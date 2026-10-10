@@ -160,6 +160,31 @@ jobs:
           -p:DebugSymbols=false -p:DebugType=none
           --nologo -v m
 
+      - name: GUI 主线程冒烟（macOS）
+        # 无显示环境不保证能起窗口: 只断言 GUI 不再在子线程初始化 Avalonia(尽力而为)。
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUB="DshGuiHost/bin/Release/net10.0/${{ matrix.rid }}/publish"
+          EXE="$PUB/dsh-gui"
+          test -f "$EXE" || { echo "::error::找不到 $EXE"; exit 1; }
+          chmod +x "$EXE"
+          DSH_HOME="$(mktemp -d)" "$EXE" > gui-smoke.out 2>&1 &
+          GUIPID=$!
+          ( sleep 30; kill -9 "$GUIPID" 2>/dev/null ) &
+          WATCH=$!
+          set +e
+          wait "$GUIPID"
+          kill "$WATCH" 2>/dev/null || true
+          set -e
+          cat gui-smoke.out || true
+          if grep -q "IDispatcherImpl belongs to a different thread" gui-smoke.out; then
+            echo "::error::macOS GUI 仍在子线程初始化 Avalonia"
+            exit 1
+          fi
+          echo "macOS GUI 冒烟通过（未见 Dispatcher 主线程异常）"
+
   aot:
     name: AOT 构建（${{ matrix.rid }}）
     # 独立流水线：只在这两处跑——PR 被 merge（在 merge 提交上），或手动 dispatch 且 aot=true。

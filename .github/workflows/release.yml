@@ -1,25 +1,21 @@
-name: 发布 Release（JIT / AOT）
+name: 发布 Release（JIT + AOT）
 
 # 只在明确的发布点触发，日常提交不会发 Release：
-#   1) push 形如 v0.1.0-jit / v0.1.0-aot 的 tag；
-#   2) 手动 workflow_dispatch（要求 tag 已先推送到仓库，档位可覆盖，也可只干跑不发布）。
-# 档位判定：tag 以 -aot 结尾 => AOT 档（pre-release，不占用 latest）；其余 => JIT 档（latest）。
+#   1) push 形如 v0.1.1 的版本 tag；
+#   2) 手动 workflow_dispatch（要求 tag 已先推送到仓库，也可只干跑不发布）。
+# 每次发布同时产出 JIT 与 AOT 两档(与 ci.yml 不同: ci.yml 只在合入/手动时校验 AOT)。
+# JIT 资产保持 dsharp-<rid> 的旧名(远端自动部署按此名下载), AOT 资产带 -aot 后缀。
 # 发布说明由 GitHub 自动生成（--generate-notes），不在仓库里维护手写前端。
 # 发布前先跑一遍测试（排除需要 GPU/桌面/外部模型的类别），测试不过就不构建、不发布。
 on:
   push:
     tags:
-      - 'v*-jit'
-      - 'v*-aot'
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: '已存在的 tag（如 v0.1.0-jit）；请先把 tag 推到仓库'
+        description: '已存在的 tag（如 v0.1.1）；请先把 tag 推到仓库'
         required: true
-      flavor:
-        description: '发布档位：jit 或 aot；留空则按 tag 后缀推断'
-        required: false
-        default: ''
       dry_run:
         description: '只构建与打包，不创建/更新 Release'
         type: boolean
@@ -34,51 +30,31 @@ concurrency:
 
 jobs:
   prepare:
-    name: 判定档位
+    name: 判定发布点
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.detect.outputs.tag }}
-      flavor: ${{ steps.detect.outputs.flavor }}
-      prerelease: ${{ steps.detect.outputs.prerelease }}
     steps:
       - id: detect
-        name: 解析 tag 与档位
+        name: 解析 tag
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
           IN_TAG: ${{ inputs.tag }}
-          IN_FLAVOR: ${{ inputs.flavor }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           if [ "$EVENT" = "workflow_dispatch" ]; then
             TAG="$IN_TAG"
-            FLAVOR="$IN_FLAVOR"
           else
             TAG="$REF_NAME"
-            FLAVOR=""
           fi
           if [ -z "$TAG" ]; then
             echo "::error::没有解析到 tag"
             exit 1
           fi
-          if [ -z "$FLAVOR" ]; then
-            case "$TAG" in
-              *-aot) FLAVOR=aot ;;
-              *)     FLAVOR=jit ;;
-            esac
-          fi
-          case "$FLAVOR" in
-            jit) PRERELEASE=false ;;
-            aot) PRERELEASE=true ;;
-            *) echo "::error::无法识别的档位: $FLAVOR"; exit 1 ;;
-          esac
-          {
-            echo "tag=$TAG"
-            echo "flavor=$FLAVOR"
-            echo "prerelease=$PRERELEASE"
-          } >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG flavor=$FLAVOR prerelease=$PRERELEASE"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"
 
   test:
     name: 测试（${{ matrix.os }}）
@@ -144,7 +120,7 @@ jobs:
           "${ARGS[@]}"
 
   build:
-    name: 构建 ${{ needs.prepare.outputs.flavor }} / ${{ matrix.rid }}
+    name: 构建 ${{ matrix.flavor }} / ${{ matrix.rid }}
     needs: [prepare, test]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -153,10 +129,20 @@ jobs:
         include:
           - os: windows-latest
             rid: win-x64
+            flavor: jit
             archive: dsharp-win-x64.zip
+          - os: windows-latest
+            rid: win-x64
+            flavor: aot
+            archive: dsharp-win-x64-aot.zip
           - os: ubuntu-latest
             rid: linux-x64
+            flavor: jit
             archive: dsharp-linux-x64.tar.gz
+          - os: ubuntu-latest
+            rid: linux-x64
+            flavor: aot
+            archive: dsharp-linux-x64-aot.tar.gz
     steps:
       - uses: actions/checkout@v4
 
@@ -177,7 +163,7 @@ jobs:
           fi
 
       - name: 安装 AOT 工具链（Linux）
-        if: matrix.rid == 'linux-x64' && needs.prepare.outputs.flavor == 'aot'
+        if: matrix.rid == 'linux-x64' && matrix.flavor == 'aot'
         shell: bash
         run: |
           set -euo pipefail
@@ -187,7 +173,7 @@ jobs:
       - name: 发布产物（Release，自包含 + 裁剪）
         shell: bash
         env:
-          FLAVOR: ${{ needs.prepare.outputs.flavor }}
+          FLAVOR: ${{ matrix.flavor }}
           RID: ${{ matrix.rid }}
         run: |
           set -euo pipefail
@@ -210,7 +196,7 @@ jobs:
           test -d "$GUI_PUB"
           cp -R "$GUI_PUB"/. "$PUB"/
           rm -f "$PUB"/dsh-gui*.pdb "$PUB"/dsh-gui*.dbg
-          STAGE="artifacts/release-stage/$RID"
+          STAGE="artifacts/release-stage/$FLAVOR-$RID"
           rm -rf "$STAGE"
           mkdir -p "$STAGE/plugins"
           cp -R "$PUB/." "$STAGE/"
@@ -227,11 +213,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
+          FLAVOR: ${{ matrix.flavor }}
           RID: ${{ matrix.rid }}
           ARCHIVE: ${{ matrix.archive }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $stage = "artifacts/release-stage/$env:RID"
+          $stage = "artifacts/release-stage/$env:FLAVOR-$env:RID"
           New-Item -ItemType Directory -Force "$stage/plugins" | Out-Null
           $out = "artifacts/release-stage/$env:ARCHIVE"
           Remove-Item -Force $out -ErrorAction SilentlyContinue
@@ -242,13 +229,13 @@ jobs:
           $junk = @($entries | Where-Object { $_ -match '\.(pdb|dbg)$' })
           if ($junk.Count -ne 0) { throw "归档里不该有调试符号：$($junk -join ', ')" }
           if (-not ($entries -match '^\./plugins/$')) { throw "归档缺少 plugins/ 目录条目" }
-          $verify = Join-Path $env:RUNNER_TEMP "verify-$env:RID"
+          $verify = Join-Path $env:RUNNER_TEMP "verify-$env:FLAVOR-$env:RID"
           Remove-Item -Recurse -Force $verify -ErrorAction SilentlyContinue
           Expand-Archive -LiteralPath $out -DestinationPath $verify -Force
           if (-not (Test-Path "$verify/dsharp.exe")) { throw "归档里找不到 dsharp.exe" }
           if (-not (Test-Path "$verify/dsh-gui.exe")) { throw "归档里找不到 dsh-gui.exe" }
           if (-not (Test-Path "$verify/plugins")) { throw "归档里找不到 plugins/" }
-          $env:DSH_HOME = Join-Path $env:RUNNER_TEMP "dsh-home-$env:RID"
+          $env:DSH_HOME = Join-Path $env:RUNNER_TEMP "dsh-home-$env:FLAVOR-$env:RID"
           $proc = Start-Process -FilePath "$verify/dsharp.exe" -ArgumentList @('--help') -NoNewWindow -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP/smoke.out" -RedirectStandardError "$env:RUNNER_TEMP/smoke.err"
           if (-not $proc.WaitForExit(60000)) { $proc.Kill($true); throw "冒烟超时" }
           if ($proc.ExitCode -ne 0) { throw "冒烟失败，exit=$($proc.ExitCode)" }
@@ -258,17 +245,23 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         env:
+          FLAVOR: ${{ matrix.flavor }}
           RID: ${{ matrix.rid }}
           ARCHIVE: ${{ matrix.archive }}
         run: |
           set -euo pipefail
-          STAGE="artifacts/release-stage/$RID"
+          STAGE="artifacts/release-stage/$FLAVOR-$RID"
           mkdir -p "$STAGE/plugins"
           OUT="artifacts/release-stage/$ARCHIVE"
           rm -f "$OUT"
           tar -czf "$OUT" --exclude='*.pdb' --exclude='*.dbg' -C "$STAGE" .
-          test "$(tar -tzf "$OUT" | grep -c -E '\.(pdb|dbg)$' || true)" = "0"
-          tar -tzf "$OUT" | grep -qx './plugins/' || { echo "::error::归档缺少 plugins/ 目录条目"; exit 1; }
+          # 先把清单读进变量再用 grep: grep -q 命中即退出会让 tar 吃到 SIGPIPE, 在 set -o pipefail 下被误判为失败。
+          ENTRIES="$(tar -tzf "$OUT")"
+          if grep -qE '\.(pdb|dbg)$' <<<"$ENTRIES"; then
+            echo "::error::归档里不该有调试符号"
+            exit 1
+          fi
+          grep -qx './plugins/' <<<"$ENTRIES" || { echo "::error::归档缺少 plugins/ 目录条目"; exit 1; }
           VERIFY="$(mktemp -d)"
           tar -xzf "$OUT" -C "$VERIFY"
           test -f "$VERIFY/dsharp" || { echo "::error::归档里找不到 dsharp"; exit 1; }
@@ -306,7 +299,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
-          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -320,18 +312,10 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG 已存在：刷新资产（说明保持原样）"
             gh release upload "$TAG" "${FILES[@]}" --clobber
-            if [ "$PRERELEASE" = "true" ]; then
-              gh release edit "$TAG" --prerelease
-            else
-              gh release edit "$TAG" --latest
-            fi
+            gh release edit "$TAG" --latest
           else
             echo "创建 Release $TAG（说明自动生成）"
-            if [ "$PRERELEASE" = "true" ]; then
-              gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" --prerelease "${FILES[@]}"
-            else
-              gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" --latest "${FILES[@]}"
-            fi
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" --latest "${FILES[@]}"
           fi
           gh release view "$TAG" --json tagName,isPrerelease,assets \
-            --jq '{tag: .tagName, prerelease: .isPrerelease, assets: [.assets[] | "\\(.name) \\(.size)"]}'
+            --jq '{tag: .tagName, prerelease: .isPrerelease, assets: [.assets[] | "\(.name) \(.size)"]}'
