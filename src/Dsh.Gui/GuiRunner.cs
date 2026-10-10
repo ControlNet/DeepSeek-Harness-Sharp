@@ -32,6 +32,30 @@ public static class GuiRunner
         return exitCode;
     }
 
+    /**
+     * macOS 专用: Avalonia.Native(Cocoa)要求 UI 在进程主线程初始化(Dispatcher 会校验 impl.CurrentThreadIsLoopThread),
+     * 子线程必然抛 "IDispatcherImpl belongs to a different thread"。这里全程同步地在调用方线程(必须是进程主线程)上跑,
+     * 不再另起线程; 其余平台仍走 Run(另起线程 + Windows STA)。
+     */
+    public static int RunOnMainThread(
+        HarnessApp app,
+        string cwd,
+        string? resumeSessionId = null)
+    {
+        using var instance = SingleInstance.Acquire(app.Home.Root);
+        if (instance is null)
+            return 0;
+
+        var settings = new GuiSettings(app.Home).Load();
+        var workspace = settings.DefaultWorkspace ?? cwd;
+        var agents = app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
+        var agent = OpenAgentAsync(app, agents, workspace, resumeSessionId).GetAwaiter().GetResult();
+
+        var (exitCode, lastSession) = RunAvalonia(app, agent, settings, instance);
+        app.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(lastSession).GetAwaiter().GetResult();
+        return exitCode;
+    }
+
     /** --session 指定时直接打开历史会话; 恢复失败则退回新建, 不让 GUI 起不来。 */
     private static async Task<AgentLoopAgent> OpenAgentAsync(
         HarnessApp app,
@@ -72,20 +96,7 @@ public static class GuiRunner
         {
             try
             {
-                MainWindow? window = null;
-                instance.ActivationRequested += () =>
-                {
-                    if (window is not null)
-                        Dispatcher.UIThread.Post(() => window.ShowFromTray());
-                };
-                App.StartupAppearance = application => ThemeService.Apply(application, settings);
-                App.StartupWindowFactory = () =>
-                {
-                    window = new MainWindow(app, agent);
-                    return window;
-                };
-                var exitCode = BuildApp(settings).StartWithClassicDesktopLifetime([], ShutdownMode.OnExplicitShutdown);
-                done.TrySetResult((exitCode, window?.ViewModel?.CurrentAgent.Session ?? agent.Session));
+                done.TrySetResult(RunAvalonia(app, agent, settings, instance));
             }
             catch (Exception error)
             {
@@ -96,6 +107,29 @@ public static class GuiRunner
             thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         return done.Task;
+    }
+
+    /** 在同一线程内跑 Avalonia 消息循环; 该线程必须是 UI 线程(macOS 上必须是进程主线程)。 */
+    private static (int ExitCode, Session Session) RunAvalonia(
+        HarnessApp app,
+        AgentLoopAgent agent,
+        GuiSettingsSnapshot settings,
+        SingleInstance instance)
+    {
+        MainWindow? window = null;
+        instance.ActivationRequested += () =>
+        {
+            if (window is not null)
+                Dispatcher.UIThread.Post(() => window.ShowFromTray());
+        };
+        App.StartupAppearance = application => ThemeService.Apply(application, settings);
+        App.StartupWindowFactory = () =>
+        {
+            window = new MainWindow(app, agent);
+            return window;
+        };
+        var exitCode = BuildApp(settings).StartWithClassicDesktopLifetime([], ShutdownMode.OnExplicitShutdown);
+        return (exitCode, window?.ViewModel?.CurrentAgent.Session ?? agent.Session);
     }
 
     private static AppBuilder BuildApp(GuiSettingsSnapshot settings)

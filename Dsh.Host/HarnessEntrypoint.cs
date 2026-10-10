@@ -146,6 +146,10 @@ public static class HarnessEntrypoint
             case "gui":
                 // 组合插件之前先摘掉自己的控制台
                 ConsoleWindow.DetachIfOwned();
+                // macOS 的 Avalonia.Native(Cocoa) 要求 UI 在进程主线程初始化; GUI 的正常路径横跨多个 await,
+                // 主线程会被宿主阻塞, 因此在首个 await 之前同步走主线程路径(此处仍在进程主线程上)。
+                if (OperatingSystem.IsMacOS())
+                    return RunGuiOnMainThread(harnessHome, resumeSessionId);
                 return await RunEntrypointAsync(harnessHome, "gui", resumeSessionId);
             case "host":
                 {
@@ -284,6 +288,14 @@ public static class HarnessEntrypoint
             gpuScreenshot,
             gpuCapturePlan,
             gpuCard));
+    }
+
+    /** macOS 专用: 由进程主线程同步组合 harness 并运行 GUI(Avalonia.Native 要求主线程初始化 UI)。 */
+    private static int RunGuiOnMainThread(HarnessHome home, string? resumeSessionId)
+    {
+        var cwd = Directory.GetCurrentDirectory();
+        using var app = ConfigBoot.Compose(new HarnessOptions(home, cwd, IsTui: false)).GetAwaiter().GetResult();
+        return Dsh.Gui.GuiRunner.RunOnMainThread(app, cwd, resumeSessionId);
     }
 }
 
