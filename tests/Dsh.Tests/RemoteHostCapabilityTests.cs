@@ -15,7 +15,7 @@ public sealed class RemoteHostCapabilityTests
     public async Task SessionsToolsFilesAndMessageFlowOverTheWire()
     {
         var backend = new FakeBackend();
-        await using var fixture = await HostFixture.CreateAsync(backend, Ct);
+        await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
         var client = fixture.Client;
 
         Assert.Empty(await client.ListSessionsAsync(Ct));
@@ -57,7 +57,7 @@ public sealed class RemoteHostCapabilityTests
     public async Task ApprovalRequestRoundTripsBack()
     {
         var backend = new FakeBackend();
-        await using var fixture = await HostFixture.CreateAsync(backend, Ct);
+        await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
         var received = new TaskCompletionSource<RemoteApprovalRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var subscription = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var pump = Task.Run(async () =>
@@ -85,7 +85,7 @@ public sealed class RemoteHostCapabilityTests
     public async Task PtyEchoesInputOverTheWire()
     {
         var backend = new FakeBackend();
-        await using var fixture = await HostFixture.CreateAsync(backend, Ct);
+        await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
         var ptyId = await fixture.Client.StartPtyAsync("/bin/sh", [], Ct);
 
         var pipe = new System.IO.Pipelines.Pipe();
@@ -107,7 +107,7 @@ public sealed class RemoteHostCapabilityTests
     public async Task QuestionRequestRoundTripsBack()
     {
         var backend = new FakeBackend();
-        await using var fixture = await HostFixture.CreateAsync(backend, Ct);
+        await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
         var received = new TaskCompletionSource<RemoteQuestionRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var subscription = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var pump = Task.Run(async () =>
