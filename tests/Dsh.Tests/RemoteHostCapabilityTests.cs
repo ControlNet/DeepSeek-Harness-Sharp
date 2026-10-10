@@ -11,7 +11,7 @@ public sealed class RemoteHostCapabilityTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task SessionsToolsFilesAndMessageFlowOverTheWire()
     {
         var backend = new FakeBackend();
@@ -53,7 +53,7 @@ public sealed class RemoteHostCapabilityTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task ApprovalRequestRoundTripsBack()
     {
         var backend = new FakeBackend();
@@ -81,7 +81,7 @@ public sealed class RemoteHostCapabilityTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task PtyEchoesInputOverTheWire()
     {
         var backend = new FakeBackend();
@@ -103,7 +103,7 @@ public sealed class RemoteHostCapabilityTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await attach);
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task QuestionRequestRoundTripsBack()
     {
         var backend = new FakeBackend();

@@ -21,14 +21,14 @@ internal static class TempTree
         return directory;
     }
 
-    /** 浅目录根(同在已忽略的 artifacts020 下): AF_UNIX 套接字路径上限 108 字符, test-homes 的深路径放不下套接字。 */
-    private static readonly string SocketRoot = Path.GetFullPath(
-        Path.Combine(AppContext.BaseDirectory, "../../../../../artifacts020/ptk"));
+    /** 浅目录根(仓库内 .daemon-tests): AF_UNIX 路径上限很小(macOS 104, Linux 108), test-homes 的深路径放不下套接字。 */
+    private static readonly string SocketRoot = Path.Combine(
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../")), ".daemon-tests");
 
-    /** 建一个仓库内的浅目录(名字为 prefix + 8 位十六进制), 供 Unix 域套接字路径使用。 */
+    /** 建一个仓库内的浅目录(名字为 prefix + 6 位十六进制), 供 Unix 域套接字路径使用。 */
     public static string CreateSocketDirectory(string prefix)
     {
-        var directory = Path.Combine(SocketRoot, prefix + Guid.NewGuid().ToString("N")[..8]);
+        var directory = Path.Combine(SocketRoot, prefix + Guid.NewGuid().ToString("N")[..6]);
         Directory.CreateDirectory(directory);
         return directory;
     }

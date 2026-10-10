@@ -5,6 +5,7 @@ riderModule.iml
 /_ReSharper.Caches/
 /artifacts
 /artifacts020
+/.daemon-tests
 /plans
 /.idea
 /.kilo

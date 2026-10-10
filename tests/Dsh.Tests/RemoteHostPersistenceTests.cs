@@ -9,7 +9,7 @@ public sealed class RemoteHostPersistenceTests
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     /** 常驻 daemon + stdio 桥: 客户端断开后再接回来, 会话仍在(脱钩/重连)。 */
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task SessionsSurviveClientReconnectThroughBridge()
     {
         // 套接字路径有 108 字符上限: 用仓库内浅目录, 否则 <root>/run/host.sock 超长, daemon 绑不上。
@@ -46,7 +46,7 @@ public sealed class RemoteHostPersistenceTests
     }
 
     /** 半开/卡住的连接不能阻塞后续连接: 每条连接必须独立服务。 */
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task StuckConnectionDoesNotBlockNewConnections()
     {
         // 套接字路径有 108 字符上限: 用仓库内浅目录, 否则 <root>/run/host.sock 超长, daemon 绑不上。
