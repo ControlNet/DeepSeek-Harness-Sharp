@@ -1,0 +1,63 @@
+name: 发布资产（复用既有构建）
+
+# 快速补发/刷新 Release 资产: 直接从某个已完成 run 取产物(下载发生在 runner 上, 不重建、不本地传输)。
+# 用于构建已成功但“创建/更新 Release”这一步失败的情况。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布/更新的 tag（须已存在的版本 tag，如 v0.1.1）'
+        required: true
+      run_id:
+        description: '提供产物的 workflow run id'
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-assets-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: 创建/更新 Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 取既有 run 的产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 创建或更新 Release（说明用 GitHub 自动生成）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          FILES=(dist/*/*)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::没有可上传的产物"
+            exit 1
+          fi
+          printf '待上传：\n'
+          printf '  %s\n' "${FILES[@]}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在：刷新资产（说明保持原样）"
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+            gh release edit "$TAG" --latest
+          else
+            echo "创建 Release $TAG（说明自动生成）"
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" --latest "${FILES[@]}"
+          fi
+          gh release view "$TAG" --json tagName,isPrerelease,assets \
+            --jq '{tag: .tagName, prerelease: .isPrerelease, assets: [.assets[] | "\(.name) \(.size)"]}'
