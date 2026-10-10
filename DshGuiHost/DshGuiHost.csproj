@@ -5,6 +5,8 @@
     CLI 与 TUI 仍走同目录下的控制台子系统宿主(dsh.exe),shell 等待与 TUI 占用控制台的行为不变。
     逻辑不重复实现:转调 Dsh.Host 组合根的 gui 分支,插件目录(生成目录 + plugins/)由宿主程序集提供。
   -->
+  <Import Project="..\Dsh.Host\Dsh.Host.Publish.targets" />
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
@@ -16,6 +18,16 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <CETCompat>false</CETCompat>
     <ApplicationIcon Condition="Exists('..\src\Dsh.Gui\Assets\icon.ico')">..\src\Dsh.Gui\Assets\icon.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <!--
+    发布形态与 dsharp 宿主(DeepSeek-Harness-Sharp.csproj)一致: Release 自包含 + partial 裁剪。
+    否则 dotnet publish -r <rid> 在 .NET 8+ 默认框架依赖, dsh-gui.exe 会提示安装 .NET 运行时。
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <SelfContained>true</SelfContained>
   </PropertyGroup>
 
   <ItemGroup>
