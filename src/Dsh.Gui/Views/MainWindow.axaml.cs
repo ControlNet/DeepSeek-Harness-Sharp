@@ -102,7 +102,11 @@ public sealed partial class MainWindow : Window
             viewModel.Preferences.Preview -= ApplyPreview;
             viewModel.Dispose();
         }
-        _tray?.Dispose();
+        // 已登记的图标由 Avalonia 在 dispatcher 关闭时统一 Dispose; 先摘除可避免 12.1.2 那种非幂等 Dispose 被调两次。
+        if (_tray is { } tray && Application.Current is { } trayApp && TrayIcon.GetIcons(trayApp) is { } icons)
+            icons.Remove(tray);
+        else
+            _tray?.Dispose();
         base.OnClosed(e);
         if (_forceQuit)
             ShutdownApplication();
@@ -147,12 +151,26 @@ public sealed partial class MainWindow : Window
                 IsVisible = true,
             };
             _tray.Clicked += (_, _) => ShowFromTray();
+            RegisterTrayIcon();
         }
         catch (Exception)
         {
             // 托盘属于锦上添花: 没有通知区域时静默降级为普通窗口。
             _tray = null;
         }
+    }
+
+    /**
+     * 图标必须登记到挂在 Application 上的 TrayIcons 集合里: Avalonia 12.1.3 起原生图标只在 Attach() 中创建,
+     * 而 Attach() 只由该集合触发(12.1.2 及以前是构造即创建)。漏登记不会抛异常, 只是静默没有图标。
+     */
+    private void RegisterTrayIcon()
+    {
+        if (_tray is null || Application.Current is not { } app)
+            return;
+        var icons = TrayIcon.GetIcons(app) ?? new TrayIcons();
+        icons.Add(_tray);
+        TrayIcon.SetIcons(app, icons);
     }
 
     /** Windows 用多尺寸 ico; Linux/macOS 的托盘(SNI/NSStatusItem)要 png。 */
