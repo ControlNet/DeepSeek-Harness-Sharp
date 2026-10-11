@@ -30,6 +30,7 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    # TUI 的会话管理(PTY 守护进程按需自动拉起,无需手动启动)
    dotnet run --project DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -- tui list   # 列出所有会话id
    dotnet run --project DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -- tui attach <id>  #进入某个会话
+   dotnet run --project DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -- tui attach <pty-id> --gpu  #用独立 GPU 窗口接回该会话
    ```
 3. 插件运维:TUI 内用 `/plugins list|add <包|dll 路径>|remove <包> [--force]|disable <包>|enable <包>`;改动写回 `settings.yaml` 的 `plugins:` 段并保留注释。更新插件:先 `remove`,再删掉该插件所在的 `plugins/<目录名>/`(`add` 装出来的目录名是 dll 文件名),然后 `add` 新版(同名文件内容不一致时 add 会拒绝,以免覆盖手放的同名插件)。
 4. 日志:`<home>/logs/dsh-YYYYMMDD.log`(默认开启);`logging:` 段可配置级别、内存缓冲、是否输出到控制台(TUI 下强制关闭)。

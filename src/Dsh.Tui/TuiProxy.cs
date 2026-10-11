@@ -1,4 +1,5 @@
 using Dsh.Boot;
+using Dsh.Tui.Services;
 
 namespace Dsh.Tui;
 
@@ -7,7 +8,7 @@ namespace Dsh.Tui;
  * 这样 detach/attach 只是 proxy 的退出/进入, 会话进程内的草稿、鼠标模式、菜单与备用屏状态都不会丢;
  * 常驻会话自己用 DSH_PTY_CHILD 环境变量标记, 避免它再次包一层 proxy。
  */
-internal static class TuiProxy
+public static class TuiProxy
 {
     public static async Task<int> RunAsync(HarnessApp app, bool startShell, bool gpu = false)
     {
@@ -33,27 +34,10 @@ internal static class TuiProxy
             WantsMouse = true,
         });
 
-        if (gpu)
-        {
-            // 独立窗口形态: 窗口只渲染会话画面, 关窗口即 detach(会话继续跑)。
-            // 宿主创建失败(无显示服务器/无 DRM/终端不支持图像协议)时打印原因并回退到下面的终端形态, 不抛未捕获异常。
-            var atlas = TuiRunner.CreateAtlasForTerminal();
-            IGlSurfaceHostRunner? windowHost = null;
-            try
-            {
-                windowHost = GpuHostFactory.CreateWindowHost(atlas, vsync: GpuCatalog.LoadVsync(app.Home));
-            }
-            catch (Exception error)
-            {
-                Console.Error.WriteLine($"GPU unavailable: {error.Message}");
-            }
-            if (windowHost is not null)
-            {
-                using (windowHost)
-                    new GpuSessionProxy(session.Id, atlas, windowHost).Run();
-                return 0;
-            }
-        }
+        // 独立窗口形态: 窗口只渲染会话画面, 关窗口即 detach(会话继续跑)。
+        // 宿主创建失败(无显示服务器/无 DRM/终端不支持图像协议)时打印原因并回退到下面的终端形态, 不抛未捕获异常。
+        if (gpu && TryRunWindow(app.Home, session.Id))
+            return 0;
 
         // 终端形态: 接管本终端, 输出即会话画面, 输入原样进会话; 常驻会话发 detach 标记或退出时本进程就结束。
         await PtyDaemonClient.AttachConsoleAsync(
@@ -62,6 +46,48 @@ internal static class TuiProxy
             CancellationToken.None);
         return 0;
     }
+
+    /**
+     * 把某个常驻会话(daemon PTY id)渲染进独立 GPU 窗口: 关窗口即 detach, 会话继续在 daemon 里跑。
+     * `--gpu` 启动与 `dsharp tui attach --gpu` 共用本入口(launch 传新会话 id, attach 传已有 pty id)。
+     * 宿主不可用(无显示服务器/无 DRM/终端不支持图像协议)时打印原因并返回 false, 由调用方回退到终端接管。
+     */
+    public static bool TryRunWindow(HarnessHome home, string sessionId)
+    {
+        var atlas = TuiRunner.CreateAtlasForTerminal();
+        var windowHost = CreateWindowHostOrNull(home, atlas);
+        if (windowHost is null)
+            return false;
+        using (windowHost)
+            new GpuSessionProxy(sessionId, atlas, windowHost).Run();
+        return true;
+    }
+
+    /** 后端按 tui.gpu.backend 选择(与 RunGpuSync 同一条路径): vk 时窗口形态也走 Vulkan。 */
+    private static IGlSurfaceHostRunner? CreateWindowHostOrNull(HarnessHome home, GlyphAtlas atlas)
+    {
+        var backend = TuiGpuBackendParser.Parse(new TuiSettings(home).GpuBackend);
+        // 显式 CPU 后端: 不开 GPU 窗口, 回退终端接管(与 launch 路径 `backend == Cpu ⇒ gpu = false` 一致)。
+        if (backend == TuiGpuBackend.Cpu)
+            return null;
+        try
+        {
+            return GpuHostFactory.CreateWindowHostForBackend(
+                backend,
+                atlas,
+                gpuCard: null,
+                preferredCard: null,
+                hidden: false,
+                vsync: GpuCatalog.LoadVsync(home),
+                headlessCapture: false);
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine($"GPU unavailable: {error.Message}");
+            return null;
+        }
+    }
+
 
     /** 只转发会影响"会话本体"的参数: --session 决定续哪个会话; home 作为结构化字段交给 daemon, 不塞进命令行。 */
     private static List<string> ChildArguments(bool startShell)

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Dsh.Boot;
 using Dsh.Plugins;
 using Dsh.Ptc;
+using Dsh.Tui;
 
 namespace Dsh.Host;
 
@@ -105,6 +106,10 @@ public static class HarnessEntrypoint
         }
 
         var command = positional.FirstOrDefault();
+        // 裸 `dsharp attach <pty-id>` 等价 `dsharp tui attach <pty-id>`(tmux 习惯)。
+        // 仅当第二个参数确实是 daemon 里的 PTY 会话时生效; 否则仍按任务提示词走 headless, 不吞掉 "attach ..." 开头的指令。
+        if (command == "attach" && positional.Count >= 2 && await BootCli.IsDaemonPtyAsync(positional[1]))
+            return await AttachDaemonPtyAsync(positional[1], gpu, harnessHome);
         switch (command)
         {
             case "tui":
@@ -123,7 +128,7 @@ public static class HarnessEntrypoint
                         // tmux 式语义: id 先当 daemon 的 PTY 会话接管; 不是的话按 harness 会话恢复进窗口。
                         var target = positional[2];
                         if (await BootCli.IsDaemonPtyAsync(target))
-                            return await BootCli.RunTuiAttachAsync(target);
+                            return await AttachDaemonPtyAsync(target, gpu, harnessHome);
                         await Console.Out.WriteLineAsync($"dsharp: {target} 不是 daemon 里的 PTY 会话, 按 harness 会话恢复"
                             + (gpu ? "到独立 GPU 窗口" : "进本终端 TUI")
                             + "(要独立窗口加 --gpu)");
@@ -236,11 +241,23 @@ public static class HarnessEntrypoint
         });
     }
 
+    /**
+     * 接管 daemon 里的 PTY 会话: `--gpu` 时优先用独立窗口接回(与 `--gpu` 启动同一条渲染路径),
+     * 窗口宿主不可用(无显示服务器/无 DRM/终端不支持图像协议)再回退到本终端接管。
+     */
+    private static async Task<int> AttachDaemonPtyAsync(string ptyId, bool gpu, HarnessHome home)
+    {
+        if (gpu && TuiProxy.TryRunWindow(home, ptyId))
+            return 0;
+        return await BootCli.RunTuiAttachAsync(ptyId);
+    }
+
     private static void PrintUsage()
     {
         Console.WriteLine("""
             Usage: dsharp [options] [task...]
-                   dsharp tui [list | attach <pty-id> | kill-pty <pty-id>]
+                   dsharp tui [list | attach <pty-id> [--gpu] | kill-pty <pty-id>]
+                   dsharp attach <pty-id> [--gpu]   (等价 dsharp tui attach <pty-id>)
                    dsharp tui --session <id> [--gpu]   (恢复 harness 会话; --gpu 开独立窗口)
                    dsharp gui [--session <id>]
                    dsharp headless "task"
@@ -261,7 +278,7 @@ public static class HarnessEntrypoint
             tui kill-pty <pty-id>: 终止 daemon 里指定的那个 PTY 会话(见 dsharp tui list)。
 
             tui attach 的 <id> 两种都支持(tmux 习惯):
-              · daemon 里的 PTY 会话(由 /detach 产生, 见 dsharp tui list) —— 直接接管它的字节流;
+              · daemon 里的 PTY 会话(由 /detach 产生, 见 dsharp tui list) —— 直接接管它的字节流; 加 --gpu 改用独立窗口接回该会话;
               · harness 会话 —— 恢复进窗口(本终端 TUI; 加 --gpu 开独立窗口)。
             注: 另一个 TUI 进程内的 shell 窗格无法跨进程 attach。
             """);
