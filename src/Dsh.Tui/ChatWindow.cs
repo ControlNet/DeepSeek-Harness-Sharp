@@ -414,8 +414,8 @@ public sealed class ChatWindow : IDisposable
         // 命令浮层打开时: 正文区滚轮滚动候选(与 ^/v 等价), 便于浏览长命令列表。
         if (layout.Main.Contains(cellX, cellY) && InputPane.ScrollOverlay(delta))
             return;
-        // 单窗格时指针落在右栏上: 滚右栏内容(窄终端里才看得到下面的段落), 不再滚正文。
-        if (_panes.Count == 1 && layout.RightPanel.Contains(cellX, cellY) && InputPane.ScrollRightPanel(delta))
+        // 指针落在右栏上: 滚右栏内容(窄终端里才看得到下面的段落), 不再滚正文。分屏时右栏同样在正文区之外。
+        if (layout.RightPanel.Contains(cellX, cellY) && InputPane.ScrollRightPanel(delta))
             return;
         var target = _panes.Count > 1 ? _paneLayout.HitTest(cellX, cellY) : null;
         if (target is { } id && _panes.TryGetValue(id, out var pane))
@@ -439,8 +439,8 @@ public sealed class ChatWindow : IDisposable
             return;
         }
 
-        // 单窗格: 右栏竖线(拖宽度)和输入栏上沿(拖高度)都可拖(以前只有多窗格的窗格树分割线参与拖动)。
-        var dividerColumn = _panes.Count == 1 ? RightPanelDividerColumn(layout) : -1;
+        // 右栏竖线(拖宽度)和输入栏上沿(拖高度)都可拖(分屏时也保留右栏, 所以不限于单窗格)。
+        var dividerColumn = RightPanelDividerColumn(layout);
         if (dividerColumn >= 0
             && Math.Abs(cellX - dividerColumn) <= 1
             && cellY >= layout.Main.Y
@@ -661,10 +661,11 @@ public sealed class ChatWindow : IDisposable
     {
         grid.Clear();
         layout = Effective(layout);
-        // 窗格区始终按整幅宽度布局(多窗格不画右栏); 分隔线由 _paneLayout 派生, 与窗格同源, 不会因基数不一致而错位。
-        _paneArea = new ConsoleRect(0, 0, grid.Width, Math.Max(0, layout.Main.Height));
-        // 浮层(总览/子代理列表)的正文区域: 单窗格且有右侧栏时限于正文宽, 避免居中基准包含侧栏而压到侧栏上
-        _overlayArea = _panes.Count == 1 && layout.RightPanel.Width > 0 ? layout.Main : _paneArea;
+        // 窗格区按"正文宽"布局(不含右侧栏): 分屏后右栏依然保留, 窗格只在正文区里再分, 不会把侧栏挤掉。
+        // 分隔线由 _paneLayout 派生, 与窗格同源, 不会因基数不一致而错位。
+        _paneArea = new ConsoleRect(0, 0, layout.Main.Width, Math.Max(0, layout.Main.Height));
+        // 浮层(总览/子代理列表)的正文区域: 限于正文宽, 避免居中基准包含侧栏而压到侧栏上
+        _overlayArea = _paneArea;
         _paneLayout = LayoutEngine.EvaluatePanes(_paneTree, _paneArea);
         SyncShellPaneSizes();
 
@@ -684,6 +685,9 @@ public sealed class ChatWindow : IDisposable
         else
         {
             DrawPanes(grid);
+            // 多窗格也保留右侧栏: 侧栏是窗口级的(InputPane 的上下文/MCP 面板), 不该因为分屏就消失。
+            if (layout.RightPanel.Width > 0)
+                InputPane.DrawRightPanel(grid, layout.RightPanel);
         }
 
         InputPane.DrawInput(grid, layout.Input);
@@ -2209,7 +2213,7 @@ public sealed class ChatWindow : IDisposable
 
     private void DrawDividers(CellGrid grid, UiLayout layout)
     {
-        var verticalX = _panes.Count == 1 ? RightPanelDividerColumn(layout) : -1;
+        var verticalX = RightPanelDividerColumn(layout);
         DrawHorizontalDivider(grid, layout.Input.Y - 1, verticalX, layout.Main.Bottom, layout.Input.Y);
         DrawHorizontalDivider(grid, layout.Status.Y - 1, verticalX, layout.Input.Bottom, layout.Status.Y);
         if (verticalX < 0 || layout.Main.Height <= 0)

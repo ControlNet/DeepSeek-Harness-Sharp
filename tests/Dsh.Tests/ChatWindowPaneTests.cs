@@ -4,6 +4,7 @@ using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Runtime;
 using Dsh.Tui;
+using System.Text;
 
 namespace Dsh.Tests;
 
@@ -20,10 +21,35 @@ public sealed class ChatWindowPaneTests : IDisposable
         var (chat, _, _, first, second) = await CreateChatWithTwoAgents();
 
         Assert.Equal(2, chat.PaneCount);
-        var frame = DrawFrame(chat);
+        // 200 列: 分屏后每个窗格仍够宽, 两个会话 id 都能完整出现在各自窗格头里(窄屏下窗格头会被分隔线截断)。
+        var frame = DrawFrame(chat, 200);
         Assert.Contains(first.Id.ToString(), frame);
         Assert.Contains(second.Id.ToString(), frame);
         Assert.Contains("> ", frame);
+        chat.Dispose();
+    }
+
+    /** 分屏不能把右侧边栏挤掉: 多窗格时右栏仍按 layout.RightPanel 绘制, 窗格只在正文区里再分。 */
+    [Fact]
+    public async Task Split_Keeps_RightPanel_Visible()
+    {
+        var (chat, _, _, _, _) = await CreateChatWithTwoAgents();
+        var layout = LayoutEngine.Calculate(120, 40);
+        Assert.True(layout.RightPanel.Width > 0, "120 列下应当存在右栏");
+        var grid = DrawFrameReturningGrid(chat, layout);
+
+        var panel = new StringBuilder();
+        for (var y = 0; y < layout.RightPanel.Height && y < grid.Height; y++)
+        {
+            for (var x = layout.RightPanel.X; x < layout.RightPanel.Right && x < grid.Width; x++)
+            {
+                // 分屏的窗格内容/分隔线都不许落到右栏里(否则就是"分屏把侧栏挤掉")。
+                Assert.NotEqual('│', grid[x, y].Character);
+                panel.Append(grid[x, y].Character);
+            }
+        }
+
+        Assert.Contains("上下文", panel.ToString());
         chat.Dispose();
     }
 
@@ -305,10 +331,10 @@ public sealed class ChatWindowPaneTests : IDisposable
         return grid;
     }
 
-    private static string DrawFrame(ChatWindow chat)
+    private static string DrawFrame(ChatWindow chat, int width = 120, int height = 40)
     {
-        var layout = LayoutEngine.Calculate(120, 40);
-        var grid = new CellGrid(120, 40);
+        var layout = LayoutEngine.Calculate(width, height);
+        var grid = new CellGrid(width, height);
         chat.Draw(grid, layout);
         var lines = new List<string>();
         for (var y = 0; y < grid.Height; y++)
