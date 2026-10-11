@@ -832,7 +832,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private void LoadVersion()
     {
         var assembly = typeof(SettingsViewModel).Assembly;
-        VersionText = assembly.GetName().Version?.ToString() ?? "0.0.0";
+        VersionText = RemoteHost.RemoteHostServer.ReleaseVersion;
         var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
         var plus = informational.IndexOf('+');
         CommitText = plus >= 0 && plus + 1 < informational.Length ? informational[(plus + 1)..] : "unknown";

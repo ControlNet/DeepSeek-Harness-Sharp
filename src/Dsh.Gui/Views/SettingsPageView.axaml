@@ -407,7 +407,7 @@
                             SelectedItem="{Binding Preferences.RemoteDownloadVia}" />
                   <TextBlock Grid.Row="4" Text="远端代理" Classes="Tertiary" VerticalAlignment="Center" />
                   <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding Preferences.RemoteServerProxy}"
-                           PlaceholderText="远端直下用；留空 = 用远端自带代理/直连" />
+                           PlaceholderText="远端直下用，在远端机器上解析；远端本机代理填 127.0.0.1:端口；留空 = 用远端自带代理/直连" />
                 </Grid>
               </StackPanel>
             </Border>

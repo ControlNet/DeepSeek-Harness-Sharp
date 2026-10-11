@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+using System.Reflection;
+using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Dsh.Transport;
 
@@ -14,8 +15,22 @@ public sealed class RemoteHostServer(
     RemoteHostServerOptions options,
     IRemoteHostBackend? backend = null)
 {
-    private static readonly string HostVersion =
-        typeof(RemoteHostServer).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+    /** InformationalVersion 里构建追加的提交号分隔符(见 Directory.Build.props 的 Version)。 */
+    private const char CommitSeparator = '+';
+
+    /**
+     * 发布版本: 远端部署是否过期的判据与 host.info 上报的版本都用它, 取自 InformationalVersion 去掉构建追加的 "+提交号"。
+     * 程序集版本(AssemblyVersion)是插件 ABI 基线, 不随发版走, 见 Directory.Build.props。
+     */
+    public static readonly string ReleaseVersion = ReleaseVersionOf(typeof(RemoteHostServer).Assembly);
+
+    private static string ReleaseVersionOf(Assembly assembly)
+    {
+        var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
+        var cut = informational.IndexOf(CommitSeparator);
+        var version = cut >= 0 ? informational[..cut] : informational;
+        return version.Length > 0 ? version : "0.0.0";
+    }
 
     private readonly IRemoteHostBackend? _backend = backend;
 
@@ -47,7 +62,7 @@ public sealed class RemoteHostServer(
             : (!versionOk
                 ? $"protocol version mismatch: client {request?.ProtocolVersion}, host {HostProtocol.Version}"
                 : null);
-        return Serialize(new HostHelloResponse(mismatch is null, HostProtocol.Version, HostVersion, mismatch),
+        return Serialize(new HostHelloResponse(mismatch is null, HostProtocol.Version, ReleaseVersion, mismatch),
             HostProtocolJsonContext.Default.HostHelloResponse);
     }
 
@@ -56,7 +71,7 @@ public sealed class RemoteHostServer(
 
     private static HostInfo StaticInfo() => new(
         HostProtocol.Version,
-        HostVersion,
+        ReleaseVersion,
         OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux",
         RemoteHostEndpoint.DefaultRoot());
 

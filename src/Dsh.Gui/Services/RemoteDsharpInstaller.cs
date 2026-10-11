@@ -12,10 +12,23 @@ public static class RemoteDsharpInstaller
 {
     private const string MissingMarker = "__DSHARP_MISSING__";
 
-    /** 部署时写入 `~/.dsharp/<rid>/.dsharp-version` 的标记: 与客户端协议版本一致才算可复用。 */
-    private static string ExpectedVersion => typeof(RemoteHost.RemoteHostServer).Assembly.GetName().Version?.ToString() ?? "0";
+    /** OpenSSH 自身失败(连接/认证/端口不通)的退出码固定为 255; 远端命令自身的失败是别的退出码。 */
+    private const int SshFailureExitCode = 255;
 
+    /**
+     * 部署身份 = 本项目的发布版本(见 Directory.Build.props 的 Version, 经 FileVersion 读出):
+     * 远端 `~/.dsharp/RID/.dsharp-version` 与它一致即认为部署未过期。纯本地比较: 不联网、不看提交号
+     * (否则关代理就校验不上, 或一天重部署几十次)。
+     */
     private const string VersionFileName = ".dsharp-version";
+
+    /**
+     * 部署收尾必须停掉常驻宿主并清 control socket: `host --serve --stdio` 只是把 stdio 桥接到已有 daemon,
+     * 不会用新二进制重启它; 不停的话新部署永远不生效(表现为会话列表/回放按旧协议工作)。
+     */
+    private const string StopHostDaemonCommand =
+        "pkill -f '[h]ost serve' >/dev/null 2>&1 || true; "
+        + "rm -f \"$HOME/.dsh/run/host.sock\" \"$HOME/.dsh/run/host.port\" \"$HOME/.dsh/run/host.token\"";
 
     /** 部署参数(来自 GUI 设置): Release 基址/版本; Proxy=本地下载代理; Via=下载位置(auto|client|server); ServerProxy=远端下载代理(空则用远端自带代理/直连)。 */
     public sealed record Options(string ReleaseBaseUrl, string Version, string? Proxy, string Via = "auto", string? ServerProxy = null);
@@ -46,16 +59,17 @@ public static class RemoteDsharpInstaller
         var rid = await DetectRidAsync(workspace, cancellationToken).ConfigureAwait(false);
         if (rid.StartsWith("win-", StringComparison.Ordinal))
             throw new NotSupportedException("远端为 Windows: 自动部署暂未实现, 请在该远程工作区设置里手动填写远端 dsharp 路径");
+        var identity = RemoteHost.RemoteHostServer.ReleaseVersion;
 
         var probed = Lines(await SshRemoteWorkspaceLauncher.RunRemoteAsync(workspace, ProbeCommand, cancellationToken).ConfigureAwait(false));
         if (probed.Length > 0 && probed[0] != MissingMarker)
         {
             var present = probed[0];
             var version = probed.Length > 1 ? probed[1] : "";
-            // 有版本标记且不一致才算过期; 无标记(旧部署)按可用处理, 不强制重装。
-            if (version.Length == 0 || string.Equals(version, ExpectedVersion, StringComparison.Ordinal))
+            // 带部署标记且与目标 Release 一致才算可复用; 无标记(用户自管的 PATH 安装)按可用处理, 不强制覆盖。
+            if (version.Length == 0 || string.Equals(version, identity, StringComparison.Ordinal))
                 return new Result(present, true);
-            progress?.Invoke($"远端 dsharp 版本过期({version} → {ExpectedVersion}), 重新部署 …");
+            progress?.Invoke($"远端 dsharp 不是目标 Release({version} → {identity}), 重新部署 …");
         }
 
         // server/auto: 先让远端用它自己的网络/自带代理下载(curl/wget 认 http_proxy/https_proxy 环境, 或 ServerProxy);
@@ -65,7 +79,9 @@ public static class RemoteDsharpInstaller
             try
             {
                 progress?.Invoke($"正在让远端直接下载 {AssetName(rid)} …");
-                return await DeployFromServerAsync(workspace, options, rid, cancellationToken).ConfigureAwait(false);
+                var remote = await DeployFromServerAsync(workspace, options, rid, cancellationToken).ConfigureAwait(false);
+                await WriteIdentityAsync(workspace, rid, identity, cancellationToken).ConfigureAwait(false);
+                return remote;
             }
             catch (Exception error) when (options.Via == "auto" && error is not OperationCanceledException)
             {
@@ -78,7 +94,9 @@ public static class RemoteDsharpInstaller
         try
         {
             progress?.Invoke($"正在上传并部署 dsharp({rid})到 ~/.dsharp/ …");
-            return await DeployAsync(workspace, archive, rid, cancellationToken).ConfigureAwait(false);
+            var deployed = await DeployAsync(workspace, archive, rid, cancellationToken).ConfigureAwait(false);
+            await WriteIdentityAsync(workspace, rid, identity, cancellationToken).ConfigureAwait(false);
+            return deployed;
         }
         finally
         {
@@ -115,20 +133,30 @@ public static class RemoteDsharpInstaller
     public static string BuildServerDownloadScript(Options options, string rid)
     {
         var url = AssetUrl(options, rid);
-        var proxyArg = string.IsNullOrWhiteSpace(options.ServerProxy) ? "" : $"-x '{options.ServerProxy.Trim()}' ";
+        var proxy = options.ServerProxy?.Trim() ?? "";
+        // 代理地址在远端解析: curl 用 -x, wget 用 use_proxy + http(S)_proxy。
+        var curlProxy = proxy.Length == 0 ? "" : $"-x '{proxy}' ";
+        var wgetProxy = proxy.Length == 0 ? "" : $"-e use_proxy=yes -e https_proxy='{proxy}' -e http_proxy='{proxy}' ";
         var dir = $"\"$HOME/.dsharp/{rid}\"";
         return "set -e; "
             + $"mkdir -p {dir}; "
             + $"cd {dir}; "
-            + $"if command -v curl >/dev/null 2>&1; then curl -fL --connect-timeout 15 --max-time 900 --retry 2 {proxyArg}-o dsharp.tar.gz '{url}'; "
-            + $"elif command -v wget >/dev/null 2>&1; then wget --timeout=15 --tries=2 -O dsharp.tar.gz '{url}'; "
+            + $"if command -v curl >/dev/null 2>&1; then curl -fL --connect-timeout 15 --max-time 900 --retry 2 {curlProxy}-o dsharp.tar.gz '{url}'; "
+            + $"elif command -v wget >/dev/null 2>&1; then wget {wgetProxy}--timeout=15 --tries=2 -O dsharp.tar.gz '{url}'; "
             + "else echo __NO_DOWNLOADER__ >&2; exit 42; fi; "
             + "tar -xf dsharp.tar.gz; "
             + "chmod +x dsharp; "
-            + $"printf '%s' '{ExpectedVersion}' > {VersionFileName}; "
+            + StopHostDaemonCommand + "; "
             + "rm -f dsharp.tar.gz; "
             + "pwd";
     }
+
+    /** 部署成功后写入版本标记: 它是「远端部署是否已过期」的唯一判据。 */
+    private static Task<string> WriteIdentityAsync(SshWorkspace workspace, string rid, string identity, CancellationToken cancellationToken)
+        => SshRemoteWorkspaceLauncher.RunRemoteAsync(
+            workspace,
+            $"printf '%s' '{identity.Replace("'", "", StringComparison.Ordinal)}' > \"$HOME/.dsharp/{rid}/{VersionFileName}\"",
+            cancellationToken);
 
     /** 远端平台识别: 先 `uname`(POSIX), 失败再试 PowerShell / cmd(Windows 远端默认 shell 多为 cmd)。 */
     private static async Task<string> DetectRidAsync(SshWorkspace workspace, CancellationToken cancellationToken)
@@ -155,16 +183,13 @@ public static class RemoteDsharpInstaller
         throw new NotSupportedException("无法识别远端平台(既非 POSIX uname, 也非 Windows)");
     }
 
+    /** 探测命令: 成功返回 stdout; 远端命令失败返回 null(继续试下一种平台探测); ssh 自身失败必须抛出, 不能伪装成“平台未知”。 */
     private static async Task<string?> TryRunAsync(SshWorkspace workspace, string command, CancellationToken cancellationToken)
     {
-        try
-        {
-            return await SshRemoteWorkspaceLauncher.RunRemoteAsync(workspace, command, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception error) when (error is IOException or InvalidOperationException)
-        {
-            return null;
-        }
+        var result = await SshRemoteWorkspaceLauncher.RunRemoteCaptureAsync(workspace, command, cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode == SshFailureExitCode)
+            throw new IOException($"ssh {workspace.User}@{workspace.Host} 失败: {result.FailureDetail}");
+        return result.ExitCode == 0 ? result.StdOut : null;
     }
 
     private static string[] Lines(string output)
@@ -206,7 +231,7 @@ public static class RemoteDsharpInstaller
             + $"mkdir -p \"$HOME/.dsharp/{rid}\"; "
             + $"tar -xf \"$HOME/{archiveName}\" -C \"$HOME/.dsharp/{rid}\"; "
             + $"chmod +x \"$HOME/.dsharp/{rid}/dsharp\"; "
-            + $"printf '%s' '{ExpectedVersion}' > \"$HOME/.dsharp/{rid}/{VersionFileName}\"; "
+            + StopHostDaemonCommand + "; "
             + $"rm -f \"$HOME/{archiveName}\"; "
             + $"cd \"$HOME/.dsharp/{rid}\" && pwd";
         var dir = (await SshRemoteWorkspaceLauncher.RunRemoteAsync(workspace, script, cancellationToken).ConfigureAwait(false)).Trim();

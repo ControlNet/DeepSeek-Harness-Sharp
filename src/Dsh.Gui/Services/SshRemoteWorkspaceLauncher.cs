@@ -32,6 +32,12 @@ public static class SshRemoteWorkspaceLauncher
         }
     }
 
+    /** 远端命令的原始结果: 调用方按 ExitCode 判定(OpenSSH 自身失败固定为 255, 远端命令自身的失败是别的退出码)。 */
+    public sealed record RemoteCommandResult(int ExitCode, string StdOut, string StdErr)
+    {
+        public string FailureDetail => string.IsNullOrWhiteSpace(StdErr) ? "(无 stderr)" : StdErr.Trim();
+    }
+
     public static Task<Connection> ConnectAsync(SshWorkspace workspace, CancellationToken cancellationToken)
         => ConnectAsync(workspace, hostCommandPath: null, cancellationToken);
 
@@ -113,11 +119,20 @@ public static class SshRemoteWorkspaceLauncher
     /** 在远端执行一条命令并返回 stdout(不启动 harness); 非 0 退出抛异常(含 stderr)。 */
     public static async Task<string> RunRemoteAsync(SshWorkspace workspace, string command, CancellationToken cancellationToken)
     {
+        var result = await RunRemoteCaptureAsync(workspace, command, cancellationToken).ConfigureAwait(false);
+        return result.ExitCode == 0
+            ? result.StdOut
+            : throw new IOException($"{workspace.User}@{workspace.Host} 远端命令失败: {result.FailureDetail}");
+    }
+
+    /** 在远端执行一条命令, 原样返回退出码与 stdout/stderr(不抛异常), 供需要区分“ssh 失败”与“命令失败”的调用方使用。 */
+    public static async Task<RemoteCommandResult> RunRemoteCaptureAsync(SshWorkspace workspace, string command, CancellationToken cancellationToken)
+    {
         var startInfo = BuildSshStartInfo(workspace, out var askPass);
         startInfo.ArgumentList.Add(command);
         try
         {
-            return await RunProcessAsync(startInfo, workspace, cancellationToken).ConfigureAwait(false);
+            return await CaptureAsync(startInfo, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -134,7 +149,9 @@ public static class SshRemoteWorkspaceLauncher
         startInfo.ArgumentList.Add($"{workspace.User}@{workspace.Host}:{remotePath}");
         try
         {
-            await RunProcessAsync(startInfo, workspace, cancellationToken).ConfigureAwait(false);
+            var result = await CaptureAsync(startInfo, cancellationToken).ConfigureAwait(false);
+            if (result.ExitCode != 0)
+                throw new IOException($"{workspace.User}@{workspace.Host} scp 上传失败: {result.FailureDetail}");
         }
         finally
         {
@@ -143,7 +160,7 @@ public static class SshRemoteWorkspaceLauncher
         }
     }
 
-    private static async Task<string> RunProcessAsync(ProcessStartInfo startInfo, SshWorkspace workspace, CancellationToken cancellationToken)
+    private static async Task<RemoteCommandResult> CaptureAsync(ProcessStartInfo startInfo, CancellationToken cancellationToken)
     {
         var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start process");
         using (process)
@@ -153,11 +170,7 @@ public static class SshRemoteWorkspaceLauncher
             var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
             var error = process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            var text = await output.ConfigureAwait(false);
-            var detail = await error.ConfigureAwait(false);
-            if (process.ExitCode != 0)
-                throw new IOException($"{workspace.User}@{workspace.Host} 远端命令失败: {(string.IsNullOrWhiteSpace(detail) ? "(无 stderr)" : detail.Trim())}");
-            return text;
+            return new RemoteCommandResult(process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
         }
     }
 

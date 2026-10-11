@@ -50,6 +50,10 @@ public sealed class RemoteDsharpInstallerTests
         Assert.Contains("/latest/download/dsharp-linux-x64.tar.gz", script);
         Assert.Contains("exit 42", script);
         Assert.DoesNotContain("-x '", script);
+        // 部署必须停掉常驻宿主: 否则新二进制不会被 daemon 加载(回放/列表按旧协议工作)。
+        Assert.Contains("pkill -f '[h]ost serve'", script);
+        // 部署标记改由客户端按 Release 号写入, 脚本不再自带常量版本号。
+        Assert.DoesNotContain(".dsharp-version", script);
     }
 
     [Fact]
@@ -58,5 +62,7 @@ public sealed class RemoteDsharpInstallerTests
         var options = new RemoteDsharpInstaller.Options("https://host/releases", "latest", null, "server", "http://proxy.local:8080");
         var script = RemoteDsharpInstaller.BuildServerDownloadScript(options, "linux-x64");
         Assert.Contains("-x 'http://proxy.local:8080'", script);
+        // wget 分支也必须带上代理, 否则只有 wget 的远端会直连失败。
+        Assert.Contains("-e use_proxy=yes -e https_proxy='http://proxy.local:8080'", script);
     }
 }
