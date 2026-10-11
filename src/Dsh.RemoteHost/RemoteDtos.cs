@@ -30,9 +30,15 @@ public sealed record RemoteQuestionAnswerItem(string Id, IReadOnlyList<string> S
 
 public sealed record RemoteQuestionResponse(string RequestId, IReadOnlyList<RemoteQuestionAnswerItem> Answers);
 
-public sealed record RemoteSessionCreateRequest(string Cwd);
+/** 远端会话的模型选择: 客户端当前的 provider/model/推理强度; 缺省即远端沿用自身 settings.yaml。 */
+public sealed record RemoteModelSelection(string Provider, string Model, string? ReasoningEffort = null);
 
-public sealed record RemoteSessionRef(string SessionId);
+/** 远端 provider 规格: 远端可能没有任何配置, 客户端带上端点信息供远端按需注册适配器。 */
+public sealed record RemoteProviderSpec(string Id, string? Type = null, string? BaseUrl = null, string? ApiKey = null, string? ApiKeyEnv = null);
+
+public sealed record RemoteSessionCreateRequest(string Cwd, RemoteModelSelection? Selection = null, RemoteProviderSpec? Provider = null);
+
+public sealed record RemoteSessionRef(string SessionId, RemoteModelSelection? Selection = null, RemoteProviderSpec? Provider = null);
 
 public sealed record RemoteMessageRequest(string SessionId, string Text, IReadOnlyList<RemoteImageBlock>? Images = null);
 

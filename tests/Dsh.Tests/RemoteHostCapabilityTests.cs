@@ -12,6 +12,24 @@ public sealed class RemoteHostCapabilityTests
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact(Timeout = 30000)]
+    public async Task CreateSessionForwardsModelSelectionOverTheWire()
+    {
+        var backend = new FakeBackend();
+        await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
+        var selection = new RemoteModelSelection("prov", "model", "high");
+        var spec = new RemoteProviderSpec("prov", "openai-compatible", "https://example.invalid", "sk", "PROV_KEY");
+
+        var created = await fixture.Client.CreateSessionAsync("/work", selection, spec, Ct);
+        Assert.Equal("prov", backend.LastSelection?.Provider);
+        Assert.Equal("model", backend.LastSelection?.Model);
+        Assert.Equal("high", backend.LastSelection?.ReasoningEffort);
+        Assert.Equal(spec, backend.LastProvider);
+
+        await fixture.Client.ResumeSessionAsync(created.Id, selection, spec, Ct);
+        Assert.Equal(spec, backend.LastProvider);
+    }
+
+    [Fact(Timeout = 30000)]
     public async Task SessionsToolsFilesAndMessageFlowOverTheWire()
     {
         var backend = new FakeBackend();
@@ -19,7 +37,7 @@ public sealed class RemoteHostCapabilityTests
         var client = fixture.Client;
 
         Assert.Empty(await client.ListSessionsAsync(Ct));
-        var created = await client.CreateSessionAsync("/work", Ct);
+        var created = await client.CreateSessionAsync("/work", cancellationToken: Ct);
         Assert.Equal("/work", created.Cwd);
         Assert.Single(await client.ListSessionsAsync(Ct));
         Assert.Equal(["read", "write"], await client.ListToolsAsync(created.Id, Ct));
@@ -164,15 +182,25 @@ public sealed class RemoteHostCapabilityTests
         public Task<IReadOnlyList<RemoteSessionInfo>> ListSessionsAsync(CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<RemoteSessionInfo>>([.. _sessions.Values]);
 
-        public Task<RemoteSessionInfo> CreateSessionAsync(string cwd, CancellationToken cancellationToken)
+        public Task<RemoteSessionInfo> CreateSessionAsync(string cwd, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken)
         {
+            LastSelection = selection;
+            LastProvider = provider;
             var session = new RemoteSessionInfo($"session-{_sessions.Count + 1}", cwd, "Idle", 0, null, null, 0);
             _sessions[session.Id] = session;
             return Task.FromResult(session);
         }
 
-        public Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken)
-            => Task.FromResult(_sessions.TryGetValue(sessionId, out var session) ? session : throw new KeyNotFoundException(sessionId));
+        public Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken)
+        {
+            LastSelection = selection;
+            LastProvider = provider;
+            return Task.FromResult(_sessions.TryGetValue(sessionId, out var session) ? session : throw new KeyNotFoundException(sessionId));
+        }
+
+        public RemoteModelSelection? LastSelection { get; private set; }
+
+        public RemoteProviderSpec? LastProvider { get; private set; }
 
         public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken)
         {

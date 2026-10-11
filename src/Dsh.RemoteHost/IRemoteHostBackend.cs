@@ -10,9 +10,9 @@ public interface IRemoteHostBackend
 
     Task<IReadOnlyList<RemoteSessionInfo>> ListSessionsAsync(CancellationToken cancellationToken);
 
-    Task<RemoteSessionInfo> CreateSessionAsync(string cwd, CancellationToken cancellationToken);
+    Task<RemoteSessionInfo> CreateSessionAsync(string cwd, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken);
 
-    Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken);
+    Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken);
 
     Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken);
 

@@ -148,13 +148,13 @@ public sealed class RemoteHostServer(
                 {
                     var request = Parse(message.Params, HostProtocolJsonContext.Default.RemoteSessionCreateRequest)
                         ?? throw new JsonRpcException(-32602, "create requires cwd");
-                    return Serialize(await backend.CreateSessionAsync(request.Cwd, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionInfo);
+                    return Serialize(await backend.CreateSessionAsync(request.Cwd, request.Selection, request.Provider, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionInfo);
                 }
                 case HostProtocol.MethodSessionResume when backend is not null:
                 {
                     var request = Parse(message.Params, HostProtocolJsonContext.Default.RemoteSessionRef)
                         ?? throw new JsonRpcException(-32602, "resume requires sessionId");
-                    return Serialize(await backend.ResumeSessionAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionInfo);
+                    return Serialize(await backend.ResumeSessionAsync(request.SessionId, request.Selection, request.Provider, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionInfo);
                 }
                 case HostProtocol.MethodSessionSubscribe when backend is not null:
                 {

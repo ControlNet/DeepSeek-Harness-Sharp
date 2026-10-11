@@ -24,6 +24,8 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IDisposable
     private readonly Channel<RemoteQuestionRequest> _questions = Channel.CreateUnbounded<RemoteQuestionRequest>();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<object?>> _pendingQuestions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, AgentHandle> _handles = new(StringComparer.Ordinal);
+    private readonly Lock _providerGate = new();
+    private readonly HashSet<string> _registeredProviders = new(StringComparer.OrdinalIgnoreCase);
     private readonly Func<bool> _approvalBridge;
     private readonly Func<bool> _questionBridge;
     private long _approvalSequence;
@@ -97,24 +99,92 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IDisposable
         return Task.FromResult<IReadOnlyList<RemoteSessionInfo>>([.. byId.Values.OrderByDescending(info => info.UpdatedAt)]);
     }
 
-    public async Task<RemoteSessionInfo> CreateSessionAsync(string cwd, CancellationToken cancellationToken)
+    public async Task<RemoteSessionInfo> CreateSessionAsync(string cwd, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken)
     {
         // 会话 cwd 必须是绝对路径(POSIX 与 Windows 皆然): 空/相对一律解析到远端家目录。
         var resolved = string.IsNullOrWhiteSpace(cwd) ? ExpandHome("~") : ExpandHome(cwd);
-        var handle = await Registry.Create(new CreateAgentOptions(Cwd: resolved), cancellationToken).ConfigureAwait(false);
+        var options = ResolveAgentOptions(selection, provider);
+        var handle = await Registry.Create(new CreateAgentOptions(Cwd: resolved, AgentOptions: options), cancellationToken).ConfigureAwait(false);
         _handles[handle.Agent.Id.Value] = handle;
         return Describe(handle.Agent);
     }
 
-    public async Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken)
+    public async Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken)
     {
         var id = SessionId.Create(sessionId);
         if (Registry.Get(id) is { } live)
             return Describe(live);
-        var handle = await Registry.Resume(new ResumeAgentOptions(id), cancellationToken).ConfigureAwait(false);
+        var options = ResolveAgentOptions(selection, provider);
+        var handle = await Registry.Resume(new ResumeAgentOptions(id, options), cancellationToken).ConfigureAwait(false);
         _handles[handle.Agent.Id.Value] = handle;
+        ApplySelectionOnResume(handle.Agent, selection);
         return Describe(handle.Agent);
     }
+
+    /**
+     * 把客户端的模型选择落成 AgentOptions; 若带了 provider 规格则先在远端按需注册适配器。
+     * 远端可能没有任何 settings.yaml: 客户端提供完整端点, 避免远端 NO_ADAPTER。
+     */
+    private AgentOptions? ResolveAgentOptions(RemoteModelSelection? selection, RemoteProviderSpec? provider)
+    {
+        if (selection is null || !HasSelection(selection))
+            return null;
+        if (provider is not null)
+            EnsureProviderRegistered(provider);
+        return new AgentOptions(selection.Provider, selection.Model, EffortOf(selection));
+    }
+
+    /** 同一个 provider id 每个进程只注册一次: 已注册(本体设置或上次远端选择)即跳过, 失败把原因带进异常。 */
+    private void EnsureProviderRegistered(RemoteProviderSpec spec)
+    {
+        if (string.IsNullOrWhiteSpace(spec.Id))
+            throw new InvalidOperationException("远端模型选择缺少 provider id, 无法注册适配器");
+        lock (_providerGate)
+        {
+            if (_registeredProviders.Contains(spec.Id) || IsProviderRegistered(spec.Id))
+                return;
+            var settings = new ProviderSettings
+            {
+                Type = spec.Type,
+                Options = new ProviderOptions { BaseUrl = spec.BaseUrl, ApiKey = spec.ApiKey, ApiKeyEnv = spec.ApiKeyEnv },
+            };
+            var result = ProviderRegistrar.RegisterProvider(_app.Ctx, new HarnessOptions(_app.Home), spec.Id, settings, isDefault: false);
+            if (result.Handle is null)
+                throw new InvalidOperationException($"远端 provider \"{spec.Id}\" 注册失败: {result.Error}");
+            _registeredProviders.Add(spec.Id);
+        }
+    }
+
+    private bool IsProviderRegistered(string id)
+        => _app.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false)?.ListProviders()
+            .Any(provider => string.Equals(provider.Id, id, StringComparison.OrdinalIgnoreCase)) ?? false;
+
+    /**
+     * 恢复会话时补一条请求头: 会话内既有的请求头优先于 AgentOptions(见 AgentLoopAgent.BuildRequest),
+     * 因此仅在已有请求头且与客户端选择不一致时追加 Change 记录, 让客户端选择真正覆盖旧模型; 无请求头时 AgentOptions 即生效。
+     */
+    private static void ApplySelectionOnResume(IAgent agent, RemoteModelSelection? selection)
+    {
+        if (selection is null || !HasSelection(selection))
+            return;
+        if (agent.Session.RequestHeader() is not { } current || MatchesSelection(current, selection))
+            return;
+        agent.Session.Append(new RequestHeaderPayload(
+            RequestHeader.Canonicalize(new EpochHeader(new LlmCallConfig(selection.Provider, selection.Model, EffortOf(selection)))),
+            RequestHeaderReasons.Change,
+            true));
+    }
+
+    private static bool HasSelection(RemoteModelSelection selection)
+        => !string.IsNullOrWhiteSpace(selection.Provider) && !string.IsNullOrWhiteSpace(selection.Model);
+
+    private static ReasoningEffortId? EffortOf(RemoteModelSelection selection)
+        => string.IsNullOrWhiteSpace(selection.ReasoningEffort) ? null : ReasoningEffortId.Create(selection.ReasoningEffort);
+
+    private static bool MatchesSelection(EpochHeader header, RemoteModelSelection selection)
+        => string.Equals(header.Config.Provider, selection.Provider, StringComparison.Ordinal)
+            && string.Equals(header.Config.Model, selection.Model, StringComparison.Ordinal)
+            && header.Config.ReasoningEffort == EffortOf(selection);
 
     public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken)
     {

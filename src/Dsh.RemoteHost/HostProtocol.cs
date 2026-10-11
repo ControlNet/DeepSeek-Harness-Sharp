@@ -73,6 +73,8 @@ public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Pl
 [JsonSerializable(typeof(IReadOnlyList<RemoteQuestionOption>))]
 [JsonSerializable(typeof(RemoteSessionCreateRequest))]
 [JsonSerializable(typeof(RemoteSessionRef))]
+[JsonSerializable(typeof(RemoteModelSelection))]
+[JsonSerializable(typeof(RemoteProviderSpec))]
 [JsonSerializable(typeof(RemoteSubscribeRequest))]
 [JsonSerializable(typeof(RemoteMessageRequest))]
 [JsonSerializable(typeof(RemoteImageBlock))]

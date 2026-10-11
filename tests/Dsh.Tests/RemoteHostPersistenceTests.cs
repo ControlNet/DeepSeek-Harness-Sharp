@@ -21,7 +21,7 @@ public sealed class RemoteHostPersistenceTests
         {
             await using (var first = await ConnectViaBridgeAsync(root, Ct))
             {
-                var created = await first.Client.CreateSessionAsync("/work", Ct);
+                var created = await first.Client.CreateSessionAsync("/work", cancellationToken: Ct);
                 Assert.Equal("/work", created.Cwd);
             }
 
@@ -136,14 +136,14 @@ public sealed class RemoteHostPersistenceTests
         public Task<IReadOnlyList<RemoteSessionInfo>> ListSessionsAsync(CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<RemoteSessionInfo>>([.. _sessions.Values]);
 
-        public Task<RemoteSessionInfo> CreateSessionAsync(string cwd, CancellationToken cancellationToken)
+        public Task<RemoteSessionInfo> CreateSessionAsync(string cwd, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken)
         {
             var session = new RemoteSessionInfo($"session-{_sessions.Count + 1}", cwd, "Idle", 0, null, null, 0);
             _sessions[session.Id] = session;
             return Task.FromResult(session);
         }
 
-        public Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken)
+        public Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken)
             => Task.FromResult(_sessions.TryGetValue(sessionId, out var session) ? session : throw new KeyNotFoundException(sessionId));
 
         public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken) => Task.CompletedTask;

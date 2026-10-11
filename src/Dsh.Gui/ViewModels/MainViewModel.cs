@@ -778,7 +778,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             // 恢复为活跃会话即可继续发送(§14 B); 已在跑的会话由后端幂等返回。
-            await connection.Client.ResumeSessionAsync(node.SessionId, cts.Token).ConfigureAwait(false);
+            var (selection, provider) = CurrentRemoteModel();
+            await connection.Client.ResumeSessionAsync(node.SessionId, selection, provider, cts.Token).ConfigureAwait(false);
             Dispatcher.UIThread.Post(() =>
             {
                 IsRemoteReadOnly = false;
@@ -936,7 +937,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         try
         {
-            var created = await connection.Client.CreateSessionAsync(ResolveRemoteSessionCwd(workspace), CancellationToken.None);
+            var (selection, provider) = CurrentRemoteModel();
+            var created = await connection.Client.CreateSessionAsync(ResolveRemoteSessionCwd(workspace), selection, provider, CancellationToken.None);
             var node = new RemoteSessionNodeViewModel
             {
                 SessionId = created.Id,
@@ -1587,6 +1589,28 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private AgentOptions CurrentOptions()
         => new(_agent.Options.Provider, _agent.Options.Model, _agent.Options.ReasoningEffort, _agent.Options.MaxTokens);
+
+    /** 远端会话用的客户端模型选择与 provider 规格: 采用本体当前 provider/model(请求头优先, 见 RefreshModelLabels), 规格取自本地 settings.yaml。 */
+    private (RemoteModelSelection? Selection, RemoteProviderSpec? Provider) CurrentRemoteModel()
+    {
+        var config = _agent.Session.RequestHeader()?.Config;
+        var provider = config?.Provider ?? _agent.Options.Provider;
+        var model = config?.Model ?? _agent.Options.Model;
+        if (string.IsNullOrWhiteSpace(provider) || string.IsNullOrWhiteSpace(model))
+            return (null, null);
+        var effort = (config?.ReasoningEffort ?? _agent.Options.ReasoningEffort)?.Value;
+        return (new RemoteModelSelection(provider, model, effort), FindRemoteProviderSpec(provider));
+    }
+
+    /** provider 规格来自本地 HarnessSettings.Providers(与设置页同一数据源); 本地没有该 provider 时返回 null, 远端退回自身配置。 */
+    private RemoteProviderSpec? FindRemoteProviderSpec(string provider)
+    {
+        var entry = HarnessSettings.Load(Home).Providers
+            .FirstOrDefault(candidate => string.Equals(candidate.Key, provider, StringComparison.OrdinalIgnoreCase));
+        return entry.Value is { } settings
+            ? new RemoteProviderSpec(entry.Key, settings.Type, settings.Options?.BaseUrl, settings.Options?.ApiKey, settings.Options?.ApiKeyEnv)
+            : null;
+    }
 
     private IReadOnlyList<SessionNodeViewModel> AllSessions()
         => [.. Workspaces.SelectMany(workspace => workspace.Sessions).Concat(FileSystemNodes.SelectMany(node => node.Sessions))];
