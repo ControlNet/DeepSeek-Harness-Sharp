@@ -175,8 +175,11 @@ jobs:
         env:
           FLAVOR: ${{ matrix.flavor }}
           RID: ${{ matrix.rid }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
+          # 程序集版本随 tag: 远端部署判据比较的就是它, 必须与发布的 tag 一致。
+          VERSION="${TAG#v}"
           AOT_ARGS=""
           if [ "$FLAVOR" = "aot" ]; then
             AOT_ARGS="-p:PublishAot=true"
@@ -185,11 +188,11 @@ jobs:
           # DebugType=none：发布档不需要调试符号（AOT 的 pdb 单独就有数百 MB）。
           dotnet publish DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj \
             -c Release -r "$RID" $AOT_ARGS \
-            -p:DebugSymbols=false -p:DebugType=none \
+            -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none \
             --nologo -v m
           # GUI 启动器一并发布并叠加进主产物。
           dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r "$RID" $AOT_ARGS \
-            -p:DebugSymbols=false -p:DebugType=none --nologo -v m
+            -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none --nologo -v m
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
           GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
           test -d "$PUB"
