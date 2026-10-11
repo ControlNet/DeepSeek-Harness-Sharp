@@ -68,5 +68,6 @@
 
   <sys:Double x:Key="Layout.SidebarWidth">300</sys:Double>
   <sys:Double x:Key="Layout.ChatMinWidth">640</sys:Double>
+  <sys:Double x:Key="Layout.RemoteSectionMaxHeight">260</sys:Double>
   <Thickness x:Key="Layout.ContentPadding">16,12,16,8</Thickness>
 </ResourceDictionary>

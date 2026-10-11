@@ -24,6 +24,58 @@ public sealed class GuiRemoteWorkspaceTests
     private static readonly string ScreenshotDirectory = Path.GetFullPath(
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "artifacts020", "gui-screenshots"));
 
+    /** 远端会话列表很长时必须自己滚动, 不能溢出压住底部“终端/设置”(DockPanel 不会压缩已停靠子项)。 */
+    [Fact]
+    public async Task RemoteSessionList_IsBounded_AndKeepsFooterVisible() => await HeadlessGui.RunAsync(async () =>
+    {
+        var environment = await GuiTestEnvironment.CreateAsync();
+        using var environmentScope = environment;
+        var window = new MainWindow(environment.App, environment.Agent);
+        var viewModel = window.ViewModel!;
+        window.Width = 900;
+        window.Height = 720;
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+
+        var group = new RemoteWorkspaceGroupViewModel { Header = "pub@host:~/repo" };
+        for (var index = 0; index < 40; index++)
+        {
+            group.Sessions.Add(new RemoteSessionNodeViewModel
+            {
+                SessionId = $"remote-{index}",
+                Title = $"session-{index}",
+                Summary = "fixture",
+                RelativeTime = "1 天前"
+            });
+        }
+
+        viewModel.RemoteSessionGroups.Add(group);
+        viewModel.HasRemoteSessions = true;
+        Dispatcher.UIThread.RunJobs();
+        window.CaptureRenderedFrame()?.Dispose();
+        Dispatcher.UIThread.RunJobs();
+
+        var scroller = window.GetVisualDescendants().OfType<ScrollViewer>()
+            .Single(view => view.Name == "RemoteSessionsScroll");
+        var footer = window.GetVisualDescendants().OfType<Button>()
+            .First(button => button.GetVisualDescendants().OfType<TextBlock>().Any(text => text.Text == "设置"));
+        var scrollerBottom = scroller.TranslatePoint(new Point(0, scroller.Bounds.Height), window);
+        var footerTop = footer.TranslatePoint(new Point(0, 0), window);
+        Assert.NotNull(scrollerBottom);
+        Assert.NotNull(footerTop);
+        Assert.True(scroller.Bounds.Height <= RemoteSectionMaxHeight,
+            $"远端会话区高度 {scroller.Bounds.Height:0.#} 超过上限, 会溢出到页面其他区域");
+        Assert.True(scrollerBottom.Value.Y <= footerTop.Value.Y,
+            $"远端会话区底部 {scrollerBottom.Value.Y:0.#} 压住了底部按钮 {footerTop.Value.Y:0.#}");
+        Capture(window, "headless-remote-sessions-bounded");
+
+        window.Close();
+        Dispatcher.UIThread.RunJobs();
+    });
+
+    /** 与 Themes/Tokens.axaml 的 Layout.RemoteSectionMaxHeight 保持一致(布局断言用)。 */
+    private const double RemoteSectionMaxHeight = 260;
+
     private static IReadOnlyList<SshWorkspace> SampleWorkspaces() =>
     [
         new SshWorkspace("实验室 GPU", "gpu-box.internal", 22, "dev", SshAuth.Password, RemotePath: "~/dsh-deploy"),
