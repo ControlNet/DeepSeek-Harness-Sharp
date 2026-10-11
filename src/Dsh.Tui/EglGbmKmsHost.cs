@@ -210,7 +210,7 @@ internal sealed class EglGbmKmsHost : IGlSurfaceHostRunner
                 client.OnMouseMove(inputEvent.X, inputEvent.Y);
                 break;
             case EvdevEventKind.MouseButton:
-                client.OnMouseButton(inputEvent.Pressed, inputEvent.X, inputEvent.Y);
+                client.OnMouseButton(GpuMouseButton.Left, inputEvent.Pressed, inputEvent.X, inputEvent.Y);
                 break;
             case EvdevEventKind.MouseWheel:
                 client.OnMouseWheel(inputEvent.Wheel);

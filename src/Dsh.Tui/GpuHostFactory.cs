@@ -23,4 +23,51 @@ internal static class GpuHostFactory
             return terminalHost;
         throw new InvalidOperationException($"{displayReason}; {drmReason}; {terminalReason}");
     }
+
+    /**
+     * 按选择的后端创建宿主。Vk: 反射发现 Dsh.Tui.Vk 的 provider(不可用时抛异常, 不静默);
+     * auto: 先试 Vk, 失败打印可读原因并回退 GL; gl: 走既有 GL/GBM/Terminal 选择。
+     */
+    public static IGlSurfaceHostRunner CreateWindowHostForBackend(
+        TuiGpuBackend backend,
+        GlyphAtlas atlas,
+        string? gpuCard,
+        string? preferredCard,
+        bool hidden,
+        bool vsync,
+        bool headlessCapture)
+    {
+        if (backend is TuiGpuBackend.Vk or TuiGpuBackend.Auto)
+        {
+            var provider = VkGpuHostProviderLocator.Resolve();
+            if (provider is null)
+            {
+                if (backend == TuiGpuBackend.Vk)
+                    throw new InvalidOperationException("vk backend requested but Dsh.Tui.Vk is not available in this build");
+            }
+            else if (OperatingSystem.IsWindows() || GpuRenderer.TryDetectDisplay(out _))
+            {
+                try
+                {
+                    return provider.CreateHost(80 * atlas.GlyphWidth, 25 * atlas.GlyphHeight, hidden, vsync);
+                }
+                catch (Exception error) when (backend == TuiGpuBackend.Auto)
+                {
+                    Console.Error.WriteLine($"vk backend unavailable: {error.Message}; falling back to gl");
+                }
+            }
+            else
+            {
+                // 无显示服务器: 窗口/交换链形态不可用, 走无头离屏 + 终端图像协议贴回。
+                var headless = provider.CreateHeadlessHost(atlas, headlessCapture, out var headlessReason);
+                if (headless is not null)
+                    return headless;
+                if (backend == TuiGpuBackend.Vk)
+                    throw new InvalidOperationException($"vk headless unavailable: {headlessReason}");
+                Console.Error.WriteLine($"vk backend unavailable: {headlessReason}; falling back to gl");
+            }
+        }
+
+        return CreateWindowHost(atlas, gpuCard, preferredCard, hidden, vsync, headlessCapture);
+    }
 }

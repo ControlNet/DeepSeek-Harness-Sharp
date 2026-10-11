@@ -11,11 +11,14 @@ public class TerminalGraphicsTests
     public void EncodeKittyRow_TransmitsAndPlaces()
     {
         var pixels = Pixels(2, 2);
-        var text = TerminalGraphics.EncodeKittyRow(pixels, 2, 2, row: 0, rowHeight: 2, columns: 2);
+        var text = EncodeRow(pixels, 2, 2, row: 0, rowHeight: 2, columns: 2);
         Assert.StartsWith("\x1b[1;1H", text, StringComparison.Ordinal);
         Assert.Contains("a=t", text, StringComparison.Ordinal);
         Assert.Contains("c=2", text, StringComparison.Ordinal);
         Assert.Contains("a=p", text, StringComparison.Ordinal);
+        // kitty 协议里 t= 是"传输介质", 图像高度必须写成 v=(真 kitty 0.31 会因 t=<高> 报 Malformed GraphicsCommand)。
+        Assert.Contains(",v=2", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(",t=", text, StringComparison.Ordinal);
         Assert.Equal(FlipRows(pixels, 2, 2), Decode(text));
     }
 
@@ -23,16 +26,164 @@ public class TerminalGraphicsTests
     public void EncodeKittyRow_OnlyCoversItsOwnBand()
     {
         var pixels = Pixels(2, 4);
-        var text = TerminalGraphics.EncodeKittyRow(pixels, 2, 4, row: 1, rowHeight: 2, columns: 2);
+        var text = EncodeRow(pixels, 2, 4, row: 1, rowHeight: 2, columns: 2);
         Assert.StartsWith("\x1b[2;1H", text, StringComparison.Ordinal);
         Assert.Equal(Band(pixels, 2, 4, topY: 2, bandHeight: 2), Decode(text));
     }
 
+    /** 载荷超过 4096 字符时必须分多个 ESC_G 块(m=1 … m=0), 且拼接后仍是同一条压缩流。 */
     [Fact]
-    public void DeleteRows_EmitsOneDeletePerRow()
+    public void EncodeKittyRow_SplitsLongPayloadIntoChunks()
     {
-        var text = TerminalGraphics.DeleteRows(3);
-        Assert.Equal(3, text.Split("a=d", StringSplitOptions.None).Length - 1);
+        var rgba = new byte[400 * 16 * 4];
+        new Random(20260916).NextBytes(rgba); // 随机 → 几乎不可压 → 载荷远超 4096 字符
+        var text = EncodeRow(rgba, 400, 16, row: 0, rowHeight: 16, columns: 40);
+        Assert.Contains("m=1", text, StringComparison.Ordinal);
+        Assert.Contains("m=0", text, StringComparison.Ordinal);
+        Assert.True(text.Split("\x1b_G", StringSplitOptions.None).Length - 1 > 2, "应有多块 ESC_G");
+        Assert.Equal(FlipRows(rgba, 400, 16), Decode(text));
+    }
+
+    [Fact]
+    public void Presenter_UnchangedFrame_WritesNothing()
+    {
+        var frame = Frame(8, 4, 2, [1, 2]);
+        var writer = new StringWriter();
+        var presenter = new TerminalGraphics.KittyRowPresenter();
+        Assert.True(presenter.Present(frame, null, 8, 8, 4, 2, forceFull: true, reuse: true, writer));
+        writer.GetStringBuilder().Clear();
+        Assert.False(presenter.Present(frame, frame, 8, 8, 4, 2, forceFull: false, reuse: true, writer));
+        Assert.Equal("", writer.ToString());
+    }
+
+    /** 滚动(两行内容对调): 内容已在终端缓存 → 只发 a=p 重放置, 完全不重传载荷。 */
+    [Fact]
+    public void Presenter_MovedContent_ReusesPlacementWithoutPayload()
+    {
+        var first = Frame(8, 4, 2, [1, 2]);
+        var second = Frame(8, 4, 2, [2, 1]);
+        var writer = new StringWriter();
+        var presenter = new TerminalGraphics.KittyRowPresenter();
+        presenter.Present(first, null, 8, 8, 4, 2, forceFull: true, reuse: true, writer);
+        writer.GetStringBuilder().Clear();
+        Assert.True(presenter.Present(second, first, 8, 8, 4, 2, forceFull: false, reuse: true, writer));
+        var text = writer.ToString();
+        Assert.DoesNotContain("a=t", text, StringComparison.Ordinal);
+        Assert.Equal(2, text.Split("a=p", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void Presenter_ReuseDisabled_AlwaysTransmits()
+    {
+        var first = Frame(8, 4, 2, [1, 2]);
+        var second = Frame(8, 4, 2, [2, 1]);
+        var writer = new StringWriter();
+        var presenter = new TerminalGraphics.KittyRowPresenter();
+        presenter.Present(first, null, 8, 8, 4, 2, forceFull: true, reuse: false, writer);
+        writer.GetStringBuilder().Clear();
+        presenter.Present(second, first, 8, 8, 4, 2, forceFull: false, reuse: false, writer);
+        Assert.Equal(2, writer.ToString().Split("a=t", StringSplitOptions.None).Length - 1);
+    }
+
+    /**
+     * 非复用终端(wezterm 等): "同 placement 换另一张图"会被终端忽略(真机验证), 所以行内容变化时
+     * 必须复用该行自己的 imageId 同 id 重传载荷, placement id 保持不变(row+1), 且不新增 placement。
+     */
+    [Fact]
+    public void Presenter_ReuseDisabled_KeepsRowImageIdOnContentChange()
+    {
+        var writer = new StringWriter();
+        var presenter = new TerminalGraphics.KittyRowPresenter();
+        presenter.Present(Frame(8, 4, 2, [1, 2]), null, 8, 8, 4, 2, forceFull: true, reuse: false, writer);
+        var first = RowImageIds(writer.ToString());
+        Assert.Equal([(1, first[0].Id), (2, first[1].Id)], first);
+        writer.GetStringBuilder().Clear();
+
+        presenter.Present(Frame(8, 4, 2, [3, 4]), null, 8, 8, 4, 2, forceFull: true, reuse: false, writer);
+        var second = RowImageIds(writer.ToString());
+        Assert.Equal(first, second);                                   // 同一行始终复用同一个 imageId
+        Assert.Equal(1, writer.ToString().Split(",p=1,").Length - 1);
+        Assert.Equal(1, writer.ToString().Split(",p=2,").Length - 1);
+    }
+
+    /** 终端行数变化(resize): 旧几何下的 placement 不会被新画面覆盖, 必须先整批删除(a=d,d=i)再重画。 */
+    [Fact]
+    public void Presenter_Resize_DeletesOldIds()
+    {
+        var writer = new StringWriter();
+        var presenter = new TerminalGraphics.KittyRowPresenter();
+        presenter.Present(Frame(8, 4, 2, [1, 2]), null, 8, 8, 4, 2, forceFull: true, reuse: true, writer);
+        writer.GetStringBuilder().Clear();
+        presenter.Present(Frame(8, 4, 3, [1, 2, 3]), null, 8, 12, 4, 2, forceFull: true, reuse: true, writer);
+        Assert.Contains("a=d,d=i", writer.ToString(), StringComparison.Ordinal);
+    }
+
+    /** 从转义流里取出 (终端行, imageId) 对(AppendRow 会先移光标到该行, 随即发 a=t 带该 imageId)。 */
+    private static List<(int Row, int Id)> RowImageIds(string text)
+    {
+        var result = new List<(int, int)>();
+        var matches = System.Text.RegularExpressions.Regex.Matches(text, "\x1b\\[(\\d+);1H\x1b_Ga=t,i=(\\d+)");
+        foreach (System.Text.RegularExpressions.Match match in matches)
+            result.Add((int.Parse(match.Groups[1].Value), int.Parse(match.Groups[2].Value)));
+        return result;
+    }
+
+    [Fact]
+    public void Presenter_NewContent_Transmits()
+    {
+        var first = Frame(8, 4, 2, [1, 2]);
+        var second = Frame(8, 4, 2, [1, 3]);
+        var writer = new StringWriter();
+        var presenter = new TerminalGraphics.KittyRowPresenter();
+        presenter.Present(first, null, 8, 8, 4, 2, forceFull: true, reuse: true, writer);
+        writer.GetStringBuilder().Clear();
+        presenter.Present(second, first, 8, 8, 4, 2, forceFull: false, reuse: true, writer);
+        var text = writer.ToString();
+        Assert.Equal(1, text.Split("a=t", StringSplitOptions.None).Length - 1);   // 只有新内容那行
+        Assert.Contains("a=p", text, StringComparison.Ordinal);
+    }
+
+    /** 缓存满(行数+64)且新内容持续到来时, 应淘汰"未被任何行放置"的 id(发 a=d,d=i)。 */
+    [Fact]
+    public void Presenter_EvictsUnplacedId()
+    {
+        var writer = new StringWriter();
+        var presenter = new TerminalGraphics.KittyRowPresenter();
+        for (var i = 0; i < 70; i++)
+        {
+            var frame = Frame(8, 4, 1, [(byte)(i + 1)]);
+            presenter.Present(frame, null, 8, 4, 4, 2, forceFull: true, reuse: true, writer);
+        }
+
+        Assert.Contains("a=d,d=i", writer.ToString(), StringComparison.Ordinal);
+    }
+
+    /** 造一帧: rows 个终端行, 每行整带填 bandValues[row]。缓冲自下而上, 故终端行 0 在缓冲最高处。 */
+    private static byte[] Frame(int width, int cellHeight, int rows, byte[] bandValues)
+    {
+        var height = cellHeight * rows;
+        var pixels = new byte[width * height * 4];
+        for (var row = 0; row < rows; row++)
+        {
+            var top = height - 1 - (row * cellHeight);
+            var bottom = height - (row * cellHeight) - cellHeight;
+            for (var y = bottom; y <= top; y++)
+            {
+                for (var x = 0; x < width * 4; x++)
+                    pixels[(y * width * 4) + x] = bandValues[row];
+            }
+        }
+
+        return pixels;
+    }
+
+    private static string EncodeRow(byte[] pixels, int width, int height, int row, int rowHeight, int columns)
+    {
+        var encoder = new TerminalGraphics.KittyRowEncoder();
+        encoder.AppendRow(pixels, width, height, row, rowHeight, columns, TerminalGraphics.KittyRowImageBase + row);
+        var writer = new StringWriter();
+        encoder.WriteTo(writer);
+        return writer.ToString();
     }
 
     [Fact]

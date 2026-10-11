@@ -1,4 +1,4 @@
-using OpenTK.Graphics.OpenGL;
+using System.Runtime.InteropServices;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 
@@ -12,14 +12,15 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
 {
     /** TDR 重建上限: 60 秒内连续丢 3 次上下文说明驱动在反复复位, 放弃重建, 抛出后由 TuiRunner 回退 CPU 渲染。 */
     private const int MaxRebuildAttempts = 3;
-    /** 输入行光标闪烁半周期(终端习惯值): 半周期亮、半周期灭。 */
-    private const int CursorBlinkMs = 500;
+    /** 输入行光标闪烁半周期(终端习惯值): 半周期亮、半周期灭; 自有事件循环的宿主用它做空闲唤醒周期。 */
+    internal const int CursorBlinkMs = 500;
     private static readonly TimeSpan RebuildInterval = TimeSpan.FromSeconds(60);
 
     private readonly GlyphAtlas _atlas;
     private readonly ChatWindow _chat;
     private IGlSurfaceHostRunner _host;
-    private GpuRenderCore _core = new();
+    private ITuiSurfaceBackend _core;
+    private readonly TuiGpuBackend _backend;
     private CellGrid _grid;
     private UiLayout _layout;
     private CellGrid? _lastGrid;
@@ -79,7 +80,8 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
         string? gpuCard = null,
         string? preferredCard = null,
         string? capturePlanPath = null,
-        bool vsync = true)
+        bool vsync = true,
+        TuiGpuBackend backend = TuiGpuBackend.Auto)
     {
         ArgumentNullException.ThrowIfNull(chat);
         _chat = chat;
@@ -89,6 +91,7 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
         _preferredCard = preferredCard;
         _capturePlanPath = capturePlanPath;
         _vsync = vsync;
+        _backend = backend;
         if (capturePlanPath is { Length: > 0 })
         {
             var steps = CapturePlan.Parse(File.ReadAllText(capturePlanPath));
@@ -97,10 +100,22 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
             _capturePlan = new CapturePlanRunner(steps);
         }
 
-        _host = GpuHostFactory.CreateWindowHost(_atlas, gpuCard, preferredCard, hidden: _capturePlan is not null, vsync: _vsync, headlessCapture: _screenshotPath is not null || _capturePlan is not null);
+        _host = CreateHost();
+        _core = _host.CreateRenderCore(_atlas);
         _grid = new CellGrid(80, 25);
         _layout = LayoutEngine.Calculate(_grid.Width, _grid.Height);
     }
+
+    /** 截图/捕获计划要确定性: 隐藏窗口(不抢前台)。 */
+    private IGlSurfaceHostRunner CreateHost()
+        => GpuHostFactory.CreateWindowHostForBackend(
+            _backend,
+            _atlas,
+            _gpuCard,
+            _preferredCard,
+            hidden: _screenshotPath is not null || _capturePlan is not null,
+            vsync: _vsync,
+            headlessCapture: _screenshotPath is not null || _capturePlan is not null);
 
     /** 主循环: 宿主因 TDR 上下文丢失而关闭时重建宿主与 GL 资源再续跑; 用户退出则直接返回。 */
     public void Run()
@@ -128,12 +143,12 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
     /** GL 对象不跨上下文共享: 换宿主即全部重建, 网格状态清空触发整屏重绘。 */
     private void RebuildHost()
     {
-        _host.Dispose();
         _core.Dispose();
-        _core = new GpuRenderCore();
+        _host.Dispose();
         _lastGrid = null;
         _seenRenderVersion = -1;
-        _host = GpuHostFactory.CreateWindowHost(_atlas, _gpuCard, _preferredCard, vsync: _vsync, headlessCapture: _screenshotPath is not null || _capturePlan is not null);
+        _host = CreateHost();
+        _core = _host.CreateRenderCore(_atlas);
     }
 
     public void Dispose()
@@ -153,14 +168,17 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
     {
         _host.MakeCurrent();
         _core.Initialize(_atlas);
-        Console.Error.WriteLine($"gpu renderer: {GL.GetString(StringName.Renderer)} ({GL.GetString(StringName.Version)})");
+        Console.Error.WriteLine($"gpu renderer: {_core.DeviceInfo}");
+        // 自有事件循环的宿主(Vk)空闲时阻塞等待输入: agent 流式输出经 Wake 叫醒它重绘(B16)。
+        if (_host is IGpuHostWaker waker)
+            _chat.WakeHook = waker.Wake;
         var size = _host.Size;
         OnResize(size.Width, size.Height);
     }
 
     public void OnResize(int width, int height)
     {
-        GL.Viewport(0, 0, width, height);
+        _core.Resize(width, height);
         var gridWidth = Math.Max(1, width / _atlas.GlyphWidth);
         var gridHeight = Math.Max(1, height / _atlas.GlyphHeight);
         if (_grid.Width != gridWidth || _grid.Height != gridHeight)
@@ -208,6 +226,9 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
         _lastGrid ??= new CellGrid(_grid.Width, _grid.Height);
         (_grid, _lastGrid) = (_lastGrid, _grid);
 
+        // 本帧可能要读回像素(单帧截图或捕获计划): 让不支持即时读回的后端(Vk)在提交前把拷贝录进命令缓冲。
+        if (_capturePlan is not null || (!_screenshotTaken && _screenshotPath is not null))
+            _core.RequestCapture();
         _core.RenderFrame(_atlas, _grid.Width, _grid.Height);
 
         if (!_screenshotTaken && _screenshotPath is not null)
@@ -221,8 +242,8 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
 
         _host.Present();
 
-        // robust 上下文下 TDR 的表现: GetError 报 CONTEXT_LOST(0x0507, ErrorCode 枚举未收录该值, 按 All 原始常量比较), 之后的 GL 调用全是空操作; 关闭宿主交回 Run() 重建。
-        if ((All)GL.GetError() == All.ContextLost)
+        // robust 上下文下 TDR 的表现: 后端报上下文丢失(之后的绘制全是空操作); 关闭宿主交回 Run() 重建。
+        if (_core.ContextLost)
         {
             _contextLost = true;
             return true;
@@ -277,8 +298,11 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
             _chat.HandleMouseDrag((int)(_mouseX / _atlas.GlyphWidth), (int)(_mouseY / _atlas.GlyphHeight), _layout);
     }
 
-    public void OnMouseButton(bool pressed, float x, float y)
+    public void OnMouseButton(GpuMouseButton button, bool pressed, float x, float y)
     {
+        // TUI 只对左键做选择/拖动; 中/右键保持既有行为(不产生动作)。
+        if (button != GpuMouseButton.Left)
+            return;
         _mouseX = x;
         _mouseY = y;
         var cellX = (int)(x / _atlas.GlyphWidth);
@@ -379,19 +403,17 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
         if (size.Width <= 0 || size.Height <= 0)
             return;
         var pixels = new byte[size.Width * size.Height * 4];
-        GL.ReadPixels(0, 0, size.Width, size.Height, PixelFormat.Rgba, PixelType.UnsignedByte, pixels);
+        if (!_core.TryReadPixels(pixels, size.Width, size.Height))
+            return;
         using var image = new Image<Rgba32>(size.Width, size.Height);
         image.ProcessPixelRows(accessor =>
         {
+            // 像素缓冲自下而上; 整行 cast 成 Rgba32 批量拷贝, 不再逐像素构造。
+            var rowBytes = size.Width * 4;
             for (var y = 0; y < accessor.Height; y++)
             {
-                var row = accessor.GetRowSpan(y);
                 var sourceY = accessor.Height - 1 - y;
-                for (var x = 0; x < accessor.Width; x++)
-                {
-                    var source = ((sourceY * accessor.Width) + x) * 4;
-                    row[x] = new Rgba32(pixels[source], pixels[source + 1], pixels[source + 2], pixels[source + 3]);
-                }
+                MemoryMarshal.Cast<byte, Rgba32>(pixels.AsSpan(sourceY * rowBytes, rowBytes)).CopyTo(accessor.GetRowSpan(y));
             }
         });
         if (path.EndsWith(".tif", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".tiff", StringComparison.OrdinalIgnoreCase))

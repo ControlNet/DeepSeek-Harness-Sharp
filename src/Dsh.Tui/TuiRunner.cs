@@ -29,10 +29,14 @@ public static class TuiRunner
         // 渲染前先声明控制台按 UTF-8 解释: daemon 脱离终端后创建的伪控制台默认取系统 OEM 代码页, 会把画面中文读成乱码。
         ConsoleCodePage.EnsureUtf8();
         HookCrashLog(app);
+        var backend = gpu ? TuiGpuBackendParser.Parse(new TuiSettings(app.Home).GpuBackend) : TuiGpuBackend.Auto;
+        // 显式指定 CPU 后端时根本不进 GPU 路径, 直接落到终端形态(与 GL 不可用时的回退一致)。
+        if (gpu && backend == TuiGpuBackend.Cpu)
+            gpu = false;
         if (gpu && gpuScreenshot is null && gpuCapturePlan is null && ShouldRunAsProxy())
             return await TuiProxy.RunAsync(app, shell, gpu: true);
         if (gpu)
-            return RunGpuSync(app, cwd, shell, gpuScreenshot, gpuCard, gpuCapturePlan);
+            return RunGpuSync(app, cwd, shell, gpuScreenshot, gpuCard, gpuCapturePlan, backend);
 
         // 终端交互形态默认走"会话常驻 daemon + 本进程当 proxy"; 常驻会话本体(DSH_PTY_CHILD)与非交互(重定向)例外。
         if (ShouldRunAsProxy())
@@ -305,7 +309,8 @@ public static class TuiRunner
         bool startShell,
         string? gpuScreenshot = null,
         string? gpuCard = null,
-        string? gpuCapturePlan = null)
+        string? gpuCapturePlan = null,
+        TuiGpuBackend backend = TuiGpuBackend.Auto)
     {
         var agents = app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
         var handle = agents.Create(new CreateAgentOptions(
@@ -331,7 +336,7 @@ public static class TuiRunner
             using var chat = new ChatWindow(app.Ctx, agent, app.Home, settings: new TuiSettings(app.Home));
             chat.RegisterPaneTools();
             using var paneBridge = PaneBridge.Mount(chat);
-            using var renderer = new GpuRenderer(chat, atlas, gpuScreenshot, gpuCard, preferredCard, gpuCapturePlan, vsync: GpuCatalog.LoadVsync(app.Home));
+            using var renderer = new GpuRenderer(chat, atlas, gpuScreenshot, gpuCard, preferredCard, gpuCapturePlan, vsync: GpuCatalog.LoadVsync(app.Home), backend: backend);
             if (startShell)
                 chat.AddShellPane();
             // 进程信号兜底: 裸 TTY(GBM)形态没有窗口关闭事件, 收到信号也要走完正常 Dispose 恢复控制台(KD_TEXT/VT_AUTO/dropMaster)

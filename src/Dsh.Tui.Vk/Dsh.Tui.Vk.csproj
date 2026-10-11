@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\Dsh.Plugins.Generator\DshPluginPackage.props" />
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dsh.Core\Dsh.Core.csproj" />
+    <ProjectReference Include="..\Dsh.Pty\Dsh.Pty.csproj" />
+    <ProjectReference Include="..\Dsh.Tui\Dsh.Tui.csproj" />
+    <!-- 仅为复用 HarnessHome 解析 DSH home(缓存目录); Dsh.Tui 已传递引用 Dsh.Boot。 -->
+    <ProjectReference Include="..\Dsh.Boot\Dsh.Boot.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SDL3 绑定换为 ppy.SDL3-CS(ppy/osu 体系): 命名空间 SDL, 静态类 SDL.SDL3 承载 SDL_ 前缀函数,
+         单包自带各 RID 原生库(无需 *.Windows/*.Linux/*.MacOS 分包); 其原生库基线更低(2026.1002.1 最高 GLIBC_2.34)。 -->
+    <PackageReference Include="ppy.SDL3-CS" Version="2026.1002.1" />
+    <PackageReference Include="OpenTK.Graphics" Version="5.0.0-pre.16" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Shaders\**\*.glsl" />
+    <!-- SPIR-V 由 artifacts020/vk-probe 的 Veldrid.SPIRV 编译产出(本机无 Vulkan SDK/glslc); 源为 Shaders\*.glsl。 -->
+    <EmbeddedResource Include="Shaders\**\*.spv" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 供 artifacts020/otk-smoke / vk-window-smoke 冒烟程序与 Dsh.Tests 访问 internal 的 VkGpuDevice / VkOffscreenRenderer / VkWindowRenderer。 -->
+    <InternalsVisibleTo Include="otk-smoke" />
+    <InternalsVisibleTo Include="vk-window-smoke" />
+    <InternalsVisibleTo Include="vk-linux-smoke" />
+    <InternalsVisibleTo Include="vk-tui-smoke" />
+    <InternalsVisibleTo Include="vk-headless-smoke" />
+    <InternalsVisibleTo Include="Dsh.Tests" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+</Project>

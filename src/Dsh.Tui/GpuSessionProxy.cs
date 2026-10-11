@@ -1,13 +1,11 @@
 using System.Collections.Concurrent;
 using System.Text;
-using Dsh.Pty;
-using OpenTK.Graphics.OpenGL;
 
 namespace Dsh.Tui;
 
 /**
  * GPU 形态的 proxy: 会话同样常驻 daemon(一个 pty 上的 TUI 进程), 本进程只开一个独立窗口渲染会话画面。
- * 窗口的键鼠编码成终端输入送进隧道, 隧道画面喂给 VtScreen 再由 GpuRenderCore 画到窗口。
+ * 窗口的键鼠编码成终端输入送进隧道, 隧道画面喂给 VtScreen 再经 ITuiSurfaceBackend 画到窗口(GL 或 Vk 由宿主后端选择决定)。
  * 于是"关窗口"就是 detach: 本 proxy 结束, daemon 里的会话继续跑(`dsharp tui attach` 或 `--gpu` 都能再接回)。
  */
 internal sealed class GpuSessionProxy : IGpuHostClient
@@ -20,7 +18,7 @@ internal sealed class GpuSessionProxy : IGpuHostClient
     private readonly string _sessionId;
     private readonly GlyphAtlas _atlas;
     private readonly IGlSurfaceHostRunner _host;
-    private readonly GpuRenderCore _core = new();
+    private readonly ITuiSurfaceBackend _core;
     private readonly VtScreen _screen;
     private readonly ConcurrentQueue<byte[]> _input = new();
     private readonly SemaphoreSlim _inputSignal = new(0);
@@ -32,6 +30,8 @@ internal sealed class GpuSessionProxy : IGpuHostClient
     private int _mouseCellX;
     private int _mouseCellY;
     private bool _leftDown;
+    private char _pendingHighSurrogate;
+    private Action? _wake;
     private volatile bool _sessionEnded;
 
     public GpuSessionProxy(string sessionId, GlyphAtlas atlas, IGlSurfaceHostRunner host)
@@ -39,6 +39,7 @@ internal sealed class GpuSessionProxy : IGpuHostClient
         _sessionId = sessionId;
         _atlas = atlas;
         _host = host;
+        _core = host.CreateRenderCore(atlas);
         var size = host.Size;
         var columns = Math.Max(1, size.Width / atlas.GlyphWidth);
         var rows = Math.Max(1, size.Height / atlas.GlyphHeight);
@@ -89,13 +90,15 @@ internal sealed class GpuSessionProxy : IGpuHostClient
     {
         _host.MakeCurrent();
         _core.Initialize(_atlas);
+        if (_host is IGpuHostWaker waker)
+            _wake = waker.Wake;
         var size = _host.Size;
         OnResize(size.Width, size.Height);
     }
 
     public void OnResize(int width, int height)
     {
-        GL.Viewport(0, 0, width, height);
+        _core.Resize(width, height);
         var columns = Math.Max(1, width / _atlas.GlyphWidth);
         var rows = Math.Max(1, height / _atlas.GlyphHeight);
         lock (_screen)
@@ -169,8 +172,28 @@ internal sealed class GpuSessionProxy : IGpuHostClient
             Enqueue(buffer[..length]);
     }
 
+    /** SDL 文本事件按 UTF-16 码元逐个下发: 非 BMP 字符(emoji)拆成代理对, 必须合成后再编码, 否则产生替换字符。 */
     public void OnText(char character)
     {
+        if (char.IsHighSurrogate(character))
+        {
+            _pendingHighSurrogate = character;
+            return;
+        }
+        if (char.IsLowSurrogate(character))
+        {
+            if (_pendingHighSurrogate == '\0')
+                return;
+            Span<char> pair = [_pendingHighSurrogate, character];
+            _pendingHighSurrogate = '\0';
+            Span<byte> pairBytes = stackalloc byte[4];
+            var pairLength = Encoding.UTF8.GetBytes(pair, pairBytes);
+            if (pairLength > 0)
+                Enqueue(pairBytes[..pairLength]);
+            return;
+        }
+
+        _pendingHighSurrogate = '\0';
         Span<char> single = [character];
         Span<byte> buffer = stackalloc byte[4];
         var length = Encoding.UTF8.GetBytes(single, buffer);
@@ -185,11 +208,18 @@ internal sealed class GpuSessionProxy : IGpuHostClient
             EnqueueMouse(_mouseCellX, _mouseCellY, button: 32, release: false);
     }
 
-    public void OnMouseButton(bool pressed, float x, float y)
+    public void OnMouseButton(GpuMouseButton button, bool pressed, float x, float y)
     {
         UpdateMouseCell(x, y);
-        _leftDown = pressed;
-        EnqueueMouse(_mouseCellX, _mouseCellY, pressed ? 0 : MouseReleaseButton, release: !pressed);
+        if (button == GpuMouseButton.Left)
+            _leftDown = pressed;
+        var code = pressed ? button switch
+        {
+            GpuMouseButton.Middle => 1,
+            GpuMouseButton.Right => 2,
+            _ => 0,
+        } : MouseReleaseButton;
+        EnqueueMouse(_mouseCellX, _mouseCellY, code, release: !pressed);
     }
 
     public void OnMouseWheel(float deltaY)
@@ -299,12 +329,15 @@ internal sealed class GpuSessionProxy : IGpuHostClient
         {
             lock (owner._screen)
                 owner._screen.Feed(buffer.AsSpan(offset, count));
+            // 会话画面变了: 自有事件循环的宿主(Vk)正阻塞等输入, 叫醒它重绘(B16)。
+            owner._wake?.Invoke();
         }
 
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
             lock (owner._screen)
                 owner._screen.Feed(buffer.Span);
+            owner._wake?.Invoke();
             return ValueTask.CompletedTask;
         }
 

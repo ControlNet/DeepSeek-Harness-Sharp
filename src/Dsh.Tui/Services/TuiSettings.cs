@@ -1,6 +1,5 @@
 using System.Globalization;
 using Dsh.Boot;
-using Dsh.Pty;
 
 namespace Dsh.Tui.Services;
 
@@ -34,6 +33,12 @@ public sealed class TuiSettings(HarnessHome home)
 
     /** 高亮色(聚焦窗格标题/补全选中): "#rrggbb" 真彩或 16 色板名(如 BrightCyan); 缺省 BrightCyan。 */
     public CellColor Highlight => ReadColor("highlightColor", CellColor.FromPalette(AnsiColor.BrightCyan));
+
+    /** GPU 后端: auto|vk|gl|cpu; 缺省 auto(auto 优先 Vk, 不可用回退 GL, 再回退 CPU)。 */
+    public string GpuBackend => ReadString("gpuBackend", "auto");
+
+    private string ReadString(string key, string fallback)
+        => Parameters().GetValueOrDefault(key) is string text && text.Length > 0 ? text : fallback;
 
     private CellColor ReadColor(string key, CellColor fallback)
     {

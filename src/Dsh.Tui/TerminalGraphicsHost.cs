@@ -16,6 +16,8 @@ internal sealed class TerminalGraphicsHost : IGlSurfaceHostRunner
     private EglPbufferHost _surface;
     private ITerminalInputSource? _input;
     private byte[]? _previous;
+    private byte[]? _frame;
+    private readonly TerminalGraphics.KittyRowPresenter _kitty = new();
     private int _columns;
     private int _rows;
     private bool _forceFull = true;
@@ -74,7 +76,16 @@ internal sealed class TerminalGraphicsHost : IGlSurfaceHostRunner
         var size = _surface.Size;
         if (size.Width <= 0 || size.Height <= 0)
             return;
-        var pixels = new byte[size.Width * size.Height * 4];
+        // 双缓冲复用: 读回进 _frame, 与 _previous 比较后交替换位(不再每帧 new byte[] + Clone)。
+        var length = size.Width * size.Height * 4;
+        if (_frame is null || _previous is null || _frame.Length != length)
+        {
+            _frame = new byte[length];
+            _previous = new byte[length];
+            _forceFull = true;
+        }
+
+        var pixels = _frame;
         OpenTK.Graphics.OpenGL.GL.ReadPixels(
             0, 0, size.Width, size.Height,
             OpenTK.Graphics.OpenGL.PixelFormat.Rgba,
@@ -87,39 +98,15 @@ internal sealed class TerminalGraphicsHost : IGlSurfaceHostRunner
             return;
         }
         PresentKittyRows(pixels, size.Width, size.Height);
+        (_frame, _previous) = (_previous, pixels);
     }
 
-    /** kitty: 逐终端行贴图; 首帧/尺寸变化全量, 之后只重传内容变化的行。 */
+    /** kitty: 逐终端行贴图; 首帧/尺寸变化全量, 之后只重传内容变化的行(#2 复用由呈现器负责)。 */
     private void PresentKittyRows(byte[] pixels, int width, int height)
     {
-        var rowCount = Math.Max(1, height / _cellHeight);
-        var builder = new StringBuilder();
-        for (var row = 0; row < rowCount; row++)
-        {
-            if (!_forceFull && _previous is not null && !RowChanged(pixels, _previous, width, height, row))
-                continue;
-            builder.Append(TerminalGraphics.EncodeKittyRow(pixels, width, height, row, _cellHeight, _columns));
-        }
-        if (builder.Length > 0)
-        {
-            Console.Out.Write(builder.ToString());
+        if (_kitty.Present(pixels, _previous, width, height, _cellHeight, _columns, _forceFull, TerminalGraphics.SupportsPlacementReuse(), Console.Out))
             Console.Out.Flush();
-        }
-        _previous = (byte[])pixels.Clone();
         _forceFull = false;
-    }
-
-    /** 该终端行在自上而下坐标里的像素带是否变化(GL 缓冲自下而上)。 */
-    private bool RowChanged(byte[] current, byte[] previous, int width, int height, int row)
-    {
-        var topY = row * _cellHeight;
-        for (var y = Math.Min(height, topY + _cellHeight) - 1; y >= topY; y--)
-        {
-            var offset = y * width * 4;
-            if (!current.AsSpan(offset, width * 4).SequenceEqual(previous.AsSpan(offset, width * 4)))
-                return true;
-        }
-        return false;
     }
 
     public void Run(IGpuHostClient client)
@@ -209,7 +196,7 @@ internal sealed class TerminalGraphicsHost : IGlSurfaceHostRunner
             client.OnMouseMove(x, y);
             return;
         }
-        client.OnMouseButton(mouse.Pressed, x, y);
+        client.OnMouseButton(GpuMouseButton.Left, mouse.Pressed, x, y);
     }
 
     private static ITerminalInputSource? CreateInputSource()
@@ -230,7 +217,7 @@ internal sealed class TerminalGraphicsHost : IGlSurfaceHostRunner
         if (!Presenting)
             return;
         if (_protocol == TerminalGraphicsProtocol.Kitty)
-            Console.Out.Write(TerminalGraphics.DeleteRows(Math.Max(1, _surface.Size.Height / _cellHeight)));
+            _kitty.DeleteAll(Console.Out);
         Console.Out.Write("\x1b[?25h\x1b[?1049l");
         Console.Out.Flush();
     }

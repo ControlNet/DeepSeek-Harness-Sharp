@@ -131,9 +131,10 @@ public sealed class GlfwWindowHost : IGlSurfaceHostRunner
 
     private void OnMouseButton(MouseButtonEventArgs e)
     {
+        // 保持 GL 窗口宿主既有行为: 只把左键透传给 TUI(中/右键不产生事件)。
         if (e.Button != MouseButton.Left)
             return;
-        _client?.OnMouseButton(e.IsPressed, _window.MousePosition.X, _window.MousePosition.Y);
+        _client?.OnMouseButton(GpuMouseButton.Left, e.IsPressed, _window.MousePosition.X, _window.MousePosition.Y);
     }
 
     private void OnMouseWheel(MouseWheelEventArgs e)
