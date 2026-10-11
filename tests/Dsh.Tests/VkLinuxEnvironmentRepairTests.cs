@@ -12,7 +12,7 @@ public sealed class VkLinuxEnvironmentRepairTests
     public void NonLinux_IsNoOp()
     {
         var io = new FakeRepairIo { IsLinux = false };
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.NotApplicable, outcome.Status);
         Assert.Equal(0, io.ProbeCount);
@@ -25,7 +25,7 @@ public sealed class VkLinuxEnvironmentRepairTests
     public void HardwareAlreadyUsable_DoesNothing()
     {
         var io = new FakeRepairIo { Probes = [Hardware()] };
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.AlreadyUsable, outcome.Status);
         Assert.True(outcome.HardwareUsable);
@@ -36,21 +36,107 @@ public sealed class VkLinuxEnvironmentRepairTests
         Assert.Equal(0, io.StartedDisplays);
     }
 
+    /** 想要 GPU 形态的用户必然需要 Vulkan loader: 缺了就装, 装完硬件可用即算自愈成功。 */
     [Fact]
-    public void Disabled_SkipsProbe()
+    public void MissingLoader_Root_InstallsItThenRepairs()
     {
-        var io = new FakeRepairIo { Probes = [NoHardware()] };
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: false).EnsureReady();
+        var io = new FakeRepairIo
+        {
+            Probes = [NoHardware(), Hardware()],
+            VulkanLoaderPresent = false,
+            VulkanLoaderInstallCommand = new VkInstallCommand("apt-get", "install -y -qq libvulkan1"),
+            IsRoot = true,
+        };
+        io.RunEffect = (fileName, _) =>
+        {
+            if (fileName == "apt-get")
+                io.VulkanLoaderPresent = true;
+        };
 
-        Assert.Equal(VkRepairStatus.Disabled, outcome.Status);
-        Assert.Equal(0, io.ProbeCount);
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
+
+        Assert.Equal(VkRepairStatus.Repaired, outcome.Status);
+        Assert.True(outcome.HardwareUsable);
+        Assert.Contains(io.Commands, command => command.FileName == "apt-get");
+        Assert.Equal(0, io.UserSpaceInstalls);
+        Assert.Empty(io.Dlopens);
+        Assert.Equal(0, io.StartedDisplays);
+    }
+
+    /** 没有 root 也不是 sudo: 走用户态安装(下载解包到缓存并预载), 一样算自愈成功 —— 租用容器就是这种。 */
+    [Fact]
+    public void MissingLoader_NonRoot_InstallsInUserSpace()
+    {
+        var io = new FakeRepairIo
+        {
+            Probes = [NoHardware(), Hardware()],
+            VulkanLoaderPresent = false,
+            VulkanLoaderInstallCommand = new VkInstallCommand("apt-get", "install -y -qq libvulkan1"),
+            IsRoot = false,
+            SudoAvailable = false,
+            UserSpaceInstallFailure = null,
+        };
+
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
+
+        Assert.Equal(VkRepairStatus.Repaired, outcome.Status);
+        Assert.True(outcome.HardwareUsable);
+        Assert.Equal(1, io.UserSpaceInstalls);
+        Assert.Empty(io.Commands);
+        Assert.Empty(io.Dlopens);
+    }
+
+    /** 非 root 但有免密 sudo: 走提权安装, 不做用户态兜底。 */
+    [Fact]
+    public void MissingLoader_PasswordlessSudo_InstallsSystemWide()
+    {
+        var io = new FakeRepairIo
+        {
+            Probes = [NoHardware(), Hardware()],
+            VulkanLoaderPresent = false,
+            VulkanLoaderInstallCommand = new VkInstallCommand("apt-get", "install -y -qq libvulkan1"),
+            IsRoot = false,
+            SudoAvailable = true,
+        };
+        io.RunEffect = (fileName, _) =>
+        {
+            if (fileName == "sudo")
+                io.VulkanLoaderPresent = true;
+        };
+
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
+
+        Assert.Equal(VkRepairStatus.Repaired, outcome.Status);
+        Assert.Contains(io.Commands, command => command.FileName == "sudo" && command.Arguments.Contains("-n apt-get install"));
+        Assert.Equal(0, io.UserSpaceInstalls);
+    }
+
+    /** 既没权限、用户态兜底也不可用: 失败原因要把两条路的原因都说清楚, 而不是含糊其辞。 */
+    [Fact]
+    public void MissingLoader_NoElevationAndNoUserSpace_FailsWithBothReasons()
+    {
+        var io = new FakeRepairIo
+        {
+            Probes = [NoHardware()],
+            VulkanLoaderPresent = false,
+            VulkanLoaderInstallCommand = null,
+            IsRoot = false,
+            SudoAvailable = false,
+            UserSpaceInstallFailure = "fake: 未找到 apt-get/dpkg-deb",
+        };
+
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
+
+        Assert.Equal(VkRepairStatus.Failed, outcome.Status);
+        Assert.Contains("未找到 apt-get/dpkg-deb", outcome.Detail);
+        Assert.Empty(io.Commands);
     }
 
     [Fact]
     public void NoNvidiaIcd_FailsWithReason()
     {
         var io = new FakeRepairIo { Probes = [NoHardware()], NvidiaIcdPresent = false };
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.Failed, outcome.Status);
         Assert.Contains("NVIDIA", outcome.Detail);
@@ -68,7 +154,7 @@ public sealed class VkLinuxEnvironmentRepairTests
             NvidiaIcdPresent = true,
             Compiler = "cc",
         };
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.Repaired, outcome.Status);
         Assert.True(outcome.HardwareUsable);
@@ -93,7 +179,7 @@ public sealed class VkLinuxEnvironmentRepairTests
             Compiler = "cc",
         };
         io.SeedFile(libraryPath);
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.Repaired, outcome.Status);
         Assert.Empty(io.Commands);
@@ -112,7 +198,7 @@ public sealed class VkLinuxEnvironmentRepairTests
             IsRoot = false,
             Xvfb = null,
         };
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.Failed, outcome.Status);
         Assert.Contains("编译器", outcome.Detail);
@@ -133,7 +219,7 @@ public sealed class VkLinuxEnvironmentRepairTests
             IsRoot = false,
         };
         io.LoadResult = new VkLibraryLoad(false, "undefined symbol: __malloc_hook");
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.Failed, outcome.Status);
         Assert.Contains("dlopen", outcome.Detail);
@@ -151,7 +237,7 @@ public sealed class VkLinuxEnvironmentRepairTests
             Compiler = "cc",
             Xvfb = "/usr/bin/Xvfb",
         };
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.Repaired, outcome.Status);
         Assert.Equal(1, io.StartedDisplays);
@@ -171,7 +257,7 @@ public sealed class VkLinuxEnvironmentRepairTests
             Xvfb = "/usr/bin/Xvfb",
         };
         io.Env["DISPLAY"] = ":0";
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.Failed, outcome.Status);
         Assert.Contains("DISPLAY", outcome.Detail);
@@ -190,7 +276,7 @@ public sealed class VkLinuxEnvironmentRepairTests
             Xvfb = null,
             IsRoot = false,
         };
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.Failed, outcome.Status);
         Assert.Contains("Xvfb", outcome.Detail);
@@ -217,7 +303,7 @@ public sealed class VkLinuxEnvironmentRepairTests
             if (arguments.Contains("xvfb"))
                 io.Xvfb = "/usr/bin/Xvfb";
         };
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.Repaired, outcome.Status);
         Assert.Contains(io.Commands, command => command.Arguments.Contains("install") && command.Arguments.Contains("gcc"));
@@ -238,7 +324,7 @@ public sealed class VkLinuxEnvironmentRepairTests
         io.ProbeThrows = true;
         io.WriteThrows = true;
 
-        var outcome = new VkLinuxEnvironmentRepair(io, enabled: true).EnsureReady();
+        var outcome = new VkLinuxEnvironmentRepair(io).EnsureReady();
 
         Assert.Equal(VkRepairStatus.Failed, outcome.Status);
         Assert.NotEmpty(io.Logs);
@@ -285,6 +371,17 @@ public sealed class VkLinuxEnvironmentRepairTests
         public string CacheDirectory { get; init; } = "/home/u/.dsh/cache/vk-accel";
 
         public bool NvidiaIcdPresent { get; init; }
+
+        public bool VulkanLoaderPresent { get; set; } = true;
+
+        public VkInstallCommand? VulkanLoaderInstallCommand { get; init; }
+
+        public bool SudoAvailable { get; set; }
+
+        /** 用户态安装的返回: null = 成功(置 VulkanLoaderPresent = true), 否则为失败原因。 */
+        public string? UserSpaceInstallFailure { get; set; } = "fake: 不支持用户态安装";
+
+        public int UserSpaceInstalls { get; private set; }
 
         public string? Compiler { get; set; }
 
@@ -360,6 +457,15 @@ public sealed class VkLinuxEnvironmentRepairTests
         {
             Dlopens.Add(path);
             return LoadResult;
+        }
+
+        public string? InstallVulkanLoaderUserSpace()
+        {
+            UserSpaceInstalls++;
+            if (UserSpaceInstallFailure is not null)
+                return UserSpaceInstallFailure;
+            VulkanLoaderPresent = true;
+            return null;
         }
 
         public VkVirtualDisplayStart StartVirtualDisplay(int width, int height)

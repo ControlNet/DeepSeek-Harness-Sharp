@@ -3,7 +3,6 @@ namespace Dsh.Tui.Vk;
 internal enum VkRepairStatus
 {
     NotApplicable,
-    Disabled,
     AlreadyUsable,
     Repaired,
     Failed,
@@ -19,6 +18,9 @@ internal readonly record struct VkRepairOutcome(VkRepairStatus Status, string De
 internal readonly record struct VkProbeResult(bool InstanceCreated, int DeviceCount, bool HardwareDevicePresent, string Devices, string? Error);
 
 internal readonly record struct VkCommandResult(int ExitCode, string Output);
+
+/** 安装某个系统包所需的完整命令(distro 相关)。 */
+internal readonly record struct VkInstallCommand(string Executable, string Arguments);
 
 internal readonly record struct VkLibraryLoad(bool Loaded, string Error);
 
@@ -42,6 +44,22 @@ internal interface IVkRepairIo
     /** 缓存根目录: DSH_HOME/cache/vk-accel。 */
     string CacheDirectory { get; }
 
+    /** Vulkan loader(libvulkan.so.1)是否已在可加载路径上。 */
+    bool VulkanLoaderPresent { get; }
+
+    /** Vulkan loader 的安装命令(distro 相关); 未识别到包管理器时为 null。 */
+    VkInstallCommand? VulkanLoaderInstallCommand { get; }
+
+    /** 免密 sudo(-n)可用时为真: 没有 root 时用它提权安装。 */
+    bool SudoAvailable { get; }
+
+    /**
+     * 无 root / 无 sudo 时的用户态安装: 下载 loader 包、解包到缓存目录并预载到全局作用域。
+     * 返回失败原因(null = 成功)。租用容器常常没有 root, 这是 loader 缺失时的兜底路径。
+     */
+    string? InstallVulkanLoaderUserSpace();
+
+    /** 检测到 NVIDIA ICD / 厂商图形库时为真(只有这种情况才值得做驱动侧补救)。 */
     bool NvidiaIcdPresent { get; }
 
     string? GetEnv(string name);
@@ -73,10 +91,10 @@ internal interface IVkRepairIo
 
 /**
  * Vulkan 环境自愈编排(Linux 专属, best-effort)。
- * 流程: 轻量探测 → 可用即 no-op; 否则在存在 NVIDIA ICD 时先补符号 shim, 仍失败再给一条虚拟 X;
- * 每步之后重探测, 成功记录做了什么, 失败返回可读原因, 且绝不谎报成功、绝不把进程带崩。
+ * 流程: 轻量探测 → 可用即 no-op; 缺 Vulkan loader 就先装上; 再在存在 NVIDIA ICD 时补符号 shim, 仍失败再给一条虚拟 X;
+ * 每步之后重探测, 成功记录做了什么, 失败返回可读原因。
  */
-internal sealed class VkLinuxEnvironmentRepair(IVkRepairIo io, bool enabled) : IDisposable
+internal sealed class VkLinuxEnvironmentRepair(IVkRepairIo io) : IDisposable
 {
     private const int VirtualDisplayWidth = 1280;
     private const int VirtualDisplayHeight = 720;
@@ -103,16 +121,25 @@ internal sealed class VkLinuxEnvironmentRepair(IVkRepairIo io, bool enabled) : I
     {
         if (!io.IsLinux)
             return new VkRepairOutcome(VkRepairStatus.NotApplicable, "非 Linux 平台, 环境自愈不适用");
-        if (!enabled)
-            return new VkRepairOutcome(VkRepairStatus.Disabled, "环境自愈已禁用");
 
         var first = SafeProbe();
         if (first.HardwareDevicePresent)
             return new VkRepairOutcome(VkRepairStatus.AlreadyUsable, $"硬件 Vulkan 已可用: {first.Devices}");
-        if (!io.NvidiaIcdPresent)
-            return new VkRepairOutcome(VkRepairStatus.Failed, $"无硬件 Vulkan 设备且未检测到 NVIDIA ICD: {Describe(first)}");
 
         var actions = new List<string>();
+        var (loaderFailure, loaderInstalled) = TryEnsureVulkanLoader(actions);
+        var afterLoader = loaderInstalled ? SafeProbe() : first;
+        if (afterLoader.HardwareDevicePresent)
+            return Repaired(actions, afterLoader);
+
+        if (!io.NvidiaIcdPresent)
+        {
+            var reason = $"无硬件 Vulkan 设备且未检测到 NVIDIA ICD: {Describe(afterLoader)}";
+            return new VkRepairOutcome(
+                VkRepairStatus.Failed,
+                loaderFailure is null ? reason : $"Vulkan loader: {loaderFailure} | {reason}");
+        }
+
         var shimFailure = TryEnsureShim(actions);
         var afterShim = SafeProbe();
         if (afterShim.HardwareDevicePresent)
@@ -123,7 +150,67 @@ internal sealed class VkLinuxEnvironmentRepair(IVkRepairIo io, bool enabled) : I
         if (afterDisplay.HardwareDevicePresent)
             return Repaired(actions, afterDisplay);
 
-        return new VkRepairOutcome(VkRepairStatus.Failed, BuildFailure(shimFailure, displayFailure, first, afterDisplay));
+        return new VkRepairOutcome(
+            VkRepairStatus.Failed,
+            BuildFailure(loaderFailure, shimFailure, displayFailure, first, afterDisplay));
+    }
+
+    /**
+     * 步骤 0: 没有 Vulkan loader 就装上(apt 上是 libvulkan1)。
+     * 想用 GPU 形态的用户必然需要 loader, 且没有 loader 时后面的探测/shim/虚拟 X 都无从谈起。
+     * 先试有权限的路径(root / 免密 sudo), 都不行就装进用户缓存再预载 —— 租用容器常常没有 root。
+     * 返回 (失败原因, 是否真的装了); 已存在时是 (null, false), 调用方据此跳过多余的重探测。
+     */
+    private (string? Failure, bool Installed) TryEnsureVulkanLoader(List<string> actions)
+    {
+        if (io.VulkanLoaderPresent)
+            return (null, false);
+
+        var reasons = new List<string>();
+        if (TryElevatedInstall(actions) is { } elevatedFailure)
+            reasons.Add(elevatedFailure);
+        if (io.VulkanLoaderPresent)
+            return (null, true);
+
+        var (installed, userSpaceFailure) = TryUserSpaceInstall(actions);
+        if (installed && io.VulkanLoaderPresent)
+            return (null, true);
+        reasons.Add(userSpaceFailure);
+        return (string.Join("; ", reasons), false);
+    }
+
+    /** root 直接装, 非 root 但免密 sudo 时加 sudo; 两条都不具备时返回 null(不算失败原因, 交给用户态兜底)。 */
+    private string? TryElevatedInstall(List<string> actions)
+    {
+        if (io.VulkanLoaderInstallCommand is not { } command)
+            return null;
+        var elevated = io.IsRoot
+            ? command
+            : io.SudoAvailable
+                ? new VkInstallCommand("sudo", $"-n {command.Executable} {command.Arguments}")
+                : (VkInstallCommand?)null;
+        if (elevated is not { } run)
+            return null;
+
+        io.Log($"未找到 Vulkan loader, 尝试 {run.Executable} {run.Arguments}");
+        var result = io.Run(run.Executable, run.Arguments, null);
+        if (io.VulkanLoaderPresent)
+        {
+            actions.Add($"安装 Vulkan loader({run.Executable} {run.Arguments})");
+            return null;
+        }
+
+        return $"{run.Executable} 安装 Vulkan loader 失败(exit={result.ExitCode}): {Tail(result.Output)}";
+    }
+
+    /** 用户态兜底: 下载 + 解包到缓存 + 预载, 不需要任何权限。 */
+    private (bool Installed, string Failure) TryUserSpaceInstall(List<string> actions)
+    {
+        var failure = io.InstallVulkanLoaderUserSpace();
+        if (failure is not null)
+            return (false, failure);
+        actions.Add("用户态安装 Vulkan loader(解包到缓存并预载)");
+        return (true, "");
     }
 
     private static VkRepairOutcome Repaired(List<string> actions, VkProbeResult probe)
@@ -247,9 +334,11 @@ internal sealed class VkLinuxEnvironmentRepair(IVkRepairIo io, bool enabled) : I
         }
     }
 
-    private static string BuildFailure(string? shimFailure, string? displayFailure, VkProbeResult first, VkProbeResult last)
+    private static string BuildFailure(string? loaderFailure, string? shimFailure, string? displayFailure, VkProbeResult first, VkProbeResult last)
     {
         var parts = new List<string>();
+        if (loaderFailure is not null)
+            parts.Add($"Vulkan loader: {loaderFailure}");
         if (shimFailure is not null)
             parts.Add($"符号 shim: {shimFailure}");
         if (displayFailure is not null)

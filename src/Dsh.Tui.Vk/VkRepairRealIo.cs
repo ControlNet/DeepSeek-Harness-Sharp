@@ -15,12 +15,16 @@ namespace Dsh.Tui.Vk;
  */
 internal sealed class VkRepairRealIo : IVkRepairIo
 {
+    private const int RtldLazy = 0x1;
     private const int RtldNow = 0x2;
     private const int RtldGlobal = 0x100;
     private const uint RootUid = 0;
     private const int CommandTimeoutMilliseconds = 120_000;
 
     private static readonly string[] CompilerCandidates = ["cc", "gcc", "clang"];
+
+    /** Vulkan loader 的 soname: 装了 libvulkan1 就有第一个。 */
+    private static readonly string[] VulkanLoaderNames = ["libvulkan.so.1", "libvulkan.so"];
 
     private static readonly string[] NvidiaManifestPaths =
     [
@@ -55,6 +59,101 @@ internal sealed class VkRepairRealIo : IVkRepairIo
     }
 
     public string CacheDirectory => Path.Combine(HarnessHome.Resolve().CachePath, "vk-accel");
+
+    /** dlopen 探测 soname(RTLD_LAZY): 能打开就说明 loader 在可加载路径上。 */
+    public bool VulkanLoaderPresent
+    {
+        get
+        {
+            if (!IsLinux)
+                return true;
+            foreach (var name in VulkanLoaderNames)
+            {
+                var handle = Dlopen(name, RtldLazy);
+                if (handle == IntPtr.Zero)
+                    continue;
+                _ = Dlclose(handle);
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    /** 只装 loader; 驱动/ICD 由发行版或厂商包单独提供。无法识别的发行版返回 null。 */
+    public VkInstallCommand? VulkanLoaderInstallCommand
+    {
+        get
+        {
+            if (!IsLinux)
+                return null;
+            if (FindOnPath("apt-get") is not null)
+                return new VkInstallCommand("apt-get", "install -y -qq libvulkan1");
+            if (FindOnPath("dnf") is not null)
+                return new VkInstallCommand("dnf", "install -y vulkan-loader");
+            if (FindOnPath("zypper") is not null)
+                return new VkInstallCommand("zypper", "--non-interactive install -y libvulkan1");
+            if (FindOnPath("pacman") is not null)
+                return new VkInstallCommand("pacman", "-S --noconfirm --needed vulkan-icd-loader");
+            if (FindOnPath("apk") is not null)
+                return new VkInstallCommand("apk", "add --no-cache vulkan-loader");
+            return null;
+        }
+    }
+
+    /** sudo -n(免密)可用与否; 只探测一次, 避免反复起进程。 */
+    public bool SudoAvailable
+    {
+        get
+        {
+            if (!IsLinux || FindOnPath("sudo") is null)
+                return false;
+            return Run("sudo", "-n true", null).ExitCode == 0;
+        }
+    }
+
+    /**
+     * 无 root / 无 sudo 时的用户态安装(apt/dpkg): apt-get download 取包(不需要权限) → dpkg-deb -x 解到缓存
+     * → dlopen(RTLD_GLOBAL) 预载。之后 libvulkan.so.1 按 soname 命中已加载对象, 因此不必(也不能)靠
+     * LD_LIBRARY_PATH —— glibc 在进程启动时就把搜索路径固定住了, 之后再 setenv 对 dlopen 无效。
+     * 其它发行版返回可读原因, 由调用方提示手动安装。
+     */
+    public string? InstallVulkanLoaderUserSpace()
+    {
+        var downloader = FindOnPath("apt-get");
+        var extractor = FindOnPath("dpkg-deb");
+        if (downloader is null || extractor is null)
+            return "未找到 apt-get/dpkg-deb, 无法用户态安装(请手动安装 libvulkan1)";
+
+        var downloadDirectory = Path.Combine(CacheDirectory, "download");
+        var libraryDirectory = Path.Combine(CacheDirectory, "lib");
+        try
+        {
+            Directory.CreateDirectory(downloadDirectory);
+            Directory.CreateDirectory(libraryDirectory);
+            foreach (var stale in Directory.EnumerateFiles(downloadDirectory, "libvulkan*.deb"))
+                File.Delete(stale);
+        }
+        catch (Exception error)
+        {
+            return $"准备用户态安装目录失败: {error.Message}";
+        }
+
+        var download = Run(downloader, "download libvulkan1", downloadDirectory);
+        var package = Directory.EnumerateFiles(downloadDirectory, "libvulkan1*.deb").FirstOrDefault();
+        if (download.ExitCode != 0 || package is null)
+            return $"apt-get download libvulkan1 失败(exit={download.ExitCode}): {Tail(download.Output)}";
+
+        var extract = Run(extractor, $"-x \"{package}\" \"{libraryDirectory}\"", null);
+        if (extract.ExitCode != 0)
+            return $"dpkg-deb -x 失败(exit={extract.ExitCode}): {Tail(extract.Output)}";
+
+        var library = FindLoaderIn(libraryDirectory);
+        if (library is null)
+            return "解包后未找到 libvulkan.so.1";
+        var load = TryLoadGlobalLibrary(library);
+        return load.Loaded ? null : $"预载解包出的 loader 失败: {load.Error}";
+    }
 
     public bool NvidiaIcdPresent
     {
@@ -267,6 +366,24 @@ internal sealed class VkRepairRealIo : IVkRepairIo
         return 99;
     }
 
+    private static string? FindLoaderIn(string directory)
+    {
+        try
+        {
+            return Directory.EnumerateFiles(directory, "libvulkan.so.1*", SearchOption.AllDirectories).FirstOrDefault();
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static string Tail(string text)
+    {
+        var trimmed = text.Trim();
+        return trimmed.Length <= 400 ? trimmed : trimmed[^400..];
+    }
+
     private static string DlopenError()
     {
         var pointer = Dlerror();
@@ -306,6 +423,9 @@ internal sealed class VkRepairRealIo : IVkRepairIo
 
     [DllImport("libdl.so.2", EntryPoint = "dlopen", CharSet = CharSet.Ansi)]
     private static extern IntPtr Dlopen(string fileName, int flags);
+
+    [DllImport("libdl.so.2", EntryPoint = "dlclose")]
+    private static extern int Dlclose(IntPtr handle);
 
     [DllImport("libdl.so.2", EntryPoint = "dlerror")]
     private static extern IntPtr Dlerror();
