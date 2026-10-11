@@ -43,6 +43,9 @@ public sealed class ChatPane : ITuiPane
 
     private int _rightPanelScroll;
     private int _rightPanelRows = 1;
+
+    /** 右栏按面板宽折行后的总行数(滚轮夹取用); 每次 DrawRightPanel 按当前宽度重算。 */
+    private int _rightPanelLineCount;
     private readonly List<string> _history = [];
     private int _historyIndex = -1;
     private bool _sessionRenamedSubscribed;
@@ -726,7 +729,9 @@ public sealed class ChatPane : ITuiPane
         if (rect.Width <= 0 || rect.Height <= 0)
             return;
 
-        var lines = RightPanelLines();
+        // 先把每行折到面板宽: 长 session id / cwd 不折行会一路顶到窗口边缘(甚至越过边栏), 后面的内容看不到。
+        var lines = WrapRightPanelLines(RightPanelLines(), rect.Width);
+        _rightPanelLineCount = lines.Count;
         _rightPanelRows = rect.Height;
         // 内容超屏时按滚动偏移切窗口, 让窄终端也能看到下面的段落(滚轮在 ChatWindow 里路由过来)。
         _rightPanelScroll = Math.Clamp(_rightPanelScroll, 0, Math.Max(0, lines.Count - rect.Height));
@@ -748,6 +753,27 @@ public sealed class ChatPane : ITuiPane
         }
     }
 
+    /** 右栏按面板宽折行; 分隔线保持单行(它是整宽的横线, 不参与折行)。 */
+    private static List<RightPanelLine> WrapRightPanelLines(IReadOnlyList<RightPanelLine> lines, int width)
+    {
+        var wrapped = new List<RightPanelLine>(lines.Count);
+        var buffer = new List<string>();
+        foreach (var line in lines)
+        {
+            if (line.Separator)
+            {
+                wrapped.Add(line);
+                continue;
+            }
+
+            buffer.Clear();
+            WrapSingleLine(line.Text, width, buffer);
+            wrapped.AddRange(buffer.Select(text => line with { Text = text }));
+        }
+
+        return wrapped;
+    }
+
     /** 右栏滚动偏移(自顶部的行数), 供测试断言。 */
     internal int RightPanelScrollOffset => _rightPanelScroll;
 
@@ -757,7 +783,7 @@ public sealed class ChatPane : ITuiPane
         var lines = _rightPanelWheel.Scroll(delta);
         if (lines == 0)
             return false;
-        var maximum = Math.Max(0, RightPanelLines().Count - _rightPanelRows);
+        var maximum = Math.Max(0, _rightPanelLineCount - _rightPanelRows);
         var next = Math.Clamp(_rightPanelScroll - lines, 0, maximum);
         if (next == _rightPanelScroll)
             return false;

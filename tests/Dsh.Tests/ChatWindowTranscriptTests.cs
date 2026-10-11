@@ -6,6 +6,7 @@ using Dsh.Presets;
 using Dsh.Runtime;
 using Dsh.Tui;
 using Dsh.Tui.Services;
+using System.Text;
 
 namespace Dsh.Tests;
 
@@ -572,6 +573,41 @@ public sealed class ChatWindowTranscriptTests : IDisposable
         chat.Draw(after, layout);
         Assert.True(chat.RightPanelScrollOffset > 0);
         Assert.DoesNotContain("上下文", string.Join('\n', Rows(after)));
+    }
+
+    /** 右栏文字必须按面板宽折行: 长 session id / cwd 不能一路顶到窗口边缘把剩余内容截掉。 */
+    [Fact]
+    public async Task RightPanel_WrapsLongLines_ToPanelWidth()
+    {
+        var (ctx, agent, home) = await CreateAgent();
+        using var chat = new ChatWindow(ctx, agent, home);
+        chat.DrainUi();
+        var layout = LayoutEngine.Calculate(120, 40);
+        var grid = new CellGrid(120, 40);
+        chat.Draw(grid, layout);
+
+        // 面板宽 38 < "session: <id>"(45 列): 不折行时 id 尾部落到窗口外被裁掉, 这里就找不到完整 id。
+        var panel = new StringBuilder();
+        for (var y = 0; y < layout.RightPanel.Height; y++)
+        {
+            for (var x = layout.RightPanel.X; x < layout.RightPanel.Right; x++)
+            {
+                var character = grid[x, y].Character;
+                if (character is not ('\0' or ' '))
+                    panel.Append(character);
+            }
+        }
+
+        Assert.Contains(agent.Id.ToString(), panel.ToString());
+
+        // 并且确实是"折行": 完整 id 不可能塞进右栏任意单行(面板宽 38 < 45)。
+        for (var y = 0; y < layout.RightPanel.Height; y++)
+        {
+            var row = new StringBuilder();
+            for (var x = layout.RightPanel.X; x < layout.RightPanel.Right; x++)
+                row.Append(grid[x, y].Character);
+            Assert.DoesNotContain(agent.Id.ToString(), row.ToString());
+        }
     }
 
     private static int FindPaneDividerColumn(ChatWindow chat, UiLayout layout)
