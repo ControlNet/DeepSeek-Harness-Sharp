@@ -21,41 +21,31 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 1. 配置文件:`~/.dsh/settings.yaml`(Linux)/`%USERPROFILE%\.dsh\settings.yaml`(Windows);首次运行会生成带注释的模板,插件开关与参数写在 `plugins:` 段。
 2. 构建与运行:
    ```bash
-   dotnet build
-   # 默认入口: 交互式 TUI
-   dotnet run --project DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj 
-   dotnet run --project DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj --gpu # 使用GPU加速渲染
-   # 无头单次任务
-   dotnet run --project DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -- headless "跑一遍测试"
-   # TUI 的会话管理(PTY 守护进程按需自动拉起,无需手动启动)
-   dotnet run --project DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -- tui list   # 列出所有会话id
-   dotnet run --project DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -- tui attach <id>  #进入某个会话
-   dotnet run --project DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -- tui attach <pty-id> --gpu  #用独立 GPU 窗口接回该会话
+   dotnet build # 只构建不运行
+   dotnet run --project DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj  # 执行构建并启动
+   DeepSeek-Harness-Sharp/bin/Debug(Release)/net10.0/dsharp 启动构建结果
    ```
-3. 插件运维:TUI 内用 `/plugins list|add <包|dll 路径>|remove <包> [--force]|disable <包>|enable <包>`;改动写回 `settings.yaml` 的 `plugins:` 段并保留注释。更新插件:先 `remove`,再删掉该插件所在的 `plugins/<目录名>/`(`add` 装出来的目录名是 dll 文件名),然后 `add` 新版(同名文件内容不一致时 add 会拒绝,以免覆盖手放的同名插件)。
+   主程序叫做dsharp/dsharp.exe；`DSH_HOME`(或 settings.yaml 的 `storage.root`)可以指定独立的配置/会话目录,便于用不同配置试跑构建产物。
+
+   ```bash
+   # 默认入口: 交互式 TUI
+   dsharp --gpu # 使用GPU加速渲染，会启动独立窗口
+   # 无头单次任务
+   dsharp -- headless "跑一遍测试"
+   # TUI 的会话管理(PTY 守护进程按需自动拉起,无需手动启动)
+   dsharp -- tui list   # 列出所有会话id
+   dsharp -- tui attach <id>  #进入某个会话
+   dsharp -- tui attach <pty-id> --gpu  #用独立 GPU 窗口接回该会话
+   ```
+   TUI 的 GPU 渲染后端由 `plugins."@deepseek-ai/dsh-tui"` 的 `gpuBackend` 决定(`auto|vk|gl|cpu`,缺省 `auto`)，`vsync` 即垂直同步默认为 `true`。
+
+   Linux 上 `vk` 后端要求 glibc >= 2.33(ppy.SDL3-CS 要求), 老系统请用 `gl` 或升级 glibc; 后端不可用时 dsharp 会输出原因并自动回退(`gl` -> CPU)。
+3. 插件运维:TUI 内用 `/plugins list|add <包|dll 路径>|remove <包> [--force]|disable <包>|enable <包>`;改动写回 `settings.yaml` 的 `plugins:` 段并保留注释。
+
+    `disable` 只停用效果、保留插件(`enable` 可复原);`remove` 是卸载:摘除效果并删除 `plugins/<包名>/` 目录(内置或手工平铺的插件没有该目录,只做摘除)。更新插件:直接 `remove` 旧版(安装目录会被一并删除),再 `add` 新版;`add` 遇到同名但内容不同的文件会拒绝,以免覆盖手工放置的同名插件。
 4. 日志:`<home>/logs/dsh-YYYYMMDD.log`(默认开启);`logging:` 段可配置级别、内存缓冲、是否输出到控制台(TUI 下强制关闭)。
 5. 后台会话:TUI 内 `/detach [命令]`(Ctrl+X D)把命令交给 PTY 守护进程托管;`tui list`/`tui attach` 会自动拉起守护进程。
 6. 插件目录:把插件放进 `<安装目录>/plugins/`,启动时自动加载并启用(可用 `/plugins disable <包>` 关闭)。托管插件是构建时引入 `Dsh.Plugins.Generator` 的 dll(生成清单提供入口),仅在默认 JIT 发布档可用;原生插件是 `.so`/`.dylib`/`.dll` 共享库(实现 `IDshNativePlugin` 声明包名与工具,导出握手与 ABI 胶水由生成器产出),JIT 与 AOT 发布档均可用,示例见 `tests/Dsh.NativePluginSample`。
-
-## 运行构建产物
-
-`dotnet build` 的产物在 `DeepSeek-Harness-Sharp/bin/<Debug|Release>/net10.0/`,`dotnet publish` 的产物在其 `publish/` 子目录。GUI 启动器是独立工程 `DshGuiHost`(构建方式见「图形界面」),产物在 `DshGuiHost/bin/<Debug|Release>/net10.0/`。
-
-```bash
-# Linux/macOS:直接运行构建产物
-DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp              # 交互式 TUI
-DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp --gpu       # GPU 渲染
-DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp headless "跑一遍测试"
-DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp tui list
-
-# 或将 DLL 交给本机 dotnet 运行
-dotnet DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp.dll tui
-
-# Windows
-DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe tui
-```
-
-用 `DSH_HOME`(或 settings.yaml 的 `storage.root`)可以指定独立的配置/会话目录,便于用不同配置试跑构建产物。
 
 ## 图形界面
 
@@ -89,13 +79,11 @@ DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui --session <会话 id>
       workspaceView: solution   # solution|filesystem
       sidebarVisible: true
       gpu: { enabled: true, adapter: auto, backend: auto }   # adapter 选显卡(设置页会列出本机识别到的卡), backend 是高级项: auto|opengl|vulkan|software,改动重启生效
-      # `dsharp tui --gpu` 的独立窗口还会读同一段的 vsync(缺省 true): true 跟显示器刷新同步,
-      # false 让帧循环按显卡最快速度跑(空转吃一个核, 一般只在测延迟/性能时关)
       window: { rememberBounds: true }
   ```
 
 - 内容折叠:思考、工具调用与结果、上下文注入默认折叠,点「▸ 展开 / ▾ 折叠」切换;轨迹条目用右侧箭头展开详情;助手正文中的代码块超过 12 行先折叠。
-- 需要你决定:工具审批与 `ask_user_question` 共用同一个窗口。审批提供「仅本次允许(y)/总是允许(a,本会话内该工具不再询问)/拒绝(n)/取消(c 或 Esc)」,并展示工具的主参数与影响提示。
+- 需要用户决定:工具审批与 `ask_user_question` 共用同一个窗口。审批提供「仅本次允许(y)/总是允许(a,本会话内该工具不再询问)/拒绝(n)/取消(c 或 Esc)」,并展示工具的主参数与影响提示。
 - 会话标题:首条用户消息写入会话标题(会话 id 不变),侧栏会话项的 `⋯` 菜单可重命名、导出日志、删除。
 - 消息操作:助手消息下方有复制、有帮助/没帮助、重新生成(把最后一条用户消息重新入队)。
 - 单实例:同一份 home 只会有一个 GUI,重复启动(双击、快捷方式、`dsh-gui.exe`)只会把已有窗口调到前台,不会开第二个窗口。同一个 home 里同时跑 GUI 与 CLI/TUI 也是允许的,日志会自动共用同一个文件。

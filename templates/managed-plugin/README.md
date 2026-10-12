@@ -63,5 +63,5 @@ public sealed class Plugin(string packageName) : IDshPlugin
 
 - `/plugins add <路径>`：把目标 dll 及其 deps.json 闭包拷入 `plugins/<dll 文件名>/`（宿主镜像已有的程序集自动跳过），随后热装载。
 - `/plugins remove <包名>`：协作式卸载；仍有下游 Inject 其服务的共享库会被拒绝并列出依赖方。
-- 更新插件：先 `/plugins remove <包名>`（卸载并释放文件占用），再删掉该插件所在的 `plugins/<目录名>/`（`/plugins add` 装的目录名就是 dll 文件名；手工摆放的是你起的名字），然后 `/plugins add <新构建的 dll>`。同名文件内容不一致时 add 一律拒绝——这是为了不覆盖手放或他人写的同名插件，所以更新必须先删旧副本。
+- 更新插件：先 `/plugins remove <包名>`（卸载效果、释放文件占用，并删除 `/plugins add` 落盘的 `plugins/<目录名>/`，目录名就是 dll 文件名；手工摆放的目录不归 add 管，remove 只做摘除，需你自己替换文件），然后 `/plugins add <新构建的 dll>`。同名文件内容不一致时 add 一律拒绝——这是为了不覆盖手放或他人写的同名插件，所以更新必须先 `remove` 旧副本（或手工删掉旧文件）。
 - 工具重名不再是错误：后注册者自动以 `<包名末段>-<工具名>` 可见并 WARN；PTC 模式下非标识符工具名用 `tools.call("<name>", args)` 调用。
