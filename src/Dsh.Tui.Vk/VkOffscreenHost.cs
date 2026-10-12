@@ -54,7 +54,7 @@ internal sealed class VkOffscreenHost : IGlSurfaceHostRunner, IGpuHostWaker
      * headlessCapture(截图/捕获)不要求终端支持图像协议; 交互形态则需要 kitty/sixel。
      * Vulkan 设备不可用/终端尺寸不可用时返回 false, 由调用方给出原因并回退。
      */
-    public static bool TryCreate(GlyphAtlas atlas, string? deviceNameFilter, bool headlessCapture, [NotNullWhen(true)] out VkOffscreenHost? host, out string reason)
+    public static bool TryCreate(GlyphAtlas atlas, string? deviceNameFilter, bool headlessCapture, [NotNullWhen(true)] out VkOffscreenHost? host, out string reason, string? devicePciSlot = null)
     {
         host = null;
         var protocol = TerminalGraphics.Detect(out var protocolReason);
@@ -67,7 +67,7 @@ internal sealed class VkOffscreenHost : IGlSurfaceHostRunner, IGpuHostWaker
         VkGpuDevice gpu;
         try
         {
-            gpu = VkGpuDevice.Create(deviceNameFilter: deviceNameFilter);
+            gpu = VkGpuDevice.Create(deviceNameFilter: deviceNameFilter, devicePciSlot: devicePciSlot);
         }
         catch (Exception error)
         {

@@ -268,6 +268,28 @@ public static class GpuCatalog
     }
 
     /**
+     * 由 DRM 卡节点反查它绑定的 PCI 地址(如 0000:11:00.0)。Vk 侧靠它在同型号多卡里精确选卡(设备名区分不了)。
+     * cardPath 形如 /dev/dri/cardN; 非 Linux / 链接缺失 / 参数为空时返回 null(交由设备名匹配或自动选择)。
+     */
+    [SupportedOSPlatform("linux")]
+    public static string? ResolveCardPciSlot(string? cardPath)
+    {
+        if (!OperatingSystem.IsLinux() || string.IsNullOrEmpty(cardPath))
+            return null;
+        try
+        {
+            var name = Path.GetFileName(cardPath.TrimEnd('/'));
+            return name.Length == 0
+                ? null
+                : File.ResolveLinkTarget($"{DrmRoot}/{name}/device", returnFinalTarget: true)?.Name;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /**
      * 设置里的选卡值 > 适配器: 先按 PCI slot 精确匹配(同名多卡只能这样区分),
      * 再按名字精确匹配, 最后按厂商名包含匹配。
      */

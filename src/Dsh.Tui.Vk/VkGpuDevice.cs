@@ -37,7 +37,10 @@ internal sealed unsafe class VkGpuDevice : IDisposable
 
     public string DeviceName { get; }
 
-    private VkGpuDevice(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue queue, uint family, VkCommandPool pool, string name)
+    /** 该物理设备的 PCI 地址(0000:bb:dd.f); 未启用 VK_EXT_pci_bus_info 或驱动不支持时为 null。 */
+    public string? PciSlot { get; }
+
+    private VkGpuDevice(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue queue, uint family, VkCommandPool pool, string name, string? pciSlot)
     {
         _instance = instance;
         PhysicalDevice = physicalDevice;
@@ -46,6 +49,7 @@ internal sealed unsafe class VkGpuDevice : IDisposable
         GraphicsFamily = family;
         CommandPool = pool;
         DeviceName = name;
+        PciSlot = pciSlot;
     }
 
     public VkDevice Device => _device;
@@ -60,7 +64,8 @@ internal sealed unsafe class VkGpuDevice : IDisposable
         IReadOnlyList<string>? instanceExtensions = null,
         string? deviceNameFilter = null,
         IReadOnlyList<string>? deviceExtensions = null,
-        Func<VkInstance, VkPhysicalDevice, uint, bool>? presentPredicate = null)
+        Func<VkInstance, VkPhysicalDevice, uint, bool>? presentPredicate = null,
+        string? devicePciSlot = null)
     {
         EnsureInitialized();
         // Linux best-effort 环境自愈: 首次创建实例之前跑一次(非 Linux / 已可用时零成本 no-op)。
@@ -72,6 +77,9 @@ internal sealed unsafe class VkGpuDevice : IDisposable
         var portability = OperatingSystem.IsMacOS() && InstanceExtensionSupported("VK_KHR_portability_enumeration");
         if (portability)
             extensions = [.. extensions, "VK_KHR_portability_enumeration"];
+        // 指定了 PCI 槽位就用 VK_EXT_pci_bus_info 精确选卡(同型号多卡靠它区分); 扩展不可用时退化为设备名/自动选择。
+        if (!string.IsNullOrEmpty(devicePciSlot) && InstanceExtensionSupported(VulkanApi.ExtPciBusInfoExtensionName))
+            extensions = [.. extensions, VulkanApi.ExtPciBusInfoExtensionName];
 
         var namePtrs = new byte*[extensions.Length];
         for (var i = 0; i < extensions.Length; i++)
@@ -104,7 +112,7 @@ internal sealed unsafe class VkGpuDevice : IDisposable
 
         try
         {
-            var (physicalDevice, family, name) = PickDevice(instance, deviceNameFilter, presentPredicate);
+            var (physicalDevice, family, name, pciSlot) = PickDevice(instance, deviceNameFilter, devicePciSlot, presentPredicate);
             float priority = 1f;
             var queueInfo = new VkDeviceQueueCreateInfo
             {
@@ -164,7 +172,7 @@ internal sealed unsafe class VkGpuDevice : IDisposable
             VkCommandPool pool;
             Throw(VulkanApi.CreateCommandPool(device, &poolInfo, null, &pool), "vkCreateCommandPool");
 
-            return new VkGpuDevice(instance, physicalDevice, device, queue, family, pool, name);
+            return new VkGpuDevice(instance, physicalDevice, device, queue, family, pool, name, pciSlot);
         }
         catch
         {
@@ -173,9 +181,14 @@ internal sealed unsafe class VkGpuDevice : IDisposable
         }
     }
 
-    private static (VkPhysicalDevice Device, uint Family, string Name) PickDevice(
+    /**
+     * 选物理设备。优先级: PCI 槽位精确匹配(指定了就必须按它选) > 设备名包含匹配 > 第一个有图形队列的设备。
+     * 指定 PCI 但一个都没匹配上时退回"第一个图形设备", 与 GL 侧"选卡不可用就回退扫描"一致, 不硬失败。
+     */
+    private static (VkPhysicalDevice Device, uint Family, string Name, string? PciSlot) PickDevice(
         VkInstance instance,
         string? nameFilter,
+        string? pciSlot,
         Func<VkInstance, VkPhysicalDevice, uint, bool>? presentPredicate)
     {
         uint count = 0;
@@ -186,20 +199,52 @@ internal sealed unsafe class VkGpuDevice : IDisposable
         fixed (VkPhysicalDevice* p = devices)
             Throw(VulkanApi.EnumeratePhysicalDevices(instance, &count, p), "vkEnumeratePhysicalDevices");
 
-        (VkPhysicalDevice Device, uint Family, string Name)? fallback = null;
+        (VkPhysicalDevice Device, uint Family, string Name, string? PciSlot)? fallback = null;
         foreach (var device in devices)
         {
             var name = NameOf(device);
+            var devicePciSlot = PciSlotOf(device);
             var family = FindGraphicsFamily(instance, device, presentPredicate);
             if (family is null)
                 continue;
-            fallback ??= (device, family.Value, name);
+            fallback ??= (device, family.Value, name, devicePciSlot);
+            if (pciSlot is { Length: > 0 })
+            {
+                if (string.Equals(devicePciSlot, pciSlot, StringComparison.OrdinalIgnoreCase))
+                    return (device, family.Value, name, devicePciSlot);
+                continue;
+            }
+
             if (nameFilter is null || name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
-                return (device, family.Value, name);
+                return (device, family.Value, name, devicePciSlot);
         }
 
         return fallback ?? throw new InvalidOperationException("没有支持图形队列的 Vulkan 物理设备");
     }
+
+    /** 读物理设备的 PCI 地址(需实例启用了 VK_EXT_pci_bus_info; 未启用/不支持时返回 null)。 */
+    private static string? PciSlotOf(VkPhysicalDevice device)
+    {
+        var pci = new VkPhysicalDevicePCIBusInfoPropertiesEXT
+        {
+            sType = VkStructureType.StructureTypePhysicalDevicePciBusInfoPropertiesExt,
+        };
+        var properties = new VkPhysicalDeviceProperties2
+        {
+            sType = VkStructureType.StructureTypePhysicalDeviceProperties2,
+            pNext = &pci,
+        };
+        VulkanApi.GetPhysicalDeviceProperties2(device, &properties);
+        var formatted = FormatPciSlot(pci.pciDomain, pci.pciBus, pci.pciDevice, pci.pciFunction);
+        // 扩展没启用时 pci* 全为 0, 格式化出来是 0000:00:00.0 —— 与真实设备不符, 当作"没有"。
+        return formatted == ZeroPciSlot ? null : formatted;
+    }
+
+    /** sysfs(/sys/class/drm/cardN/device)与 VK_EXT_pci_bus_info 都用 0000:bb:dd.f 表示 PCI 地址。 */
+    internal static string FormatPciSlot(uint domain, uint bus, uint device, uint function)
+        => $"{domain:x4}:{bus:x2}:{device:x2}.{function:x}";
+
+    internal const string ZeroPciSlot = "0000:00:00.0";
 
     private static uint? FindGraphicsFamily(
         VkInstance instance,

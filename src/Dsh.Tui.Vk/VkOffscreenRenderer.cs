@@ -62,6 +62,13 @@ internal sealed unsafe class VkOffscreenRenderer : IDisposable
         return new VkOffscreenRenderer(atlas, VkGpuDevice.Create(deviceNameFilter: deviceNameFilter));
     }
 
+    /** 选卡版本: 指定 PCI 槽位(见 VkGpuDevice.FormatPciSlot)在同型号多卡里精确选卡。 */
+    public static VkOffscreenRenderer CreateForCard(GlyphAtlas atlas, string? devicePciSlot)
+    {
+        ArgumentNullException.ThrowIfNull(atlas);
+        return new VkOffscreenRenderer(atlas, VkGpuDevice.Create(devicePciSlot: devicePciSlot));
+    }
+
     /** 全帧渲染给定格栅; 结果像素在 ReadPixels 中读回。 */
     public void Render(CellGrid grid)
     {
