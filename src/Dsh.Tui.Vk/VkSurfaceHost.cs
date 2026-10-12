@@ -16,6 +16,18 @@ namespace Dsh.Tui.Vk;
  */
 internal sealed unsafe class VkSurfaceHost : IGlSurfaceHostRunner, IGpuHostWaker
 {
+    /** SDL 视频后端名: 无显示服务器时用它走 DRM 直连屏(KMS/GBM), 经 VK_KHR_display 建表面。 */
+    internal const string KmsDrmVideoDriver = "kmsdrm";
+
+    private const string VideoDriverHint = "SDL_VIDEO_DRIVER";
+
+    /** SDL 在指定后端失败后仍会继续尝试其它后端, 所以"要 A 却拿到 B"必须显式判定, 否则就是不上屏的静默降级。 */
+    private static void RequireVideoDriver(string requested)
+    {
+        var actual = SDL.SDL3.SDL_GetCurrentVideoDriver();
+        if (!string.Equals(actual, requested, StringComparison.Ordinal))
+            throw new InvalidOperationException($"SDL video driver is '{actual}', not the requested '{requested}'");
+    }
     private static readonly object SdlGate = new();
     private static bool _sdlInitialized;
 
@@ -55,9 +67,20 @@ internal sealed unsafe class VkSurfaceHost : IGlSurfaceHostRunner, IGpuHostWaker
         _vsync = vsync;
     }
 
-    public static VkSurfaceHost Create(string title, int width, int height, string? deviceNameFilter = null, bool hidden = true, bool vsync = true)
+    public static VkSurfaceHost Create(string title, int width, int height, string? deviceNameFilter = null, bool hidden = true, bool vsync = true, string? devicePciSlot = null, string? videoDriver = null, bool fullscreenDesktop = false)
     {
+        // 指定视频后端(如无显示服务器时的 "kmsdrm"): 必须在 SDL 初始化视频子系统之前设置, 否则不生效。
+        if (!string.IsNullOrEmpty(videoDriver))
+            _ = SDL.SDL3.SDL_SetHint(VideoDriverHint, videoDriver);
         EnsureSdl();
+        if (!string.IsNullOrEmpty(videoDriver))
+            RequireVideoDriver(videoDriver);
+        // SDL 的 Vulkan 契约: 先让 SDL 加载 loader, 后续 SDL_Vulkan_*(GetInstanceExtensions/CreateSurface) 才有
+        // 自己的 vkGetInstanceProcAddr。X11/Win32 的表面创建恰好不需要它(直接用 VkInstance), 但 kmsdrm 的
+        // VK_KHR_display 路径必须经 SDL 的 loader 取函数指针 —— 缺了就是"surface 创建失败, 且 SDL 错误串是
+        // 更早的残留错误"; 而 SDL_Vulkan_CreateSurface 只在窗口没带 SDL_WINDOW_VULKAN 时才回头补加载。
+        if (!SDL.SDL3.SDL_Vulkan_LoadLibrary((byte*)null))
+            throw new InvalidOperationException($"SDL_Vulkan_LoadLibrary 失败: {SDL.SDL3.SDL_GetError()}");
         if (!SDL.SDL3.SDL_SetAppMetadata("dsh-tui-vk", "0.1", "dsh"))
             throw new InvalidOperationException($"SDL_SetAppMetadata 失败: {SDL.SDL3.SDL_GetError()}");
 
@@ -67,6 +90,19 @@ internal sealed unsafe class VkSurfaceHost : IGlSurfaceHostRunner, IGpuHostWaker
         var flags = SDL.SDL_WindowFlags.SDL_WINDOW_VULKAN | SDL.SDL_WindowFlags.SDL_WINDOW_RESIZABLE;
         if (hidden)
             flags |= SDL.SDL_WindowFlags.SDL_WINDOW_HIDDEN;
+        if (fullscreenDesktop)
+        {
+            // KMS/DRM 直连屏: 必须用显示器当前模式。否则 SDL 拿调用方给的像素尺寸去找"预定义模式",
+            // 匹配不上、又建不出自定义模式(NVIDIA 不支持), 症状就是 CreateSurface 报
+            // "couldn't find a predefined mode for that window size"。SDL3 的 FULLSCREEN 即"用桌面当前模式"。
+            var mode = SDL.SDL3.SDL_GetDesktopDisplayMode(SDL.SDL3.SDL_GetPrimaryDisplay());
+            if (mode is not null && mode->w > 0 && mode->h > 0)
+            {
+                width = mode->w;
+                height = mode->h;
+            }
+            flags |= SDL.SDL_WindowFlags.SDL_WINDOW_FULLSCREEN;
+        }
         var window = SDL.SDL3.SDL_CreateWindow(title, width, height, flags);
         if (window is null)
             throw new InvalidOperationException($"SDL_CreateWindow 失败: {SDL.SDL3.SDL_GetError()}");
@@ -74,8 +110,10 @@ internal sealed unsafe class VkSurfaceHost : IGlSurfaceHostRunner, IGpuHostWaker
         var extensions = GetInstanceExtensions();
         if (extensions.Length == 0)
         {
+            // 先取错误串: 之后的 SDL 调用(销毁窗口)会覆盖线程级的 SDL 错误状态。
+            var error = SDL.SDL3.SDL_GetError();
             SDL.SDL3.SDL_DestroyWindow(window);
-            throw new InvalidOperationException($"SDL_Vulkan_GetInstanceExtensions 失败: {SDL.SDL3.SDL_GetError()}");
+            throw new InvalidOperationException($"SDL_Vulkan_GetInstanceExtensions 失败: {error}");
         }
 
         VkGpuDevice gpu;
@@ -85,7 +123,8 @@ internal sealed unsafe class VkSurfaceHost : IGlSurfaceHostRunner, IGpuHostWaker
                 extensions,
                 deviceNameFilter,
                 ["VK_KHR_swapchain"],
-                (instance, device, family) => SDL.SDL3.SDL_Vulkan_GetPresentationSupport((SDL.VkInstance_T*)instance.Handle, (SDL.VkPhysicalDevice_T*)device.Handle, family));
+                (instance, device, family) => SDL.SDL3.SDL_Vulkan_GetPresentationSupport((SDL.VkInstance_T*)instance.Handle, (SDL.VkPhysicalDevice_T*)device.Handle, family),
+                devicePciSlot);
         }
         catch
         {
@@ -96,9 +135,13 @@ internal sealed unsafe class VkSurfaceHost : IGlSurfaceHostRunner, IGpuHostWaker
         SDL.VkSurfaceKHR_T* surfacePtr;
         if (!SDL.SDL3.SDL_Vulkan_CreateSurface(window, (SDL.VkInstance_T*)gpu.Instance.Handle, null, &surfacePtr))
         {
+            // 先取错误串(见上): 否则拿到的是销毁窗口时产生的无关错误。设备名与实例扩展一并带上,
+            // 因为 kmsdrm 的 KMS/VK_KHR_display 失败几乎都取决于"哪块 GPU + 启了哪些实例扩展"。
+            var error = SDL.SDL3.SDL_GetError();
             gpu.Dispose();
             SDL.SDL3.SDL_DestroyWindow(window);
-            throw new InvalidOperationException($"SDL_Vulkan_CreateSurface 失败: {SDL.SDL3.SDL_GetError()}");
+            throw new InvalidOperationException(
+                $"SDL_Vulkan_CreateSurface 失败: {error} (device={gpu.DeviceName}; instanceExts={string.Join(',', extensions)})");
         }
 
         return new VkSurfaceHost(window, gpu, new VkSurfaceKHR((ulong)surfacePtr), vsync);
