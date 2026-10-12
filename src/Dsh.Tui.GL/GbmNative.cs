@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 /** libgbm 薄 P/Invoke: 创建 DRM 后备缓冲表面并锁定/释放前台 BO。 */
 internal static class GbmNative

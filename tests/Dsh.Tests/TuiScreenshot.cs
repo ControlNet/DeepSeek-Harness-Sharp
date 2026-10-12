@@ -1,4 +1,5 @@
 using Dsh.Tui;
+using Dsh.Tui.GL;
 using OpenTK.Graphics.OpenGL;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;

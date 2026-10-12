@@ -1,6 +1,8 @@
 using OpenTK.Graphics.OpenGL;
+// 本命名空间末段就叫 GL, 裸名 `GL` 会被它遮蔽; 用别名 GlApi 引用 OpenTK 的静态绑定类(与 Vk 侧 VulkanApi 同形)。
+using GlApi = OpenTK.Graphics.OpenGL.GL;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 /**
  * 无头 GL 上下文(压测/CI): Windows 或有显示服务器走隐藏 GLFW 窗口(WGL/GLX 经驱动路由选卡), Linux 真无头走 EGL pbuffer。
@@ -29,7 +31,7 @@ public sealed class HeadlessGl : IDisposable
         {
             var window = new GlfwWindowHost(width, height, visible: false, title: "dsh-headless-bench");
             window.MakeCurrent();
-            var renderer = GL.GetString(StringName.Renderer) ?? "";
+            var renderer = GlApi.GetString(StringName.Renderer) ?? "";
             return new HeadlessGl(window, renderer, [$"GLFW: {renderer}"]);
         }
         var pbuffer = EglPbufferHost.Create(width, height);

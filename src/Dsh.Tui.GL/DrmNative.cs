@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 /** libdrm 薄 P/Invoke: 只用 legacy KMS(GetResources/SetCrtc/PageFlip/AddFB2) 与 master 切换, 不做 atomic。 */
 internal static class DrmNative

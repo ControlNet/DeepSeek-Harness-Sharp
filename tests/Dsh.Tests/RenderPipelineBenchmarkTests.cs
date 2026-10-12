@@ -4,6 +4,7 @@ using Dsh.Core;
 using Dsh.Runtime;
 using Dsh.PtyTerminal;
 using Dsh.Tui;
+using Dsh.Tui.GL;
 using OpenTK.Graphics.OpenGL;
 
 namespace Dsh.Tests;

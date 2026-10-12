@@ -2,8 +2,10 @@ using System.Runtime.InteropServices;
 using OpenTK.Graphics;
 using OpenTK.Graphics.Egl;
 using OpenTK.Graphics.OpenGL;
+// 本命名空间末段就叫 GL, 裸名 `GL` 会被它遮蔽; 用别名 GlApi 引用 OpenTK 的静态绑定类(与 Vk 侧 VulkanApi 同形)。
+using GlApi = OpenTK.Graphics.OpenGL.GL;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 /**
  * 无头 EGL pbuffer 宿主: Linux 无显示服务器时用 EGL 平台设备枚举选卡, 建 pbuffer 供压测/CI 真无头渲染。
@@ -119,7 +121,7 @@ public sealed class EglPbufferHost : IGlSurfaceHost
     public void Present()
     {
         // pbuffer 没有可呈现表面: 提交命令保证后续 ReadPixels 能读回最新帧。
-        GL.Flush();
+        GlApi.Flush();
     }
 
     public void Dispose()
@@ -197,7 +199,7 @@ public sealed class EglPbufferHost : IGlSurfaceHost
                     return null;
                 }
                 GLLoader.LoadBindings(new EglBindingsContext());
-                var renderer = GL.GetString(OpenTK.Graphics.OpenGL.StringName.Renderer) ?? "";
+                var renderer = GlApi.GetString(OpenTK.Graphics.OpenGL.StringName.Renderer) ?? "";
                 return new EglCandidate(display, configs[0], context, probeSurface, renderer);
             }
             catch (Exception error)

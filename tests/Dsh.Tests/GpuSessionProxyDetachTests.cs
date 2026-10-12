@@ -105,7 +105,14 @@ public sealed class GpuSessionProxyDetachTests
     {
         try
         {
-            return GpuHostFactory.CreateWindowHost(atlas, hidden: true);
+            return GpuHostFactory.CreateWindowHostForBackend(
+                TuiGpuBackend.Gl,
+                atlas,
+                gpuCard: null,
+                preferredCard: null,
+                hidden: true,
+                vsync: true,
+                headlessCapture: false);
         }
         catch (InvalidOperationException error)
         {

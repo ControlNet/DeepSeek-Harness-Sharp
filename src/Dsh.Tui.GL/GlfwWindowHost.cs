@@ -3,7 +3,7 @@ using OpenTK.Windowing.Common;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 /** 窗口形态宿主: GLFW 窗口 + GL 上下文 + 交换缓冲, 由 GLFW 事件驱动帧循环与输入。 */
 public sealed class GlfwWindowHost : IGlSurfaceHostRunner
@@ -22,6 +22,9 @@ public sealed class GlfwWindowHost : IGlSurfaceHostRunner
         _window = CreateWindow(clientWidth, clientHeight, visible, title);
         HookEvents();
     }
+
+    /** 与宿主共享 GL 上下文/交换链的渲染核心: GL 后端的 ITuiSurfaceBackend 适配器。 */
+    public ITuiSurfaceBackend CreateRenderCore(GlyphAtlas atlas) => new GlSurfaceBackend(new GpuRenderCore());
 
     public (int Width, int Height) Size
     {

@@ -3,7 +3,7 @@ using Microsoft.Win32.SafeHandles;
 using OpenTK.Graphics;
 using OpenTK.Graphics.Egl;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 /**
  * 裸 TTY GBM/KMS 宿主: 无显示服务器时接管 DRM CRTC 直接上屏, 键盘/鼠标走 evdev。
@@ -13,6 +13,9 @@ namespace Dsh.Tui;
  */
 internal sealed class EglGbmKmsHost : IGlSurfaceHostRunner
 {
+    /** 与宿主共享 GL 上下文/交换链的渲染核心(GBM 表面)。 */
+    public ITuiSurfaceBackend CreateRenderCore(GlyphAtlas atlas) => new GlSurfaceBackend(new GpuRenderCore());
+
     private const int EglPlatformGbmMesa = 0x31D7;
     private const string DrmDeviceRoot = "/dev/dri";
     private const string DrmCardName = "card";

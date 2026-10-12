@@ -1,6 +1,6 @@
 using Microsoft.Win32.SafeHandles;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 internal enum EvdevEventKind
 {

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\Dsh.Plugins.Generator\DshPluginPackage.props" />
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dsh.Tui\Dsh.Tui.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- OpenGL / GLFW / EGL 绑定(含各 RID 的原生 GLFW); 只有本程序集需要, Dsh.Tui 不再依赖 OPENGL 相关包。 -->
+    <PackageReference Include="OpenTK" Version="5.0.0-pre.16" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Dsh.Tests 直接用 HeadlessGl/GpuRenderCore/EglGbmKmsHost.NormalizeCardPath 做 GL 渲染与选卡用例。 -->
+    <InternalsVisibleTo Include="Dsh.Tests" />
+    <InternalsVisibleTo Include="vk-tui-smoke" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);CS0618</NoWarn>
+  </PropertyGroup>
+
+</Project>

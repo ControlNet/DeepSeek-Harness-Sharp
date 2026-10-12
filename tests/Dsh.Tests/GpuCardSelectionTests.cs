@@ -1,4 +1,5 @@
 using Dsh.Tui;
+using Dsh.Tui.GL;
 using Xunit;
 
 namespace Dsh.Tests;

@@ -1,6 +1,8 @@
 using OpenTK.Graphics.OpenGL;
+// 本命名空间末段就叫 GL, 裸名 `GL` 会被它遮蔽; 用别名 GlApi 引用 OpenTK 的静态绑定类(与 Vk 侧 VulkanApi 同形)。
+using GlApi = OpenTK.Graphics.OpenGL.GL;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 /**
  * GL 后端适配器: 把既有 GpuRenderCore 的 GL 调用映射到 ITuiSurfaceBackend, GpuRenderCore 本身不改。
@@ -8,9 +10,9 @@ namespace Dsh.Tui;
  */
 internal sealed class GlSurfaceBackend(GpuRenderCore core) : ITuiSurfaceBackend
 {
-    public string DeviceInfo => $"gl: {GL.GetString(StringName.Renderer)} ({GL.GetString(StringName.Version)})";
+    public string DeviceInfo => $"gl: {GlApi.GetString(StringName.Renderer)} ({GlApi.GetString(StringName.Version)})";
 
-    public bool ContextLost => (All)GL.GetError() == All.ContextLost;
+    public bool ContextLost => (All)GlApi.GetError() == All.ContextLost;
 
     public void Initialize(GlyphAtlas atlas) => core.Initialize(atlas);
 
@@ -24,11 +26,11 @@ internal sealed class GlSurfaceBackend(GpuRenderCore core) : ITuiSurfaceBackend
 
     public void RenderFrame(GlyphAtlas atlas, int gridWidth, int gridHeight) => core.RenderFrame(atlas, gridWidth, gridHeight);
 
-    public void Resize(int pixelWidth, int pixelHeight) => GL.Viewport(0, 0, pixelWidth, pixelHeight);
+    public void Resize(int pixelWidth, int pixelHeight) => GlApi.Viewport(0, 0, pixelWidth, pixelHeight);
 
     public bool TryReadPixels(Span<byte> destination, int width, int height)
     {
-        GL.ReadPixels(0, 0, width, height, PixelFormat.Rgba, PixelType.UnsignedByte, destination);
+        GlApi.ReadPixels(0, 0, width, height, PixelFormat.Rgba, PixelType.UnsignedByte, destination);
         return true;
     }
 

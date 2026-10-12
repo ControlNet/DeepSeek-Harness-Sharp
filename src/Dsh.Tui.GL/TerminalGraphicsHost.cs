@@ -1,7 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 /**
  * 无显示服务器且无 DRM 时的 GPU 宿主: 用 EGL pbuffer 离屏渲染(可用文末 GPU, 不需要 /dev/dri),
@@ -10,6 +10,9 @@ namespace Dsh.Tui;
  */
 internal sealed class TerminalGraphicsHost : IGlSurfaceHostRunner
 {
+    /** 与宿主共享 GL 上下文/交换链的渲染核心(EGL pbuffer)。 */
+    public ITuiSurfaceBackend CreateRenderCore(GlyphAtlas atlas) => new GlSurfaceBackend(new GpuRenderCore());
+
     private readonly int _cellWidth;
     private readonly int _cellHeight;
     private readonly TerminalGraphicsProtocol _protocol;

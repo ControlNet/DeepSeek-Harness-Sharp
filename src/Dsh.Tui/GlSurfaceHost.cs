@@ -1,8 +1,8 @@
 namespace Dsh.Tui;
 
 /**
- * GL 表面/上下文宿主: 只负责"让当前 GL 上下文可渲染"与"呈现一帧", 以及后端帧缓冲尺寸。
- * 对当前 GL 上下文的绘制逻辑全部在 GpuRenderCore, 与宿主无关; 换宿主不改渲染核心。
+ * GL 表面/上下文宿主契约: 只负责"让当前 GL 上下文可渲染"与"呈现一帧", 以及后端帧缓冲尺寸。
+ * 对当前 GL 上下文的绘制逻辑全在 GL 后端的渲染核心里(见 Dsh.Tui.GL 的 GpuRenderCore), 与宿主无关; 换宿主不改渲染核心。
  */
 public interface IGlSurfaceHost : IDisposable
 {
@@ -71,10 +71,11 @@ public interface IGlSurfaceHostRunner : IGlSurfaceHost
     string? ReadClipboard();
 
     /**
-     * 创建本宿主的渲染核心(与宿主共享上下文/交换链)。默认给 GL 宿主: 独立 GpuRenderCore 的适配器;
-     * Vk 宿主覆写为共享交换链的 VkRenderCore。
+     * 创建本宿主的渲染核心(与宿主共享上下文/交换链)。
+     * Vk 宿主给共享交换链的 VkRenderCore; GL 宿主(Dsh.Tui.GL)给 GpuRenderCore 的适配器 ——
+     * 因此这里不提供默认实现: 任何宿主都必须指出自己用哪个后端渲染。
      */
-    ITuiSurfaceBackend CreateRenderCore(GlyphAtlas atlas) => new GlSurfaceBackend(new GpuRenderCore());
+    ITuiSurfaceBackend CreateRenderCore(GlyphAtlas atlas);
 
     /** 调整像素尺寸(窗口形态用于复现 resize; 其他宿主默认忽略)。 */
     void Resize(int pixelWidth, int pixelHeight)

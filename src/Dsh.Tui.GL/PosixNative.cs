@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 /** 裸 TTY 路径要用的 libc 原语: poll / ioctl / read 与 VT 控制台 ioctl 的结构体。 */
 internal static class PosixNative

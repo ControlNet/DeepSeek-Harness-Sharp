@@ -2,7 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
-namespace Dsh.Tui;
+namespace Dsh.Tui.GL;
 
 /**
  * VT 控制台接管: KD_GRAPHICS 停掉内核控制台绘制, K_OFF 防按键漏进 VT 行律,
