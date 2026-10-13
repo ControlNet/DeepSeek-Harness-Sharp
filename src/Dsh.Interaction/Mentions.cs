@@ -4,10 +4,10 @@ using Dsh.Core;
 
 namespace Dsh.Interaction;
 
-public sealed record MentionSessionInfo(string Id, string? Title, string? Summary)
+public sealed record MentionSessionInfo(string Id, string? Title, string? Summary, long CreatedAt = 0)
 {
     public static MentionSessionInfo FromSnapshot(SessionPersistenceSnapshot snapshot)
-        => new(snapshot.Header.Id.Value, snapshot.Header.Title, null);
+        => new(snapshot.Header.Id.Value, snapshot.Header.Title, null, snapshot.Header.CreatedAt);
 }
 
 /** `@` 引用的解析: 会话 id/标题优先, 否则按 cwd 匹配文件系统条目; 选中后展开为带边界的文本块。 */

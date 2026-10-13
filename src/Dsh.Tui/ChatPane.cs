@@ -225,7 +225,7 @@ public sealed class ChatPane : ITuiPane
             {
                 if (DeleteConfirmSessionId is null)
                 {
-                    var candidate = CommandMenu.Candidates.ElementAtOrDefault(CommandMenu.SelectedIndex);
+                    var candidate = CommandMenu.CandidateValues.ElementAtOrDefault(CommandMenu.SelectedIndex);
                     if (candidate is not null)
                     {
                         DeleteConfirmSessionId = candidate;
@@ -640,9 +640,10 @@ public sealed class ChatPane : ITuiPane
         if (CommandMenu?.IsActive == true)
         {
             // 参数阶段画"说明 + 候选"面板; 命令/子命令阶段只在有候选时画列表(无候选不画空浮层)。
+            // 有说明行时也要把候选的解说词传进去(如 /session 候选右侧的"带时区时间戳")。
             var headers = CommandMenuPanelLines();
             if (headers.Count > 0)
-                PopupList.Draw(grid, rect, CommandMenuTitle(), headers, CommandMenu.Candidates, CommandMenu.SelectedIndex);
+                PopupList.Draw(grid, rect, CommandMenuTitle(), headers, CommandMenu.Candidates, CommandMenu.SelectedIndex, CommandMenu.CandidateDescriptions);
             else if (CommandMenu.Candidates.Count > 0)
                 PopupList.Draw(grid, rect, CommandMenuTitle(), [], CommandMenu.Candidates, CommandMenu.SelectedIndex, CommandMenu.CandidateDescriptions);
             return;
@@ -1088,7 +1089,7 @@ public sealed class ChatPane : ITuiPane
         return new CommandMenuState(descriptors, CommandCandidates);
     }
 
-    private IReadOnlyList<string> CommandCandidates(
+    private IReadOnlyList<CommandCandidate> CommandCandidates(
         CommandDescriptor command,
         CommandDescriptor? subcommand,
         CommandArgumentSchema? schema)
@@ -1099,7 +1100,7 @@ public sealed class ChatPane : ITuiPane
             if (string.Equals(command.Name, "provider", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(subcommand?.Name, "add", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(schema?.Name, "name", StringComparison.OrdinalIgnoreCase))
-                return [.. _window.ProviderCatalogCandidates, .. ProviderTypes.All];
+                return Candidates([.. _window.ProviderCatalogCandidates, .. ProviderTypes.All]);
 
             // 有子命令时按子命令名给候选(如 provider remove), 否则按命令名。
             var descriptor = subcommand ?? command;
@@ -1107,23 +1108,23 @@ public sealed class ChatPane : ITuiPane
             return schema?.Name switch
             {
                 // provider 的 --type 候选按已注册适配器动态取(插件启用/停用后依然正确)。
-                "type" => KnownProviderTypes(),
-                "action" when string.Equals(descriptor.Name, "timestamp", StringComparison.OrdinalIgnoreCase) => ["jump", "revert", "fork"],
-                "seq" when string.Equals(descriptor.Name, "timestamp", StringComparison.OrdinalIgnoreCase) => _window.TimestampCandidates(),
+                "type" => Candidates([.. KnownProviderTypes()]),
+                "action" when string.Equals(descriptor.Name, "timestamp", StringComparison.OrdinalIgnoreCase) => Candidates("jump", "revert", "fork"),
+                "seq" when string.Equals(descriptor.Name, "timestamp", StringComparison.OrdinalIgnoreCase) => Candidates(_window.TimestampCandidates()),
                 _ => descriptor.Name switch
-            {
-                "model" => settings.Providers
-                    .OrderBy(entry => entry.Key, StringComparer.Ordinal)
-                    .SelectMany(entry => entry.Value.Models.Keys
-                        .OrderBy(model => model, StringComparer.Ordinal)
-                        .Select(model => $"{entry.Key}/{model}"))
-                    .ToList(),
-                "remove" => settings.Providers.Keys.OrderBy(name => name, StringComparer.Ordinal).ToList(),
-                "session" => _window.CurrentSessions().Select(session => session.Id).ToList(),
-                "skill" => _window.SkillCandidates,
-                "reasoning" => ReasoningEffortCandidates(),
-                "gpu" => GpuCatalog.SelectionLabels(),
-                _ => [],
+                {
+                    "model" => Candidates([.. settings.Providers
+                        .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+                        .SelectMany(entry => entry.Value.Models.Keys
+                            .OrderBy(model => model, StringComparer.Ordinal)
+                            .Select(model => $"{entry.Key}/{model}"))]),
+                    "remove" => Candidates([.. settings.Providers.Keys.OrderBy(name => name, StringComparer.Ordinal)]),
+                    // 显示"会话标题 + 带时区的时间戳", 但写入的是会话 id(标题可能为空或重复, 不能当值用)。
+                    "session" => _window.SessionCandidates(),
+                    "skill" => Candidates(_window.SkillCandidates),
+                    "reasoning" => Candidates(ReasoningEffortCandidates()),
+                    "gpu" => Candidates(GpuCatalog.SelectionLabels()),
+                    _ => [],
                 },
             };
         }
@@ -1132,6 +1133,10 @@ public sealed class ChatPane : ITuiPane
             return [];
         }
     }
+
+    /** 参数候选的默认包装: 值即标签(没有单独显示文本的场合)。 */
+    private static IReadOnlyList<CommandCandidate> Candidates(params IReadOnlyList<string> values)
+        => [.. values.Select(value => new CommandCandidate(value, value))];
 
     private IReadOnlyList<string> KnownProviderTypes()
     {

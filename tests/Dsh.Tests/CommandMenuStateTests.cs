@@ -17,6 +17,10 @@ public class CommandMenuStateTests
         ]),
     ];
 
+    /** 值即标签的参数候选(没有单独显示文本的场合)。 */
+    private static IReadOnlyList<CommandCandidate> Candidates(params string[] values)
+        => [.. values.Select(value => new CommandCandidate(value, value))];
+
     [Fact]
     public void Slash_Shows_All_Commands()
     {
@@ -79,7 +83,7 @@ public class CommandMenuStateTests
     {
         var state = new CommandMenuState(
             Commands,
-            (_, subcommand, _) => subcommand?.Name == "remove" ? ["alpha", "beta"] : []);
+            (_, subcommand, _) => subcommand?.Name == "remove" ? Candidates("alpha", "beta") : []);
         state.ApplyInput("/provider");
         state.Confirm();
         state.ApplyInput("/provider remove");
@@ -98,7 +102,7 @@ public class CommandMenuStateTests
         var state = new CommandMenuState(
             Commands,
             (descriptor, _, _) => descriptor.Name == "model"
-                ? ["deepseek/deepseek-v4", "openai/gpt-5"]
+                ? Candidates("deepseek/deepseek-v4", "openai/gpt-5")
                 : []);
         state.ApplyInput("/model");
         state.Confirm();
@@ -114,7 +118,7 @@ public class CommandMenuStateTests
     {
         var state = new CommandMenuState(
             Commands,
-            (_, subcommand, _) => subcommand?.Name == "remove" ? ["alpha"] : []);
+            (_, subcommand, _) => subcommand?.Name == "remove" ? Candidates("alpha") : []);
         state.ApplyInput("/provider");
         state.Confirm();
         state.ApplyInput("/provider remove");
@@ -207,7 +211,7 @@ public class CommandMenuStateTests
     {
         var descriptors = CommandMenuCatalog.Enrich([new CommandDescriptor("provider", "Manage providers")]);
         var state = new CommandMenuState(descriptors, (_, _, schema) =>
-            string.Equals(schema?.Name, "name", StringComparison.Ordinal) ? ["302ai", "acme", "zhipuai"] : []);
+            string.Equals(schema?.Name, "name", StringComparison.Ordinal) ? Candidates("302ai", "acme", "zhipuai") : []);
 
         state.ApplyInput("/provider");
         state.Confirm();
@@ -268,7 +272,7 @@ public class CommandMenuStateTests
     {
         var descriptors = CommandMenuCatalog.Enrich([new CommandDescriptor("reasoning", "Show or set reasoning effort")]);
         var state = new CommandMenuState(descriptors,
-            (descriptor, _, _) => descriptor.Name == "reasoning" ? ["low", "high"] : []);
+            (descriptor, _, _) => descriptor.Name == "reasoning" ? Candidates("low", "high") : []);
 
         state.ApplyInput("/reasoning");
         Assert.Null(state.Confirm());
@@ -285,7 +289,7 @@ public class CommandMenuStateTests
     {
         var descriptors = CommandMenuCatalog.Enrich([new CommandDescriptor("skill", "List or inspect a skill")]);
         var state = new CommandMenuState(descriptors,
-            (descriptor, _, _) => descriptor.Name == "skill" ? ["review-code", "ship-it"] : []);
+            (descriptor, _, _) => descriptor.Name == "skill" ? Candidates("review-code", "ship-it") : []);
 
         state.ApplyInput("/skill");
         Assert.Null(state.Confirm());
@@ -296,12 +300,39 @@ public class CommandMenuStateTests
         Assert.Equal("/skill ship-it", state.Confirm());
     }
 
+    /**
+     * 参数候选的显示文本与写入值可以不同: 浮层用 Label(如会话标题), 确认写入的是 Value(会话 id),
+     * 右侧解说词用 Description(如带时区的时间戳); 筛选同时匹配 Label 与 Value。
+     */
+    [Fact]
+    public void Argument_Candidate_Keeps_Display_Label_Separate_From_Value()
+    {
+        var descriptors = CommandMenuCatalog.Enrich([new CommandDescriptor("session", "List or delete persistent sessions")]);
+        var state = new CommandMenuState(descriptors, (descriptor, _, _) => descriptor.Name == "session"
+            ?
+            [
+                new CommandCandidate("session-aaa", "切换C盘根目录", "2026-10-13 15:54 +08:00"),
+                new CommandCandidate("session-bbb", "(未命名)", "2026-10-12 09:01 +08:00"),
+            ]
+            : []);
+
+        state.ApplyInput("/session ");
+        Assert.Equal(["切换C盘根目录", "(未命名)"], state.Candidates);
+        Assert.Equal(["session-aaa", "session-bbb"], state.CandidateValues);
+        Assert.Equal("2026-10-13 15:54 +08:00", state.CandidateDescriptions[0]);
+
+        // 输入 id 前缀也能筛出来(值参与匹配), 但确认写入的仍是 id。
+        state.ApplyInput("/session session-b");
+        Assert.Equal(["(未命名)"], state.Candidates);
+        Assert.Equal("/session session-bbb", state.Confirm());
+    }
+
     [Fact]
     public void Session_Menu_Lists_Injected_Session_Ids()
     {
         var descriptors = CommandMenuCatalog.Enrich([new CommandDescriptor("session", "List or delete persistent sessions")]);
         var state = new CommandMenuState(descriptors,
-            (descriptor, _, _) => descriptor.Name == "session" ? ["session-aaa", "session-bbb"] : []);
+            (descriptor, _, _) => descriptor.Name == "session" ? Candidates("session-aaa", "session-bbb") : []);
 
         state.ApplyInput("/session ");
         Assert.Equal(CommandMenuState.MenuStage.Argument, state.Stage);
@@ -316,7 +347,7 @@ public class CommandMenuStateTests
     {
         var descriptors = CommandMenuCatalog.Enrich([new CommandDescriptor("model", "List or switch model")]);
         var state = new CommandMenuState(descriptors,
-            (_, _, _) => Enumerable.Range(0, 500).Select(index => $"provider/m{index:000}").ToList());
+            (_, _, _) => Candidates([.. Enumerable.Range(0, 500).Select(index => $"provider/m{index:000}")]));
 
         state.ApplyInput("/model");
         state.Confirm();

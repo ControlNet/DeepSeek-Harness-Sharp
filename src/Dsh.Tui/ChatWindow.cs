@@ -970,7 +970,7 @@ public sealed class ChatWindow : IDisposable
         {
             if (agent.Session.Header.IsSubagent)
                 continue;
-            var info = new MentionSessionInfo(agent.Id.ToString(), agent.Session.Header.Title, null);
+            var info = new MentionSessionInfo(agent.Id.ToString(), agent.Session.Header.Title, null, agent.Session.Header.CreatedAt);
             if (seen.Add(info.Id))
                 result.Add(info);
         }
@@ -1207,6 +1207,23 @@ public sealed class ChatWindow : IDisposable
         string Description,
         Func<ChatPane, string, Task> Run,
         IReadOnlyList<CommandArgumentSchema>? ArgumentSchemas = null);
+
+    /**
+     * `/session` 浮层候选: 显示"会话标题 + 带时区的时间戳", **写入的是会话 id**
+     * (标题可能为空或重复, 拿它当值会让命令选错会话); 空标题退回用 id 显示。
+     */
+    internal IReadOnlyList<CommandCandidate> SessionCandidates()
+        => [.. CurrentSessions().Select(session => new CommandCandidate(
+            session.Id,
+            string.IsNullOrWhiteSpace(session.Title) ? session.Id : session.Title,
+            SessionTimestamp(session.CreatedAt)))];
+
+    /** 会话创建时间戳(本地时区 + 偏移, 如 `2026-10-13 15:54 +08:00`); 未知(旧日志没有该字段)时返回 null 不显示。 */
+    internal static string? SessionTimestamp(long createdAtEpochMilliseconds)
+        => createdAtEpochMilliseconds > 0
+            ? DateTimeOffset.FromUnixTimeMilliseconds(createdAtEpochMilliseconds).ToLocalTime()
+                .ToString("yyyy-MM-dd HH:mm zzz", CultureInfo.InvariantCulture)
+            : null;
 
     /** `/timestamp seq` 的 seq 候选: 本会话里用户自己发的消息; 显示为可读预览(#seq 前缀供解析回 seq)。 */
     internal IReadOnlyList<string> TimestampCandidates()

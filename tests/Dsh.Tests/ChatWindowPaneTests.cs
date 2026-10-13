@@ -666,6 +666,44 @@ public sealed class ChatWindowPaneTests : IDisposable
         }
     }
 
+    /** `/session` 浮层里每一项都要能看到带时区的时间戳(参数面板分支也必须把解说词画出来)。 */
+    [Fact]
+    public async Task Session_Menu_Shows_Offset_Timestamp_Next_To_Title()
+    {
+        var (chat, _, _, _, _) = await CreateChatWithTwoAgents();
+        // 单窗格: 浮层才能拿到整幅宽度, 时间戳(含时区偏移)才不会被截断。
+        Assert.True(chat.CloseFocusedPane());
+        var layout = LayoutEngine.Calculate(160, 40);
+        _ = DrawFrameReturningGrid(chat, layout);
+
+        Type(chat, "/session ");
+        chat.DrainUi();
+        var frame = DrawFrame(chat);
+
+        Assert.Contains("/session", frame);
+        Assert.Matches(@"\d{4}-\d{2}-\d{2} \d{2}:\d{2} [+-]\d{2}:\d{2}", frame);
+        chat.Dispose();
+    }
+
+    /** `/session` 浮层候选: 显示"会话标题 + 带时区的时间戳", 写入值仍是会话 id(标题可能为空或重复)。 */
+    [Fact]
+    public async Task Session_Candidates_Show_Title_And_Offset_Timestamp()
+    {
+        var (chat, _, _, first, _) = await CreateChatWithTwoAgents();
+        var candidates = chat.SessionCandidates();
+        Assert.NotEmpty(candidates);
+        var candidate = Assert.Single(candidates, entry => entry.Value == first.Id.Value);
+        // 无标题时用 id 兜底显示; 时间戳必须带时区偏移。
+        Assert.False(string.IsNullOrWhiteSpace(candidate.Label));
+        Assert.Matches(@"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} [+-]\d{2}:\d{2}$", candidate.Description);
+        // 未知时间(旧日志没有 createdAt)时不显示, 免得出现 1970-01-01。
+        Assert.Matches(
+            @"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} [+-]\d{2}:\d{2}$",
+            ChatWindow.SessionTimestamp(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        Assert.Null(ChatWindow.SessionTimestamp(0));
+        chat.Dispose();
+    }
+
     /** 总览里被选中那一行的文本(PopupList 用 Highlight 背景标记选中项)。 */
     private static string SelectedOverviewLine(ChatWindow chat)
     {

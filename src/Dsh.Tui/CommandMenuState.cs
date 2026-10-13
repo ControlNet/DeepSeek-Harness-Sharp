@@ -2,6 +2,12 @@ using Dsh.Interaction;
 
 namespace Dsh.Tui;
 
+/**
+ * 参数候选: Value 是要写进输入行的值(必须能被命令解析, 如会话 id),
+ * Label 是浮层里显示给用户看的文本(如"会话标题"), Description 是浮层右侧的解说词(如带时区的时间戳)。
+ */
+public readonly record struct CommandCandidate(string Value, string Label, string? Description = null);
+
 public sealed class CommandMenuState
 {
     public enum MenuStage
@@ -12,10 +18,10 @@ public sealed class CommandMenuState
     }
 
     private readonly IReadOnlyList<CommandDescriptor> _commands;
-    private readonly Func<CommandDescriptor, CommandDescriptor?, CommandArgumentSchema?, IReadOnlyList<string>>? _candidateProvider;
+    private readonly Func<CommandDescriptor, CommandDescriptor?, CommandArgumentSchema?, IReadOnlyList<CommandCandidate>>? _candidateProvider;
     private IReadOnlyList<CommandDescriptor> _rootFiltered = [];
     private IReadOnlyList<CommandDescriptor> _subFiltered = [];
-    private IReadOnlyList<string> _argumentCandidates = [];
+    private IReadOnlyList<CommandCandidate> _argumentCandidates = [];
     private IReadOnlyList<CommandArgumentSchema> _argumentSchemas = [];
     private readonly List<string> _argumentValues = [];
     private readonly List<string?> _argumentPrefills = [];
@@ -27,7 +33,7 @@ public sealed class CommandMenuState
 
     public CommandMenuState(
         IReadOnlyList<CommandDescriptor> commands,
-        Func<CommandDescriptor, CommandDescriptor?, CommandArgumentSchema?, IReadOnlyList<string>>? candidateProvider = null)
+        Func<CommandDescriptor, CommandDescriptor?, CommandArgumentSchema?, IReadOnlyList<CommandCandidate>>? candidateProvider = null)
     {
         _commands = commands;
         _candidateProvider = candidateProvider;
@@ -42,7 +48,7 @@ public sealed class CommandMenuState
     {
         MenuStage.Root => [.. _rootFiltered.Select(command => command.Name)],
         MenuStage.Subcommand => [.. _subFiltered.Select(command => command.Name)],
-        MenuStage.Argument => _argumentCandidates,
+        MenuStage.Argument => [.. _argumentCandidates.Select(candidate => candidate.Label)],
         _ => [],
     };
 
@@ -51,8 +57,16 @@ public sealed class CommandMenuState
     {
         MenuStage.Root => [.. _rootFiltered.Select(command => command.Description)],
         MenuStage.Subcommand => [.. _subFiltered.Select(command => command.Description)],
+        MenuStage.Argument => _argumentCandidates.Any(candidate => !string.IsNullOrEmpty(candidate.Description))
+            ? [.. _argumentCandidates.Select(candidate => candidate.Description ?? "")]
+            : [],
         _ => [],
     };
+
+    /** 参数候选要写入输入行的值(与 Candidates 对齐): 显示可以是标题, 写入的必须是能被命令解析的值。 */
+    public IReadOnlyList<string> CandidateValues => Stage == MenuStage.Argument
+        ? [.. _argumentCandidates.Select(candidate => candidate.Value)]
+        : Candidates;
 
     public int SelectedIndex { get; private set; }
 
@@ -207,7 +221,7 @@ public sealed class CommandMenuState
     {
         if (_query.Length > 0)
         {
-            SetValue(_argumentIndex, _argumentCandidates.Count > 0 ? _argumentCandidates[SelectedIndex] : _query);
+            SetValue(_argumentIndex, _argumentCandidates.Count > 0 ? _argumentCandidates[SelectedIndex].Value : _query);
             return;
         }
 
@@ -425,13 +439,13 @@ public sealed class CommandMenuState
             return false;
         string value;
         if (_query.Length > 0)
-            value = _argumentCandidates.Count > 0 ? _argumentCandidates[SelectedIndex] : _query;
+            value = _argumentCandidates.Count > 0 ? _argumentCandidates[SelectedIndex].Value : _query;
         else if (RecordedValue(_argumentIndex) is { } recorded)
             value = recorded;
         else if (PrefilledValue(_argumentIndex) is { Length: > 0 } prefill)
             value = prefill;
         else if (_argumentCandidates.Count > 0)
-            value = _argumentCandidates[SelectedIndex];
+            value = _argumentCandidates[SelectedIndex].Value;
         else if (schema.Required)
             return false;
         else
@@ -592,9 +606,13 @@ public sealed class CommandMenuState
         else
         {
             var provided = _candidateProvider?.Invoke(_command!, _subcommand, schema);
-            var pool = provided is { Count: > 0 } ? provided : schema.Choices ?? [];
+            // 没有候选提供者时回退到 schema 里的 Choices(值即标签)。
+            var pool = provided is { Count: > 0 }
+                ? provided
+                : [.. (schema.Choices ?? []).Select(choice => new CommandCandidate(choice, choice))];
             _argumentCandidates = pool
-                .Where(candidate => candidate.Contains(_query, StringComparison.OrdinalIgnoreCase))
+                .Where(candidate => candidate.Label.Contains(_query, StringComparison.OrdinalIgnoreCase)
+                    || candidate.Value.Contains(_query, StringComparison.OrdinalIgnoreCase))
                 .ToList();
         }
         SelectedIndex = 0;
@@ -611,7 +629,7 @@ public sealed class CommandMenuState
             return;
         for (var index = 0; index < _argumentCandidates.Count; index++)
         {
-            if (!string.Equals(_argumentCandidates[index], value, StringComparison.Ordinal))
+            if (!string.Equals(_argumentCandidates[index].Value, value, StringComparison.Ordinal))
                 continue;
             SelectedIndex = index;
             return;
