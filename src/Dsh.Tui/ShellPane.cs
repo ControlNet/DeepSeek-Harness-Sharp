@@ -4,14 +4,20 @@ using Dsh.Core;
 namespace Dsh.Tui;
 
 /**
- * shell 窗格: 把 Dsh.Pty 的真 shell 会话渲染成窗格内容, 键盘输入原样写给 PTY。
- * 与 ChatPane(agent 会话)并列放进分割树: 有 shell 焦点时按键不再进 AI 输入行, 行为对齐 tmux 的 "焦点在终端里"。
+ * 终端窗格: 把 Dsh.Pty 的会话渲染成窗格内容, 键盘输入原样写给 PTY。
+ * 底层既可以是本进程的 shell 会话, 也可以是 daemon pty 的窗格级订阅(跨进程远程), 见 ITerminalBacking。
+ * 与 ChatPane(agent 会话)并列放进分割树: 有终端焦点时按键不再进 AI 输入行, 行为对齐 tmux 的 "焦点在终端里"。
+ *
+ * 另外它还承载"某个 pty 这一层"的视图(layerPtyId 非空): 树是 pty > session > pane, pty 是 session 的上一层,
+ * 进入 pty 就是进入这一层 —— 内容是一个能跑普通命令的真终端, 而 Ctrl+X 仍归 DSH(与 tmux 空 session 同形)。
+ * 这一层可能拉不起 shell(受限环境/GPU 模式等): 此时 backing 为 null, 窗格只剩状态行, 但按键照常走 ChatWindow,
+ * 因此 Ctrl+X 快捷键依旧可用。
  */
 internal sealed class ShellPane : ITuiPane
 {
     private readonly ChatWindow _window;
     private readonly ScrollWheel _wheel = new();
-    private readonly PtySession _session;
+    private readonly ITerminalBacking? _backing;
     private readonly VtScreen _screen;
     /** _screen 的跨线程门: 输出泵(Feed)、UI 线程(Resize/DrawTranscript)、读取工具(SnapshotLines)三方共用。 */
     private readonly object _screenGate = new();
@@ -24,15 +30,24 @@ internal sealed class ShellPane : ITuiPane
     private int _wakePending;
     private int _bytesRead;
     private int _keysSent;
+    private string _status = "";
+    private bool _exited;
     private bool _disposed;
 
-    public ShellPane(ChatWindow window, int id, PtySession session, int width, int height)
+    public ShellPane(ChatWindow window, int id, ITerminalBacking? backing, int width, int height, string? layerPtyId = null)
     {
         _window = window;
-        _session = session;
+        _backing = backing;
+        LayerPtyId = layerPtyId;
         _screen = new VtScreen(Math.Max(1, width), Math.Max(1, height));
         Id = id;
-        StatusText = $"shell 已启动: {session.Command} (pid {session.ProcessId})";
+        StatusText = layerPtyId is { Length: > 0 }
+            ? $"[pty {layerPtyId}] 层 - Ctrl+X W 总览 - Ctrl+X ,/. 切该 pty 的会话 - Ctrl+X D 离开 DSH"
+            : _backing?.ProcessId is { } pid
+                ? $"终端已启动: {_backing.Command} (pid {pid})"
+                : $"终端已连接: {_backing?.Command ?? "(无 shell)"}";
+        if (layerPtyId is { Length: > 0 })
+            LayerBanner = StatusText;
         _pumpTask = Task.Run(PumpAsync);
         // 单一写者: 逐键异步写若并发发出, 在 Unix 上会重排/交错(实测 "echo dsh-$(echo pty)" 变成 "ech sdh-$e(ocho")。
         _writerTask = Task.Run(WriteLoopAsync);
@@ -42,21 +57,36 @@ internal sealed class ShellPane : ITuiPane
 
     public TuiPaneKind Kind => TuiPaneKind.Shell;
 
-    /** shell 窗格不绑定 agent 会话。 */
+    /** 终端窗格不绑定 agent 会话。 */
     public Session? Session => null;
 
-    /** 窗格目录/读取工具用: 底层 PTY 会话标识与命令行。 */
-    internal string PtyId => _session.Id.Value;
+    /** 非空 = 这一屏代表"某个 pty 这一层"(而不是某个会话); 状态行与窗格归属都用它。 */
+    internal string? LayerPtyId { get; }
 
-    internal string PtyCommand => _session.Command;
+    /**
+     * pty 层视图的横幅(显示在底部状态栏)。非空时优先于终端字节/按键状态 —— 否则 shell 一有输出就会
+     * 把"你在 pty 层"这条信息顶掉(见 PumpAsync 里对 StatusText 的更新)。
+     */
+    internal string? LayerBanner { get; set; }
+
+    /** 窗格目录/读取工具用: 底层 PTY 会话标识与命令行(pty 层视图报告的是它所代表的那个 pty)。 */
+    internal string PtyId => LayerPtyId ?? _backing?.PtyId ?? "";
+
+    internal string PtyCommand => LayerPtyId is { Length: > 0 } ? "pty-layer" : _backing?.Command ?? "";
 
     public bool StickToBottom { get; set; } = true;
 
-    public string PaneTitle => $"shell - {_session.Command}";
+    public string PaneTitle => LayerPtyId is { Length: > 0 } layer
+        ? $"pty 层 - {layer}"
+        : $"shell - {_backing?.Command ?? "(无 shell)"}";
 
-    public string StatusText { get; set; } = "";
+    public string StatusText
+    {
+        get => LayerBanner ?? _status;
+        set => _status = value;
+    }
 
-    public bool Exited { get; private set; }
+    public bool Exited => _exited;
 
     public void ProcessSessionEvent(SessionEvent sessionEvent, bool replay = false)
     {
@@ -92,7 +122,7 @@ internal sealed class ShellPane : ITuiPane
 
     public void HandleKey(ConsoleKeyInfo key)
     {
-        if (_disposed || Exited)
+        if (_disposed || _exited || _backing is null)
             return;
         Span<byte> buffer = stackalloc byte[16];
         int length;
@@ -103,20 +133,20 @@ internal sealed class ShellPane : ITuiPane
         _scrollOffset = 0;
         StickToBottom = true;
         _keysSent++;
-        StatusText = $"shell 键入 {_keysSent} 次 - 读取 {_bytesRead} 字节 - {_session.Command} (pid {_session.ProcessId})";
+        StatusText = $"终端键入 {_keysSent} 次 - 读取 {_bytesRead} 字节 - {_backing.Command}";
         EnqueueWrite(buffer[..length].ToArray());
     }
 
     public void HandleText(string text)
     {
-        if (_disposed || Exited || text.Length == 0)
+        if (_disposed || _exited || _backing is null || text.Length == 0)
             return;
         var bytes = System.Text.Encoding.UTF8.GetBytes(text);
         _scrollOffset = 0;
         EnqueueWrite(bytes);
     }
 
-    /** 窗格尺寸变化时同步到 PTY, shell 才能按真实宽高折行。 */
+    /** 窗格尺寸变化时同步到底层 PTY, 终端才能按真实宽高折行。 */
     public void Resize(int width, int height)
     {
         lock (_screenGate)
@@ -125,16 +155,9 @@ internal sealed class ShellPane : ITuiPane
                 return;
             _screen.Resize(width, height);
         }
-        if (_disposed || Exited)
+        if (_disposed || _exited || _backing is null)
             return;
-        try
-        {
-            _session.Resize(height, width);
-        }
-        catch (Exception)
-        {
-            // 会话已退出时忽略尺寸同步失败
-        }
+        _backing.Resize(height, width);
     }
 
     public void Dispose()
@@ -146,15 +169,7 @@ internal sealed class ShellPane : ITuiPane
         _writes.Writer.TryComplete();
         _ = _pumpTask;
         _ = _writerTask;
-        try
-        {
-            PtyHost.Default.StopAsync(_session.Id.Value).GetAwaiter().GetResult();
-        }
-        catch (Exception)
-        {
-            // 关闭竞态(进程已退出)不阻塞 UI 拆卸
-        }
-        _session.Dispose();
+        _backing?.Dispose();
         _pump.Dispose();
     }
 
@@ -195,9 +210,11 @@ internal sealed class ShellPane : ITuiPane
     {
         await foreach (var bytes in _writes.Reader.ReadAllAsync(_pump.Token))
         {
+            if (_backing is null)
+                continue;
             try
             {
-                await _session.WriteAsync(bytes, _pump.Token);
+                await _backing.WriteAsync(bytes, _pump.Token);
             }
             catch (Exception)
             {
@@ -209,25 +226,39 @@ internal sealed class ShellPane : ITuiPane
 
     private async Task PumpAsync()
     {
+        // 拉不起 shell 的 pty 层(受限环境/GPU 模式): 没有输出可泵, 只保持窗格存活, 按键仍由 ChatWindow 处理。
+        if (_backing is null)
+        {
+            try
+            {
+                await Task.Delay(Timeout.Infinite, _pump.Token);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
+            return;
+        }
+
         while (!_pump.IsCancellationRequested)
         {
             int read;
             try
             {
-                read = await _session.ReadAsync(_readBuffer, _pump.Token);
+                read = await _backing.ReadAsync(_readBuffer, _pump.Token);
             }
             catch (Exception error)
             {
                 if (!_pump.IsCancellationRequested)
                 {
-                    StatusText = $"shell 泵中止: {error.Message}";
+                    StatusText = $"终端泵中止: {error.Message}";
                     ShowFailure(error);
                 }
                 break;
             }
             if (read <= 0)
             {
-                if (_session.Status == PtySessionStatus.Running)
+                if (!_backing.Exited)
                 {
                     await DelayAsync();
                     continue;
@@ -235,12 +266,12 @@ internal sealed class ShellPane : ITuiPane
                 break;
             }
             _bytesRead += read;
-            StatusText = $"shell 读取 {_bytesRead} 字节 - {_session.Command} (pid {_session.ProcessId})";
+            StatusText = $"终端读取 {_bytesRead} 字节 - {_backing.Command}";
             lock (_screenGate)
                 _screen.Feed(_readBuffer.AsSpan(0, read));
             Invalidate();
         }
-        Exited = true;
+        _exited = true;
         Invalidate();
     }
 
@@ -248,7 +279,7 @@ internal sealed class ShellPane : ITuiPane
     private void ShowFailure(Exception error)
     {
         lock (_screenGate)
-            _screen.Feed($"\r\n\u001b[31m[shell 会话中止] {error.GetType().Name}: {error.Message}\u001b[0m\r\n");
+            _screen.Feed($"\r\n\u001b[31m[终端会话中止] {error.GetType().Name}: {error.Message}\u001b[0m\r\n");
     }
 
     private async Task DelayAsync()
@@ -275,7 +306,3 @@ internal sealed class ShellPane : ITuiPane
         });
     }
 }
-
-
-
-

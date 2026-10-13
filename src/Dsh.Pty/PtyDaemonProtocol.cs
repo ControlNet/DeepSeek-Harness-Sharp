@@ -178,6 +178,9 @@ public sealed class PtyDaemonResponse
 
     public long Seq { get; set; }
 
+    /** method=snapshot: 当前屏的状态重建重绘字节(VT 转义文本)。 */
+    public string? Snapshot { get; set; }
+
     /** method=kill: 实际被终止的会话 id。 */
     public List<string>? Killed { get; set; }
 }

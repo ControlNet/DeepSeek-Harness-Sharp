@@ -15,10 +15,10 @@ public sealed class PtyDaemonKillTests
             await using var daemon = new PtyDaemon(new PtyHost(), socketPath, portFile);
             await daemon.StartAsync(cancellationToken);
 
-            var first = await RetryAsync(() => StartSessionAsync(socketPath, portFile, cancellationToken), cancellationToken);
-            var second = await RetryAsync(() => StartSessionAsync(socketPath, portFile, cancellationToken), cancellationToken);
+            var first = await PtyDaemonRetry.Async(() => StartSessionAsync(socketPath, portFile, cancellationToken), cancellationToken);
+            var second = await PtyDaemonRetry.Async(() => StartSessionAsync(socketPath, portFile, cancellationToken), cancellationToken);
 
-            var killed = await RetryAsync(
+            var killed = await PtyDaemonRetry.Async(
                 () => PtyDaemonClient.KillAsync(first.Id, socketPath, portFile, cancellationToken), cancellationToken);
             Assert.Equal([first.Id], killed);
 
@@ -26,18 +26,18 @@ public sealed class PtyDaemonKillTests
             var gone = false;
             for (var attempt = 0; attempt < 200 && !gone; attempt++)
             {
-                var listing = await RetryAsync(
+                var listing = await PtyDaemonRetry.Async(
                     () => PtyDaemonClient.ListAsync(socketPath, portFile, cancellationToken), cancellationToken);
                 gone = listing.All(session => session.Id != first.Id);
                 if (!gone)
                     await Task.Delay(25, cancellationToken);
             }
             Assert.True(gone, "被终止的会话仍在列表中");
-            var remaining = await RetryAsync(
+            var remaining = await PtyDaemonRetry.Async(
                 () => PtyDaemonClient.ListAsync(socketPath, portFile, cancellationToken), cancellationToken);
             Assert.Contains(remaining, session => session.Id == second.Id);
 
-            await RetryAsync(() => PtyDaemonClient.KillAsync(second.Id, socketPath, portFile, cancellationToken), cancellationToken);
+            await PtyDaemonRetry.Async(() => PtyDaemonClient.KillAsync(second.Id, socketPath, portFile, cancellationToken), cancellationToken);
         }
         finally
         {
@@ -59,28 +59,12 @@ public sealed class PtyDaemonKillTests
 
             // daemon 的管道/端口握手在负载下可能尚未就绪: 对连接级 IOException 重试到拿到响应为止。
             var error = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => RetryAsync(() => PtyDaemonClient.KillAsync("pty-does-not-exist", socketPath, portFile, cancellationToken), cancellationToken));
+                () => PtyDaemonRetry.Async(() => PtyDaemonClient.KillAsync("pty-does-not-exist", socketPath, portFile, cancellationToken), cancellationToken));
             Assert.Contains("not found", error.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
             TempTree.Delete(root);
-        }
-    }
-
-    /** 负载下 daemon 的就绪可能滞后: 对「未就绪/连接级」异常短暂重试。 */
-    private static async Task<T> RetryAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                return await action();
-            }
-            catch (Exception error) when (error is IOException or PtyDaemonNotRunningException && attempt < 120)
-            {
-                await Task.Delay(25, cancellationToken);
-            }
         }
     }
 

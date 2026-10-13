@@ -2,9 +2,11 @@ using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Interaction;
 using Dsh.Llm;
+using Dsh.Pty;
 using Dsh.Runtime;
 using Dsh.Tui;
 using System.Text;
+using System.Threading.Channels;
 
 namespace Dsh.Tests;
 
@@ -287,6 +289,456 @@ public sealed class ChatWindowPaneTests : IDisposable
         chat.Dispose();
     }
 
+    /**
+     * §19 阶段 2: 总览里 Enter 一个 daemon pty → 开一个订阅其字节流的终端窗格(挂在同一棵树下), 关闭只退订。
+     */
+    [Fact]
+    public async Task Overview_Enter_Daemon_Pty_Opens_Remote_Terminal_Pane()
+    {
+        var (chat, _, _, _, _) = await CreateChatWithTwoAgents();
+        var backing = new FakeRemoteBacking("pty-remote");
+        // daemon 里程序就是 shell 的 pty: 进这一层 = 用它的前台 shell(订阅 + 按键写回)。
+        var access = new FakeDaemonAccess("pty-remote", backing, command: "pwsh.exe -NoLogo");
+        chat.DaemonPtyAccess = access;
+        var layout = LayoutEngine.Calculate(120, 40);
+        _ = DrawFrameReturningGrid(chat, layout);
+
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.W);
+        // daemon pty 列表是异步刷新的: 等它进总览。
+        for (var attempt = 0; attempt < 500 && !DrawFrame(chat).Contains("pty-remote"); attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+        Assert.Contains("pty-remote", DrawFrame(chat));
+
+        // 选中行不一定是 pty 行(初始选中当前焦点窗格所在行): 向上遍历可选行直到停在 pty 行。
+        for (var attempt = 0; attempt < 20 && !SelectedOverviewLine(chat).Contains("pty-remote"); attempt++)
+            Press(chat, ConsoleKey.UpArrow);
+        Assert.Contains("pty-remote", SelectedOverviewLine(chat));
+
+        Press(chat, ConsoleKey.Enter);
+        for (var attempt = 0; attempt < 500 && chat.PaneCount < 3; attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        // 整屏换层: 不是新增一个窗格和会话并排 —— 这一层也不是窗格目录里的一员。
+        Assert.True(chat.InPtyLayer);
+        Assert.NotNull(access.Entered);
+        Assert.Equal("pty-remote", access.Entered.Value.PtyId);
+        var paneId = chat.FocusedPaneId;
+        var panes = await DispatchAsync(chat, chat.SnapshotPanesAsync());
+        Assert.DoesNotContain(panes, entry => entry.PtyId == "pty-remote");
+
+        // 订阅的输出渲染进这一层; 键入写回该 pty。
+        backing.Push("remote-ok\r\n");
+        var text = "";
+        for (var attempt = 0; attempt < 200 && !text.Contains("remote-ok"); attempt++)
+        {
+            text = await PaneTextAsync(chat, paneId);
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        }
+        Assert.Contains("remote-ok", text);
+
+        chat.ApplyPaneInput("text", paneId, "ls\r");
+        for (var attempt = 0; attempt < 200 && !backing.Written.Any(entry => entry.Contains("ls")); attempt++)
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        Assert.Contains(backing.Written, entry => entry.Contains("ls"));
+
+        // 退出这一层 = 退订, 不杀远端会话。
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.OemMinus);
+        Assert.False(chat.InPtyLayer);
+        Assert.Equal(2, chat.PaneCount);
+        Assert.True(backing.Disposed);
+        chat.Dispose();
+    }
+
+    /**
+     * 进入同一个 daemon 下**别的** pty: 这一层同样是一个终端(它的程序不是 shell → DSH 另托一个),
+     * 但"看到它的会话 + 响应 Ctrl+X"与任何 pty 一致 —— 横幅列出它的会话, Ctrl+X . 请对面切会话,
+     * 绝不把别人的对话界面镜像进来当这一层的内容。
+     */
+    [Fact(Timeout = 20000)]
+    public async Task Overview_Enter_Foreign_Dsh_Pty_Hosts_Terminal_And_Switches_Its_Sessions()
+    {
+        var (chat, _, _, _, _) = await CreateChatWithTwoAgents();
+        var access = new FakeDaemonAccess("pty-other", new FakeRemoteBacking("pty-other"), panes:
+        [
+            new PtyPaneSnapshotDto { Id = 0, Kind = "chat", Title = "会话一", SessionId = "session-remote-a", Focused = true },
+            new PtyPaneSnapshotDto { Id = 1, Kind = "chat", Title = "会话二", SessionId = "session-remote-b" },
+        ]);
+        chat.DaemonPtyAccess = access;
+        var layout = LayoutEngine.Calculate(120, 40);
+        _ = DrawFrameReturningGrid(chat, layout);
+
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.W);
+        for (var attempt = 0; attempt < 500 && !DrawFrame(chat).Contains("pty-other"); attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+        for (var attempt = 0; attempt < 20 && !SelectedOverviewLine(chat).Contains("pty-other"); attempt++)
+            Press(chat, ConsoleKey.UpArrow);
+
+        Press(chat, ConsoleKey.Enter);
+        for (var attempt = 0; attempt < 500 && !chat.InPtyLayer; attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        Assert.True(chat.InPtyLayer);
+        Assert.False(chat.DetachRequested);
+        // 别人的 pty 也不订阅镜像(它是 DSH, 不是 shell): 这一层的内容由 DSH 托的终端提供。
+        Assert.Null(access.Entered);
+        // 横幅把该 pty 的会话列表画出来(两个会话)。
+        var frame = DrawFrame(chat);
+        Assert.Contains("[pty pty-other] 层", frame);
+        Assert.Contains("会话: 1:", frame);
+        Assert.Contains("2:", frame);
+
+        // Ctrl+X . 切到该 pty 的另一个会话: 请对面聚焦那个会话的窗格(既有的 focus 控制消息)。
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.OemPeriod);
+        for (var attempt = 0; attempt < 200 && !access.ControlSends.Any(send => send.Kind == "focus"); attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+        Assert.Contains(access.ControlSends, send => send.PtyId == "pty-other" && send.Kind == "focus" && send.PaneId == 1);
+
+        // 这一层仍然整屏响应 Ctrl+X: W 开总览。
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.W);
+        chat.DrainUi();
+        Assert.Contains("总览 Pty", DrawFrame(chat));
+        Press(chat, ConsoleKey.Escape);
+
+        // Ctrl+X - 退出这一层。
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.OemMinus);
+        Assert.False(chat.InPtyLayer);
+        chat.Dispose();
+    }
+
+    /**
+     * 进入"本 TUI 自己所在的 pty"= 打开这一层的视图: **不 detach**, 由 DSH 为这一层托一个本地 shell
+     * (该 pty 的程序是常驻 DSH, 没有 shell 可用), 底部状态行写明当前在 pty 层, Ctrl+X 仍归 DSH。
+     */
+    [Fact(Timeout = 20000)]
+    public async Task Overview_Enter_Own_Pty_Opens_Pty_Layer_Without_Detaching()
+    {
+        var (chat, _, _, _, _) = await CreateChatWithTwoAgents();
+        var access = new FakeDaemonAccess("pty-self", new FakeRemoteBacking("pty-self"), pid: Environment.ProcessId);
+        chat.DaemonPtyAccess = access;
+        var layout = LayoutEngine.Calculate(120, 40);
+        _ = DrawFrameReturningGrid(chat, layout);
+
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.W);
+        for (var attempt = 0; attempt < 500 && !DrawFrame(chat).Contains("pty-self"); attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+        for (var attempt = 0; attempt < 20 && !SelectedOverviewLine(chat).Contains("pty-self"); attempt++)
+            Press(chat, ConsoleKey.UpArrow);
+        Assert.Contains("pty-self", SelectedOverviewLine(chat));
+
+        Press(chat, ConsoleKey.Enter);
+        for (var attempt = 0; attempt < 500 && !chat.InPtyLayer; attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        // 关键: 不是 detach, 而是整屏换到"这一层"(内容由 DSH 托的本地 shell 提供), 且不与会话并排。
+        Assert.False(chat.DetachRequested);
+        Assert.Null(access.Entered);
+        Assert.True(chat.InPtyLayer);
+        Assert.Equal(3, chat.PaneCount);
+        var paneId = chat.FocusedPaneId;
+        var panes = await DispatchAsync(chat, chat.SnapshotPanesAsync());
+        Assert.DoesNotContain(panes, entry => entry.PtyId == "pty-self");
+        // 状态行(底部横幅)标明当前在 pty 层。
+        Assert.Contains("[pty pty-self] 层", DrawFrame(chat));
+
+        // 这一层仍然响应 Ctrl+X(与 tmux 的前缀键同形): 按 Ctrl+X W 能开总览。
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.W);
+        chat.DrainUi();
+        Assert.Contains("总览 Pty", DrawFrame(chat));
+        Press(chat, ConsoleKey.Escape);
+
+        // Ctrl+X - 退出这一层, 回到会话视图(窗格数不变, 只是不再整屏显示这一层)。
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.OemMinus);
+        Assert.False(chat.InPtyLayer);
+        Assert.Equal(2, chat.PaneCount);
+        chat.Dispose();
+    }
+
+    /**
+     * pty 层拉不起 shell(受限环境/GPU 模式等): 仍要开出这一层的窗格并让 Ctrl+X 快捷键可用。
+     */
+    [Fact(Timeout = 20000)]
+    public async Task Overview_Enter_Pty_Layer_Without_Shell_Still_Handles_CtrlX()
+    {
+        var (chat, _, _, _, _) = await CreateChatWithTwoAgents();
+        // 程序是 shell 但订阅失败: 等价于"这一层起不了 shell"。
+        chat.DaemonPtyAccess = new FakeDaemonAccess("pty-broken", new FakeRemoteBacking("pty-broken"), command: "pwsh.exe -NoLogo", enterFails: true);
+        var layout = LayoutEngine.Calculate(120, 40);
+        _ = DrawFrameReturningGrid(chat, layout);
+
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.W);
+        for (var attempt = 0; attempt < 500 && !DrawFrame(chat).Contains("pty-broken"); attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+        for (var attempt = 0; attempt < 20 && !SelectedOverviewLine(chat).Contains("pty-broken"); attempt++)
+            Press(chat, ConsoleKey.UpArrow);
+
+        Press(chat, ConsoleKey.Enter);
+        for (var attempt = 0; attempt < 500 && !chat.InPtyLayer; attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        Assert.False(chat.DetachRequested);
+        Assert.True(chat.InPtyLayer);
+        Assert.Contains("[pty pty-broken] 层", DrawFrame(chat));
+
+        // 没有 shell 也照样响应 Ctrl+X。
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.W);
+        chat.DrainUi();
+        Assert.Contains("总览 Pty", DrawFrame(chat));
+        chat.Dispose();
+    }
+
+    /**
+     * §19 阶段 2 端到端: 真 daemon 里的真 pty → RemoteTerminalBacking → 真 ShellPane。
+     * 键入必须被前台进程执行并把输出渲染进窗格(证明"进入 pty 后能跑命令", 不是只铺了张静态快照)。
+     */
+    [Fact(Timeout = 12000)]
+    public async Task Remote_Pane_Runs_Command_Through_Real_Daemon_Pty()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = TempTree.CreateSocketDirectory("rpe");
+        try
+        {
+            var socketPath = Path.Combine(root, "dsh.sock");
+            string? portFile = OperatingSystem.IsWindows() ? Path.Combine(root, "dsh.port") : null;
+            await using var daemon = new PtyDaemon(new PtyHost(), socketPath, portFile);
+            await daemon.StartAsync(cancellationToken);
+            var (fileName, arguments) = OperatingSystem.IsWindows()
+                ? ("cmd.exe", (string[])["/v:on"])
+                : ("/bin/sh", []);
+            var started = await PtyDaemonClient.StartAsync(new PtyDaemonStartParams
+            {
+                FileName = fileName,
+                Arguments = [.. arguments],
+                Rows = 24,
+                Columns = 80,
+            }, socketPath, portFile, cancellationToken);
+
+            await using var remote = await PtyDaemonClient.SubscribeAsync(started.Id, socketPath, portFile, cancellationToken);
+            var (chat, _, _, _, _) = await CreateChatWithTwoAgents();
+            chat.DaemonPtyAccess = FakeDaemonAccess.None;
+            var paneId = 2;
+            chat.AddPane(new ShellPane(chat, paneId, new RemoteTerminalBacking(remote), 80, 24), SplitOrientation.Vertical);
+            chat.DrainUi();
+
+            // 只在"进程真的执行"时才出现的输出(输入回显里不含最终值)。
+            var (input, expected) = OperatingSystem.IsWindows()
+                ? ("set /a m=6*7 & echo E2E-!m!\r", "E2E-42")
+                : ("echo E2E-$((6*7))\r", "E2E-42");
+            chat.ApplyPaneInput("text", paneId, input);
+
+            var text = "";
+            for (var attempt = 0; attempt < 400 && !text.Contains(expected); attempt++)
+            {
+                text = await PaneTextAsync(chat, paneId);
+                await Task.Delay(10, cancellationToken);
+            }
+            Assert.Contains(expected, text);
+            chat.Dispose();
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
+    /**
+     * 总览必须列出 daemon 下所有 pty, 以及每个 pty 托管的 session 与 pane(三级树 pty > session > pane)。
+     * 远程 pty 的会话由它发布的窗格反推(常驻 TUI 在别的进程)。
+     */
+    [Fact]
+    public async Task Overview_Lists_Daemon_Pty_Sessions_And_Panes()
+    {
+        var (chat, _, _, _, _) = await CreateChatWithTwoAgents();
+        chat.DaemonPtyAccess = new FakeDaemonAccess("pty-remote", new FakeRemoteBacking("pty-remote"), panes:
+        [
+            new PtyPaneSnapshotDto { Id = 0, Kind = "chat", Title = "主窗格", SessionId = "session-remote-a", Focused = true },
+            new PtyPaneSnapshotDto { Id = 1, Kind = "chat", Title = "副窗格", SessionId = "session-remote-a" },
+            new PtyPaneSnapshotDto { Id = 2, Kind = "shell", Title = "bash", SessionId = "session-remote-b" },
+        ]);
+        var layout = LayoutEngine.Calculate(120, 40);
+        _ = DrawFrameReturningGrid(chat, layout);
+
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.W);
+        for (var attempt = 0; attempt < 500 && !DrawFrame(chat).Contains("pty-remote"); attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        var lines = DrawFrame(chat).Split('\n').Select(line => line.TrimEnd()).ToList();
+        Assert.Contains(lines, line => line.Contains("> pty-remote (daemon)"));
+        Assert.Contains(lines, line => line.Contains("  session-remote-a"));
+        Assert.Contains(lines, line => line.Contains("    pane 0 - session-remote-a (remote)"));
+        Assert.Contains(lines, line => line.Contains("    pane 1 - session-remote-a (remote)"));
+        Assert.Contains(lines, line => line.Contains("  session-remote-b"));
+        Assert.Contains(lines, line => line.Contains("    pane 2 - session-remote-b (remote)"));
+        chat.Dispose();
+    }
+
+    /**
+     * §19 阶段 1: 总览里 Enter 一个本进程 host shell pty(尚无窗格) → 绑一个真终端窗格, 命令能跑通。
+     */
+    [Fact]
+    public async Task Overview_Enter_Host_Shell_Pty_Opens_Terminal_Pane()
+    {
+        var (chat, _, _, _, _) = await CreateChatWithTwoAgents();
+        chat.DaemonPtyAccess = FakeDaemonAccess.None;
+        var shell = PtyShell.Resolve();
+        if (!PtyShell.Exists(shell))
+            return;
+        var session = await PtyHost.Default.StartAsync(new PtyStartInfo
+        {
+            FileName = shell,
+            Arguments = PtyShell.Arguments(shell),
+            Rows = 24,
+            Columns = 80,
+        }, cancellationToken: TestContext.Current.CancellationToken);
+        try
+        {
+            var layout = LayoutEngine.Calculate(120, 40);
+            _ = DrawFrameReturningGrid(chat, layout);
+            PressCtrl(chat, ConsoleKey.X);
+            Press(chat, ConsoleKey.W);
+            for (var attempt = 0; attempt < 20 && !SelectedOverviewLine(chat).Contains(session.Id.Value); attempt++)
+                Press(chat, ConsoleKey.UpArrow);
+            Assert.Contains(session.Id.Value, SelectedOverviewLine(chat));
+
+            Press(chat, ConsoleKey.Enter);
+            chat.DrainUi();
+            Assert.True(chat.InPtyLayer);
+            var paneId = chat.FocusedPaneId;
+            // pty 层是"一层", 不进窗格目录; 但它绑定的就是这个真 shell。
+            var panes = await DispatchAsync(chat, chat.SnapshotPanesAsync());
+            Assert.DoesNotContain(panes, entry => entry.PtyId == session.Id.Value);
+
+            // 键入直达这个真 shell: 输出里回显出命令即证明往返已通。
+            chat.ApplyPaneInput("text", paneId, "echo STAGE1-MARK\r");
+            var text = "";
+            for (var attempt = 0; attempt < 300 && !text.Contains("STAGE1-MARK"); attempt++)
+            {
+                text = await PaneTextAsync(chat, paneId);
+                await Task.Delay(10, TestContext.Current.CancellationToken);
+            }
+            Assert.Contains("STAGE1-MARK", text);
+        }
+        finally
+        {
+            await PtyHost.Default.StopAsync(session.Id.Value);
+            chat.Dispose();
+        }
+    }
+
+    /** 总览里被选中那一行的文本(PopupList 用 Highlight 背景标记选中项)。 */
+    private static string SelectedOverviewLine(ChatWindow chat)
+    {
+        var layout = LayoutEngine.Calculate(120, 40);
+        var grid = new CellGrid(120, 40);
+        chat.Draw(grid, layout);
+        for (var y = 0; y < grid.Height; y++)
+        {
+            var selected = false;
+            var text = new StringBuilder();
+            for (var x = 0; x < grid.Width; x++)
+            {
+                var cell = grid[x, y];
+                text.Append(cell.Character);
+                selected |= cell.Background == TuiTheme.Highlight;
+            }
+
+            if (selected)
+                return text.ToString();
+        }
+
+        return "";
+    }
+
+    private static async Task<T> DispatchAsync<T>(ChatWindow chat, Task<T> task)
+    {
+        for (var attempt = 0; attempt < 500 && !task.IsCompleted; attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+        return await task;
+    }
+
+    private static async Task<string> PaneTextAsync(ChatWindow chat, int paneId)
+    {
+        var lines = await DispatchAsync(chat, chat.SnapshotPaneLinesAsync(paneId));
+        return lines is null ? "" : string.Join('\n', lines);
+    }
+
+    /**
+     * Ctrl+X ,/. 是"在当前 pty 的会话列表里切换"(pty 是 session 的上一层容器, 一个 pty 可挂多个会话):
+     * 目标会话没有窗格时, 把它装进当前窗格(而不是只能在没有窗格时才失败/跳过)。
+     */
+    [Fact]
+    public async Task CtrlX_Period_Loads_Session_Without_Pane_Into_Current_Pane()
+    {
+        var ctx = new Context();
+        _ = new SessionStore(ctx);
+        var agents = new AgentRegistry(ctx);
+        _ = new AgentLoop(ctx);
+        CommandsService.Register(ctx);
+        var first = await CreateAgent(agents);
+        var second = await CreateAgent(agents);
+        var chat = new ChatWindow(ctx, first, HarnessHome.Resolve(_homeDir));
+        Assert.Equal(1, chat.PaneCount);
+        var layout = LayoutEngine.Calculate(120, 40);
+        _ = DrawFrameReturningGrid(chat, layout);
+
+        PressCtrl(chat, ConsoleKey.X);
+        Press(chat, ConsoleKey.OemPeriod);
+
+        for (var attempt = 0; attempt < 500 && chat.InputPane.Agent.Id != second.Id; attempt++)
+        {
+            chat.DrainUi();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        Assert.Equal(second.Id, chat.InputPane.Agent.Id);
+        Assert.Equal(1, chat.PaneCount);
+        chat.Dispose();
+    }
+
     private async Task<(ChatWindow Chat, Context Ctx, AgentRegistry Agents, AgentLoopAgent First, AgentLoopAgent Second)> CreateChatWithTwoAgents()
     {
         var ctx = new Context();
@@ -299,6 +751,118 @@ public sealed class ChatWindowPaneTests : IDisposable
         var chat = new ChatWindow(ctx, first, HarnessHome.Resolve(_homeDir));
         chat.AddPane(second, SplitOrientation.Vertical);
         return (chat, ctx, agents, first, second);
+    }
+
+    /** 假的 daemon pty 访问: 发布一个远端 pty(ptyId 为 null 时列表为空), 进入时交出记录用的假终端 backing。 */
+    private sealed class FakeDaemonAccess(
+        string? ptyId,
+        FakeRemoteBacking? backing,
+        int? pid = null,
+        IReadOnlyList<PtyPaneSnapshotDto>? panes = null,
+        string command = "dsh tui",
+        bool enterFails = false) : IDaemonPtyAccess
+    {
+        /** 没有远端 pty: 让总览只反映本进程的 host pty。 */
+        public static FakeDaemonAccess None { get; } = new(null, null);
+
+        public (string PtyId, int Rows, int Columns)? Entered { get; private set; }
+
+        public List<(string PtyId, string Kind, int PaneId)> ControlSends { get; } = [];
+
+        public Task<IReadOnlyList<PtyDaemonSessionDto>> ListAsync()
+            => Task.FromResult<IReadOnlyList<PtyDaemonSessionDto>>(ptyId is null
+                ? []
+                :
+                [
+                    new PtyDaemonSessionDto
+                    {
+                        Id = ptyId,
+                        Command = command,
+                        Status = nameof(PtySessionStatus.Running),
+                        Columns = 80,
+                        Rows = 24,
+                        Pid = pid,
+                        Panes = panes is null ? null : [.. panes],
+                    },
+                ]);
+
+        public Task ControlSendAsync(string ptyId, string kind, int paneId, string payload)
+        {
+            ControlSends.Add((ptyId, kind, paneId));
+            return Task.CompletedTask;
+        }
+
+        public Task<ITerminalBacking> EnterAsync(string id, int rows, int columns)
+        {
+            Entered = (id, rows, columns);
+            if (enterFails)
+                return Task.FromException<ITerminalBacking>(new InvalidOperationException("subscribe failed"));
+            return Task.FromResult<ITerminalBacking>(backing
+                ?? throw new NotSupportedException("this fake publishes no daemon pty"));
+        }
+    }
+
+    /** 假终端 backing: 手动喂输出、记录写入, 用于验证远程窗格的渲染与输入路径。 */
+    private sealed class FakeRemoteBacking(string ptyId) : ITerminalBacking
+    {
+        private readonly Channel<byte[]> _output = Channel.CreateUnbounded<byte[]>();
+        private byte[]? _pending;
+        private int _offset;
+
+        public List<string> Written { get; } = [];
+
+        public string Command => "dsh tui";
+
+        public int? ProcessId => null;
+
+        public string PtyId => ptyId;
+
+        public bool Exited { get; private set; }
+
+        public bool Disposed { get; private set; }
+
+        public void Push(string text) => _output.Writer.TryWrite(Encoding.UTF8.GetBytes(text));
+
+        public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            while (await _output.Reader.WaitToReadAsync(cancellationToken))
+            {
+                if (_pending is null && _output.Reader.TryRead(out var chunk))
+                {
+                    _pending = chunk;
+                    _offset = 0;
+                }
+
+                if (_pending is { } current)
+                {
+                    var take = Math.Min(current.Length - _offset, buffer.Length);
+                    current.AsSpan(_offset, take).CopyTo(buffer.Span);
+                    _offset += take;
+                    if (_offset >= current.Length)
+                        _pending = null;
+                    return take;
+                }
+            }
+
+            return 0;
+        }
+
+        public ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        {
+            Written.Add(Encoding.UTF8.GetString(data.Span));
+            return ValueTask.CompletedTask;
+        }
+
+        public void Resize(int rows, int columns)
+        {
+        }
+
+        public void Dispose()
+        {
+            Disposed = true;
+            Exited = true;
+            _output.Writer.TryComplete();
+        }
     }
 
     private static async Task<AgentLoopAgent> CreateAgent(AgentRegistry agents)

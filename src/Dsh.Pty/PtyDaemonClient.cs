@@ -250,6 +250,44 @@ public static class PtyDaemonClient
         }
     }
 
+    /**
+     * 窗格级订阅: 订阅某 pty 的字节流(首帧为当前屏的状态重建快照), 返回可读可写的会话句柄。
+     * 与 AttachAsync 的区别是不独占会话 —— 不排空历史、不改 attached 状态、可多方同时订阅同一 pty。
+     */
+    public static Task<PtyRemoteSession> SubscribeAsync(string id, CancellationToken cancellationToken = default)
+        => SubscribeAsync(id, PtyDaemonPaths.SocketPath(), OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile() : null, cancellationToken);
+
+    public static async Task<PtyRemoteSession> SubscribeAsync(string id, string socketPath, string? portFile, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(id);
+        // 隧道里流的是状态重建快照(UTF-8 原样字节): 不声明代码页, 控制台会按 OEM 代码页把中文读成乱码。
+        ConsoleCodePage.EnsureUtf8();
+        var socket = await ConnectAsync(socketPath, portFile, cancellationToken);
+        var stream = new NetworkStream(socket, ownsSocket: false);
+        try
+        {
+            await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "subscribe", Id = id }, cancellationToken);
+            var response = await ReadResponseAsync(stream, cancellationToken);
+            var session = response.Session
+                ?? throw new InvalidOperationException("daemon returned no PTY session for subscribe");
+            return new PtyRemoteSession(socket, stream, session);
+        }
+        catch (Exception)
+        {
+            // 订阅未建立: 连接归调用方负责清理(建立成功后所有权移交 PtyRemoteSession)。
+            stream.Dispose();
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    /** 取某 pty 当前屏的重绘字节(即时状态重建), 供窗格在 resize 后重建画面。 */
+    public static Task<string> SnapshotAsync(string id, CancellationToken cancellationToken = default)
+        => SnapshotAsync(id, PtyDaemonPaths.SocketPath(), OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile() : null, cancellationToken);
+
+    public static async Task<string> SnapshotAsync(string id, string socketPath, string? portFile, CancellationToken cancellationToken = default)
+        => (await SendAsync(socketPath, portFile, new PtyDaemonRequest { Method = "snapshot", Id = id }, cancellationToken)).Snapshot ?? "";
+
     public static Task<bool> IsRunningAsync(CancellationToken cancellationToken = default)
         => IsRunningAsync(PtyDaemonPaths.SocketPath(), OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile() : null, cancellationToken);
 

@@ -16,6 +16,9 @@ public sealed class PtySession : IDisposable
     /** 会话自己的 VT 屏: attach 据此做完整重绘(tmux 式状态重建), 而不是原始字节回放。 */
     private readonly VtScreen _screen;
 
+    /** 窗格级(非独占)订阅者: 每个订阅者拿到当前屏快照与后续输出的一份拷贝。 */
+    private readonly List<Channel<byte[]>> _subscribers = [];
+
     /** 子进程退出后留给泵读完尾巴输出再结束流的时间(见 OnConPtyExited)。 */
     private const int ExitDrainMilliseconds = 150;
 
@@ -225,7 +228,12 @@ public sealed class PtySession : IDisposable
                     break;
                 var chunk = buffer.AsSpan(0, read).ToArray();
                 lock (_gate)
+                {
                     _screen.Feed(chunk);
+                    foreach (var subscriber in _subscribers)
+                        subscriber.Writer.TryWrite(chunk);
+                }
+
                 _output.Writer.TryWrite(chunk);
             }
         }
@@ -235,6 +243,7 @@ public sealed class PtySession : IDisposable
         }
         finally
         {
+            CompleteSubscribers();
             _output.Writer.TryComplete();
         }
     }
@@ -328,6 +337,43 @@ public sealed class PtySession : IDisposable
             _attached = false;
     }
 
+    /**
+     * 窗格级(非独占)订阅: 用于把本会话显示在另一个进程/窗格里, 与独占 attach 不同 —— 不改变 attached 状态、
+     * 不排空历史输出、可多方同时订阅。首帧是当前屏的状态重建快照(与 attach 同一套字节), 之后是原始输出。
+     */
+    public PtySessionSubscription Subscribe()
+    {
+        var channel = Channel.CreateBounded<byte[]>(
+            new BoundedChannelOptions(256) { FullMode = BoundedChannelFullMode.DropOldest });
+        lock (_gate)
+        {
+            _subscribers.Add(channel);
+            channel.Writer.TryWrite(Snapshot());
+            if (_status == PtySessionStatus.Exited)
+                channel.Writer.TryComplete();
+        }
+
+        return new PtySessionSubscription(this, channel);
+    }
+
+    internal void Unsubscribe(Channel<byte[]> channel)
+    {
+        lock (_gate)
+            _subscribers.Remove(channel);
+        channel.Writer.TryComplete();
+    }
+
+    /** 结束所有窗格级订阅: 泵退出与 ConPTY 退出两条路径都要走这里, 否则订阅者会永远等不到流结束。 */
+    private void CompleteSubscribers()
+    {
+        lock (_gate)
+        {
+            foreach (var subscriber in _subscribers)
+                subscriber.Writer.TryComplete();
+            _subscribers.Clear();
+        }
+    }
+
     public async Task StopAsync()
     {
         // 只取消、不 await 泵: Unix 后端用的是无缓冲同步 FileStream(见 UnixPtySession), 阻塞中的 ReadAsync
@@ -390,6 +436,7 @@ public sealed class PtySession : IDisposable
         // 只取消不 Dispose: PtyHost.Dispose 之后还会调 StopAsync, 释放过的 CTS 会让 CancelAsync 抛 ObjectDisposedException。
         _pumpCts.Cancel();
         _output.Writer.TryComplete();
+        CompleteSubscribers();
 
         if (_unix is not null)
         {
@@ -421,20 +468,26 @@ public sealed class PtySession : IDisposable
         }
     }
 
-        private void OnConPtyExited(int? exitCode)
+    private void OnConPtyExited(int? exitCode)
+    {
+        lock (_gate)
         {
-            lock (_gate)
-            {
-                _status = PtySessionStatus.Exited;
-                _exitCode = exitCode;
-            }
-
-            // ConPTY 的输出管道在子进程退出后不 EOF(pseudoconsole 还握着写端), 泵会一直在读上阻塞:
-            // 输出流不结束 → attach 隧道永远收不到流结束 → 代理退不出会话(终端的备用屏/原始模式也还不回去),
-            // GPU 形态则一直等 Tunnel 结束而关不掉窗口。稍等片刻让泵读完尾巴, 再结束输出流。
-            _ = Task.Delay(ExitDrainMilliseconds)
-                .ContinueWith(_ => _output.Writer.TryComplete(), TaskScheduler.Default);
+            _status = PtySessionStatus.Exited;
+            _exitCode = exitCode;
         }
+
+        // ConPTY 的输出管道在子进程退出后不 EOF(pseudoconsole 还握着写端), 泵会一直在读上阻塞:
+        // 输出流不结束 → attach 隧道永远收不到流结束 → 代理退不出会话(终端的备用屏/原始模式也还不回去),
+        // GPU 形态则一直等 Tunnel 结束而关不掉窗口。稍等片刻让泵读完尾巴, 再结束输出流(窗格订阅同理)。
+        _ = Task.Delay(ExitDrainMilliseconds)
+            .ContinueWith(
+                _ =>
+                {
+                    CompleteSubscribers();
+                    _output.Writer.TryComplete();
+                },
+                TaskScheduler.Default);
+    }
 
     private static Process StartWindowsProcess(PtyStartInfo info)
     {

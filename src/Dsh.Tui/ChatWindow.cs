@@ -39,6 +39,8 @@ public sealed class ChatWindow : IDisposable
     private IReadOnlyList<PtyDaemonSessionDto> _daemonPtys = [];
     private PaneNode _paneTree = new PaneLeaf(0);
     private PaneLayout _paneLayout;
+    /** 非空 = 当前整屏显示的是某个 pty 的"层"视图(pty 层不与 session/pane 并排显示)。 */
+    private ShellPane? _ptyLayer;
     private SplitDivider? _dividerDrag;
     private bool _rightPanelDrag;
     private bool _inputDrag;
@@ -160,6 +162,9 @@ public sealed class ChatWindow : IDisposable
     internal int PaneCount => _panes.Count;
 
     internal int FocusedPaneId => _focusedPaneId;
+
+    /** 当前是否整屏显示在某个 pty 的"层"视图里(pty 层不与 session/pane 并排)。 */
+    internal bool InPtyLayer => _ptyLayer is not null;
 
     internal int InputPaneId => _inputPaneId;
 
@@ -315,6 +320,20 @@ public sealed class ChatWindow : IDisposable
     {
         var input = InputPane;
         key = NormalizeSubcommandKey(key);
+        // 在 pty 层视图里: ","/".' 切该 pty 的会话, "W" 开总览, "-" 就是退出这一层(这一层不是会话里的窗格),
+        // 其余子命令都作用在会话/窗格上, 先退出这一层再执行, 否则会对着不显示的东西下手。
+        if (_ptyLayer is not null)
+        {
+            if (key.Key is ConsoleKey.OemMinus or ConsoleKey.Subtract)
+            {
+                LeavePtyLayer();
+                return;
+            }
+
+            if (key.Key is not (ConsoleKey.OemComma or ConsoleKey.OemPeriod or ConsoleKey.W))
+                LeavePtyLayer();
+        }
+
         switch (key.Key)
         {
             case ConsoleKey.N:
@@ -411,6 +430,12 @@ public sealed class ChatWindow : IDisposable
     {
         RenderVersion++;
         layout = Effective(layout);
+        // pty 层视图: 整屏就是那一层, 滚轮只滚它(不命中窗格树, 也不滚侧栏/浮层)。
+        if (_ptyLayer is { } layer)
+        {
+            layer.HandleMouseWheel(delta);
+            return;
+        }
         // 命令浮层打开时: 正文区滚轮滚动候选(与 ^/v 等价), 便于浏览长命令列表。
         if (layout.Main.Contains(cellX, cellY) && InputPane.ScrollOverlay(delta))
             return;
@@ -428,6 +453,9 @@ public sealed class ChatWindow : IDisposable
     {
         RenderVersion++;
         layout = Effective(layout);
+        // pty 层视图整屏就是那一层: 点击不碰窗格树/分隔线(拖拽也没有意义)。
+        if (_ptyLayer is not null)
+            return;
         var input = InputPane;
         if (input.PendingApproval is not null)
             return;
@@ -661,6 +689,18 @@ public sealed class ChatWindow : IDisposable
     {
         grid.Clear();
         layout = Effective(layout);
+        // pty 层视图: 整屏换层 —— 侧栏与输入栏都让位(会话/pane 不消失, 只是不在这一层显示),
+        // 一排 pty 与一排 pane 并排画既没有意义, 也会把命令行的宽高挤坏。
+        if (_ptyLayer is not null)
+        {
+            var fullWidth = layout.Main.Width + layout.RightPanel.Width + (layout.RightPanel.Width > 0 ? 1 : 0);
+            layout = new UiLayout(
+                new ConsoleRect(0, 0, fullWidth, Math.Max(1, layout.Input.Y)),
+                new ConsoleRect(0, 0, 0, 0),
+                new ConsoleRect(0, 0, 0, 0),
+                layout.Status);
+        }
+
         // 窗格区按"正文宽"布局(不含右侧栏): 分屏后右栏依然保留, 窗格只在正文区里再分, 不会把侧栏挤掉。
         // 分隔线由 _paneLayout 派生, 与窗格同源, 不会因基数不一致而错位。
         _paneArea = new ConsoleRect(0, 0, layout.Main.Width, Math.Max(0, layout.Main.Height));
@@ -668,6 +708,22 @@ public sealed class ChatWindow : IDisposable
         _overlayArea = _paneArea;
         _paneLayout = LayoutEngine.EvaluatePanes(_paneTree, _paneArea);
         SyncShellPaneSizes();
+
+        if (_ptyLayer is { } layer)
+        {
+            DrawPaneHeader(grid, layer, _paneArea, focused: true);
+            if (_paneArea.Height > 1)
+                layer.DrawTranscript(grid, new ConsoleRect(_paneArea.X, _paneArea.Y + 1, _paneArea.Width, _paneArea.Height - 1));
+            // 审批/提问必须可见可答(否则在这一层里会卡住): 有挂起项时把输入栏照常画出来。
+            if (InputPane.PendingApproval is not null || InputPane.PendingQuestions is not null)
+                InputPane.DrawInput(grid, layout.Input);
+            DrawStatusLine(grid, layout.Status);
+            if (_overviewActive)
+                DrawOverview(grid);
+            if (_agentsActive)
+                DrawAgentList(grid);
+            return;
+        }
 
         if (_panes.Count == 1)
         {
@@ -784,7 +840,12 @@ public sealed class ChatWindow : IDisposable
         {
             var entries = new List<PaneCatalogEntry>(_panes.Count);
             foreach (var pane in _panes.Values)
+            {
+                // pty 层是"一层"而不是会话里的窗格: 不进目录(pane_list/总览都不该把它当 pane)。
+                if (pane is ShellPane { LayerPtyId: { Length: > 0 } })
+                    continue;
                 entries.Add(CatalogEntryOf(pane));
+            }
             return (IReadOnlyList<PaneCatalogEntry>)entries;
         });
 
@@ -1615,7 +1676,7 @@ public sealed class ChatWindow : IDisposable
                 Rows = rows,
                 Columns = columns,
             });
-            QueueAction(() => AddPane(new ShellPane(this, id, session, columns, rows), null));
+            QueueAction(() => AddPane(new ShellPane(this, id, new LocalTerminalBacking(session), columns, rows), null));
         }
         catch (Exception error)
         {
@@ -1686,6 +1747,8 @@ public sealed class ChatWindow : IDisposable
     {
         _panes.Remove(paneId, out var pane);
         pane?.Dispose();
+        if (ReferenceEquals(pane, _ptyLayer))
+            _ptyLayer = null;
         var tree = PaneTree.Remove(_paneTree, paneId);
         if (tree is null)
             return;
@@ -1709,16 +1772,24 @@ public sealed class ChatWindow : IDisposable
         if (_panes[paneId] is ChatPane)
             _inputPaneId = paneId;
         if (_panes[paneId] is ShellPane shell)
-            shell.StatusText = "shell 窗格: 按键直达 shell - Ctrl+X - 关闭 - Ctrl+X 方向键/O 切窗格";
+        {
+            if (shell.LayerPtyId is { Length: > 0 } layer)
+                shell.LayerBanner = PtyLayerStatusText(layer);
+            else
+                shell.StatusText = "shell 窗格: 按键直达 shell - Ctrl+X - 关闭 - Ctrl+X 方向键/O 切窗格";
+        }
         RenderVersion++;
     }
 
     /** 窗格尺寸变化时同步给 shell 窗格(PTY 需要按真实行列折行)。 */
     private void SyncShellPaneSizes()
     {
+        // pty 层占整屏(不在窗格树的分格里): 按整块正文区给它尺寸, 否则会按分屏的小格子折行。
+        if (_ptyLayer is { } layer)
+            layer.Resize(Math.Max(1, _paneArea.Width), Math.Max(1, _paneArea.Height - 1));
         foreach (var placement in _paneLayout.Panes)
         {
-            if (!_panes.TryGetValue(placement.PaneId, out var pane) || pane is not ShellPane shell)
+            if (!_panes.TryGetValue(placement.PaneId, out var pane) || pane is not ShellPane shell || ReferenceEquals(shell, _ptyLayer))
                 continue;
             shell.Resize(placement.Rect.Width, Math.Max(1, placement.Rect.Height - 1));
         }
@@ -1748,25 +1819,118 @@ public sealed class ChatWindow : IDisposable
             (key.Modifiers & ConsoleModifiers.Control) != 0);
     }
 
-    /** Ctrl+X ,/. : 在"当前窗格所属 Pty"的会话窗格间循环切换(归属推导复用总览的 PtyForSession, 单一真相)。 */
-    private void SwitchSessionInPty(int direction)
+    /**
+     * Ctrl+X ,/. : 在"当前窗格所属 Pty"的会话列表里循环切换(tmux 的 window 切换语义), 不按归属分叉:
+     * - 本进程的会话 → 聚焦已有窗格, 没有窗格就装进输入窗格并聚焦;
+     * - 别的进程(该 pty 的常驻 DSH)的会话 → 请对面把焦点切到该会话的窗格(既有的 focus 控制消息), 本窗格的镜像随之显示它。
+     */
+    private async void SwitchSessionInPty(int direction)
     {
-        var catalog = Catalog();
-        var current = catalog.FirstOrDefault(entry => entry.Id == _focusedPaneId);
-        var pty = current?.SessionId is { Length: > 0 } sessionId ? PtyForSession(sessionId) : current?.PtyId;
-        var siblings = catalog
-            .Where(entry => entry.Kind == TuiPaneKind.Chat
-                && entry.SessionId is { Length: > 0 }
-                && string.Equals(PtyForSession(entry.SessionId), pty, StringComparison.Ordinal))
-            .ToList();
-        if (siblings.Count < 2)
+        try
+        {
+            var pty = CurrentPtyId();
+            var dto = _daemonPtys.FirstOrDefault(candidate => string.Equals(candidate.Id, pty, StringComparison.Ordinal));
+            var local = SessionsInPty(pty);
+            var remote = RemoteOf(dto).Where(id => local.All(session => !string.Equals(session.Value, id, StringComparison.Ordinal))).ToList();
+            var order = new List<string>([.. local.Select(session => session.Value), .. remote]);
+            if (order.Count == 0)
+            {
+                SetCtrlXHint($"pty {pty ?? "(未归属)"} 下没有可切换的会话");
+                return;
+            }
+
+            if (order.Count == 1)
+            {
+                FocusOrSwitchSession(pty, order[0]);
+                SetCtrlXHint($"pty {pty} 下只有 1 个会话: {order[0]}");
+                return;
+            }
+
+            var currentId = CurrentSessionId(dto);
+            var index = currentId is { Length: > 0 } ? order.FindIndex(id => string.Equals(id, currentId, StringComparison.Ordinal)) : -1;
+            var nextIndex = ((index + direction) % order.Count + order.Count) % order.Count;
+            var next = order[nextIndex];
+            SetCtrlXHint($"切换到会话 {ShortSession(next)} ({nextIndex + 1}/{order.Count}) - pty {pty}");
+            await FocusOrSwitchSessionAsync(pty, next);
+        }
+        catch (Exception error)
+        {
+            SetCtrlXHint($"切换会话失败: {error.Message}");
+        }
+    }
+
+    /** 切到某 pty 下的某个会话: 本进程的原生聚焦/装载(并退出 pty 层, 因为会话视图就是那一层的"上一层"); 别的进程的请它聚焦该会话的窗格。 */
+    private async Task FocusOrSwitchSessionAsync(string? pty, string sessionId)
+    {
+        if (SessionsInPty(pty).Any(session => string.Equals(session.Value, sessionId, StringComparison.Ordinal)))
+        {
+            if (FocusExistingSessionPane(SessionId.Create(sessionId)))
+            {
+                LeavePtyLayer();
+                return;
+            }
+            // 目标会话没有窗格: 装进输入窗格并聚焦, 这样从"pty 层"回到会话视图是可见的。
+            var target = InputPane;
+            LeavePtyLayer();
+            FocusPane(target.Id);
+            await ResumeSession(target, $"/resume {sessionId}");
             return;
-        var index = siblings.FindIndex(entry => entry.Id == _focusedPaneId);
-        var start = index < 0 ? 0 : index;
-        var nextIndex = ((start + direction) % siblings.Count + siblings.Count) % siblings.Count;
-        var next = siblings[nextIndex];
-        FocusPane(next.Id);
-        SetCtrlXHint($"已切换到会话 {next.SessionId}({nextIndex + 1}/{siblings.Count})");
+        }
+
+        var paneId = _daemonPtys
+            .FirstOrDefault(candidate => string.Equals(candidate.Id, pty, StringComparison.Ordinal))?.Panes?
+            .FirstOrDefault(pane => string.Equals(pane.SessionId, sessionId, StringComparison.Ordinal))?.Id;
+        if (paneId is null || pty is null)
+        {
+            SetCtrlXHint($"会话 {ShortSession(sessionId)} 没有可聚焦的窗格");
+            return;
+        }
+
+        // 别的进程的会话: 请对面切过去, 本窗格的镜像随之显示它(留在这一层里)。
+        await DaemonPtyAccess.ControlSendAsync(pty, "focus", paneId.Value, "");
+    }
+
+    private void FocusOrSwitchSession(string? pty, string sessionId)
+        => _ = FocusOrSwitchSessionAsync(pty, sessionId);
+
+    /** 当前焦点窗格所属的 pty: pty 层窗格用它代表的那一层, 会话窗格用归属推导(与总览同源)。 */
+    private string? CurrentPtyId()
+    {
+        if (FocusedPane is ShellPane { LayerPtyId: { Length: > 0 } layer })
+            return layer;
+        var current = Catalog().FirstOrDefault(entry => entry.Id == _focusedPaneId);
+        return current?.SessionId is { Length: > 0 } session ? PtyForSession(session) : current?.PtyId;
+    }
+
+    /** 当前"所在会话": 焦点是会话窗格就是它; 在 pty 层里取对面发布的当前窗格所属会话。 */
+    private string? CurrentSessionId(PtyDaemonSessionDto? dto)
+        => FocusedPane.Session?.Id.Value ?? (dto?.Panes ?? []).FirstOrDefault(pane => pane.Focused)?.SessionId;
+
+    /**
+     * 某 pty 下的会话列表(本进程注册的顶层会话, 创建序): 与总览共用 PtyForSession 归属推导。
+     * pty 为 null 表示这些会话都没有 pty 归属(例如 TUI 不跑在 daemon pty 里), 此时仍按"同一个 pty"分组切换。
+     */
+    private List<SessionId> SessionsInPty(string? pty)
+    {
+        var agents = _ctx.Get<AgentRegistry>(AgentRegistry.ServiceName);
+        if (agents is null)
+            return [];
+        return
+        [
+            .. agents.Roots()
+                .Where(agent => string.Equals(PtyForSession(agent.Id.Value), pty, StringComparison.Ordinal))
+                .Select(agent => agent.Id),
+        ];
+    }
+
+    /** 该会话已有窗格则聚焦并返回 true; 没有窗格返回 false(由调用方决定装载到哪个窗格)。 */
+    private bool FocusExistingSessionPane(SessionId sessionId)
+    {
+        var pane = _panes.Values.FirstOrDefault(candidate => candidate.Session?.Id == sessionId);
+        if (pane is null)
+            return false;
+        FocusPane(pane.Id);
+        return true;
     }
 
     private async void SplitFocusedPane()
@@ -1902,10 +2066,12 @@ public sealed class ChatWindow : IDisposable
                 return;
             case OverviewTargetKind.Pane when item.PaneId is { } paneId:
                 _overviewActive = false;
+                LeavePtyLayer();
                 FocusPane(paneId);
                 return;
             case OverviewTargetKind.Session when item.SessionId is { } sessionId:
                 _overviewActive = false;
+                LeavePtyLayer();
                 var existing = FindPaneBySessionId(sessionId);
                 if (existing is not null)
                     FocusPane(existing.Id);
@@ -1917,6 +2083,24 @@ public sealed class ChatWindow : IDisposable
                 _ = FocusRemotePaneSafeAsync(ptyId, paneId);
                 return;
         }
+    }
+
+    /**
+     * 远程 pty 的会话列表: 由它发布的窗格反推(每个窗格带 SessionId), 加上它上报的输入会话(排最前)。
+     * 常驻 TUI 会发布自己全部窗格, 所以这足以列出"该 pty 当前的会话集合"(不算权威: 真权威表要它在 publish 里带上)。
+     */
+    private static List<string> RemoteSessionsOf(PtyDaemonSessionDto pty)
+    {
+        var sessions = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (pty.AgentSessionId is { Length: > 0 } own && seen.Add(own))
+            sessions.Add(own);
+        foreach (var pane in pty.Panes ?? [])
+        {
+            if (pane.SessionId is { Length: > 0 } sessionId && seen.Add(sessionId))
+                sessions.Add(sessionId);
+        }
+        return sessions;
     }
 
     /** 激活远程窗格: 通知其所属 TUI 把焦点切到该窗格(方案 §4.4 的 focus 控制消息)。 */
@@ -1956,6 +2140,14 @@ public sealed class ChatWindow : IDisposable
             AddPaneRows(catalog, placedPanes, 4, entry => string.Equals(entry.SessionId, sessionId, StringComparison.Ordinal));
         }
 
+        void AddRemotePaneRow(PtyPaneSnapshotDto pane, string ptyId)
+            => _overviewItems.Add(new OverviewItem(
+                $"    pane {pane.Id} - {pane.SessionId ?? pane.Title} (remote)",
+                OverviewTargetKind.RemotePane,
+                pane.Id,
+                null,
+                ptyId));
+
         foreach (var pty in hostPtys)
         {
             _overviewItems.Add(new OverviewItem(
@@ -1972,10 +2164,23 @@ public sealed class ChatWindow : IDisposable
             _overviewItems.Add(new OverviewItem(
                 $"> {pty.Id} (daemon) - {pty.Command} - {pty.Status}{ownership}",
                 OverviewTargetKind.Pty, null, null, pty.Id));
-            foreach (var pane in pty.Panes ?? [])
-                _overviewItems.Add(new OverviewItem($"    pane {pane.Id} - {pane.SessionId ?? pane.Title} (remote)", OverviewTargetKind.RemotePane, pane.Id, null, pty.Id));
+            // 该 daemon pty 托管的会话(三级树的中间层)。常驻 TUI 在别的进程, 本进程只能从它发布的窗格反推:
+            // 每个窗格带 SessionId, 加上它上报的输入会话; 属于本进程的会话在下面按本地会话行列出, 不在这里重复。
+            foreach (var session in RemoteSessionsOf(pty).Where(session => !agents.Any(agent => string.Equals(agent.Id.Value, session, StringComparison.Ordinal))))
+            {
+                _overviewItems.Add(new OverviewItem($"  {session}", OverviewTargetKind.None, null, null, pty.Id));
+                foreach (var pane in (pty.Panes ?? []).Where(pane => string.Equals(pane.SessionId, session, StringComparison.Ordinal)))
+                    AddRemotePaneRow(pane, pty.Id);
+            }
+
+            // 归属未知的远程窗格也不能丢。
+            foreach (var pane in (pty.Panes ?? []).Where(pane => string.IsNullOrEmpty(pane.SessionId)))
+                AddRemotePaneRow(pane, pty.Id);
+
+            // 本进程归属该 daemon pty 的会话, 以及为它开的终端窗格(EnterPty 的窗格级订阅)。
             foreach (var agent in agents.Where(candidate => string.Equals(PtyForSession(candidate.Id.Value), pty.Id, StringComparison.Ordinal)))
                 AddSessionRow(agent.Id.Value);
+            AddPaneRows(catalog, placedPanes, 4, entry => string.Equals(entry.PtyId, pty.Id, StringComparison.Ordinal));
         }
 
         // 不归属任何已列 Pty 的会话与窗格: 会话按 id, 窗格统一落入“未分组”。
@@ -1994,11 +2199,20 @@ public sealed class ChatWindow : IDisposable
     }
 
     /**
-     * 进入 Pty: 已有窗格直接聚焦; 本进程的 shell pty 无窗格时绑一个终端窗格(与普通终端无异)。
-     * daemon/远程 pty 的窗格级 attach 不在阶段 1。
+     * 进入 Pty = **整屏换到"这个 pty 这一层"**(不是 detach, 也不是新增一个窗格和会话并排):
+     * 树是 pty > session > pane, pty 是 session 的上一层容器; 这一层与 tmux 的空 session 同形 ——
+     * 内容是一个能跑普通命令(或操作对面程序)的真终端, 同时 Ctrl+X 仍归 DSH。
+     * - 本进程 host pty, 或 daemon 里任何别的 pty → 那个 shell / 那个常驻 DSH 的画面(订阅镜像 + 按键写回);
+     * - 只有"本 TUI 自己所在的 pty"例外(画面就是眼前这份 UI, 镜像会回环) → 由 DSH 为这一层托一个本地 shell;
+     * - 连 shell 都起不来(受限环境 / GPU 模式等) → 内容留空, 但状态行与 Ctrl+X 照常可用。
+     * 退出这一层: Ctrl+X - / 在该层里选中一个会话 / 从总览激活会话或窗格。
      */
     private void EnterPty(string ptyId)
     {
+        if (_ptyLayer is { } layer && string.Equals(layer.LayerPtyId, ptyId, StringComparison.Ordinal))
+            return;
+        LeavePtyLayer();
+
         foreach (var entry in Catalog())
         {
             if (string.Equals(entry.PtyId, ptyId, StringComparison.Ordinal) && _panes.ContainsKey(entry.Id))
@@ -2010,13 +2224,129 @@ public sealed class ChatWindow : IDisposable
 
         if (PtyHost.Default.Get(ptyId) is { } session && session.Status != PtySessionStatus.Exited)
         {
-            var id = _nextPaneId++;
-            AddPane(new ShellPane(this, id, session, Math.Max(1, _paneArea.Width), Math.Max(1, _paneArea.Height)), null);
+            AddPtyLayerPane(ptyId, new LocalTerminalBacking(session));
             return;
         }
 
-        InputPane.AppendRaw($"  pty {ptyId} 暂无可进入的窗格(daemon/远程 pty 需窗格级 attach)\n");
+        if (_daemonPtys.FirstOrDefault(pty => string.Equals(pty.Id, ptyId, StringComparison.Ordinal)) is { } daemonPty)
+        {
+            // 这一层必须是**终端**: pty 的程序本来就是 shell → 用它(订阅 + 按键写回);
+            // 否则(常驻 DSH, 含本 TUI 自己所在的、别人的) → 由 DSH 另托一个本地 shell。
+            // 绝不把别人的对话界面镜像进来当"这一层的内容"(那是 session 层, 不是 pty 层)。
+            if (PtyShell.IsShellCommand(daemonPty.Command))
+                _ = SubscribePtyLayerAsync(ptyId);
+            else
+                _ = OpenPtyLayerWithHostedShellAsync(ptyId);
+            return;
+        }
+
+        InputPane.AppendRaw($"  pty {ptyId} 不在 daemon 里, 也无法在本进程进入\n");
     }
+
+    /** 退出 pty 层视图(关掉这一层的窗格: 托管的 shell / 订阅随之释放), 回到会话视图。 */
+    internal void LeavePtyLayer()
+    {
+        if (_ptyLayer is not { } layer)
+            return;
+        _ptyLayer = null;
+        if (_panes.ContainsKey(layer.Id))
+            RemovePane(layer.Id);
+        RenderVersion++;
+    }
+
+    /** 开一个"pty 层"窗格: backing 为 null 表示这一层起不了 shell(只剩状态行, Ctrl+X 仍可用)。 */
+    private void AddPtyLayerPane(string ptyId, ITerminalBacking? backing)
+    {
+        var pane = new ShellPane(this, _nextPaneId++, backing, Math.Max(20, _paneArea.Width), Math.Max(4, _paneArea.Height - 1), ptyId);
+        pane.LayerBanner = PtyLayerStatusText(ptyId);
+        AddPane(pane, null);
+        _ptyLayer = pane;
+        RenderVersion++;
+    }
+
+    /** daemon 里程序就是 shell 的 pty: 订阅它的字节流, 按键写回那个 shell(进这一层 = 进那个 shell)。 */
+    private async Task SubscribePtyLayerAsync(string ptyId)
+    {
+        try
+        {
+            var backing = await DaemonPtyAccess.EnterAsync(ptyId, Math.Max(4, _paneArea.Height - 1), Math.Max(20, _paneArea.Width));
+            QueueAction(() => AddPtyLayerPane(ptyId, backing));
+        }
+        catch (Exception error)
+        {
+            // 订阅不上也仍然给这一层(空白 + 状态行): 至少 Ctrl+X 可用。
+            QueueAction(() =>
+            {
+                InputPane.AppendRaw($"  进入 pty {ptyId} 失败: {error.Message}\n");
+                AddPtyLayerPane(ptyId, null);
+            });
+        }
+    }
+
+    /** 程序不是 shell 的 pty(常驻 DSH): 由 DSH 为这一层托一个本地 shell; 起不来就给空白层。 */
+    private async Task OpenPtyLayerWithHostedShellAsync(string ptyId)
+    {
+        ITerminalBacking? backing = null;
+        var shell = PtyShell.Resolve();
+        if (PtyShell.Exists(shell))
+        {
+            try
+            {
+                var session = await PtyHost.Default.StartAsync(new PtyStartInfo
+                {
+                    FileName = shell,
+                    Arguments = PtyShell.Arguments(shell),
+                    WorkingDirectory = InputPane.CurrentCwd(),
+                    Environment = PtyShell.ChildEnvironment(),
+                    Rows = Math.Max(4, _paneArea.Height - 1),
+                    Columns = Math.Max(20, _paneArea.Width),
+                });
+                backing = new LocalTerminalBacking(session);
+            }
+            catch (Exception)
+            {
+                // 拉不起 shell: 这一层只给状态行, 不阻塞进入(受限环境/GPU 模式仍需响应 Ctrl+X)。
+            }
+        }
+
+        QueueAction(() => AddPtyLayerPane(ptyId, backing));
+    }
+
+    /** pty 层状态行(底部横幅): 当前在哪一层、该 pty 的会话列表(当前会话带 `*`)、可用快捷键。 */
+    private string PtyLayerStatusText(string ptyId)
+    {
+        var dto = _daemonPtys.FirstOrDefault(pty => string.Equals(pty.Id, ptyId, StringComparison.Ordinal));
+        var local = SessionsInPty(ptyId);
+        var remote = RemoteOf(dto).Where(id => local.All(session => !string.Equals(session.Value, id, StringComparison.Ordinal))).ToList();
+        var order = new List<string>([.. local.Select(session => session.Value), .. remote]);
+        var current = CurrentSessionId(dto);
+        var list = order.Count == 0
+            ? "会话: (无)"
+            : "会话: " + string.Join(' ', order.Select((id, index) =>
+                $"{index + 1}:{ShortSession(id)}{(string.Equals(id, current, StringComparison.Ordinal) ? "*" : "")}"));
+        return $"[pty {ptyId}] 层 - {list} - Ctrl+X ,/. 切会话 - Ctrl+X W 总览 - Ctrl+X D 离开 DSH";
+    }
+
+    /** 该 daemon pty 发布上来的会话 id(没有该 pty 时为空)。 */
+    private static List<string> RemoteOf(PtyDaemonSessionDto? pty)
+        => pty is null ? [] : RemoteSessionsOf(pty);
+
+    /** 状态行里的会话简写: `session-` 前缀加前 8 位(完整 id 在总览树里)。 */
+    private static string ShortSession(string sessionId)
+    {
+        const int prefix = 8;
+        const string name = "session-";
+        if (!sessionId.StartsWith(name, StringComparison.Ordinal))
+            return sessionId;
+        var start = name.Length;
+        return sessionId[start..Math.Min(sessionId.Length, start + prefix)];
+    }
+
+    /** 本 TUI 所在的 pty id(daemon 启动子进程时注入): 会话兜底归属与"是否是自己这层"共用同一真相。 */
+    private static string? ResidentPtyId
+        => Environment.GetEnvironmentVariable(PtySessionProtocol.SessionVariable) is { Length: > 0 } resident
+            ? resident
+            : null;
 
     /** 会话所属 pty: daemon 上报的归属优先(跨进程), 否则常驻进程自身所在的 pty; 都没有返回 null。 */
     private string? PtyForSession(string sessionId)
@@ -2026,8 +2356,7 @@ public sealed class ChatWindow : IDisposable
             if (string.Equals(pty.AgentSessionId, sessionId, StringComparison.Ordinal))
                 return pty.Id;
         }
-        var resident = Environment.GetEnvironmentVariable(PtySessionProtocol.SessionVariable);
-        return resident is { Length: > 0 } ? resident : null;
+        return ResidentPtyId;
     }
 
     /** 窗格目录(按 pane 树顺序): 总览与 pane_list/pane_read 共用同一份归属推导(CatalogEntryOf), 避免两套真相。 */
@@ -2036,7 +2365,8 @@ public sealed class ChatWindow : IDisposable
         var entries = new List<PaneCatalogEntry>(_panes.Count);
         foreach (var id in PaneTree.PaneIds(_paneTree))
         {
-            if (_panes.TryGetValue(id, out var pane))
+            // pty 层窗格是"一层"而不是会话里的窗格: 不进窗格目录(总览树/pane_list 都不该把它当 pane)。
+            if (_panes.TryGetValue(id, out var pane) && pane is not ShellPane { LayerPtyId: { Length: > 0 } })
                 entries.Add(CatalogEntryOf(pane));
         }
         return entries;
@@ -2194,7 +2524,8 @@ public sealed class ChatWindow : IDisposable
         if (rect.Width <= 0 || rect.Height <= 0)
             return;
         var text = FocusedPane.StatusText;
-        if (_panes.Count > 1)
+        // pty 层占整屏, 不存在"第 N/M 个窗格"的说法(那一层不是会话里的窗格)。
+        if (_panes.Count > 1 && _ptyLayer is null)
         {
             var order = PaneTree.PaneIds(_paneTree);
             var index = 0;

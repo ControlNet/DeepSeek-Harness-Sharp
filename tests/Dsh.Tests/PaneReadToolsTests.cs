@@ -283,6 +283,9 @@ public sealed class PaneReadToolsTests : IDisposable
             ControlSends.Add((ptyId, kind, paneId, payload));
             return Task.CompletedTask;
         }
+
+        public Task<ITerminalBacking> EnterAsync(string ptyId, int rows, int columns)
+            => throw new NotSupportedException("pane read tools fake does not enter daemon ptys");
     }
 
     public void Dispose() => TempTree.Delete(_homeDir);

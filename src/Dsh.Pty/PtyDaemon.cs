@@ -357,6 +357,46 @@ public sealed class PtyDaemon : IAsyncDisposable
                     return true;
                 }
 
+            case "subscribe":
+                {
+                    var id = request.Id;
+                    var session = id is null ? null : _host.Get(id);
+                    if (session is null)
+                    {
+                        await WriteResponseAsync(stream, new PtyDaemonResponse { Ok = false, Error = $"PTY session not found: {id}" }, cancellationToken);
+                        return false;
+                    }
+
+                    if (session.Status == PtySessionStatus.Exited)
+                    {
+                        await WriteResponseAsync(stream, new PtyDaemonResponse { Ok = false, Error = $"PTY session {id} has exited" }, cancellationToken);
+                        return false;
+                    }
+
+                    // 窗格级订阅: 不排空历史、不改 attached 状态, 与独占 attach 并行存在。
+                    using var subscription = session.Subscribe();
+                    await WriteResponseAsync(stream, new PtyDaemonResponse { Ok = true, Session = ToDto(session.ToInfo()) }, cancellationToken);
+                    await TunnelSubscriptionAsync(subscription.Output, session, stream, cancellationToken);
+                    return true;
+                }
+
+            case "snapshot":
+                {
+                    var id = request.Id;
+                    var session = id is null ? null : _host.Get(id);
+                    if (session is null)
+                    {
+                        await WriteResponseAsync(stream, new PtyDaemonResponse { Ok = false, Error = $"PTY session not found: {id}" }, cancellationToken);
+                        return false;
+                    }
+
+                    await WriteResponseAsync(
+                        stream,
+                        new PtyDaemonResponse { Ok = true, Snapshot = Encoding.UTF8.GetString(session.Snapshot()) },
+                        cancellationToken);
+                    return false;
+                }
+
             case "identify":
                 {
                     if (request.Id is not { Length: > 0 } id)
@@ -449,6 +489,51 @@ public sealed class PtyDaemon : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+        }
+    }
+
+    /**
+     * 窗格级订阅隧道: 输出侧来自会话的订阅通道(首帧是快照), 输入侧原样写入会话。
+     * 任一侧结束(客户端断开/会话退出)即收尾; 订阅随 using 释放, 不影响会话本身。
+     */
+    private static async Task TunnelSubscriptionAsync(
+        ChannelReader<byte[]> output,
+        PtySession session,
+        NetworkStream stream,
+        CancellationToken cancellationToken)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var pumpToSocket = PumpSubscriptionToSocketAsync(output, stream, linked.Token);
+        var pumpToSession = PumpSocketToSessionAsync(session, stream, linked.Token);
+        await Task.WhenAny(pumpToSocket, pumpToSession);
+        linked.Cancel();
+
+        try
+        {
+            await pumpToSocket;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        try
+        {
+            await pumpToSession;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static async Task PumpSubscriptionToSocketAsync(
+        ChannelReader<byte[]> output,
+        NetworkStream stream,
+        CancellationToken cancellationToken)
+    {
+        await foreach (var chunk in output.ReadAllAsync(cancellationToken))
+        {
+            await stream.WriteAsync(chunk, cancellationToken);
+            await stream.FlushAsync(cancellationToken);
         }
     }
 

@@ -50,6 +50,18 @@ public static class PtyShell
     public static bool Exists(string shell)
         => OperatingSystem.IsWindows() ? ExistsOnPath(shell) : File.Exists(shell);
 
+    /**
+     * 某个 pty 的命令行是否就是个 shell: 决定"进入该 pty"能否直接用它自己的前台程序当终端。
+     * 不是 shell(如常驻 DSH 的 `dsharp tui`)时, 这一层由 DSH 另托一个终端 —— 层里必须是终端, 不能是别人的对话界面。
+     */
+    public static bool IsShellCommand(string command)
+    {
+        var space = command.IndexOf(' ');
+        var token = (space < 0 ? command : command[..space]).Trim().Trim('"');
+        var name = Path.GetFileNameWithoutExtension(token);
+        return name.ToLowerInvariant() is "pwsh" or "powershell" or "pwsh-preview" or "cmd" or "bash" or "sh" or "dash" or "zsh" or "ksh" or "fish" or "nu";
+    }
+
     private static bool ExistsOnPath(string executable)
     {
         var path = Environment.GetEnvironmentVariable("PATH");
