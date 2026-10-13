@@ -19,6 +19,7 @@ public sealed class VkCardSelectionTests
 
     /** 按 PCI 槽位选卡必须选到"就是那块卡"; 认不出的槽位要回退而不是抛异常。 */
     [Fact]
+    [Trait("Category", "OnlyGpu")]
     public void SelectByPciSlot_PicksThatDevice_AndFallsBackWhenUnknown()
     {
         string? slot;
