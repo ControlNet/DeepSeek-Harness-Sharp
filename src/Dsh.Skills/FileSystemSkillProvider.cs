@@ -2,6 +2,7 @@ using Dsh.Runtime;
 
 namespace Dsh.Skills;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record SkillFilesystemConfig
 {
     public string ProviderName { get; init; } = FileSystemSkillProvider.DefaultProviderName;

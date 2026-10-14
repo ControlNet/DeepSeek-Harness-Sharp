@@ -5,9 +5,34 @@ namespace Dsh.Tests.Runtime;
 
 public class RuntimePluginTests
 {
+    /** 事件订阅快照(Context.EventSubscriptions)是公开只读入口: 供以后的 /inspect event 类别使用。 */
     [Fact]
-    public async Task Plugin_AppliesAndDisposes()
+    public void Context_EventSubscriptions_Are_Readable_And_Unregister_Removes_Them()
     {
+        var ctx = new Context();
+        Assert.DoesNotContain(ctx.EventSubscriptions, entry => entry.NotificationType == nameof(ProbeNotification));
+
+        var unregister = ctx.On(new ProbeNotificationHandler());
+        var subscription = Assert.Single(ctx.EventSubscriptions, entry => entry.NotificationType == nameof(ProbeNotification));
+        Assert.False(subscription.Global);
+        Assert.False(subscription.Prepend);
+
+        unregister();
+        Assert.DoesNotContain(ctx.EventSubscriptions, entry => entry.NotificationType == nameof(ProbeNotification));
+    }
+
+    private sealed record ProbeNotification : INotification
+    {
+        public static string EventName => "probe.notification";
+    }
+
+    private sealed class ProbeNotificationHandler : INotificationHandler<ProbeNotification>
+    {
+        public ValueTask Handle(ProbeNotification notification) => ValueTask.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Plugin_AppliesAndDisposes()    {
         var ctx = new Context();
         var events = new List<string>();
         var definition = PluginDefinition.From((_, _) =>

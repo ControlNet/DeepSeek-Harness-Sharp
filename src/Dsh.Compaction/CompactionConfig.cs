@@ -19,6 +19,7 @@ public sealed record ModelCompactPolicyConfig : CompactionPolicyConfig
     public required string Model { get; init; }
 }
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record BasicCompactionConfig : CompactionPolicyConfig
 {
     public IReadOnlyList<ModelCompactPolicyConfig>? ModelPolicies { get; init; }

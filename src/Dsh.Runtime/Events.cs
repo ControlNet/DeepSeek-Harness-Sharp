@@ -8,7 +8,11 @@ public sealed record EventOptions
     public bool Global { get; init; }
 }
 
-internal sealed class EventTable
+/** 一条已登记的事件订阅的只读描述(Handler 取分发桥类型名): 供 /inspect 的 event 类别等只读自省使用(以后应用)。 */
+public sealed record EventSubscription(string NotificationType, string Handler, bool Global, bool Prepend);
+
+/** 事件订阅表: 按通知类型登记处理器, 分发不依赖反射(AOT 友好)。 */
+public sealed class EventTable
 {
     internal readonly Dictionary<Type, List<TypedHook>> TypedHooks = [];
     internal readonly Lock Sync = new();
@@ -54,6 +58,25 @@ internal sealed class EventTable
         return hooks
             .Where(hook => hook.Options.Global || filter is null || filter(hook.Ctx))
             .ToList();
+    }
+
+    /** 全部订阅的只读快照(按通知类型名、处理器名排序); 只读自省用, 不影响分发。 */
+    public IReadOnlyList<EventSubscription> Snapshot()
+    {
+        lock (Sync)
+        {
+            return
+            [
+                .. TypedHooks
+                    .SelectMany(entry => entry.Value.Select(hook => new EventSubscription(
+                        entry.Key.Name,
+                        hook.Handler.GetType().Name,
+                        hook.Options.Global,
+                        hook.Options.Prepend)))
+                    .OrderBy(subscription => subscription.NotificationType, StringComparer.Ordinal)
+                    .ThenBy(subscription => subscription.Handler, StringComparer.Ordinal),
+            ];
+        }
     }
 }
 

@@ -3,6 +3,7 @@ using Dsh.Runtime;
 
 namespace Dsh.Tools;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record LocalFsConfig
 {
     public string? Cwd { get; init; }

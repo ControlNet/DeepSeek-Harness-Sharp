@@ -6,6 +6,7 @@ using Dsh.Llm;
 
 namespace Dsh.Goal;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record GoalToolsConfig
 {
     public const long DefaultBlockedAfterConsecutiveRounds = 3;

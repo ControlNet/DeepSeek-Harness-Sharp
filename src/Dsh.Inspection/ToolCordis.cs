@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Core;
 using Dsh.Llm;
@@ -17,12 +17,15 @@ public static class ToolCordis
     private const string ListDescription =
         "List the inspectable runtime directory in four categories: service (plugin-provided services and their "
         + "provider state), event (notification listener table), config (settings.yaml sections), and tool (tool "
-        + "schemas visible to this agent). Read-only; the event category is reported unavailable in this build. Call "
-        + "cordis_inspect_query with a category and an item name from the result for details.";
+        + "schemas visible to this agent; each config item is prefixed [set]/[default]/[unknown] and uses path keys " 
+        + "like logging.keep_days or plugins.\"@deepseek-ai/dsh-toon\".input). Read-only; the event category is " 
+        + "not wired yet. Call "
+        + "cordis_inspect_query with a category and a name from the result for details.";
 
     private const string QueryDescription =
         "Read one inspectable item selected by category and name, both taken from cordis_inspect_list. Read-only: it "
-        + "never modifies runtime state and cannot invoke services or tools; event queries fail in this build.";
+        + "never modifies runtime state and cannot invoke services or tools. For config, name is a path key: it " 
+        + "returns the settings.yaml value, or the schema default when unset.";
 
     internal static IReadOnlyList<ToolDefinition> Definitions(Context ctx)
         => [ListDefinition(ctx), QueryDefinition(ctx)];

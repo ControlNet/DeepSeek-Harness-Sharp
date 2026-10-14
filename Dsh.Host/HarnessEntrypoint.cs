@@ -61,6 +61,14 @@ public static class HarnessEntrypoint
                 case "--gpu-card" when index + 1 < args.Length:
                     gpuCard = args[++index];
                     break;
+                // 子命令自己的选项(config schema / storage 等): 原样透传给子命令解析, 不当未知选项报错。
+                case "--write-template" or "--verify" or "--json" or "--markdown" or "--md":
+                    positional.Add(args[index]);
+                    break;
+                case "--path" when index + 1 < args.Length:
+                    positional.Add(args[index]);
+                    positional.Add(args[++index]);
+                    break;
                 case "--help" or "-h":
                     PrintUsage();
                     return 0;
@@ -163,6 +171,8 @@ public static class HarnessEntrypoint
                 return await BootCli.RunHeadlessAsync(harnessHome, string.Join(' ', positional.Skip(1)));
             case "storage":
                 return await RunStorageCommandAsync(harnessHome, positional.Skip(1).ToList());
+            case "config":
+                return await RunConfigCommandAsync(positional.Skip(1).ToList());
             case "register-terminal":
                 return await TerminalEntryRegistration.RegisterAsync(Console.Out);
             case null:
@@ -204,6 +214,45 @@ public static class HarnessEntrypoint
      * `dsharp storage paths`: 打印 §18 解析后的根与各分区, 便于核对 settings.storage 是否生效。
      * `dsharp storage migrate <old> <new>`: 手动搬运(与启动时的自动迁移共用同一实现)。
      */
+    /** `dsharp config schema`: 打印/校验/重写配置面(顶层 settings + 各插件参数, 全部来自编译期生成的 schema)。 */
+    private static async Task<int> RunConfigCommandAsync(List<string> arguments)
+    {
+        var subcommand = arguments.FirstOrDefault();
+        if (subcommand is null or "schema")
+        {
+            var path = ValueOf(arguments, "--path") ?? SettingsTemplate.DefaultPath;
+            if (arguments.Contains("--write-template"))
+            {
+                var changed = SettingsTemplate.Write(path);
+                await Console.Out.WriteLineAsync(changed ? $"settings.yaml 模板已更新: {path}" : $"settings.yaml 模板已是最新: {path}");
+                return 0;
+            }
+            if (arguments.Contains("--verify"))
+            {
+                var problem = SettingsTemplate.Verify(path);
+                if (problem is null)
+                {
+                    await Console.Out.WriteLineAsync($"settings.yaml 模板与配置面一致: {path}");
+                    return 0;
+                }
+                await Console.Error.WriteLineAsync(problem);
+                return 1;
+            }
+            var format = arguments.Contains("--json") ? "json" : arguments.Contains("--markdown") || arguments.Contains("--md") ? "markdown" : "yaml";
+            await Console.Out.WriteAsync(SettingsSchemaCatalog.Render(format));
+            return 0;
+        }
+
+        await Console.Error.WriteLineAsync("dsharp: config requires a subcommand (schema [--json|--markdown|--verify|--write-template])");
+        return 1;
+    }
+
+    private static string? ValueOf(List<string> arguments, string option)
+    {
+        var index = arguments.IndexOf(option);
+        return index >= 0 && index + 1 < arguments.Count ? arguments[index + 1] : null;
+    }
+
     private static async Task<int> RunStorageCommandAsync(HarnessHome home, List<string> arguments)
     {
         var subcommand = arguments.FirstOrDefault();
@@ -308,6 +357,9 @@ public static class HarnessEntrypoint
                    dsharp register-terminal    (Linux: 注册为桌面环境的默认终端)
                    dsharp storage paths        (打印 storage.root 与各分区解析结果)
                    dsharp storage migrate <old> <new>   (手动搬运旧根数据)
+                   dsharp config schema [--json | --markdown]   (列出所有可配置项: 顶层 settings + 各插件参数)
+                   dsharp config schema --verify [--path <模板>]        (校验 settings.yaml 模板是否与配置面同步)
+                   dsharp config schema --write-template [--path <模板>] (用配置面重写模板生成块)
 
             Options:
               --session <id>     open an existing session (gui) or resume one (tui)

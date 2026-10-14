@@ -2,6 +2,7 @@ using Dsh.Runtime;
 
 namespace Dsh.Web;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record WebRuntimeConfig(string? SearchProvider = null, string? FetchProvider = null);
 
 public sealed class WebRuntime : Service

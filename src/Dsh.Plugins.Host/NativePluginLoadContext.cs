@@ -66,17 +66,21 @@ public sealed class NativePluginLoadContext : IDisposable
     private readonly HashSet<int> _inFlight = [];
     private NativePluginState _state = NativePluginState.Loaded;
 
-    internal NativePluginLoadContext(nint library, DshPluginApiBinding binding, string sourcePath, string package)
+    internal NativePluginLoadContext(nint library, DshPluginApiBinding binding, string sourcePath, string package, string settingsSchemaJson = "")
     {
         _library = library;
         _binding = binding;
         SourcePath = sourcePath;
         Package = package;
+        SettingsSchemaJson = settingsSchemaJson;
     }
 
     public string Package { get; }
 
     public string SourcePath { get; }
+
+    /** 插件在 dsh_plugin_settings_schema 里声明的配置面(JSON); 未声明为空串。 */
+    public string SettingsSchemaJson { get; }
 
     public NativePluginState State
     {

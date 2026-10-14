@@ -7,6 +7,7 @@ using Dsh.Runtime.Events;
 
 namespace Dsh.Checkpoints;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record CheckpointPolicy
 {
     public const int DefaultMaxPoints = 256;

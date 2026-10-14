@@ -79,7 +79,7 @@ public sealed class IdeHistoryTests(ITestOutputHelper output)
         }
     }
 
-    /** VS Code Remote(SSH 到 Linux/容器)把 User 数据放在 ~/.vscode-server/data/User: 那里也要能发现(183.49 实测)。 */
+    /** VS Code Remote(SSH 到 Linux/容器)把 User 数据放在 ~/.vscode-server/data/User: 那里也要能发现。 */
     [Fact]
     public void VSCode_Discovers_SshServerHistory()
     {

@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Core;
 using Dsh.Llm;
@@ -38,6 +38,12 @@ public sealed class InspectionToolsTests
         Assert.True(config["available"]!.GetValue<bool>());
         Assert.Contains(config["items"]!.AsArray(), item => item!["name"]!.GetValue<string>() == "global_default_model");
         Assert.Contains(config["items"]!.AsArray(), item => item!["name"]!.GetValue<string>() == "plugins");
+        // 可用键(未写进文件也算)与来源标记: 模型据此知道能配什么、哪些键可疑。
+        var configItems = config["items"]!.AsArray();
+        Assert.Contains(configItems, item => item!["name"]!.GetValue<string>() == "logging.keep_days");
+        Assert.Contains(configItems, item => item!["name"]!.GetValue<string>() == "plugins.\"@deepseek-ai/dsh-toon\".output");
+        Assert.Contains(configItems, item => item!["detail"]!.GetValue<string>().StartsWith("[set]", StringComparison.Ordinal));
+        Assert.Contains(configItems, item => item!["detail"]!.GetValue<string>().StartsWith("[default]", StringComparison.Ordinal));
 
         var tool = Category(categories, "tool");
         Assert.True(tool["available"]!.GetValue<bool>());
@@ -82,7 +88,35 @@ public sealed class InspectionToolsTests
 
         var data = await Query(harness, agent, """{"category":"config","name":"global_default_model"}""");
 
-        Assert.Equal("my-provider/some-model", data.GetValue<string>());
+        Assert.Equal("my-provider/some-model", data["value"]!.GetValue<string>());
+        Assert.Equal("settings.yaml", data["source"]!.GetValue<string>());
+    }
+
+    /** 路径键(嵌套段)可查: 以前只认顶层键, providers.my-provider.options.baseUrl 这类完全问不到。 */
+    [Fact]
+    public async Task Query_Config_Path_Key_Resolves_Nested_Value()
+    {
+        using var harness = new Harness();
+        await harness.ComposeAsync();
+        var agent = harness.OpenCreative();
+
+        var data = await Query(harness, agent, """{"category":"config","name":"providers.my-provider.options.baseUrl"}""");
+
+        Assert.Equal("https://example.invalid", data["value"]!.GetValue<string>());
+    }
+
+    /** 没写进文件但可配的键: 返回 schema 默认值(来源标注 default), 模型才能回答"能配什么"。 */
+    [Fact]
+    public async Task Query_Config_Unset_Key_Returns_Schema_Default()
+    {
+        using var harness = new Harness();
+        await harness.ComposeAsync();
+        var agent = harness.OpenCreative();
+
+        var data = await Query(harness, agent, """{"category":"config","name":"plugins.\"@deepseek-ai/dsh-toon\".output"}""");
+
+        Assert.Equal("default", data["source"]!.GetValue<string>());
+        Assert.Equal("true", data["default"]!.GetValue<string>());
     }
 
     [Fact]
@@ -95,7 +129,7 @@ public sealed class InspectionToolsTests
         var result = await harness.Execute("cordis_inspect_query", """{"category":"event","name":"anything"}""", agent);
 
         var failure = Assert.IsType<ToolExecutionResult.Failure>(result);
-        Assert.Contains("event table is internal", string.Concat(failure.Content.OfType<TextBlock>().Select(block => block.Text)));
+        Assert.Contains("not wired yet", string.Concat(failure.Content.OfType<TextBlock>().Select(block => block.Text)));
     }
 
     [Fact]

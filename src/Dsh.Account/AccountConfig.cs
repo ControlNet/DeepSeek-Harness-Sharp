@@ -1,6 +1,7 @@
-﻿namespace Dsh.Account;
+namespace Dsh.Account;
 
 /** 账号功能配置: 默认走官方地址, 私有部署只经本库插件参数覆盖, 不写入源码仓库。 */
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record AccountConfig
 {
     public const string DefaultPlatformOrigin = "https://platform.deepseek.com";

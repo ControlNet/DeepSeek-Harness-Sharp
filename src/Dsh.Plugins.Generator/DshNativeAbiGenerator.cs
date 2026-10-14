@@ -67,7 +67,7 @@ public sealed partial class DshNativeAbiGenerator : IIncrementalGenerator
         if (spec is null)
             return;
         ReportUnknownRoles(context, hostApiType, pluginApiType, constants, [
-            "log", "register_tool", "unregister_tool", "package", "activate", "deactivate", "invoke_tool",
+            "log", "register_tool", "unregister_tool", "get_config", "package", "activate", "deactivate", "invoke_tool",
         ]);
 
         var pluginInterface = compilation.GetTypeByMetadataName(NativePluginInterfaceMetadataName);
@@ -109,6 +109,7 @@ public sealed partial class DshNativeAbiGenerator : IIncrementalGenerator
             EntryExport = Constant(constants, "EntryPoint", ""),
             PackageExport = Constant(constants, "PackageExport", ""),
             VersionExport = Constant(constants, "VersionExport", ""),
+            SettingsSchemaExport = Constant(constants, "SettingsSchemaExport", ""),
             Ok = Constant(constants, "Ok", 0),
             Error = Constant(constants, "Error", -1),
             LogInfo = Constant(constants, "LogInfo", 1),
@@ -120,6 +121,7 @@ public sealed partial class DshNativeAbiGenerator : IIncrementalGenerator
             HostLogField = Field(hostApiType, roleAttribute, "log"),
             HostRegisterToolField = Field(hostApiType, roleAttribute, "register_tool"),
             HostUnregisterToolField = Field(hostApiType, roleAttribute, "unregister_tool"),
+            HostGetConfigField = Field(hostApiType, roleAttribute, "get_config"),
         };
         foreach (var (type, role, field) in new[]
         {
@@ -130,6 +132,7 @@ public sealed partial class DshNativeAbiGenerator : IIncrementalGenerator
             (hostApiType.Name, "log", spec.HostLogField),
             (hostApiType.Name, "register_tool", spec.HostRegisterToolField),
             (hostApiType.Name, "unregister_tool", spec.HostUnregisterToolField),
+            (hostApiType.Name, "get_config", spec.HostGetConfigField),
         })
         {
             if (field.Length == 0)
@@ -217,6 +220,8 @@ public sealed partial class DshNativeAbiGenerator : IIncrementalGenerator
 
         public string VersionExport { get; set; } = "";
 
+        public string SettingsSchemaExport { get; set; } = "";
+
         public int Ok { get; set; }
 
         public int Error { get; set; }
@@ -238,5 +243,7 @@ public sealed partial class DshNativeAbiGenerator : IIncrementalGenerator
         public string HostRegisterToolField { get; set; } = "";
 
         public string HostUnregisterToolField { get; set; } = "";
+
+        public string HostGetConfigField { get; set; } = "";
     }
 }

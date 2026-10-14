@@ -7,6 +7,7 @@ using Dsh.Interaction;
 
 namespace Dsh.Skills;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record SkillRegistryConfig
 {
     public int CollectCacheMaxEntries { get; init; } = SkillRegistry.DefaultCollectCacheEntries;

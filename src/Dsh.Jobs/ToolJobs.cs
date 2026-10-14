@@ -14,6 +14,7 @@ public enum CompletionDelivery
     Wakeup,
 }
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record ToolJobsConfig
 {
     public long WaitTimeoutMs { get; init; } = 30_000;

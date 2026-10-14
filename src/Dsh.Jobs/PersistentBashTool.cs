@@ -7,6 +7,7 @@ using Dsh.Llm;
 
 namespace Dsh.Jobs;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record PersistentBashConfig
 {
     public const string DefaultDescription = "Run commands in a persistent bash shell. State, including the current directory and exported environment variables, persists across calls for this agent.";

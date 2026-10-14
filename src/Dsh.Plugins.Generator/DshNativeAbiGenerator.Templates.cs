@@ -36,6 +36,10 @@ public sealed partial class DshNativeAbiGenerator
             builder.AppendLine($"    [global::System.Runtime.InteropServices.UnmanagedCallersOnly(EntryPoint = {Literal(spec.VersionExport)}, CallConvs = [typeof(global::System.Runtime.CompilerServices.CallConvCdecl)])]");
             builder.AppendLine("    public static int Version() => AbiVersion;");
             builder.AppendLine();
+            builder.AppendLine($"    [global::System.Runtime.InteropServices.UnmanagedCallersOnly(EntryPoint = {Literal(spec.SettingsSchemaExport)}, CallConvs = [typeof(global::System.Runtime.CompilerServices.CallConvCdecl)])]");
+            builder.AppendLine("    public static int SettingsSchema(byte* output, int capacity)");
+            builder.AppendLine("        => global::Dsh.Plugins.Native.NativeUtf8.Write(global::Dsh.Plugins.Native.NativePluginSettingsJson.Render(Plugin.Settings), output, capacity);");
+            builder.AppendLine();
             builder.AppendLine($"    [global::System.Runtime.InteropServices.UnmanagedCallersOnly(EntryPoint = {Literal(spec.EntryExport)}, CallConvs = [typeof(global::System.Runtime.CompilerServices.CallConvCdecl)])]");
             builder.AppendLine("    public static int Entry(global::Dsh.Plugins.Native.DshHostApi* host, global::Dsh.Plugins.Native.DshPluginApi* api)");
             builder.AppendLine("    {");
@@ -57,6 +61,7 @@ public sealed partial class DshNativeAbiGenerator
             builder.AppendLine("        {");
             builder.AppendLine("            _context = new global::Dsh.Plugins.Native.NativePluginContext(_host, context);");
             builder.AppendLine("            global::Dsh.Plugins.Native.DshNativePluginRuntime.ToolRegistry = _context;");
+            builder.AppendLine("            global::Dsh.Plugins.Native.DshNativePluginRuntime.ConfigSource = _context.ConfigJson;");
             builder.AppendLine("            foreach (var tool in Plugin.Tools)");
             builder.AppendLine("                _context.RegisterTool(tool.Name, tool.Description, tool.ParametersJson, tool.Invoke);");
             builder.AppendLine($"            _context.Log({spec.LogInfo}, $\"{{Plugin.Package}} activated\");");
@@ -75,6 +80,7 @@ public sealed partial class DshNativeAbiGenerator
             builder.AppendLine("    {");
             builder.AppendLine($"        _context?.Log({spec.LogInfo}, $\"{{Plugin.Package}} deactivated\");");
             builder.AppendLine("        global::Dsh.Plugins.Native.DshNativePluginRuntime.ToolRegistry = null;");
+            builder.AppendLine("        global::Dsh.Plugins.Native.DshNativePluginRuntime.ConfigSource = null;");
             builder.AppendLine("        _context = null;");
             builder.AppendLine("    }");
             builder.AppendLine();
@@ -119,6 +125,8 @@ public sealed partial class DshNativeAbiGenerator
             builder.AppendLine("    int RegisterTool(nint context, string name, string description, string parametersJson, int handle);");
             builder.AppendLine();
             builder.AppendLine("    int UnregisterTool(nint context, int handle);");
+            builder.AppendLine();
+            builder.AppendLine("    int GetConfig(nint context, nint output, int capacity);");
             builder.AppendLine("}");
             builder.AppendLine();
             builder.AppendLine("/** 生成的宿主侧 ABI 粘合:主机函数表、回调蹦床与插件函数表绑定。 */");
@@ -127,6 +135,7 @@ public sealed partial class DshNativeAbiGenerator
             builder.AppendLine("    private static readonly delegate* unmanaged[Cdecl]<void*, int, byte*, void> LogCallback = &Log;");
             builder.AppendLine("    private static readonly delegate* unmanaged[Cdecl]<void*, byte*, byte*, byte*, int, int> RegisterToolCallback = &RegisterTool;");
             builder.AppendLine("    private static readonly delegate* unmanaged[Cdecl]<void*, int, int> UnregisterToolCallback = &UnregisterTool;");
+            builder.AppendLine("    private static readonly delegate* unmanaged[Cdecl]<void*, byte*, int, int> GetConfigCallback = &GetConfig;");
             builder.AppendLine("    private static readonly global::Dsh.Plugins.Native.DshHostApi* Table;");
             builder.AppendLine();
             builder.AppendLine("    static DshNativeHostApi()");
@@ -137,6 +146,7 @@ public sealed partial class DshNativeAbiGenerator
             builder.AppendLine($"        Table->{spec.HostLogField} = LogCallback;");
             builder.AppendLine($"        Table->{spec.HostRegisterToolField} = RegisterToolCallback;");
             builder.AppendLine($"        Table->{spec.HostUnregisterToolField} = UnregisterToolCallback;");
+            builder.AppendLine($"        Table->{spec.HostGetConfigField} = GetConfigCallback;");
             builder.AppendLine("    }");
             builder.AppendLine();
             builder.AppendLine("    public static IDshNativeHostCalls? Calls { get; set; }");
@@ -155,6 +165,10 @@ public sealed partial class DshNativeAbiGenerator
             builder.AppendLine("    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]");
             builder.AppendLine("    private static int UnregisterTool(void* context, int handle)");
             builder.AppendLine($"        => Calls?.UnregisterTool((nint)context, handle) ?? {spec.Error};");
+            builder.AppendLine();
+            builder.AppendLine("    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]");
+            builder.AppendLine("    private static int GetConfig(void* context, byte* output, int capacity)");
+            builder.AppendLine("        => Calls?.GetConfig((nint)context, (nint)output, capacity) ?? 0;");
             builder.AppendLine("}");
             builder.AppendLine();
             builder.AppendLine("/** 插件函数表的托管绑定:握手与两段式工具调用。 */");

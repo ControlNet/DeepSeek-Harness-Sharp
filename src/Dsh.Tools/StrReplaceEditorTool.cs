@@ -7,6 +7,7 @@ using Dsh.Llm;
 
 namespace Dsh.Tools;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record StrReplaceEditorConfig
 {
     public int MaxOutputChars { get; init; } = 16_000;

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
 
 namespace Dsh.Plugins.Generator;
@@ -90,9 +91,8 @@ public sealed partial class DshPluginCatalogGenerator : IIncrementalGenerator
             : DescribeAssembly(context, compilation.Assembly, pluginInterface, pluginAttribute, entryAttribute);
         if (own.Count > 0)
             context.AddSource(ManifestHintName, Templates.RenderManifest(Deduplicate(own), DescribeSharedDependencies(compilation)));
-        // 配置面与清单同源: 有插件声明就有 ISettingsSchemaProvider(宿主按 SchemaTypeSuffix 约定聚合)。
-        if (own.Count > 0)
-            EmitSettingsSchema(context, compilation);
+        // 配置面与清单同源: 插件程序集产出插件参数面, 标了 [DshSettingsDocument] 的程序集产出顶层文档面。
+        EmitSettingsSchema(context, compilation);
 
         var isHost = options.GlobalOptions.TryGetValue(HostPropertyName, out var value)
             && string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
@@ -101,6 +101,7 @@ public sealed partial class DshPluginCatalogGenerator : IIncrementalGenerator
 
         var registrations = new List<PluginRegistration>(own);
         var bootstraps = new List<string>();
+        var schemas = new List<string>();
         if (bootstrap is not null)
             bootstraps.Add($"global::{NamespaceFor(compilation.AssemblyName ?? compilation.Assembly.Name)}{BootstrapTypeSuffix}");
         foreach (var assembly in compilation.SourceModule.ReferencedAssemblySymbols)
@@ -111,10 +112,13 @@ public sealed partial class DshPluginCatalogGenerator : IIncrementalGenerator
                 registrations.AddRange(DescribeAssembly(context, assembly, pluginInterface, pluginAttribute, entryAttribute));
             if (assembly.GetTypeByMetadataName($"{NamespaceFor(assembly.Name)}{BootstrapTypeSuffix}") is { } referenced)
                 bootstraps.Add(referenced.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
+            // 配置面同样按类型名约定聚合: 编译期就登记, 不依赖运行期插件探测或装载顺序。
+            if (assembly.GetTypeByMetadataName($"{NamespaceFor(assembly.Name)}{SchemaTypeSuffix}") is { } schema)
+                schemas.Add(schema.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
         }
-        if (registrations.Count == 0 && bootstraps.Count == 0)
+        if (registrations.Count == 0 && bootstraps.Count == 0 && schemas.Count == 0)
             return;
-        context.AddSource(CatalogHintName, Templates.RenderCatalog(Deduplicate(registrations), bootstraps));
+        context.AddSource(CatalogHintName, Templates.RenderCatalog(Deduplicate(registrations), bootstraps, schemas));
     }
 
     /** 汇编级显式注册:源生成 JSON 上下文 + 标了 DshPluginInitializer 的静态方法(字典序保证确定性)。 */

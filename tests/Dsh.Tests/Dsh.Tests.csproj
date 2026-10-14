@@ -44,6 +44,13 @@
     <None Include="..\Dsh.ManagedPluginSample\bin\$(Configuration)\$(TargetFramework)\Dsh.ManagedPluginSample.deps.json"
           Link="Dsh.ManagedPluginSample.deps.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      发布版 settings.yaml 模板: 内容文件不会穿过传递项目引用(Dsh.Boot 是经 Dsh.Host 间接引用的),
+      而 SettingsTemplateTests 校验的正是"随包发布的这份", 所以显式复制, 避免它悄悄缺失。
+    -->
+    <None Include="..\..\src\Dsh.Boot\Profiles\Templates\settings.yaml"
+          Link="Profiles\Templates\settings.yaml"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

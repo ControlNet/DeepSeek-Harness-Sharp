@@ -1,4 +1,4 @@
-﻿using System.Runtime.ExceptionServices;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Runtime;
@@ -8,6 +8,7 @@ using Dsh.Llm;
 
 namespace Dsh.Subagent;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record SubagentToolConfig
 {
     public required string Provider { get; init; }

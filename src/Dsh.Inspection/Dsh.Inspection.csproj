@@ -8,6 +8,7 @@
     <ProjectReference Include="..\Dsh.Core\Dsh.Core.csproj" />
     <ProjectReference Include="..\Dsh.Llm\Dsh.Llm.csproj" />
     <ProjectReference Include="..\Dsh.Presets\Dsh.Presets.csproj" />
+    <ProjectReference Include="..\Dsh.Boot\Dsh.Boot.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

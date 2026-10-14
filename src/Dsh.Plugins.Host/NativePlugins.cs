@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using Dsh.Plugins.Generated;
 using Dsh.Plugins.Native;
 
@@ -61,6 +62,11 @@ public interface INativePlugin : IDisposable
 
     NativePluginState State { get; }
 
+    /** 该插件在 settings.yaml 里的参数(JSON 文本), 由桥接在激活前写入; 插件通过 GetConfig 回调取走。 */
+    string ConfigJson { get; }
+
+    void Configure(string configJson);
+
     void Activate(INativePluginHost host);
 
     void Deactivate();
@@ -93,6 +99,11 @@ public sealed unsafe class NativePluginLibrary : INativePlugin
 
     public NativePluginLoadContext Context => _context;
 
+    /** 该插件在 settings.yaml 里的参数(JSON 文本), 由桥接在激活前写入; 插件通过 GetConfig 回调取走。 */
+    public string ConfigJson { get; private set; } = "";
+
+    public void Configure(string configJson) => ConfigJson = configJson;
+
     /** 按结构化原因装载原生插件:缺导出 / ABI 版本不符 / 非共享库 / quarantine 都给出明确原因。 */
     public static NativePluginLoad TryLoad(string path)
     {
@@ -121,7 +132,10 @@ public sealed unsafe class NativePluginLibrary : INativePlugin
                 return NativePluginLoad.Fail(Map(status), Describe(status, fullPath));
             }
             var binding = new DshPluginApiBinding(api);
-            var context = new NativePluginLoadContext(library, binding, fullPath, NativeUtf8.Read(api.Package));
+            var package = NativeUtf8.Read(api.Package);
+            var schemaJson = ReadSettingsSchema(library);
+            var context = new NativePluginLoadContext(library, binding, fullPath, package, schemaJson);
+            NativePluginSchema.Register(package, schemaJson);
             return NativePluginLoad.Ok(new NativePluginLibrary(context));
         }
         catch (Exception error)
@@ -129,6 +143,30 @@ public sealed unsafe class NativePluginLibrary : INativePlugin
             NativeLibrary.Free(library);
             return NativePluginLoad.Fail(NativePluginFailureKind.LoadFault,
                 $"原生插件握手抛异常: {error.Message}");
+        }
+    }
+
+    /** 可选的配置面导出:插件的 dsh_plugin_settings_schema 走两段式缓冲返回 JSON; 没导出或读失败返回空串。 */
+    private static unsafe string ReadSettingsSchema(nint library)
+    {
+        if (!NativeLibrary.TryGetExport(library, DshNativePluginAbi.SettingsSchemaExport, out var symbol))
+            return "";
+        try
+        {
+            var call = (delegate* unmanaged[Cdecl]<byte*, int, int>)symbol;
+            var required = call(null, 0);
+            if (required <= 0 || required > DshNativePluginAbi.ConfigCapacityHint)
+                return "";
+            var buffer = new byte[required];
+            fixed (byte* pointer = buffer)
+            {
+                var written = call(pointer, required);
+                return written <= 0 ? "" : Encoding.UTF8.GetString(buffer, 0, written);
+            }
+        }
+        catch (Exception)
+        {
+            return "";
         }
     }
 
@@ -211,6 +249,22 @@ public sealed unsafe class NativePluginLibrary : INativePlugin
             if (plugin?._host is null)
                 return DshNativePluginAbi.Error;
             return plugin._host.UnregisterTool(handle) ? DshNativePluginAbi.Ok : DshNativePluginAbi.Error;
+        }
+
+        /** 两段式缓冲回传该插件的参数 JSON(output 为 0 或容量不足时只报所需长度)。 */
+        public int GetConfig(nint context, nint output, int capacity)
+        {
+            var json = FromHandle(context)?.ConfigJson ?? "";
+            var bytes = Encoding.UTF8.GetBytes(json);
+            if (output == 0 || capacity < bytes.Length)
+                return bytes.Length;
+            unsafe
+            {
+                var destination = (byte*)output;
+                for (var index = 0; index < bytes.Length; index++)
+                    destination[index] = bytes[index];
+            }
+            return bytes.Length;
         }
     }
 }

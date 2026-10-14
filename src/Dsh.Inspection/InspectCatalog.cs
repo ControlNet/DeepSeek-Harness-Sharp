@@ -1,14 +1,16 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text.Json.Nodes;
+using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Llm;
+using Dsh.Plugins;
 using Dsh.Runtime;
 using Dsh.Runtime.Composition;
 
 namespace Dsh.Inspection;
 
 /** 创造模式的只读运行时数据源:服务、事件、配置、工具四类,全部来自公开可解析的运行时状态。
- *  事件表(EventTable)在 Dsh.Runtime 内为 internal,没有公开只读枚举入口,故该类别如实降级为不可用。 */
+ *  事件类别尚未接通: EventTable 已公开只读快照(Context.EventSubscriptions), 留待以后应用。 */
 public static class InspectCatalog
 {
     public const string Service = "service";
@@ -21,7 +23,7 @@ public static class InspectCatalog
     public static readonly IReadOnlyList<string> Categories = [Service, Event, Config, Tool];
 
     private const string EventUnavailable =
-        "the event table is internal to Dsh.Runtime and exposes no read-only enumeration API in this build";
+        "the event category is not wired yet; Context.EventSubscriptions already exposes a public read-only subscription snapshot";
 
     public static JsonObject List(Context ctx, ScopeKey? scope, string? category)
     {
@@ -56,10 +58,123 @@ public static class InspectCatalog
             _ => throw new InvalidOperationException($"unknown inspect category \"{category}\""),
         };
 
+    /**
+     * 配置类别: 同时给出**可用键**(来自编译期配置面 schema: 顶层 settings + 各插件参数, 路径形如
+     * `logging.keep_days` 或 `plugins."@deepseek-ai/dsh-toon".input`)与**文件里已写的键**。
+     * detail 前缀标明来源: [set]=已设置 / [default]=未设置但可配 / [unknown]=schema 里没有(疑似拼错或已废弃)。
+     */
     private static JsonObject ConfigList(Context ctx)
-        => TryLoadSettings(ctx, out var settings, out var reason)
-            ? Available(Config, ConfigItems(settings))
-            : Unavailable(Config, reason);
+    {
+        var entries = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (path, spec) in ConfigPaths())
+        {
+            entries[path] = spec.DefaultLiteral is { Length: > 0 } literal
+                ? $"[default] {spec.Kind} = {literal}"
+                : $"[default] {spec.Kind}";
+        }
+        if (TryLoadSettings(ctx, out var settings, out var reason))
+        {
+            foreach (var (path, value) in Flatten(settings, ""))
+            {
+                entries[path] = entries.TryGetValue(path, out var known)
+                    ? known.StartsWith("[default]", StringComparison.Ordinal)
+                        ? $"[set] {Describe(value)} ({known})"
+                        : $"[set] {Describe(value)}"
+                    : $"[unknown] {Describe(value)} (schema 里没有这个键; 疑似拼错或已废弃)";
+            }
+        }
+        else
+        {
+            entries["(settings)"] = $"[unknown] {reason}";
+        }
+        var array = new JsonArray();
+        foreach (var (path, detail) in entries)
+            array.Add(Item(path, detail));
+        return Available(Config, array);
+    }
+
+    /** 单个配置键(路径): 已设置返回值; 未设置但可配返回 schema 里的默认值; 两者都不中报未知键。 */
+    private static JsonObject ConfigQuery(Context ctx, string name)
+    {
+        var normalized = name.Trim().Trim('"');
+        if (TryLoadSettings(ctx, out var settings, out _)
+            && Flatten(settings, "").FirstOrDefault(entry => string.Equals(entry.Path, normalized, StringComparison.Ordinal)) is { Path: not null } found)
+        {
+            return new JsonObject
+            {
+                ["category"] = Config,
+                ["name"] = name,
+                ["data"] = new JsonObject
+                {
+                    ["path"] = found.Path,
+                    ["source"] = "settings.yaml",
+                    ["value"] = ToNode(found.Value),
+                },
+            };
+        }
+        if (ConfigPaths().FirstOrDefault(entry => string.Equals(entry.Path, normalized, StringComparison.Ordinal)) is { Path: not null } spec)
+        {
+            return new JsonObject
+            {
+                ["category"] = Config,
+                ["name"] = name,
+                ["data"] = new JsonObject
+                {
+                    ["path"] = spec.Path,
+                    ["source"] = "default",
+                    ["kind"] = spec.Spec.Kind.ToString(),
+                    ["default"] = spec.Spec.DefaultLiteral,
+                },
+            };
+        }
+        throw new InvalidOperationException(
+            $"unknown inspectable config key \"{name}\"; use cordis_inspect_list with category \"config\" to see available keys");
+    }
+
+    /** schema 里的全部配置路径(顶层文档 + 各插件参数)。 */
+    private static List<(string Path, PluginSettingSpec Spec)> ConfigPaths()
+    {
+        var paths = new List<(string, PluginSettingSpec)>();
+        foreach (var provider in SettingsSchemaCatalog.All())
+        {
+            var prefix = provider.IsPlugin ? $"plugins.\"{provider.Package}\"" : "";
+            Collect(provider.Settings, prefix, paths);
+        }
+        return paths;
+    }
+
+    private static void Collect(IReadOnlyList<PluginSettingSpec> settings, string prefix, List<(string, PluginSettingSpec)> paths)
+    {
+        foreach (var spec in settings)
+        {
+            var path = prefix.Length == 0 ? spec.Key : $"{prefix}.{spec.Key}";
+            paths.Add((path, spec));
+            if (spec.Children is { Count: > 0 } children)
+                Collect(children, path, paths);
+        }
+    }
+
+    /** settings.yaml 的原始映射摊平成路径(嵌套映射展开, 列表按 `key[0]` 索引)。 */
+    private static List<(string Path, object? Value)> Flatten(Dictionary<string, object?> mapping, string prefix)
+    {
+        var entries = new List<(string, object?)>();
+        foreach (var (key, value) in mapping)
+        {
+            var path = prefix.Length == 0 ? key : $"{prefix}.{key}";
+            entries.Add((path, value));
+            switch (value)
+            {
+                case Dictionary<string, object?> nested:
+                    entries.AddRange(Flatten(nested, path));
+                    break;
+                case List<object?> sequence:
+                    for (var index = 0; index < sequence.Count && index < 10; index++)
+                        entries.Add(($"{path}[{index}]", sequence[index]));
+                    break;
+            }
+        }
+        return entries;
+    }
 
     private static JsonArray ServiceItems(Context ctx)
     {
@@ -76,14 +191,6 @@ public static class InspectCatalog
         var array = new JsonArray();
         foreach (var (name, detail) in items.OrderBy(entry => entry.Name, StringComparer.Ordinal))
             array.Add(Item(name, detail));
-        return array;
-    }
-
-    private static JsonArray ConfigItems(Dictionary<string, object?> settings)
-    {
-        var array = new JsonArray();
-        foreach (var (key, value) in settings.OrderBy(entry => entry.Key, StringComparer.Ordinal))
-            array.Add(Item(key, Describe(value)));
         return array;
     }
 
@@ -121,20 +228,6 @@ public static class InspectCatalog
                 ["pluginServices"] = Strings(activation.ProvidedNames.OrderBy(value => value, StringComparer.Ordinal)),
             },
         };
-
-    private static JsonObject ConfigQuery(Context ctx, string name)
-    {
-        if (!TryLoadSettings(ctx, out var settings, out var reason))
-            throw new InvalidOperationException(reason);
-        if (!settings.TryGetValue(name, out var value))
-            throw new InvalidOperationException($"unknown inspectable config key \"{name}\"");
-        return new JsonObject
-        {
-            ["category"] = Config,
-            ["name"] = name,
-            ["data"] = ToNode(value),
-        };
-    }
 
     private static JsonObject ToolQuery(Context ctx, ScopeKey? scope, string name)
     {

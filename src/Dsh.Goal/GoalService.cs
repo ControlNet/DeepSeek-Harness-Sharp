@@ -50,6 +50,7 @@ public static class GoalProjectionDefinition
     }
 }
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record GoalServiceConfig
 {
     public long DefaultMaxGoalRounds { get; init; } = GoalService.DefaultMaxGoalRoundsValue;

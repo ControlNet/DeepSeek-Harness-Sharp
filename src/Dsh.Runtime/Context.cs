@@ -84,6 +84,9 @@ public sealed class Context
 
     public EventsService Events => _events ??= new EventsService(this, EventTable);
 
+    /** 事件订阅的只读快照: 供 /inspect 的 event 类别等自省读取(以后应用)。 */
+    public IReadOnlyList<EventSubscription> EventSubscriptions => EventTable.Snapshot();
+
     public LoggerService Logger => _logger ??= new LoggerService(this, Logging);
 
     public Logger LoggerFor(string? name = null) => Logger.Invoke(name, this);

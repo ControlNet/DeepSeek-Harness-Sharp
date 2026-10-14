@@ -5,6 +5,7 @@ using Dsh.Llm;
 
 namespace Dsh.Tools;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record BashToolConfig
 {
     public string? Cwd { get; init; }

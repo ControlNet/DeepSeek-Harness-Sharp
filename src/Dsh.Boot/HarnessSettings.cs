@@ -1,9 +1,11 @@
+using Dsh.Plugins;
 using Dsh.Runtime.Logging;
 using YamlDotNet.Serialization;
 
 namespace Dsh.Boot;
 
-/** 配置文件位置：%USERPROFILE%\.dsh\settings.yaml（即 $DSH_HOME/settings.yaml，默认 ~/.dsh/settings.yaml） */
+/** 配置文件位置：%USERPROFILE%\.dsh\settings.yaml（即 $DSH_HOME/settings.yaml，默认 ~/.dsh/settings.yaml）。标记为 settings 文档: 生成器据此产出顶层配置面(schema/模板/校验共用)。 */
+[DshSettingsDocument]
 public sealed class HarnessSettings
 {
     [YamlMember(Alias = "global_default_model")]

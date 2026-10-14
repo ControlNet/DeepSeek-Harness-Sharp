@@ -6,6 +6,7 @@ using Dsh.Llm;
 
 namespace Dsh.PtyTerminal;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record TerminalToolsConfig
 {
     public const int DefaultMaxResultBytes = 256 * 1024;

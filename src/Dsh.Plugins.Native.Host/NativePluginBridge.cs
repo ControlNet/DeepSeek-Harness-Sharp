@@ -14,11 +14,12 @@ public static class NativePluginBridge
         """);
 
     public static PluginDefinition CreateDefinition(INativePlugin plugin)
-        => PluginDefinition.From((ctx, _) =>
+        => PluginDefinition.From((ctx, config) =>
         {
             var tools = ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)
                 ?? throw new InvalidOperationException($"native plugin \"{plugin.Package}\" requires the tools service");
             var logger = ctx.LoggerFor("native-plugin");
+            plugin.Configure(SettingsJson.Write(config));
             var host = new Host(plugin, tools, logger);
             try
             {

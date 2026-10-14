@@ -4,6 +4,7 @@ using Dsh.Llm;
 
 namespace Dsh.Compaction;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record ToolResultPruneConfig
 {
     public int? ThresholdChars { get; init; }

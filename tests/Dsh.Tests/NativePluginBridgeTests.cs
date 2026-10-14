@@ -54,9 +54,42 @@ public sealed class NativePluginBridgeTests
         Assert.Empty(create().Inject);
     }
 
+    /** 原生 ABI 的配置通道: 宿主把 plugins.<包名> 段编成 JSON, 激活前交给插件(旧插件不取即无感)。 */
     [Fact]
-    public async Task RuntimeUnregisterTool_RemovesFromToolRuntime()
+    public void Activation_Passes_Plugin_Settings_As_Json()
     {
+        var ctx = new Context();
+        _ = new SystemPrompt(ctx, new SystemPromptConfig());
+        _ = new ToolRuntime(ctx);
+        var plugin = new FakeNativePlugin();
+
+        using var registration = (IDisposable)NativePluginBridge.CreateDefinition(plugin).Apply(ctx, new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["timeoutMs"] = 2500L,
+            ["enabled"] = true,
+            ["label"] = "hi \"there\"",
+            ["tags"] = new List<object?> { "a", 2L },
+        })!;
+
+        Assert.Equal("""{"timeoutMs":2500,"enabled":true,"label":"hi \"there\"","tags":["a",2]}""", plugin.ConfigJson);
+    }
+
+    /** 没有配置段时交空串(插件按默认值走), 而不是 "null" 或 "{}"。 */
+    [Fact]
+    public void Activation_Without_Settings_Passes_Empty_Config()
+    {
+        var ctx = new Context();
+        _ = new SystemPrompt(ctx, new SystemPromptConfig());
+        _ = new ToolRuntime(ctx);
+        var plugin = new FakeNativePlugin();
+
+        using var registration = (IDisposable)NativePluginBridge.CreateDefinition(plugin).Apply(ctx, null)!;
+
+        Assert.Equal("", plugin.ConfigJson);
+    }
+
+    [Fact]
+    public async Task RuntimeUnregisterTool_RemovesFromToolRuntime()    {
         var ctx = new Context();
         _ = new SystemPrompt(ctx, new SystemPromptConfig());
         var tools = new ToolRuntime(ctx);
@@ -169,6 +202,11 @@ public sealed class NativePluginBridgeTests
         private int _lastHandle;
 
         public string Package => "test.native";
+
+        /** 宿主在激活前写入的参数(JSON), 用于验证原生插件拿到的是自己那份 plugins.<包名> 段。 */
+        public string ConfigJson { get; private set; } = "";
+
+        public void Configure(string configJson) => ConfigJson = configJson;
 
         public bool Deactivated { get; private set; }
 

@@ -3,6 +3,7 @@ using Dsh.Core;
 
 namespace Dsh.Jobs;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record LocalJobsConfig
 {
     public int MaxConcurrentJobsPerOwner { get; init; } = DefaultMaxConcurrentJobsPerOwner;

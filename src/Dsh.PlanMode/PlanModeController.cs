@@ -10,6 +10,7 @@ using Dsh.Llm;
 
 namespace Dsh.PlanMode;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record PlanModeConfig
 {
     public const string DefaultSection = "请针对我当前的需求和已有的上下文内容,制定出可行的计划";

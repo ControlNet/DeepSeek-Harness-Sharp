@@ -11,6 +11,10 @@ public static class DshNativePluginAbi
     public const string PackageExport = "dsh_plugin_package";
     /** 可选的独立版本导出:插件声明自身 ABI 版本,使宿主在握手前就能精确区分“版本不符”与“其它拒绝”。 */
     public const string VersionExport = "dsh_plugin_abi_version";
+    /** 可选的配置面导出:插件声明自己认哪些参数(JSON),宿主据此把参数传下去并纳入文档。 */
+    public const string SettingsSchemaExport = "dsh_plugin_settings_schema";
+    /** 配置回传缓冲上限:超出即视为插件不认这份配置,宿主只记 WARN(避免无界重试)。 */
+    public const int ConfigCapacityHint = 64 * 1024;
 
     public const int Ok = 0;
     public const int Error = -1;
@@ -47,6 +51,8 @@ public static class DshAbiRoles
     public const string RegisterTool = "register_tool";
     /** 运行期反注册(ABI v1 的可选回调):插件按句柄撤销已登记的工具。 */
     public const string UnregisterTool = "unregister_tool";
+    /** 参数回传(可选回调):插件按"两段式缓冲"取自己那份 plugins.<包名> 配置(JSON)。 */
+    public const string GetConfig = "get_config";
 }
 
 /** 宿主提供给插件的函数表;Context 是不透明句柄,插件只负责原样回传。 */
@@ -62,6 +68,12 @@ public unsafe struct DshHostApi
     /** 可选回调:旧宿主此指针为 null,插件据此判断能否在运行期反注册。 */
     [DshAbiRole(DshAbiRoles.UnregisterTool)]
     public delegate* unmanaged[Cdecl]<void*, int, int> UnregisterTool;
+    /**
+     * 可选回调(追加在末尾,旧插件只读前缀所以不受影响):读取该插件在 settings.yaml 里的参数(JSON)。
+     * 两段式缓冲:output 为 null 或容量不足时只返回所需字节数,否则写出内容并返回写入长度;无配置返回 0。
+     */
+    [DshAbiRole(DshAbiRoles.GetConfig)]
+    public delegate* unmanaged[Cdecl]<void*, byte*, int, int> GetConfig;
 }
 
 /** 插件提供给宿主的函数表;Package 指向插件内静态 UTF-8 缓冲区,插件卸载前一直有效。 */
@@ -131,6 +143,22 @@ public sealed unsafe class NativePluginContext(DshHostApi* host, void* context) 
 
     public string? Dispatch(int handle, string inputJson)
         => _handlers.TryGetValue(handle, out var invoke) ? invoke(inputJson) : null;
+
+    /** 该插件在 settings.yaml 里的参数(JSON 文本);宿主不支持或没有配置时返回空串。 */
+    public string ConfigJson()
+    {
+        if (host->GetConfig is null)
+            return "";
+        var required = host->GetConfig(context, null, 0);
+        if (required <= 0 || required > DshNativePluginAbi.ConfigCapacityHint)
+            return "";
+        var buffer = new byte[required];
+        fixed (byte* pointer = buffer)
+        {
+            var written = host->GetConfig(context, pointer, required);
+            return written <= 0 ? "" : Encoding.UTF8.GetString(buffer, 0, written);
+        }
+    }
 }
 
 /** 插件侧 UTF-8 互操作助手。 */

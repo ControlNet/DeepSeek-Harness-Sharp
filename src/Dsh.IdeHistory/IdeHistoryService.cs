@@ -3,6 +3,7 @@ using Dsh.Runtime;
 namespace Dsh.IdeHistory;
 
 /** `@deepseek-ai/dsh-ide-history` 的插件参数: 各 provider 开关、时间线开关与上限。默认只开 provider、时间线关。 */
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record IdeHistoryOptions
 {
     public const int DefaultTimelineLimit = 50;

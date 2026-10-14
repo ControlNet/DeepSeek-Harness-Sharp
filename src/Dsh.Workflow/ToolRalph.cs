@@ -6,6 +6,7 @@ using Dsh.Llm;
 
 namespace Dsh.Workflow;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record ToolRalphConfig
 {
     public string SubagentProvider { get; init; } = "spawn";

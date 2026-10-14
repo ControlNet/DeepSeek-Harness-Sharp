@@ -4,6 +4,7 @@ namespace Dsh.PtyTerminal;
  * 真 PTY 终端后端配置: 键名与旧 shell 后端一致, 默认沿用 rows=24/cols=80 与相同的时序/留存上限。
  * command/args 留空时按平台解析 shell(Windows 取 pwsh/powershell/cmd, Unix 取 $SHELL 或 /bin/bash)。
  */
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record PtyTerminalConfig
 {
     public const string DefaultBackendType = "shell";

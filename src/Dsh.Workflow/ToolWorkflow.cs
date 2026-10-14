@@ -7,6 +7,7 @@ using Dsh.Llm;
 
 namespace Dsh.Workflow;
 
+[global::Dsh.Plugins.DshPluginSettings]
 public sealed record ToolWorkflowConfig
 {
     public string ToolName { get; init; } = "workflow";
