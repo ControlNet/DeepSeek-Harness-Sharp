@@ -5,12 +5,21 @@ using Dsh.Llm;
 using Dsh.Pty;
 using Dsh.Runtime;
 using Dsh.Tui;
+using Dsh.Tui.Services;
 using System.Text;
 using System.Threading.Channels;
 
 namespace Dsh.Tests;
 
+/**
+ * 改/依赖全局 `TuiTheme` 的用例所在 collection: 禁用并行, 避免与 TuiRunner(带 settings → `TuiTheme.Load`)
+ * 之类的用例互相改主题色。
+ */
+[CollectionDefinition("TuiTheme", DisableParallelization = true)]
+public sealed class TuiThemeCollection;
+
 /** TUI 分屏: pane 增删/焦点、鼠标与键盘路由、Ctrl+X W 总览。 */
+[Collection("TuiTheme")]
 public sealed class ChatWindowPaneTests : IDisposable
 {
     private readonly string _homeDir = Path.Combine(
@@ -777,7 +786,103 @@ public sealed class ChatWindowPaneTests : IDisposable
         chat.Dispose();
     }
 
-    private async Task<(ChatWindow Chat, Context Ctx, AgentRegistry Agents, AgentLoopAgent First, AgentLoopAgent Second)> CreateChatWithTwoAgents()
+
+    /** 主题色接进渲染: 箭头/分隔线/状态栏取 TuiTheme 的可配值, 窗格标题仍取 Highlight(§8)。 */
+    [Fact]
+    public async Task Theme_Colors_Reach_Arrow_Divider_And_Status()
+    {
+        var (chat, _, _, _, _) = await CreateChatWithTwoAgents();
+        var (arrow, divider, status) = (TuiTheme.Arrow, TuiTheme.Divider, TuiTheme.Status);
+        var configuredArrow = CellColor.FromRgb(0x0a, 0x0b, 0x0c);
+        var configuredDivider = CellColor.FromRgb(0x1a, 0x1b, 0x1c);
+        var configuredStatus = CellColor.FromRgb(0x2a, 0x2b, 0x2c);
+        try
+        {
+            TuiTheme.Arrow = configuredArrow;
+            TuiTheme.Divider = configuredDivider;
+            TuiTheme.Status = configuredStatus;
+            var layout = LayoutEngine.Calculate(120, 40);
+            var grid = DrawFrameReturningGrid(chat, layout);
+
+            // 聚焦窗格头: 行首箭头用 arrowColor, 标题用 Highlight(分屏时聚焦窗格不在第 0 列, 故按 ">" 定位)。
+            var headerX = -1;
+            for (var x = 0; x < grid.Width; x++)
+            {
+                if (grid[x, 0].Character == '>')
+                {
+                    headerX = x;
+                    break;
+                }
+            }
+
+            Assert.True(headerX >= 0, "聚焦窗格头应当画了 > 箭头");
+            Assert.Equal(configuredArrow, grid[headerX, 0].Foreground);
+            Assert.Equal(TuiTheme.Highlight, grid[headerX + 2, 0].Foreground);
+            // 输入栏上方的横分隔线整行用 dividerColor。
+            var dividerRow = layout.Input.Y - 1;
+            Assert.Equal(configuredDivider, grid[0, dividerRow].Foreground);
+            Assert.Equal(configuredDivider, grid[grid.Width - 1, dividerRow].Foreground);
+            // 状态栏文本用 statusColor。
+            Assert.Equal(configuredStatus, grid[0, layout.Status.Y].Foreground);
+        }
+        finally
+        {
+            TuiTheme.Arrow = arrow;
+            TuiTheme.Divider = divider;
+            TuiTheme.Status = status;
+        }
+
+        chat.Dispose();
+    }
+
+    /** 失败的工具结果整行按 TuiTheme.Error 着色(§8): 新建窗口时回放既有历史即可看到。 */
+    [Fact]
+    public async Task Failed_Tool_Result_Uses_Error_Theme_Color()
+    {
+        var ctx = new Context();
+        _ = new SessionStore(ctx);
+        var agents = new AgentRegistry(ctx);
+        _ = new AgentLoop(ctx);
+        CommandsService.Register(ctx);
+        var handle = await agents.Create(new CreateAgentOptions(
+            SessionId.Create($"session-{Guid.NewGuid():N}"),
+            null,
+            new AgentOptions("deepseek-official", "deepseek-v4-flash")), TestContext.Current.CancellationToken);
+        var agent = (AgentLoopAgent)handle.Agent;
+        await agent.WhenIdle();
+        var callId = ToolCallId.Create("call-error");
+        agent.Session.Append(new TurnStartPayload(1));
+        agent.Session.Append(new ToolCallPayload(1, 1, callId, "bash", """{"command":"false"}"""));
+        agent.Session.Append(
+            new ToolResultPayload(
+                1,
+                1,
+                MessageFactory.CreateToolResultMessage(callId, [new TextBlock("bash 失败输出")], true),
+                new ToolResultErrorInfo("bash", "TOOL_FAILED")),
+            new SurfaceOp.Append());
+        agent.Session.Append(new TurnEndPayload(1, new TurnEndReason.Completed()));
+
+        // 窗口后建 → 走回放路径(用户消息只在回放时渲染, 工具结果两条路都渲染)。
+        using var chat = new ChatWindow(ctx, agent, HarnessHome.Resolve(_homeDir));
+        var layout = LayoutEngine.Calculate(120, 40);
+        var grid = DrawFrameReturningGrid(chat, layout);
+        var rows = new List<string>();
+        for (var y = 0; y < grid.Height; y++)
+        {
+            var chars = new char[grid.Width];
+            for (var x = 0; x < grid.Width; x++)
+                chars[x] = grid[x, y].Character;
+            rows.Add(new string(chars).Replace("\0", ""));
+        }
+
+        var row = rows.FindIndex(line => line.Contains("bash 失败输出", StringComparison.Ordinal));
+        Assert.True(row >= 0, "失败的工具结果应当出现在转录里");
+        var column = rows[row].IndexOf("bash 失败输出", StringComparison.Ordinal);
+        Assert.Equal(TuiTheme.Error, grid[column, row].Foreground);
+    }
+
+    private async Task<(ChatWindow Chat, Context Ctx, AgentRegistry Agents, AgentLoopAgent First, AgentLoopAgent Second)> CreateChatWithTwoAgents(
+        TuiSettings? settings = null)
     {
         var ctx = new Context();
         _ = new SessionStore(ctx);
@@ -786,9 +891,44 @@ public sealed class ChatWindowPaneTests : IDisposable
         CommandsService.Register(ctx);
         var first = await CreateAgent(agents);
         var second = await CreateAgent(agents);
-        var chat = new ChatWindow(ctx, first, HarnessHome.Resolve(_homeDir));
+        var chat = new ChatWindow(ctx, first, HarnessHome.Resolve(_homeDir), null, settings);
         chat.AddPane(second, SplitOrientation.Vertical);
         return (chat, ctx, agents, first, second);
+    }
+
+    /** settings.yaml 的 tui 配色参数要真的生效(settings → TuiTheme → 渲染): 写 highlightColor/arrowColor 后标题与箭头用它。 */
+    [Fact]
+    public async Task TuiSettings_Colors_Reach_Rendered_Title_And_Arrow()
+    {
+        Directory.CreateDirectory(_homeDir);
+        File.WriteAllText(
+            Path.Combine(_homeDir, "settings.yaml"),
+            "plugins:\n  \"@deepseek-ai/dsh-tui\":\n    highlightColor: \"#0a0b0c\"\n    arrowColor: \"#010203\"\n");
+        var (arrow, highlight) = (TuiTheme.Arrow, TuiTheme.Highlight);
+        try
+        {
+            var (chat, _, _, _, _) = await CreateChatWithTwoAgents(new TuiSettings(HarnessHome.Resolve(_homeDir)));
+            var grid = DrawFrameReturningGrid(chat, LayoutEngine.Calculate(120, 40));
+            var headerX = -1;
+            for (var x = 0; x < grid.Width; x++)
+            {
+                if (grid[x, 0].Character == '>')
+                {
+                    headerX = x;
+                    break;
+                }
+            }
+
+            Assert.True(headerX >= 0, "聚焦窗格头应当画了 > 箭头");
+            Assert.Equal(CellColor.FromRgb(0x01, 0x02, 0x03), grid[headerX, 0].Foreground);
+            Assert.Equal(CellColor.FromRgb(0x0a, 0x0b, 0x0c), grid[headerX + 2, 0].Foreground);
+            chat.Dispose();
+        }
+        finally
+        {
+            TuiTheme.Arrow = arrow;
+            TuiTheme.Highlight = highlight;
+        }
     }
 
     /** 假的 daemon pty 访问: 发布一个远端 pty(ptyId 为 null 时列表为空), 进入时交出记录用的假终端 backing。 */

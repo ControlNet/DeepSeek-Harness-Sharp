@@ -149,7 +149,10 @@ public sealed class TranscriptRenderer
                     }
                     var label = result.Error is not null ? $"x {result.Error.Code} " : "↳ ";
                     var start = _buffer.Length;
+                    // 失败的工具结果整行按错误色着色(颜色由 TuiTheme.Error 决定, 设 Default 即不着色)。
+                    _pendingTint = result.Error is not null ? TranscriptTint.Error : TranscriptTint.None;
                     Append($"  {label}{text}\n");
+                    _pendingTint = TranscriptTint.None;
                     if (foldToolResult)
                     {
                         _folds.Add(new TranscriptFold
@@ -165,7 +168,9 @@ public sealed class TranscriptRenderer
                 }
             case TurnEndPayload { Reason: TurnEndReason.Error error }:
                 _assistantStreamed = false;
+                _pendingTint = TranscriptTint.Error;
                 Append($"  x turn failed: {error.Failure.Code}: {error.Failure.Message}\n");
+                _pendingTint = TranscriptTint.None;
                 break;
             case TurnEndPayload:
                 _assistantStreamed = false;

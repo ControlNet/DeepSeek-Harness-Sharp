@@ -743,12 +743,12 @@ public sealed class ChatPane : ITuiPane
             if (line.Separator)
             {
                 for (var x = rect.X; x < rect.Right && x < grid.Width; x++)
-                    grid[x, y] = new Cell('─', AnsiColor.Default, AnsiColor.Default, CellStyle.Dim);
+                    grid[x, y] = new Cell('─', TuiTheme.Divider, AnsiColor.Default, CellStyle.Dim);
                 continue;
             }
 
             CellText.Draw(grid, rect.X, y, line.Text,
-                line.Header ? AnsiColor.BrightCyan : AnsiColor.Default,
+                line.Header ? TuiTheme.Highlight : CellColor.Default,
                 AnsiColor.Default,
                 line.Header ? CellStyle.Bold : CellStyle.Dim);
         }
@@ -1110,12 +1110,13 @@ public sealed class ChatPane : ITuiPane
                 // provider 的 --type 候选按已注册适配器动态取(插件启用/停用后依然正确)。
                 "type" => Candidates([.. KnownProviderTypes()]),
                 "action" when string.Equals(descriptor.Name, "timestamp", StringComparison.OrdinalIgnoreCase) => Candidates("jump", "revert", "fork"),
-                "seq" when string.Equals(descriptor.Name, "timestamp", StringComparison.OrdinalIgnoreCase) => Candidates(_window.TimestampCandidates()),
+                "seq" when string.Equals(descriptor.Name, "timestamp", StringComparison.OrdinalIgnoreCase) => _window.TimestampCandidates(),
                 _ => descriptor.Name switch
                 {
                     "model" => Candidates([.. settings.Providers
                         .OrderBy(entry => entry.Key, StringComparer.Ordinal)
-                        .SelectMany(entry => entry.Value.Models.Keys
+                        .SelectMany(entry => ProviderCatalog
+                            .EffectiveModels(entry.Key, entry.Value.Options?.BaseUrl, entry.Value.Models.Keys)
                             .OrderBy(model => model, StringComparer.Ordinal)
                             .Select(model => $"{entry.Key}/{model}"))]),
                     "remove" => Candidates([.. settings.Providers.Keys.OrderBy(name => name, StringComparer.Ordinal)]),
@@ -1805,12 +1806,13 @@ public sealed class ChatPane : ITuiPane
             return;
         var (foreground, background, style) = tints[lineIndex] switch
         {
-            TranscriptTint.DiffAdded => (AnsiColor.Black, AnsiColor.Green, CellStyle.None),
-            TranscriptTint.DiffRemoved => (AnsiColor.BrightWhite, AnsiColor.Red, CellStyle.None),
-            TranscriptTint.DiffTitle => (AnsiColor.BrightCyan, AnsiColor.Default, CellStyle.Bold),
-            _ => (AnsiColor.Default, AnsiColor.Default, CellStyle.None),
+            TranscriptTint.DiffAdded => (CellColor.FromPalette(AnsiColor.Black), CellColor.FromPalette(AnsiColor.Green), CellStyle.None),
+            TranscriptTint.DiffRemoved => (CellColor.FromPalette(AnsiColor.BrightWhite), CellColor.FromPalette(AnsiColor.Red), CellStyle.None),
+            TranscriptTint.DiffTitle => (CellColor.FromPalette(AnsiColor.BrightCyan), CellColor.Default, CellStyle.Bold),
+            TranscriptTint.Error => (TuiTheme.Error, CellColor.Default, CellStyle.None),
+            _ => (CellColor.Default, CellColor.Default, CellStyle.None),
         };
-        if (foreground == AnsiColor.Default && background == AnsiColor.Default && style == CellStyle.None)
+        if (foreground.IsDefault && background.IsDefault && style == CellStyle.None)
             return;
         for (var column = 0; column < rect.Width; column++)
         {

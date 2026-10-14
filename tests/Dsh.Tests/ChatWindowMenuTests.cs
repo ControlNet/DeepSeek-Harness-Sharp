@@ -3,7 +3,9 @@ using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Interaction;
 using Dsh.Llm;
+using Dsh.Persistence;
 using Dsh.Tui;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace Dsh.Tests;
@@ -590,7 +592,8 @@ public class ChatWindowMenuTests : IDisposable
         Press(chat, ConsoleKey.Enter);
 
         frame = DrawFrame(chat);
-        Assert.Contains("> /model deepseek-official/deepseek-v4-flash", frame);
+        // 候选 = 声明 ∪ models.dev 目录, 排序后首个 id 随目录变化, 这里只校验"回填成完整命令"这件事。
+        Assert.Matches(@"> /model deepseek-official/\S+", frame);
         Assert.DoesNotContain("Provider/model", frame);
 
         Press(chat, ConsoleKey.Enter);
@@ -1085,18 +1088,223 @@ public class ChatWindowMenuTests : IDisposable
 
         var entry = Assert.Single(chat.TimestampCandidates());
 
-        Assert.StartsWith("#", entry);
-        Assert.Contains("hello jump target", entry, StringComparison.Ordinal);
+        Assert.StartsWith("#", entry.Value, StringComparison.Ordinal);
+        Assert.Contains("hello jump target", entry.Label, StringComparison.Ordinal);
     }
 
-    private async Task<ChatWindow> CreateChat(Action<Context, CommandsService>? configure = null, string model = "deepseek-v4-flash", bool stubModelCommand = true)
+
+
+    /** fork 出来的会话带上"[0, 被选中那条消息]": resume 后必须能看到 fork 点之前的内容(用户报的缺陷)。 */
+    [Fact]
+    public async Task Forked_Session_Shows_Previous_Content_After_Resume()
+    {
+        var persistence = new JsonlSessionPersistence(Path.Combine(_homeDir, "fork-sessions"));
+        using var chat = await CreateChat(
+            configure: (ctx, _) => ctx.Provide(ISessionPersistence.ServiceName, persistence),
+            persistenceFor: _ => persistence);
+
+        Type(chat, "source message before fork");
+        Press(chat, ConsoleKey.Enter);
+        await SettleAsync(chat, () => chat.TimestampCandidates().Count > 0);
+        var sourceSeq = long.Parse(chat.TimestampCandidates()[0].Value.TrimStart('#'), CultureInfo.InvariantCulture);
+
+        // 直接走命令分发(菜单的多参数面板需要多次 Tab/Enter, 与本用例无关)。
+        chat.RunSlashCommand(chat.InputPane, $"/timestamp fork {sourceSeq}");
+        await SettleAsync(chat, () => WideFrame(chat).Contains("forked ->", StringComparison.Ordinal));
+        var forkId = ExtractForkId(WideFrame(chat));
+        Assert.NotNull(forkId);
+
+        // fork 的 header 要带上窗格的工作目录, 否则右栏显示"(无工作目录)"。
+        var forkReader = persistence.Open(SessionId.Create(forkId!), SessionAccess.Read);
+        Assert.Equal(chat.InputPane.CurrentCwd(), forkReader.Header.Cwd);
+        // 种子会话形态: header 标 IsSeeded, 切点=前缀长度, 日志以 session/end-seed 收尾(只复制, 不触发推理)。
+        var forkedEvents = forkReader.Read().ToArray();
+        Assert.True(forkReader.Header.IsSeeded);
+        Assert.Equal(forkedEvents.Length - 1, forkReader.InheritedEventCount);
+        Assert.Equal(SessionEventTypes.SessionEndSeed, forkedEvents[^1].Type);
+        forkReader.Close();
+
+        chat.RunSlashCommand(chat.InputPane, $"/resume {forkId}");
+        await SettleAsync(chat, () => WideFrame(chat).Contains("resumed:", StringComparison.Ordinal));
+
+        Assert.Contains("source message before fork", WideFrame(chat), StringComparison.Ordinal);
+
+        // 打开(resume)不许往 fork 里补合成事件: 种子的部分不参与中断收尾。
+        var resumedReader = persistence.Open(SessionId.Create(forkId!), SessionAccess.Read);
+        Assert.Equal(forkedEvents.Length, resumedReader.Read().Count);
+        resumedReader.Close();
+    }
+
+    /** 种子里带未闭合 turn / 悬空工具调用时, 打开 fork 也不补"请判断是否重试"这类会被模型当成继续指令的事件。 */
+    [Fact]
+    public void Seeded_Fork_Does_Not_Get_Repair_Closers()
+    {
+        var persistence = new JsonlSessionPersistence(Path.Combine(_homeDir, "seeded-fork"));
+        var sourceId = SessionId.Create($"session-src-{Guid.NewGuid():N}");
+        var source = Session.Create(sourceId, header: new SessionHeader
+        {
+            Version = SessionHeader.SessionFormatVersion,
+            Id = sourceId,
+            CreatedAt = 1700000000000,
+            Cwd = Environment.CurrentDirectory,
+            IsSeeded = false,
+        });
+        source.Append(new TurnStartPayload(1));
+        source.Append(new StepStartPayload(1, 1));
+        source.Append(new ToolCallPayload(1, 1, ToolCallId.Create("call-pending"), "bash", """{"command":"sleep 1"}"""));
+        source.Append(new UserMessagePayload(MessageFactory.CreateUserText("fork 点消息")), new SurfaceOp.Append());
+
+        var forked = SessionFork.Fork(persistence, source, source.Seq, "fork @mid-turn", Environment.CurrentDirectory);
+        var reader = persistence.Open(forked, SessionAccess.Read);
+        var stored = reader.Read().ToArray();
+        reader.Close();
+
+        // 打开 fork = AgentLoop.Resume 的中断收尾逻辑(传入种子切点)。
+        var closers = SessionRepair.InterruptedTurnClosers(stored, stored.Length - 1);
+
+        Assert.Empty(closers);
+    }
+
+
+    private static string WideFrame(ChatWindow chat)
+    {
+        var grid = DrawGrid(chat, 220, 30);
+        var lines = new List<string>();
+        for (var y = 0; y < grid.Height; y++)
+        {
+            var chars = new char[grid.Width];
+            for (var x = 0; x < grid.Width; x++)
+                chars[x] = grid[x, y].Character;
+            lines.Add(new string(chars).Replace("\0", ""));
+        }
+        return string.Join('\n', lines);
+    }
+
+    private static string? ExtractForkId(string frame)
+    {
+        const string marker = "forked -> ";
+        var index = frame.IndexOf(marker, StringComparison.Ordinal);
+        if (index < 0)
+            return null;
+        var rest = frame[(index + marker.Length)..];
+        var end = rest.IndexOfAny([' ', '\n', '\r', '|', '(', ')', '[']);
+        return end < 0 ? rest : rest[..end];
+    }
+
+    /** IDE 历史默认不进时间线(timeline=false); 只有开关打开才并进 `/timestamp` 候选。 */
+    [Fact]
+    public async Task TimestampCandidates_IncludeIdeHistory_OnlyWhenTimelineEnabled()
+    {
+        using (var chat = await CreateChat(configure: (ctx, _) =>
+            ctx.Provide(Dsh.IdeHistory.IIdeHistoryService.ServiceName, new StubIdeHistoryService(timelineEnabled: false))))
+        {
+            Type(chat, "message for timeline");
+            Press(chat, ConsoleKey.Enter);
+            await SettleAsync(chat, () => chat.TimestampCandidates().Count > 0);
+            Assert.DoesNotContain(chat.TimestampCandidates(), entry => entry.Value.StartsWith("ide|", StringComparison.Ordinal));
+        }
+
+        using (var chat = await CreateChat(configure: (ctx, _) =>
+            ctx.Provide(Dsh.IdeHistory.IIdeHistoryService.ServiceName, new StubIdeHistoryService(timelineEnabled: true))))
+        {
+            Type(chat, "message for timeline");
+            Press(chat, ConsoleKey.Enter);
+            await SettleAsync(chat, () => chat.TimestampCandidates().Count > 0);
+            var ide = Assert.Single(chat.TimestampCandidates(), entry => entry.Value.StartsWith("ide|", StringComparison.Ordinal));
+            Assert.Contains("app.cs", ide.Label, StringComparison.Ordinal);
+            Assert.NotNull(ChatWindow.ParseIdeTarget(ide.Value));
+        }
+    }
+
+    private sealed class StubIdeHistoryService(bool timelineEnabled) : Dsh.IdeHistory.IIdeHistoryService
+    {
+        public bool TimelineEnabled { get; } = timelineEnabled;
+
+        public Dsh.IdeHistory.IdeWorkspaceKind WorkspaceKind(string? workspaceRoot) => Dsh.IdeHistory.IdeWorkspaceKind.VsCode;
+
+        public IReadOnlyList<Dsh.IdeHistory.IdeHistoryEntry> Query(string? workspaceRoot, long? from, long? to, string? path = null)
+            =>
+            [
+                new Dsh.IdeHistory.IdeHistoryEntry
+                {
+                    Provider = "vscode",
+                    Path = Path.Combine(workspaceRoot ?? Environment.CurrentDirectory, "app.cs"),
+                    Timestamp = 1780000001000,
+                    Kind = "User",
+                    EntryFile = "v1.txt",
+                },
+            ];
+
+        public Dsh.IdeHistory.IdeHistoryContent? Read(Dsh.IdeHistory.IdeHistoryEntry entry)
+            => new() { Bytes = "x"u8.ToArray(), Origin = "stub" };
+    }
+
+    /** §20: 时间线里 IDE 项的值编码(`ide|<provider>|<epoch-ms>|<path>`)可无损解析回条目; 消息项(#seq)不受影响。 */
+    [Fact]
+    public void IdeTarget_Value_RoundTrips()
+    {
+        var entry = new Dsh.IdeHistory.IdeHistoryEntry
+        {
+            Provider = "vscode",
+            Path = @"C:\proj dir\app.cs",
+            Timestamp = 1780000001000,
+            Kind = "User",
+            EntryFile = "v1.txt",
+        };
+
+        var parsed = ChatWindow.ParseIdeTarget(ChatWindow.IdeTargetValue(entry));
+
+        Assert.Equal(("vscode", 1780000001000L, @"C:\proj dir\app.cs"), parsed);
+        Assert.Null(ChatWindow.ParseIdeTarget("#12"));
+    }
+
+    /** `/model` 候选与列表 = 声明 ∪ models.dev 目录: 目录已收录的模型没写进 settings 也要能列出/选中。 */
+    [Fact]
+    public async Task Model_Candidates_Include_Catalog_Models_Absent_From_Settings()
+    {
+        const string baseUrl = "https://api.kilo.ai/api/gateway/";
+        var catalogIds = ModelsDevCatalog.Embedded.ModelIdsFor("kilo", baseUrl);
+        Assert.NotEmpty(catalogIds);
+        Directory.CreateDirectory(_homeDir);
+        File.WriteAllText(Path.Combine(_homeDir, "settings.yaml"), $"""
+            providers:
+              kilo:
+                type: openai-compatible
+                options:
+                  baseUrl: {baseUrl}
+                  apiKey: sk-test
+                models:
+                  my-local-model:
+                    name: my-local-model
+            """);
+
+        using var chat = await CreateChat(
+            (ctx, commands) => _ = ModelCommand.Register(ctx, HarnessHome.Resolve(_homeDir)),
+            stubModelCommand: false);
+
+        Type(chat, "/model");
+        Press(chat, ConsoleKey.Tab);
+
+        var menu = chat.InputPane.CommandMenu;
+        Assert.NotNull(menu);
+        Assert.Equal(CommandMenuState.MenuStage.Argument, menu.Stage);
+        Assert.Contains("kilo/my-local-model", menu.Candidates);
+        Assert.Contains($"kilo/{catalogIds[0]}", menu.Candidates);
+    }
+
+    private async Task<ChatWindow> CreateChat(
+        Action<Context, CommandsService>? configure = null,
+        string model = "deepseek-v4-flash",
+        bool stubModelCommand = true,
+        Func<SessionId, ISessionPersistence>? persistenceFor = null)
     {
         var ctx = new Context();
         _ = new SessionStore(ctx);
         // 会话里要能落到用户消息: agent loop 需要 systemPrompt 服务(真实宿主由插件提供)。
         _ = new SystemPrompt(ctx, new SystemPromptConfig());
         var agents = new AgentRegistry(ctx);
-        _ = new AgentLoop(ctx);
+        // resume 需要会话持久化后端(真实宿主由插件接线)。
+        _ = new AgentLoop(ctx, persistenceFor: persistenceFor);
         var commands = CommandsService.Register(ctx);
         if (stubModelCommand)
             RegisterCommand(commands, "model", "List or switch model");

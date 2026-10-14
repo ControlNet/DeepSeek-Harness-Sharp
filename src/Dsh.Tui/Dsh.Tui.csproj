@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <Import Project="..\Dsh.Plugins.Generator\DshPluginPackage.props" />
 
@@ -10,6 +10,7 @@
     <ProjectReference Include="..\Dsh.Interaction\Dsh.Interaction.csproj" />
     <ProjectReference Include="..\Dsh.Subagent\Dsh.Subagent.csproj" />
     <ProjectReference Include="..\Dsh.Pty\Dsh.Pty.csproj" />
+    <ProjectReference Include="..\Dsh.IdeHistory\Dsh.IdeHistory.csproj" />
   </ItemGroup>
 
   <ItemGroup>

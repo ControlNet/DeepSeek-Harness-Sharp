@@ -75,4 +75,39 @@ public sealed class TuiSettingsTests : IDisposable
         palette.SavePlugins(home);
         Assert.Equal(CellColor.FromPalette(AnsiColor.BrightRed), new TuiSettings(home).Highlight);
     }
+
+    [Fact]
+    public void Theme_Colors_Parse_And_Arrow_Follows_Highlight()
+    {
+        var home = new HarnessHome(_homeDir);
+        Directory.CreateDirectory(_homeDir);
+        var raw = HarnessSettings.Load(home);
+        raw.Plugins[TuiSettings.Package] = new PluginSetting
+        {
+            Enabled = true,
+            Parameters = new Dictionary<string, object?>(StringComparer.Ordinal) { ["highlightColor"] = "#112233" },
+        };
+        raw.SavePlugins(home);
+
+        // 只配了高亮时: 箭头跟随高亮; 分隔线/状态栏默认不着色; 错误默认 Red。
+        var onlyHighlight = new TuiSettings(home);
+        Assert.Equal(CellColor.FromRgb(0x11, 0x22, 0x33), onlyHighlight.Arrow);
+        Assert.Equal(CellColor.Default, onlyHighlight.Divider);
+        Assert.Equal(CellColor.Default, onlyHighlight.Status);
+        Assert.Equal(CellColor.FromPalette(AnsiColor.Red), onlyHighlight.Error);
+
+        var explicitColors = HarnessSettings.Load(home);
+        var parameters = explicitColors.Plugins[TuiSettings.Package].Parameters;
+        parameters["arrowColor"] = "#0a0b0c";
+        parameters["dividerColor"] = "BrightBlack";
+        parameters["statusColor"] = "#010203";
+        parameters["errorColor"] = "Default";
+        explicitColors.SavePlugins(home);
+
+        var themed = new TuiSettings(home);
+        Assert.Equal(CellColor.FromRgb(0x0a, 0x0b, 0x0c), themed.Arrow);
+        Assert.Equal(CellColor.FromPalette(AnsiColor.BrightBlack), themed.Divider);
+        Assert.Equal(CellColor.FromRgb(0x01, 0x02, 0x03), themed.Status);
+        Assert.Equal(CellColor.Default, themed.Error);
+    }
 }

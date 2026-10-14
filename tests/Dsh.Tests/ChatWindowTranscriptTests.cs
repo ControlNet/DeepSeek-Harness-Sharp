@@ -658,6 +658,7 @@ public sealed class ChatWindowTranscriptTests : IDisposable
         Assert.Equal('│', clamped[120 - 1 - 10, 1].Character);
     }
 
+
     private static List<string> Rows(CellGrid grid)
     {
         var lines = new List<string>();

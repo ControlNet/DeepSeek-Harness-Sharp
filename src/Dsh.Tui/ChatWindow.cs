@@ -4,6 +4,7 @@ using Dsh.Runtime.Events;
 using System.Globalization;
 using Dsh.Boot;
 using Dsh.Core;
+using Dsh.IdeHistory;
 using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Subagent;
@@ -1225,66 +1226,228 @@ public sealed class ChatWindow : IDisposable
                 .ToString("yyyy-MM-dd HH:mm zzz", CultureInfo.InvariantCulture)
             : null;
 
-    /** `/timestamp seq` 的 seq 候选: 本会话里用户自己发的消息; 显示为可读预览(#seq 前缀供解析回 seq)。 */
-    internal IReadOnlyList<string> TimestampCandidates()
-        => [.. UserMessages(InputPane.Agent.Session)
-            .Select(entry => $"#{entry.Seq.ToString(CultureInfo.InvariantCulture)} {Preview(entry.Text)}")];
-
-    private static List<(long Seq, string Text)> UserMessages(Session session)
+    /**
+     * `/timestamp seq` 的候选: 本会话用户消息 + 工作区命中的 IDE 历史(§6 统一时间线)。
+     * 消息项写入 `#<seq>`; IDE 项写入 `ide|<provider>|<epoch-ms>|<path>`(路径放最后, 自身可含空格)。
+     */
+    internal IReadOnlyList<CommandCandidate> TimestampCandidates()
     {
-        var messages = new List<(long Seq, string Text)>();
+        var candidates = new List<CommandCandidate>();
+        foreach (var (seq, time, text) in UserMessages(InputPane.Agent.Session))
+        {
+            var token = $"#{seq.ToString(CultureInfo.InvariantCulture)}";
+            candidates.Add(new CommandCandidate(token, $"{token} {Preview(text)}", SessionTimestamp(time)));
+        }
+
+        var service = _ctx.Get<IIdeHistoryService>(IIdeHistoryService.ServiceName, false);
+        // 默认不并进时间线(插件参数 timeline=false): IDE 自动保存很密, 会淹掉用户消息。
+        if (service is null || !service.TimelineEnabled)
+            return candidates;
+        var workspace = InputPane.CurrentCwd();
+        foreach (var entry in service.Query(workspace, from: null, to: null))
+        {
+            candidates.Add(new CommandCandidate(
+                IdeTargetValue(entry),
+                IdeEntryLabel(workspace, entry),
+                entry.Kind));
+        }
+        return candidates;
+    }
+
+    /** IDE 历史项在选单里的值编码(可被 `/timestamp` 解析回条目)。 */
+    internal static string IdeTargetValue(IdeHistoryEntry entry)
+        => $"ide|{entry.Provider}|{entry.Timestamp.ToString(CultureInfo.InvariantCulture)}|{entry.Path}";
+
+    internal static (string Provider, long Timestamp, string Path)? ParseIdeTarget(string value)
+    {
+        var parts = value.Split('|', 4);
+        return parts.Length == 4 && parts[0] == "ide"
+            && long.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var timestamp)
+            ? (parts[1], timestamp, parts[3])
+            : null;
+    }
+
+    /** IDE 项的显示: 工作区内用相对路径, 右侧带本地时间与来源。 */
+    private static string IdeEntryLabel(string? workspaceRoot, IdeHistoryEntry entry)
+    {
+        var path = entry.Path;
+        if (!string.IsNullOrWhiteSpace(workspaceRoot))
+        {
+            var relative = Path.GetRelativePath(workspaceRoot, entry.Path);
+            if (!relative.StartsWith("..", StringComparison.Ordinal) && !Path.IsPathRooted(relative))
+                path = relative;
+        }
+        return $"{path} @ {entry.Time.ToLocalTime():HH:mm:ss} ({entry.Provider})";
+    }
+
+    /** `/timestamp [jump|revert|fork] <#seq|ide|...>`: 无参数列出时间线; revert 回退文件+会话, fork 派生新会话。 */
+    private async Task TimestampCommand(ChatPane pane, string text)
+    {
+        var messages = UserMessages(pane.Agent.Session);
+        var space = text.IndexOf(' ');
+        var arguments = space < 0 ? "" : text[(space + 1)..].Trim();
+        var parts = arguments.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0)
+        {
+            if (messages.Count == 0)
+                pane.AppendRaw("  (没有用户消息)\n");
+            else
+                foreach (var (messageSeq, _, messageText) in messages)
+                    pane.AppendRaw($"  #{messageSeq} {Preview(messageText)}\n");
+            return;
+        }
+
+        var action = parts[0].ToLowerInvariant();
+        if (parts.Length < 2)
+        {
+            pane.AppendRaw("  usage: /timestamp <jump|revert|fork> <#seq|ide 项>\n");
+            return;
+        }
+
+        var target = parts[1];
+        if (ParseIdeTarget(target) is { } ide)
+        {
+            await IdeTimestampActionAsync(pane, action, ide, messages);
+            return;
+        }
+
+        var seqToken = target.TrimStart('#');
+        if (!long.TryParse(seqToken, NumberStyles.Integer, CultureInfo.InvariantCulture, out var targetSeq))
+        {
+            pane.AppendRaw("  usage: /timestamp <jump|revert|fork> <#seq|ide 项>\n");
+            return;
+        }
+
+        var message = messages.FirstOrDefault(entry => entry.Seq == targetSeq);
+        switch (action)
+        {
+            case "jump":
+                await JumpToMessage(pane, message, targetSeq);
+                return;
+            case "revert":
+                await RevertToAsync(pane, targetSeq, message.Text);
+                return;
+            case "fork":
+                await ForkAtAsync(pane, targetSeq);
+                return;
+            default:
+                pane.AppendRaw("  usage: /timestamp <jump|revert|fork> <#seq|ide 项>\n");
+                return;
+        }
+    }
+
+    /** IDE 时间点的三种动作: jump 只报位置; revert 写回该版本再按时间截断会话; fork 映射到该时间之前的最近消息。 */
+    private async Task IdeTimestampActionAsync(
+        ChatPane pane,
+        string action,
+        (string Provider, long Timestamp, string Path) ide,
+        IReadOnlyList<(long Seq, long Time, string Text)> messages)
+    {
+        switch (action)
+        {
+            case "jump":
+                pane.AppendRaw($"  定位: {ide.Path} @ {TimeOf(ide.Timestamp)} ({ide.Provider})\n");
+                return;
+            case "revert":
+                var service = _ctx.Get<IIdeHistoryService>(IIdeHistoryService.ServiceName, false);
+                var entry = service?.Query(pane.CurrentCwd(), from: null, to: null, path: ide.Path)
+                    .FirstOrDefault(candidate => candidate.Timestamp == ide.Timestamp);
+                var content = entry is null ? null : service!.Read(entry);
+                if (content is null)
+                {
+                    pane.AppendRaw($"  revert 失败: 读不到 {ide.Path} @ {TimeOf(ide.Timestamp)} 的 IDE 历史内容\n");
+                    return;
+                }
+
+                if (WriteBackIdeRevision(ide.Path, content) is { } failure)
+                {
+                    pane.AppendRaw($"  文件写回被拒绝({failure}); 会话未截断\n");
+                    return;
+                }
+
+                pane.AppendRaw($"  文件已回退到 {ide.Path} @ {TimeOf(ide.Timestamp)} ({ide.Provider})\n");
+                var nearest = NearestMessageSeq(messages, ide.Timestamp);
+                if (nearest is not { } seq)
+                {
+                    pane.AppendRaw("  会话未截断: 该时间点之前没有用户消息\n");
+                    return;
+                }
+
+                await RevertToAsync(pane, seq, messages.First(entry => entry.Seq == seq).Text);
+                return;
+            case "fork":
+                if (NearestMessageSeq(messages, ide.Timestamp) is not { } forkFrom)
+                {
+                    pane.AppendRaw("  fork 失败: 该时间点之前没有用户消息(无从映射会话前缀)\n");
+                    return;
+                }
+
+                await ForkAtAsync(pane, forkFrom);
+                return;
+            default:
+                pane.AppendRaw("  usage: /timestamp <jump|revert|fork> <#seq|ide 项>\n");
+                return;
+        }
+    }
+
+    /** 时间 ≤ 目标时刻的最近一条用户消息(消息按时间递增, 取最后一个满足的就是它)。 */
+    private static long? NearestMessageSeq(IReadOnlyList<(long Seq, long Time, string Text)> messages, long timestamp)
+    {
+        long? nearest = null;
+        foreach (var message in messages)
+        {
+            if (message.Time <= timestamp)
+                nearest = message.Seq;
+        }
+        return nearest;
+    }
+
+    /**
+     * §6.5: revert 的 IDE 分支 = 把该 revision 的整份内容写回工作区(复刻 IDE 还原语义, 不做 diff/文档级操作)。
+     * 写前用独占打开探一次: 编辑器正持有该文件时拒绝覆盖(IDE 的 restore 会丢未保存改动, 我们不擅自动手)。
+     */
+    private static string? WriteBackIdeRevision(string path, IdeHistoryContent content)
+    {
+        try
+        {
+            if (Path.GetDirectoryName(path) is { Length: > 0 } directory)
+                Directory.CreateDirectory(directory);
+            using (new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+            {
+            }
+            File.WriteAllBytes(path, content.Bytes);
+            return null;
+        }
+        catch (IOException error)
+        {
+            return error.Message;
+        }
+        catch (UnauthorizedAccessException error)
+        {
+            return error.Message;
+        }
+    }
+
+    private static string TimeOf(long timestamp)
+        => DateTimeOffset.FromUnixTimeMilliseconds(timestamp).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+
+    /** 本会话里用户自己发的消息(seq / 事件时间 / 文本), 供时间线与"IDE 时间点 → 最近消息"映射。 */
+    private static List<(long Seq, long Time, string Text)> UserMessages(Session session)
+    {
+        var messages = new List<(long Seq, long Time, string Text)>();
         foreach (var sessionEvent in session.SnapshotEvents())
         {
             if (sessionEvent.Data is not UserMessagePayload user || user.Message.Source is not UserMessageSource)
                 continue;
             var text = string.Concat(user.Message.Content.OfType<TextBlock>().Select(block => block.Text)).Trim();
             if (text.Length > 0)
-                messages.Add((sessionEvent.Seq, text));
+                messages.Add((sessionEvent.Seq, sessionEvent.Time, text));
         }
         return messages;
     }
 
-    /** `/timestamp [jump|revert|fork <seq>]`: 无参数列出用户消息; revert 就地截断, fork 派生新会话(D3)。 */
-    private Task TimestampCommand(ChatPane pane, string text)
-    {
-        var messages = UserMessages(pane.Agent.Session);
-        var space = text.IndexOf(' ');
-        var arguments = space < 0 ? "" : text[(space + 1)..].Trim();
-        var parts = arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length == 0)
-        {
-            if (messages.Count == 0)
-                pane.AppendRaw("  (没有用户消息)\n");
-            else
-                foreach (var (messageSeq, messageText) in messages)
-                    pane.AppendRaw($"  #{messageSeq} {Preview(messageText)}\n");
-            return Task.CompletedTask;
-        }
-
-        var seqToken = parts.Length >= 2 ? parts[1].TrimStart('#') : "";
-        if (parts.Length < 2 || !long.TryParse(seqToken, NumberStyles.Integer, CultureInfo.InvariantCulture, out var targetSeq))
-        {
-            pane.AppendRaw("  usage: /timestamp <jump|revert|fork> <seq>\n");
-            return Task.CompletedTask;
-        }
-
-        var target = messages.FirstOrDefault(entry => entry.Seq == targetSeq);
-        switch (parts[0].ToLowerInvariant())
-        {
-            case "jump":
-                return JumpToMessage(pane, target, targetSeq);
-            case "revert":
-                return RevertToAsync(pane, targetSeq, target.Text);
-            case "fork":
-                return ForkAtAsync(pane, targetSeq);
-            default:
-                pane.AppendRaw("  usage: /timestamp <jump|revert|fork> <seq>\n");
-                return Task.CompletedTask;
-        }
-    }
-
     /** jump: 只滚到该消息(不改会话/文件); 用消息首行文本在视口缓存里定位。 */
-    private static Task JumpToMessage(ChatPane pane, (long Seq, string Text) target, long seq)
+    private static Task JumpToMessage(ChatPane pane, (long Seq, long Time, string Text) target, long seq)
     {
         var firstLine = FirstLine(target.Text);
         if (firstLine.Length == 0)
@@ -1340,33 +1503,32 @@ public sealed class ChatWindow : IDisposable
         return "";
     }
 
-    /** 派生新会话(不动当前会话), 保留 [0, seq) 事件。 */
+    /**
+     * 派生新会话(不动当前会话), 带上 [0, seq] —— **含被选中的那条消息**。
+     * 不带它的话"从第一条用户消息 fork"会得到一个只有握手的空会话(用户看到的就是空转录)。
+     */
     private Task ForkAtAsync(ChatPane pane, long seq)
     {
         var session = pane.Agent.Session;
-        var events = session.SnapshotEvents(0, seq);
-        if (events.Count == 0)
-        {
-            pane.AppendRaw($"  fork 失败: seq {seq} 超出范围\n");
-            return Task.CompletedTask;
-        }
         var persistence = _ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName, false);
         if (persistence is null)
         {
             pane.AppendRaw("  fork 不可用: 会话持久化未启用\n");
             return Task.CompletedTask;
         }
-        var header = session.Header with
+
+        SessionId forked;
+        try
         {
-            Id = SessionId.Create($"session-fork-{Guid.NewGuid():N}"),
-            Title = $"fork of {session.Id} @{seq}",
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            ParentSession = session.Id,
-        };
-        using var handle = persistence.Create(header);
-        handle.Append(events);
-        handle.Close();
-        pane.AppendRaw($"  forked -> {header.Id} (用 /resume {header.Id} 打开)\n");
+            forked = SessionFork.Fork(persistence, session, seq + 1, $"fork of {session.Id} @{seq}", pane.CurrentCwd());
+        }
+        catch (InvalidOperationException error)
+        {
+            pane.AppendRaw($"  {error.Message}\n");
+            return Task.CompletedTask;
+        }
+
+        pane.AppendRaw($"  forked -> {forked} (用 /resume {forked} 打开)\n");
         return Task.CompletedTask;
     }
 
@@ -2526,14 +2688,16 @@ public sealed class ChatWindow : IDisposable
     private static void DrawPaneHeader(CellGrid grid, ITuiPane pane, ConsoleRect rect, bool focused)
     {
         var prefix = focused ? "> " : "  ";
+        var style = focused ? CellStyle.Bold : CellStyle.Dim;
+        CellText.Draw(grid, rect.X, rect.Y, prefix, focused ? TuiTheme.Arrow : CellColor.Default, AnsiColor.Default, style);
         CellText.Draw(
             grid,
-            rect.X,
+            rect.X + prefix.Length,
             rect.Y,
-            prefix + pane.PaneTitle,
+            pane.PaneTitle,
             focused ? TuiTheme.Highlight : CellColor.Default,
             AnsiColor.Default,
-            focused ? CellStyle.Bold : CellStyle.Dim);
+            style);
     }
 
     private void DrawStatusLine(CellGrid grid, ConsoleRect rect)
@@ -2556,7 +2720,7 @@ public sealed class ChatWindow : IDisposable
             }
             text = $"[窗格 {index + 1}/{order.Count}] {text}";
         }
-        CellText.Draw(grid, rect.X, rect.Y, text, AnsiColor.Default, AnsiColor.Default, CellStyle.Dim);
+        CellText.Draw(grid, rect.X, rect.Y, text, TuiTheme.Status, AnsiColor.Default, CellStyle.Dim);
     }
 
     private void DrawDividers(CellGrid grid, UiLayout layout)
@@ -2567,7 +2731,7 @@ public sealed class ChatWindow : IDisposable
         if (verticalX < 0 || layout.Main.Height <= 0)
             return;
         for (var y = layout.Main.Y; y < layout.Main.Bottom && y < grid.Height; y++)
-            grid[verticalX, y] = new Cell('│', AnsiColor.Default, AnsiColor.Default, CellStyle.Dim);
+            grid[verticalX, y] = new Cell('│', TuiTheme.Divider, AnsiColor.Default, CellStyle.Dim);
     }
 
     private static void DrawHorizontalDivider(CellGrid grid, int y, int verticalX, int minimumY, int maximumY)
@@ -2575,7 +2739,7 @@ public sealed class ChatWindow : IDisposable
         if (y < minimumY || y >= maximumY || y < 0 || y >= grid.Height)
             return;
         for (var x = 0; x < grid.Width; x++)
-            grid[x, y] = new Cell(x == verticalX ? '┼' : '─', AnsiColor.Default, AnsiColor.Default, CellStyle.Dim);
+            grid[x, y] = new Cell(x == verticalX ? '┼' : '─', TuiTheme.Divider, AnsiColor.Default, CellStyle.Dim);
     }
 
     private static void DrawPaneDividers(CellGrid grid, PaneLayout layout)
@@ -2592,7 +2756,7 @@ public sealed class ChatWindow : IDisposable
             for (var y = divider.Y; y < divider.Y + divider.Length && y < grid.Height; y++)
             {
                 if (y >= 0)
-                    grid[divider.X, y] = new Cell('│', AnsiColor.Default, AnsiColor.Default, CellStyle.Dim);
+                    grid[divider.X, y] = new Cell('│', TuiTheme.Divider, AnsiColor.Default, CellStyle.Dim);
             }
         }
 
@@ -2603,7 +2767,7 @@ public sealed class ChatWindow : IDisposable
             for (var x = divider.X; x < divider.X + divider.Length && x < grid.Width; x++)
             {
                 if (x >= 0)
-                    grid[x, divider.Y] = new Cell('─', AnsiColor.Default, AnsiColor.Default, CellStyle.Dim);
+                    grid[x, divider.Y] = new Cell('─', TuiTheme.Divider, AnsiColor.Default, CellStyle.Dim);
             }
         }
 
@@ -2617,7 +2781,7 @@ public sealed class ChatWindow : IDisposable
                     && y >= vertical.Y && y < vertical.Y + vertical.Length
                     && x >= 0 && x < grid.Width && y >= 0 && y < grid.Height)
                 {
-                    grid[x, y] = new Cell('┼', AnsiColor.Default, AnsiColor.Default, CellStyle.Dim);
+                    grid[x, y] = new Cell('┼', TuiTheme.Divider, AnsiColor.Default, CellStyle.Dim);
                 }
             }
         }

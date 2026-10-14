@@ -511,7 +511,7 @@ public sealed class GlyphAtlas
         var name = Math.Abs(fontSizePt - DefaultFontSizePt) < 1e-9
             ? "glyph-atlas.bin"
             : $"glyph-atlas-{fontSizePt}pt.bin";
-        return Path.Combine(HarnessStorage.ResolveDefaultHome().CachePath, name);
+        return Path.Combine(HarnessStorage.ResolveCachePath(), name);
     }
 
     /** 布局基线位置: 以 'H' 大写字母脚底(即基线)实测, 避免假设 SixLabors 的行盒口径。 */

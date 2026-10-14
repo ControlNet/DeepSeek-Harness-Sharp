@@ -34,6 +34,18 @@ public sealed class TuiSettings(HarnessHome home)
     /** 高亮色(聚焦窗格标题/补全选中): "#rrggbb" 真彩或 16 色板名(如 BrightCyan); 缺省 BrightCyan。 */
     public CellColor Highlight => ReadColor("highlightColor", CellColor.FromPalette(AnsiColor.BrightCyan));
 
+    /** 聚焦窗格行首箭头色; 缺省跟随 highlightColor。 */
+    public CellColor Arrow => ReadColor("arrowColor", Highlight);
+
+    /** 分隔线色; 缺省 Default。 */
+    public CellColor Divider => ReadColor("dividerColor", CellColor.Default);
+
+    /** 状态栏文本色; 缺省 Default。 */
+    public CellColor Status => ReadColor("statusColor", CellColor.Default);
+
+    /** 错误文本色; 缺省 Red; 设成 Default 即不着色。 */
+    public CellColor Error => ReadColor("errorColor", CellColor.FromPalette(AnsiColor.Red));
+
     /** GPU 后端: auto|vk|gl|cpu; 缺省 auto(auto 优先 Vk, 不可用回退 GL, 再回退 CPU)。 */
     public string GpuBackend => ReadString("gpuBackend", "auto");
 
