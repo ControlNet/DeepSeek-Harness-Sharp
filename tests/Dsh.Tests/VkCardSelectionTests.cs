@@ -45,6 +45,7 @@ public sealed class VkCardSelectionTests
 
     /** Vk 报出的 PCI 地址必须与 sysfs(/sys/class/drm/cardN/device)同一套写法, 否则选卡永远匹配不上。 */
     [Fact]
+    [Trait("Category", "OnlyGpu")]
     public void DevicePciSlot_Matches_SysfsConvention()
     {
         if (!OperatingSystem.IsLinux())
