@@ -79,6 +79,36 @@ public sealed class IdeHistoryTests(ITestOutputHelper output)
         }
     }
 
+    /** VS Code Remote(SSH 到 Linux/容器)把 User 数据放在 ~/.vscode-server/data/User: 那里也要能发现(183.49 实测)。 */
+    [Fact]
+    public void VSCode_Discovers_SshServerHistory()
+    {
+        var home = CreateTempDirectory("vscode-server");
+        try
+        {
+            var historyDir = Path.Combine(home, ".vscode-server", "data", "User", "History", "abc123");
+            Directory.CreateDirectory(historyDir);
+            File.WriteAllText(Path.Combine(historyDir, "v1.py"), "print(1)");
+            File.WriteAllText(Path.Combine(historyDir, "entries.json"), """
+                {
+                  "version": 1,
+                  "resource": "file:///home/pub/proj/app.py",
+                  "entries": [ { "id": "v1.py", "timestamp": 1780000001000 } ]
+                }
+                """);
+            var provider = new VsCodeLocalHistoryProvider(home);
+            var store = Assert.Single(provider.Discover());
+            // 服务器上调用方传的是 POSIX 路径(正斜杠), 资源是 file:// URI: 归一化后要能匹配上。
+            var entry = Assert.Single(provider.List(store, "/home/pub/proj", 10));
+            // 读取时已把 file:// 资源还原成本机路径。
+            Assert.Equal("/home/pub/proj/app.py", entry.Path);
+        }
+        finally
+        {
+            DeleteQuietly(home);
+        }
+    }
+
     [Fact]
     public void VSCode_ParsesWindowsDriveUri()
     {

@@ -50,6 +50,7 @@ public sealed class VsCodeLocalHistoryProvider : IIdeHistoryProvider
         {
             foreach (var product in Products)
                 yield return Path.Combine(_home, ".config", product, "User");
+            yield return Path.Combine(_home, ".vscode-server", "data", "User");
             yield break;
         }
         if (OperatingSystem.IsWindows())
@@ -68,6 +69,8 @@ public sealed class VsCodeLocalHistoryProvider : IIdeHistoryProvider
         {
             foreach (var product in Products)
                 yield return Path.Combine(Home, ".config", product, "User");
+            // VS Code Remote(SSH 到 Linux/容器)把 User 数据放在 ~/.vscode-server/data/User:
+            // 服务器上没有 ~/.config/Code, 只查前者会一无所获。
             yield return Path.Combine(Home, ".vscode-server", "data", "User");
         }
     }
@@ -112,7 +115,7 @@ public sealed class VsCodeLocalHistoryProvider : IIdeHistoryProvider
             var (resource, items) = ReadEntriesFile(entriesFile);
             if (resource is null)
                 continue;
-            if (pathFilter is { Length: > 0 } && !resource.Contains(pathFilter, StringComparison.OrdinalIgnoreCase))
+            if (!IdeHistoryPathFilter.Matches(resource, pathFilter))
                 continue;
             foreach (var (id, timestamp) in items)
             {

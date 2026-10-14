@@ -19,6 +19,8 @@ public sealed class Plugin(string packageName) : IDshPlugin
     public IDisposable Apply(Context ctx, object? config)
     {
         var registry = IdeHistoryRegistry.CreateDefault();
+        // 服务自己向 ctx 注册(IIdeHistoryService): TUI/GUI 用它查历史, 与 checkpoints 无依赖。
+        _ = new IdeHistoryService(ctx, registry, IdeHistoryOptions.From(config));
         return IdeHistoryTool.Register(ctx, registry);
     }
 }

@@ -41,17 +41,17 @@ public sealed class JetBrainsLocalHistoryProvider : IIdeHistoryProvider
                 continue;
             foreach (var ideDir in Directory.EnumerateDirectories(root))
             {
-            foreach (var candidate in CandidateStores(ideDir))
-            {
-                if (!File.Exists(candidate))
-                    continue;
-                stores.Add(new IdeHistoryStoreInfo
+                foreach (var candidate in CandidateStores(ideDir))
                 {
-                    Provider = Name,
-                    Location = candidate,
-                    Retention = $"localHistory.daysToKeep (IDE 注册表, 默认 5 个工作日) [{Path.GetFileName(ideDir)}]",
-                });
-            }
+                    if (!File.Exists(candidate))
+                        continue;
+                    stores.Add(new IdeHistoryStoreInfo
+                    {
+                        Provider = Name,
+                        Location = candidate,
+                        Retention = $"localHistory.daysToKeep (IDE 注册表, 默认 5 个工作日) [{Path.GetFileName(ideDir)}]",
+                    });
+                }
             }
         }
         return stores;
@@ -92,7 +92,7 @@ public sealed class JetBrainsLocalHistoryProvider : IIdeHistoryProvider
         {
             foreach (var change in record.Changes)
             {
-                if (pathFilter is { Length: > 0 } && !change.Path.Contains(pathFilter, StringComparison.OrdinalIgnoreCase))
+                if (!IdeHistoryPathFilter.Matches(change.Path, pathFilter))
                     continue;
                 entries.Add(new IdeHistoryEntry
                 {
