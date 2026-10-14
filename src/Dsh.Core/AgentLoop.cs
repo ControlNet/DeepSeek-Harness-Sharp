@@ -70,7 +70,8 @@ public sealed class AgentLoop : Service, IAgentFactory
         // 只读取历史; 写入句柄由持久化接线在会话进入 store 后接管, 否则两处会争同一把写锁。
         using var handle = persistence.Open(options.SessionId, SessionAccess.Read);
         var persisted = handle.Read();
-        var closers = SessionRepair.InterruptedTurnClosers(persisted);
+        // 只对"本会话自有"的事件补中断收尾; 种子(fork 前缀)是冻结历史, 不在其中(见 InterruptedTurnClosers)。
+        var closers = SessionRepair.InterruptedTurnClosers(persisted, handle.InheritedEventCount);
         var events = closers.Count > 0 ? [.. persisted, .. closers] : persisted;
         var session = Session.FromRestore(options.SessionId, events, handle.Header, handle.InheritedEventCount);
         var sessions = Ctx.Get<SessionStore>(SessionStore.ServiceName)!;

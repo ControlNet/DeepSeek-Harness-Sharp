@@ -18,7 +18,7 @@ public sealed class CheckpointTests
             var ctx = new Context();
             var sessions = new SessionStore(ctx);
             var policy = new CheckpointPolicy { MaxPoints = 256, KeepDays = 15 };
-            using var service = new CheckpointService(ctx, policy, home);
+            using var service = new CheckpointService(ctx, policy, Path.Combine(home, "checkpoints"));
             var header = Header(project);
             var session = sessions.Create(id: header.Id, header: header);
 
@@ -57,7 +57,7 @@ public sealed class CheckpointTests
             var ctx = new Context();
             var sessions = new SessionStore(ctx);
             var policy = new CheckpointPolicy { MaxPoints = 256, KeepDays = 15 };
-            using var service = new CheckpointService(ctx, policy, home);
+            using var service = new CheckpointService(ctx, policy, Path.Combine(home, "checkpoints"));
             var header = Header(project);
             var session = sessions.Create(id: header.Id, header: header);
 
@@ -94,7 +94,7 @@ public sealed class CheckpointTests
             var ctx = new Context();
             var sessions = new SessionStore(ctx);
             var policy = new CheckpointPolicy { MaxPoints = 2, KeepDays = 15 };
-            using var service = new CheckpointService(ctx, policy, home);
+            using var service = new CheckpointService(ctx, policy, Path.Combine(home, "checkpoints"));
             var header = Header(project);
             var session = sessions.Create(id: header.Id, header: header);
 
@@ -193,7 +193,7 @@ public sealed class CheckpointTests
             File.WriteAllText(Path.Combine(project, "keep.txt"), "op1");
             var ctx = new Context();
             var sessions = new SessionStore(ctx);
-            using var service = new CheckpointService(ctx, new CheckpointPolicy { MaxPoints = 256, KeepDays = 15 }, home);
+            using var service = new CheckpointService(ctx, new CheckpointPolicy { MaxPoints = 256, KeepDays = 15 }, Path.Combine(home, "checkpoints"));
             var header = Header(project);
             var session = sessions.Create(id: header.Id, header: header);
 

@@ -13,12 +13,19 @@ public static class SessionRepair
     private const string NotStartedText =
         "The tool call was interrupted before the Harness recorded it as started. Retry it if it is still needed.";
 
-    public static IReadOnlyList<SessionEvent> InterruptedTurnClosers(IReadOnlyList<SessionEvent> events)
+    /**
+     * 中断轮的收尾事件: 只统计**本会话自有**的事件(inheritedEventCount 之后)。
+     * 种子(fork 复制的父会话前缀)是冻结的历史, 它的未闭合 turn / 悬空工具调用不该在这里补合成事件——
+     * 那些合成文本("请判断是否重试")会让模型以为要继续, fork 必须保持"只复制、不触发推理"。
+     */
+    public static IReadOnlyList<SessionEvent> InterruptedTurnClosers(
+        IReadOnlyList<SessionEvent> events,
+        long inheritedEventCount = 0)
     {
         int? openTurn = null;
         int? openStep = null;
         var pendingCalls = new Dictionary<ToolCallId, (int Step, long? CallSeq)>();
-        foreach (var sessionEvent in events)
+        foreach (var sessionEvent in events.Skip((int)Math.Clamp(inheritedEventCount, 0, events.Count)))
         {
             switch (sessionEvent.Data)
             {
@@ -54,6 +61,8 @@ public static class SessionRepair
         }
         var last = events.Count > 0 ? events[^1] : null;
         if (openTurn is null || last is null)
+            return [];
+        if (last.Seq < inheritedEventCount)
             return [];
         var seq = last.Seq + 1;
         var time = last.Time;

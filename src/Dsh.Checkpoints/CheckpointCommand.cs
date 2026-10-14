@@ -41,7 +41,7 @@ public static class CheckpointCommand
         {
             var points = service.PointsFor(cwd);
             var path = Path.Combine(
-                new HarnessHome(ctx.GetProp("dshHomePath") as string ?? HarnessHome.Resolve().Root).CheckpointsPath,
+                (DshPaths.FromContext(ctx) ?? DshPaths.Default(HarnessHome.Resolve().Root)).CheckpointsPath,
                 ProjectStorageKey.BoundedOf(cwd));
             return new CommandResult.Success(
                 $"enabled: true\npoints: {points.Count}/{service.MaxPoints}\nkeep days: {service.KeepDays}\nstore: {path}");
@@ -68,19 +68,7 @@ public static class CheckpointCommand
         var persistence = ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)
             ?? throw new InvalidOperationException("session persistence is not available");
         var point = service.PointsFor(cwd)[index];
-        var events = agent.Session.SnapshotEvents(0, point.Seq);
-        if (events.Count == 0)
-            throw new InvalidOperationException("checkpoint seq is beyond the current session log");
-        var header = agent.Session.Header with
-        {
-            Id = SessionId.Create($"session-restore-{Guid.NewGuid():N}"),
-            Title = $"restored from {CheckpointLog.Shorten(point.Commit)}",
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            ParentSession = agent.Session.Header.Id,
-        };
-        using var handle = persistence.Create(header);
-        handle.Append(events);
-        handle.Close();
-        return header.Id.Value;
+        // 与 /timestamp fork 共用同一实现: 继承 [0, point.Seq) 的事件并落盘。
+        return SessionFork.Fork(persistence, agent.Session, point.Seq, $"restored from {CheckpointLog.Shorten(point.Commit)}", cwd).Value;
     }
 }
