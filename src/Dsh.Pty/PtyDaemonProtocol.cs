@@ -12,12 +12,34 @@ public sealed class PtyDaemonNotRunningException : Exception
 
 public static class PtyDaemonPaths
 {
+    /** 与 Dsh.Boot.HarnessHome.StorageRootMarker 同名: daemon 与客户端都按它认 §18 的 storage.root。 */
+    private const string StorageRootMarker = ".storage-root";
+
+    /**
+     * daemon run 目录的根: $DSH_HOME 或 ~/.dsh; 该根记录了 storage.root(§18)时用记录的根,
+     * 否则 daemon 会把 socket 落在默认根、而数据在 storage.root 里, 两边互相找不到。
+     */
     public static string DefaultRoot()
     {
         var home = Environment.GetEnvironmentVariable("DSH_HOME");
-        if (!string.IsNullOrWhiteSpace(home))
-            return home;
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh");
+        var root = string.IsNullOrWhiteSpace(home)
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile, Environment.SpecialFolderOption.DoNotVerify),
+                ".dsh")
+            : home;
+        try
+        {
+            var marker = Path.Combine(root, StorageRootMarker);
+            if (File.Exists(marker) && File.ReadAllText(marker).Trim() is { Length: > 0 } recorded)
+                return Path.GetFullPath(recorded);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+        return Path.GetFullPath(root);
     }
 
     public static string SocketPath(string? root = null)

@@ -17,7 +17,7 @@ public sealed class AttachmentTests : IDisposable
     public AttachmentTests()
     {
         Directory.CreateDirectory(_home);
-        _store = new FileAttachmentStore(_ctx, _home);
+        _store = new FileAttachmentStore(_ctx, Path.Combine(_home, "attachments"));
     }
 
     public void Dispose()

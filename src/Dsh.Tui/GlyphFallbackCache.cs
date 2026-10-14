@@ -15,7 +15,7 @@ internal static class GlyphFallbackCache
     private const string Version = "1";
 
     public static string DefaultPath => Path.Combine(
-        HarnessStorage.ResolveDefaultHome().CachePath, "glyph-fallback.txt");
+        HarnessStorage.ResolveCachePath(), "glyph-fallback.txt");
 
     public static string Key(double fontSize, IReadOnlyList<string> inventory)
     {

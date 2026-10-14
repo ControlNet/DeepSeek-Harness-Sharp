@@ -14,7 +14,6 @@ public static class HarnessEntrypoint
         if (args.Contains(PtcScriptHost.HostArgument))
             return await PtcScriptHost.RunAsync(args);
 
-        string? home = null;
         string? resumeSessionId = null;
         var dumpConfig = false;
         var gpu = false;
@@ -30,9 +29,6 @@ public static class HarnessEntrypoint
         {
             switch (args[index])
             {
-                case "--home" when index + 1 < args.Length:
-                    home = args[++index];
-                    break;
                 case "--session" when index + 1 < args.Length:
                     resumeSessionId = args[++index];
                     break;
@@ -81,9 +77,8 @@ public static class HarnessEntrypoint
             }
         }
 
-        var harnessHome = home is { Length: > 0 } explicitHome
-            ? HarnessHome.Resolve(explicitHome)
-            : HarnessStorage.ResolveDefaultHome();
+        // §18/D14: 统一持久化根只由 settings.storage.root > DSH_HOME 环境变量 > ~/.dsh 决定, 不再有 --home。
+        var harnessHome = HarnessStorage.ResolveDefaultHome();
         if (dumpConfig)
         {
             var settings = HarnessSettings.Load(harnessHome);
@@ -166,6 +161,8 @@ public static class HarnessEntrypoint
                 }
             case "headless":
                 return await BootCli.RunHeadlessAsync(harnessHome, string.Join(' ', positional.Skip(1)));
+            case "storage":
+                return await RunStorageCommandAsync(harnessHome, positional.Skip(1).ToList());
             case "register-terminal":
                 return await TerminalEntryRegistration.RegisterAsync(Console.Out);
             case null:
@@ -203,6 +200,54 @@ public static class HarnessEntrypoint
         return 0;
     }
 
+    /**
+     * `dsharp storage paths`: 打印 §18 解析后的根与各分区, 便于核对 settings.storage 是否生效。
+     * `dsharp storage migrate <old> <new>`: 手动搬运(与启动时的自动迁移共用同一实现)。
+     */
+    private static async Task<int> RunStorageCommandAsync(HarnessHome home, List<string> arguments)
+    {
+        var subcommand = arguments.FirstOrDefault();
+        if (subcommand is null or "paths")
+        {
+            var settings = HarnessSettings.Load(home);
+            var paths = HarnessStorage.Paths(home, settings);
+            await Console.Out.WriteLineAsync($"root: {paths.Root}");
+            foreach (var name in Dsh.Runtime.DshPaths.Names)
+                await Console.Out.WriteLineAsync($"{name}: {paths.Path(name)}");
+            return 0;
+        }
+
+        if (subcommand != "migrate")
+        {
+            await Console.Error.WriteLineAsync("dsharp: storage requires a subcommand (paths | migrate <old> <new>)");
+            return 1;
+        }
+
+        if (arguments.Count < 3)
+        {
+            await Console.Error.WriteLineAsync("dsharp: storage migrate requires <old> and <new> roots");
+            return 1;
+        }
+
+        var source = HarnessHome.Resolve(arguments[1]);
+        var target = HarnessHome.Resolve(arguments[2]);
+        if (!Directory.Exists(source.Root))
+        {
+            await Console.Error.WriteLineAsync($"dsharp: storage migrate old root {source.Root} does not exist");
+            return 1;
+        }
+
+        // 搬运清单按"旧根自己的 settings"解析(改动后旧根里实际存在的分区名), 目标根的分区配置与此无关。
+        var sourceSettings = HarnessSettings.Load(source);
+        var results = HarnessStorage.Migrate(source, target, sourceSettings.Storage);
+        foreach (var (directory, outcome) in results)
+            await Console.Out.WriteLineAsync($"  {directory}: {outcome}");
+        await Console.Out.WriteLineAsync(results.Count == 0
+            ? "storage migrate: nothing to do (same root or nothing to move)"
+            : $"storage migrate: {results.Count} partition(s) handled");
+        return 0;
+    }
+
     /** 以脱离会话的方式起 `dsharp host serve`(ssh 断开不把 daemon 带走)。 */
     private static void StartHostDaemon(HarnessHome home, string? token)
     {
@@ -211,8 +256,6 @@ public static class HarnessEntrypoint
         var hostArguments = new List<string>();
         if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
             hostArguments.Add(Environment.GetCommandLineArgs()[0]);
-        hostArguments.Add("--home");
-        hostArguments.Add(home.Root);
         if (token is { Length: > 0 })
         {
             hostArguments.Add("--token");
@@ -263,9 +306,10 @@ public static class HarnessEntrypoint
                    dsharp headless "task"
                    dsharp host --serve [--stdio] [--token <t>]   (远端工作区宿主: 默认 loopback socket, --stdio 走 ssh)
                    dsharp register-terminal    (Linux: 注册为桌面环境的默认终端)
+                   dsharp storage paths        (打印 storage.root 与各分区解析结果)
+                   dsharp storage migrate <old> <new>   (手动搬运旧根数据)
 
             Options:
-              --home <path>      harness home (default: $DSH_HOME or ~/.dsh; settings 的 storage.root 仍会覆盖)
               --session <id>     open an existing session (gui) or resume one (tui)
               --gpu              open the standalone terminal window with the GPU renderer
               --shell            start with a real shell pane (Dsh.Pty) in the focused slot

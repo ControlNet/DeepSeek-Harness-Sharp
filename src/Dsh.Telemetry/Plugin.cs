@@ -65,12 +65,12 @@ public sealed class TelemetryConfig
         var dict = config as IReadOnlyDictionary<string, object?>;
         var enabled = dict?.GetValueOrDefault("enabled") is not false;
         var configuredPath = dict?.GetValueOrDefault("path") as string;
-        var home = ctx.GetProp("dshHomePath") as string;
+        var paths = DshPaths.FromContext(ctx);
         var path = !string.IsNullOrWhiteSpace(configuredPath)
             ? configuredPath
-            : string.IsNullOrWhiteSpace(home)
+            : paths is null
                 ? DefaultFileName
-                : System.IO.Path.Combine(home, DefaultFileName);
+                : paths.TelemetryPath;
         return new TelemetryConfig { Enabled = enabled, Path = path };
     }
 }

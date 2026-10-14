@@ -17,10 +17,12 @@ public static class ConfigBoot
         options.Home.Ensure();
         var settings = HarnessSettings.Load(options.Home);
         var home = HarnessStorage.ApplyStorageRoot(options.Home, settings);
-        var logging = LoggingSetup.Create(settings.Logging?.ToOptions(), home.LogsPath, allowConsole: !options.IsTui);
+        var paths = HarnessStorage.Paths(home, settings);
+        var logging = LoggingSetup.Create(settings.Logging?.ToOptions(), paths.LogsPath, allowConsole: !options.IsTui);
         var credentials = new EnvCredentials(home, options.Cwd);
         var ctx = new Context(logging);
         ctx.SetOwn("dshHomePath", home.Root);
+        ctx.SetOwn(DshPaths.PropName, paths);
         ctx.SetOwn("credentials", credentials);
         ctx.SetOwn("harnessOptions", options with { Home = home });
         _ = new ToolResultSpill(ctx, settings.Storage?.ToolResults is { } toolResults

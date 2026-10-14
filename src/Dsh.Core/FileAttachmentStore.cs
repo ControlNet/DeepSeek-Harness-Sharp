@@ -4,7 +4,7 @@ using Dsh.Runtime;
 
 namespace Dsh.Core;
 
-/** 附件字节以内容寻址(sha256)落盘在 <harness home>/attachments; 幂等去重, 支持会话 resume 后按 id 重新解析。 */
+/** 附件字节以内容寻址(sha256)落盘在附件分区(<root>/attachments); 幂等去重, 支持会话 resume 后按 id 重新解析。 */
 public sealed class FileAttachmentStore : Service, IAttachmentStore
 {
     public const string ServiceName = "attachments";
@@ -12,13 +12,13 @@ public sealed class FileAttachmentStore : Service, IAttachmentStore
     private readonly string _root;
 
     public FileAttachmentStore(Context ctx)
-        : this(ctx, ResolveHome(ctx))
+        : this(ctx, ResolveRoot(ctx))
     {
     }
 
-    public FileAttachmentStore(Context ctx, string home)
+    public FileAttachmentStore(Context ctx, string attachmentsDirectory)
         : base(ctx, ServiceName)
-        => _root = Path.Combine(home, "attachments");
+        => _root = attachmentsDirectory;
 
     public ImageAttachmentRef Put(byte[] bytes, string mediaType, int width, int height, string? name = null)
     {
@@ -63,8 +63,10 @@ public sealed class FileAttachmentStore : Service, IAttachmentStore
 
     private string PathFor(string id) => Path.Combine(_root, id[..2], id);
 
-    private static string ResolveHome(Context ctx)
-        => ctx.GetProp("dshHomePath") is string { Length: > 0 } home
-            ? home
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh");
+    private static string ResolveRoot(Context ctx)
+        => DshPaths.FromContext(ctx)?.AttachmentsPath
+            ?? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile, Environment.SpecialFolderOption.DoNotVerify),
+                ".dsh",
+                DshPaths.Attachments);
 }

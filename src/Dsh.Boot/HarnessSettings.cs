@@ -201,6 +201,28 @@ public sealed class StorageSettings
 
     [YamlMember(Alias = "tool_results")]
     public ToolResultsSettings? ToolResults { get; set; }
+
+    /** 各分区目录(相对根 / 绝对路径 / ~ 展开); 留空用同名默认目录。见 DshPaths。 */
+    [YamlMember(Alias = "sessions")]
+    public string? Sessions { get; set; }
+
+    [YamlMember(Alias = "logs")]
+    public string? Logs { get; set; }
+
+    [YamlMember(Alias = "cache")]
+    public string? Cache { get; set; }
+
+    [YamlMember(Alias = "checkpoints")]
+    public string? Checkpoints { get; set; }
+
+    [YamlMember(Alias = "attachments")]
+    public string? Attachments { get; set; }
+
+    [YamlMember(Alias = "telemetry")]
+    public string? Telemetry { get; set; }
+
+    [YamlMember(Alias = "run")]
+    public string? Run { get; set; }
 }
 
 public sealed class ToolResultsSettings

@@ -42,7 +42,7 @@ public sealed class CheckpointService : Service, ICheckpointRestore, IDisposable
     private sealed record SnapshotRequest(SessionId Session, long Seq, string Cwd, string Reason);
 
     private readonly CheckpointPolicy _policy;
-    private readonly string _homeRoot;
+    private readonly string _checkpointsDirectory;
     private readonly Dictionary<string, ProjectRepo> _repos = new(StringComparer.Ordinal);
     private readonly Channel<SnapshotRequest> _queue = Channel.CreateBounded<SnapshotRequest>(
         new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
@@ -50,10 +50,10 @@ public sealed class CheckpointService : Service, ICheckpointRestore, IDisposable
     private readonly Task _worker;
     private readonly Lock _sync = new();
 
-    public CheckpointService(Context ctx, CheckpointPolicy policy, string homeRoot) : base(ctx, ServiceName)
+    public CheckpointService(Context ctx, CheckpointPolicy policy, string checkpointsDirectory) : base(ctx, ServiceName)
     {
         _policy = policy;
-        _homeRoot = homeRoot;
+        _checkpointsDirectory = checkpointsDirectory;
         _ = ctx.Get<SessionStore>(SessionStore.ServiceName)
             ?? throw new InvalidOperationException("checkpoints requires the sessionStore service");
         _worker = Task.Run(ProcessAsync);
@@ -174,7 +174,7 @@ public sealed class CheckpointService : Service, ICheckpointRestore, IDisposable
         {
             if (_repos.TryGetValue(cwd, out var existing))
                 return existing;
-            var root = Path.Combine(new HarnessHome(_homeRoot).CheckpointsPath, ProjectStorageKey.BoundedOf(cwd));
+            var root = Path.Combine(_checkpointsDirectory, ProjectStorageKey.BoundedOf(cwd));
             var created = new ProjectRepo(
                 new ShadowGit(Path.Combine(root, "repo.git"), cwd),
                 new CheckpointLog(Path.Combine(root, "points.jsonl")));

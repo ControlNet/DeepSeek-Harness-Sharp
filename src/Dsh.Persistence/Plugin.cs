@@ -27,9 +27,9 @@ public sealed class Plugin(string packageName) : IDshPlugin
 
     private static IDisposable RegisterPersistence(Context ctx, object? _)
     {
-        var homePath = ctx.GetProp("dshHomePath") as string
-            ?? throw new InvalidOperationException("dshHomePath is required for the persistence plugin");
-        var persistence = new JsonlSessionPersistence(Path.Combine(homePath, "sessions"));
+        var paths = DshPaths.FromContext(ctx)
+            ?? throw new InvalidOperationException("dshPaths/dshHomePath is required for the persistence plugin");
+        var persistence = new JsonlSessionPersistence(paths.SessionsPath);
         ctx.Provide(ISessionPersistence.ServiceName, persistence);
         var command = SessionCommand.Register(ctx, persistence);
         var wiring = WirePersistence(ctx, persistence);

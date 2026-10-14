@@ -23,9 +23,7 @@ public sealed class ToolResultSpill : Service
     public ToolResultSpill(Context ctx, ToolResultSpillOptions? options = null) : base(ctx, ServiceName)
     {
         Options = options ?? new ToolResultSpillOptions();
-        _root = ctx.GetProp("dshHomePath") is string { Length: > 0 } home
-            ? Path.Combine(home, "tool-results")
-            : null;
+        _root = DshPaths.FromContext(ctx)?.ToolResultsPath;
     }
 
     public bool ShouldSpill(string text) => _root is not null && text.Length > Options.MaxBytes;
