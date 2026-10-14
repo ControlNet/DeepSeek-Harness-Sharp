@@ -773,12 +773,18 @@ public sealed partial class SettingsViewModel : ObservableObject
         Models.Clear();
         foreach (var (providerName, providerEntry) in settings.Providers.OrderBy(entry => entry.Key, StringComparer.Ordinal))
         {
-            foreach (var modelId in providerEntry.Models.Keys.OrderBy(id => id, StringComparer.Ordinal))
+            foreach (var modelId in ProviderCatalog.EffectiveModels(providerName, providerEntry.Options?.BaseUrl, providerEntry.Models.Keys)
+                .OrderBy(id => id, StringComparer.Ordinal))
+            {
                 Models.Add($"{providerName}/{modelId}");
+            }
         }
         Providers.Clear();
         foreach (var (providerName, providerEntry) in settings.Providers.OrderBy(entry => entry.Key, StringComparer.Ordinal))
-            Providers.Add(new ProviderRowViewModel(providerName, ProviderTypes.Canonical(providerEntry.Type), providerEntry.Options?.BaseUrl ?? "", providerEntry.Models.Count));
+        {
+            var effective = ProviderCatalog.EffectiveModels(providerName, providerEntry.Options?.BaseUrl, providerEntry.Models.Keys);
+            Providers.Add(new ProviderRowViewModel(providerName, ProviderTypes.Canonical(providerEntry.Type), providerEntry.Options?.BaseUrl ?? "", effective.Count));
+        }
         ProviderChoices = ProviderChoiceViewModel.Build(ProviderCatalog.LoadCached(_home));
         SelectedProvider = Providers.FirstOrDefault();
         AutoApprove = settings.Safety?.AutoApprove ?? false;
