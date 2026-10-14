@@ -63,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -143,6 +143,10 @@ jobs:
             rid: linux-x64
             flavor: aot
             archive: dsharp-linux-x64-aot.tar.gz
+          - os: macos-latest
+            rid: osx-arm64
+            flavor: jit
+            archive: dsharp-osx-arm64.tar.gz
     steps:
       - uses: actions/checkout@v4
 
