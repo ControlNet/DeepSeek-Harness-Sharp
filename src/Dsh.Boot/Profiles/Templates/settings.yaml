@@ -17,6 +17,8 @@ subagent:
 # LLM 提供方配置:type 缺省即 openai-compatible;要用 DeepSeek 专属行为(缓存 token 统计等)需显式 type: deepseek
 # 适配器由插件提供:@deepseek-ai/dsh-llm-openai(openai-compatible/openai-responses)、-anthropic、-deepseek
 # 未配置 key 的 provider 会被跳过并记 WARN;完全不配 provider 也能启动,首次发起请求时才报错
+# models 只写 models.dev 之外的模型(自建端点、中转站、或刚发布还没进目录的 id):目录已收录的模型写了只是重复,
+# 也不会列得更全——菜单/列表一律按"本文件声明 ∪ models.dev 目录"算,推理强度按目录解析。
 providers:
   deepseek-official:
     type: openai-compatible
@@ -24,13 +26,18 @@ providers:
       baseUrl: https://api.deepseek.com
       # 也可以用 apiKey 直接内联;留空或未设置环境变量时该 provider 会被跳过并记 WARN
       apiKeyEnv: DEEPSEEK_API_KEY
-    models:
-      deepseek-v4-flash:
-        name: DeepSeek V4 Flash
-        tool_call: true
-      deepseek-v4-pro:
-        name: DeepSeek V4 Pro
-        tool_call: true
+    # models.dev 已收录该 provider(deepseek) → 模型不必列;要覆盖某个模型的显示名/系统提示,才在这里补条目。
+    models: {}
+  # 中转站/私有部署这类 models.dev 里没有的 provider 才需要把模型列全(目录无从补充):
+  # "@deepseek-ai/dsh-relay":
+  #   type: openai-compatible
+  #   options:
+  #     baseUrl: https://relay.example.com/v1
+  #     apiKey: sk-...
+  #   models:
+  #     my-model:
+  #       name: My Model
+  #       tool_call: true
 
 # 技能目录
 skills:
@@ -47,10 +54,24 @@ rules: []
 # 快照恢复点 @deepseek-ai/dsh-checkpoints 默认关闭,改 true 开启;参数:max_points、keep_days。
 # TOON 编码面 @deepseek-ai/dsh-toon 默认关闭(实验性:工具结果/调用改用 TOON 文本,输出侧会缓冲流式渲染);
 # 参数:output(默认 true)、input(逗号分隔的工具名白名单,这些工具的结果以 TOON 进上下文)。
+# IDE 本地历史 @deepseek-ai/dsh-ide-history: 只有工作区带对应标记(.vscode/*.code-workspace、.idea/*.iml、.zed)时才查该来源;
+# 参数:providers(默认 [vscode, jetbrains, zed])、timeline(是否把 IDE 历史并进 /timestamp 时间线供 jump/revert/fork,默认 false,避免自动保存噪声)、
+#       timeline_limit(开启后合并的条目上限,默认 50)。
+# TUI @deepseek-ai/dsh-tui: 参数 highlightColor/arrowColor/dividerColor/statusColor/errorColor 可配色(取 "#rrggbb" 真彩或 16 色名如 BrightCyan;
+# arrowColor 缺省跟随 highlightColor, 其余缺省不留痕; 示例见下)。sidebarWidth/inputHeight/gpuBackend 亦在此配。
 plugins:
   "@deepseek-ai/dsh-memory": false
   "@deepseek-ai/dsh-toon": false
   "@deepseek-ai/dsh-checkpoints": false
+  # 下面两段是示例, 默认不打开:
+  # "@deepseek-ai/dsh-ide-history":
+  #   timeline: true    # 支持IDE(JetBrains/VSCode)历史记录进入timestamp fork/revert/jump时间线，默认为false
+  #   timeline_limit: 30
+  # "@deepseek-ai/dsh-tui":
+  #   highlightColor: "#7fd1ff"
+  #   dividerColor: BrightBlack
+  #   statusColor: "#9aa0a6"
+  #   errorColor: "#ff6b6b"
 
 # MCP 服务器
 mcp:
@@ -84,6 +105,15 @@ logging:
 # 持久化根:留空用 $DSH_HOME 或 ~/.dsh;改动后下次启动后台把旧根的数据目录搬到新根
 storage:
   # root: D:/dsh-data
+  # 各分区目录: root之下的相对路径; 留空用同名默认目录(默认即下列值)
+  # sessions: sessions
+  # logs: logs
+  # cache: cache
+  # checkpoints: checkpoints
+  # attachments: attachments
+  # telemetry: telemetry.jsonl
+  # run: run
+  # dsharp storage paths 可打印解析结果;dsharp storage migrate --from <old> --to <new> 手动搬运
   tool_results:
     # 单个工具结果超过该字节数就落盘到 <root>/tool-results,会话里只留头尾与路径
     max_bytes: 65536
