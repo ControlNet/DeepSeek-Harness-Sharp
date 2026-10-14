@@ -276,7 +276,13 @@ jobs:
           test -d "$VERIFY/plugins" || { echo "::error::归档里找不到 plugins/"; exit 1; }
           chmod +x "$VERIFY/dsharp"
           cd "$VERIFY"
-          DSH_HOME="$VERIFY/dsh-home" timeout 60 ./dsharp --help > "$VERIFY/smoke.out" 2>&1 || {
+          # macOS 自带 bash 3.2 且没有 GNU timeout(只有 gtimeout 或都没有): 有就加超时, 没有就直接跑。
+          TIMEOUT_CMD=""
+          if command -v timeout >/dev/null 2>&1; then TIMEOUT_CMD="timeout 60"
+          elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_CMD="gtimeout 60"
+          fi
+          # shellcheck disable=SC2086  # 这里就是要让 TIMEOUT_CMD 按词展开(空串即不加超时)
+          DSH_HOME="$VERIFY/dsh-home" $TIMEOUT_CMD ./dsharp --help > "$VERIFY/smoke.out" 2>&1 || {
             echo "::error::冒烟失败"; tail -20 "$VERIFY/smoke.out"; exit 1; }
           cd - >/dev/null
           rm -rf "$VERIFY"
