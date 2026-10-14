@@ -90,6 +90,9 @@ public sealed partial class DshPluginCatalogGenerator : IIncrementalGenerator
             : DescribeAssembly(context, compilation.Assembly, pluginInterface, pluginAttribute, entryAttribute);
         if (own.Count > 0)
             context.AddSource(ManifestHintName, Templates.RenderManifest(Deduplicate(own), DescribeSharedDependencies(compilation)));
+        // 配置面与清单同源: 有插件声明就有 ISettingsSchemaProvider(宿主按 SchemaTypeSuffix 约定聚合)。
+        if (own.Count > 0)
+            EmitSettingsSchema(context, compilation);
 
         var isHost = options.GlobalOptions.TryGetValue(HostPropertyName, out var value)
             && string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
