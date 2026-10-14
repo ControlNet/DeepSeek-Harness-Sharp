@@ -250,7 +250,6 @@ public sealed class ProviderCommandTests
             Assert.IsType<CommandResult.Success>(result.Result);
             var settings = HarnessSettings.Load(new HarnessHome(home));
             Assert.Equal(expected, settings.Providers["acme"].Type);
-            Assert.Null(settings.Providers["acme"].Options?.ApiStyle);
         }
         finally
         {

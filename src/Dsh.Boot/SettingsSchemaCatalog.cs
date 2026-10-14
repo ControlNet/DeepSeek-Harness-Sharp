@@ -49,7 +49,7 @@ public static class SettingsSchemaCatalog
             }
             Render(plugin.Settings, 2, builder);
         }
-        builder.AppendLine(GeneratedEnd);
+        builder.Append(GeneratedEnd);
         return builder.ToString();
     }
 

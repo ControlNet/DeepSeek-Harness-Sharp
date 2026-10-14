@@ -274,8 +274,6 @@ plugins:
 #   toolName: "workflow"
 # <<< generated
 
-
-
 # MCP 服务器
 mcp:
   filesystem:

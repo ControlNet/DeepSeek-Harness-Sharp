@@ -35,7 +35,12 @@ public static class SettingsTemplate
         var text = File.ReadAllText(path);
         if (!TryFindBlock(text, out var begin, out var tail))
             throw new InvalidOperationException($"模板缺少生成块标记({SettingsSchemaCatalog.GeneratedBegin} / {SettingsSchemaCatalog.GeneratedEnd}): {path}");
-        var updated = string.Concat(text[..begin], SettingsSchemaCatalog.RenderTemplateBlock(), text[tail..]);
+        // 结束标记后统一收敛成一个空行: 历史 bug 曾让每次写回多留一串空行。
+        var rest = tail;
+        while (rest < text.Length && (text[rest] == '\r' || text[rest] == '\n'))
+            rest++;
+        var newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var updated = string.Concat(text[..begin], SettingsSchemaCatalog.RenderTemplateBlock(), newline, newline, text[rest..]);
         if (Normalize(updated) == Normalize(text))
             return false;
         File.WriteAllText(path, updated);

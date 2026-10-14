@@ -152,14 +152,6 @@ public sealed class ProviderRegistrar : IDisposable
                 Error: $"provider \"{id}\" skipped: API key is not configured "
                     + $"(set providers.{id}.options.apiKey or environment variable {apiKeyEnv}); requests using it will fail with NO_ADAPTER");
         }
-        // 旧 settings 把 OpenAI 风格单列在 options.apiStyle; 类型名已能表达风格, 这里只做兼容读取并提示迁移。
-        var legacyStyle = string.Equals(wire, DefaultWire, StringComparison.OrdinalIgnoreCase) ? provider.Options?.ApiStyle : null;
-        if (legacyStyle is { Length: > 0 })
-        {
-            ctx.Logger.Warn("%s", $"provider \"{id}\": options.apiStyle is deprecated; "
-                + $"use type \"{ProviderTypes.OpenAiCompatibleResponses}\" for the Responses style");
-        }
-
         // 有效模型 = settings 声明 ∪ models.dev 目录(目录已收录的模型不必落盘, 但运行时要能列出/选中)。
         var specs = ProviderCatalog.EffectiveModels(id, baseUrl, provider.Models.Keys)
             .Select(modelId => provider.Models.TryGetValue(modelId, out var declared)
@@ -173,7 +165,7 @@ public sealed class ProviderRegistrar : IDisposable
             apiKeyEnv,
             resolvedKey,
             specs,
-            resolution.ApiStyle ?? legacyStyle);
+            resolution.ApiStyle);
         return new ProviderRegistrationResult(llm.RegisterAdapter([id], factory!.Create(resolved)), wire, source);
     }
 
