@@ -87,6 +87,35 @@ public sealed class ProviderCatalogTests
         Assert.Null(ProviderCatalog.TypeOf("x", null));
     }
 
+    /** 目录按 provider 名精确对 id, 不中再按 baseUrl 端点(host:port)对 api; 中转站两路都不命中就返回空(不猜)。 */
+    [Fact]
+    public void ModelIdsFor_Matches_ById_Then_By_Endpoint()
+    {
+        var catalog = ModelsDevCatalog.FromJson(Fixture);
+
+        Assert.Equal(["glm-5.3"], catalog.ModelIdsFor("zhipuai-coding-plan", null));
+        Assert.Equal(["glm-5.3"], catalog.ModelIdsFor("ZHIPUAI-CODING-PLAN", null));
+        Assert.Equal(["glm-5.3"], catalog.ModelIdsFor("relay", "https://open.bigmodel.cn/api/coding/paas/v4/"));
+        Assert.Equal(["glm-5.3"], catalog.ModelIdsFor("relay", "https://open.bigmodel.cn:443/api/coding/paas/v4"));
+        // 同主机不同端口不是同一个端点(127.0.0.1:1 不该撞目录里的本地 runtime)。
+        Assert.Empty(catalog.ModelIdsFor("my-endpoint", "http://127.0.0.1:1/v1"));
+        Assert.Empty(catalog.ModelIdsFor("boomfirst", "https://www.boomfirst.cc/v1"));
+        Assert.Empty(catalog.ModelIdsFor(null, null));
+    }
+
+    /** 有效模型 = 声明 ∪ 目录(声明在前去重): 目录已收录的模型不必写进 settings.yaml。 */
+    [Fact]
+    public void EffectiveModels_Unions_Declared_With_Catalog()
+    {
+        var catalog = ModelsDevCatalog.FromJson(Fixture);
+
+        Assert.Equal(["glm-5.5-preview", "glm-5.3"],
+            ProviderCatalog.EffectiveModels(catalog, "zhipuai-coding-plan", null, ["glm-5.5-preview", "glm-5.3"]));
+        Assert.Equal(["glm-5.3"], ProviderCatalog.EffectiveModels(catalog, "zhipuai-coding-plan", null, []));
+        Assert.Equal(["my-model"],
+            ProviderCatalog.EffectiveModels(catalog, "boomfirst", "https://www.boomfirst.cc/v1", ["my-model"]));
+    }
+
     /** 内置快照随程序发布: 没有缓存也保证目录可用(离线), 且 DeepSeek 走专有类型。 */
     [Fact]
     public void Embedded_Snapshot_Is_Available_Without_Cache()

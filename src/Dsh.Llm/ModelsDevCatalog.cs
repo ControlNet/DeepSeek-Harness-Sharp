@@ -44,19 +44,36 @@ public sealed class ModelsDevCatalog
         => _reasoning.TryGetValue($"{provider}/{model}", out var reasoning) ? reasoning : null;
 
     /**
-     * 把端点的 baseUrl 主机名映射到 models.dev 的 provider 键(models.dev 的 provider.api);
-     * 目录里没有该域名的中转站返回 null, 不猜。
+     * 把端点的 baseUrl 映射到 models.dev 的 provider 键(models.dev 的 provider.api);
+     * 主机 + 端口一致才算命中(默认端口归一化): 目录里没有该端点的中转站返回 null, 不猜。
      */
-    public string? ProviderKeyFor(string? baseUrl)
+    public string? ProviderKeyFor(string? baseUrl) => ProviderFor(null, baseUrl)?.Id;
+
+    /** 该 provider 在目录里的模型 id(先按 providerId 精确对 id, 不中再按 baseUrl 端点对 api); 目录里没有就返回空。 */
+    public IReadOnlyList<string> ModelIdsFor(string? providerId, string? baseUrl)
+        => ProviderFor(providerId, baseUrl)?.ModelIds ?? [];
+
+    private ModelsDevProvider? ProviderFor(string? providerId, string? baseUrl)
     {
-        var host = HostOf(baseUrl);
-        if (host is null)
+        if (providerId is { Length: > 0 } id
+            && _providers.FirstOrDefault(provider => string.Equals(provider.Id, id, StringComparison.OrdinalIgnoreCase)) is { } byId)
+        {
+            return byId;
+        }
+        var endpoint = EndpointOf(baseUrl);
+        if (endpoint is null)
             return null;
-        return _providers.FirstOrDefault(provider => string.Equals(HostOf(provider.BaseUrl), host, StringComparison.OrdinalIgnoreCase))?.Id;
+        return _providers.FirstOrDefault(provider => string.Equals(EndpointOf(provider.BaseUrl), endpoint, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static string? HostOf(string? url)
-        => Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Host.Length > 0 ? uri.Host : null;
+    /** 端点标识(host:port, 默认端口归一化到 80/443): 只看主机名会让 127.0.0.1 上的自建端点误撞目录里的本地 runtime。 */
+    private static string? EndpointOf(string? url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Host.Length == 0)
+            return null;
+        var port = uri.IsDefaultPort ? (uri.Scheme == Uri.UriSchemeHttps ? 443 : 80) : uri.Port;
+        return $"{uri.Host.ToLowerInvariant()}:{port}";
+    }
 
     public static ModelsDevCatalog Embedded { get; } = new Lazy<ModelsDevCatalog>(LoadEmbedded, isThreadSafe: true).Value;
 

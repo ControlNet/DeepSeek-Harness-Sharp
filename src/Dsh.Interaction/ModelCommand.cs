@@ -30,8 +30,12 @@ public static class ModelCommand
                         builder.AppendLine($"default: {defaultModel}");
                     foreach (var (providerName, providerEntry) in settings.Providers.OrderBy(entry => entry.Key, StringComparer.Ordinal))
                     {
-                        foreach (var modelId in providerEntry.Models.Keys.OrderBy(id => id, StringComparer.Ordinal))
+                        // 目录已收录的模型不落盘, 列表要按"有效模型"(声明 ∪ 目录)算, 否则会漏掉整段。
+                        foreach (var modelId in ProviderCatalog.EffectiveModels(providerName, providerEntry.Options?.BaseUrl, providerEntry.Models.Keys)
+                            .OrderBy(id => id, StringComparer.Ordinal))
+                        {
                             builder.AppendLine($"{providerName}/{modelId}");
+                        }
                     }
                     return Task.FromResult<CommandResult>(new CommandResult.Success(builder.ToString().TrimEnd()));
                 }

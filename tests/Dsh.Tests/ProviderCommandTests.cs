@@ -112,7 +112,14 @@ public sealed class ProviderCommandTests
             Assert.NotNull(result);
             Assert.IsType<CommandResult.Success>(result.Result);
             var settings = HarnessSettings.Load(harnessHome);
-            Assert.True(settings.Providers["zhipuai-coding-plan"].Models.ContainsKey("glm-5.3"));
+            // 目录已收录的模型不落盘(目录即真相); 有效模型(声明 ∪ 目录)里仍在。
+            Assert.Empty(settings.Providers["zhipuai-coding-plan"].Models);
+            Assert.Contains(
+                "glm-5.3",
+                ProviderCatalog.EffectiveModels(
+                    "zhipuai-coding-plan",
+                    "https://open.bigmodel.cn/api/coding/paas/v4",
+                    settings.Providers["zhipuai-coding-plan"].Models.Keys));
 
             var missing = await commands.Execute(
                 agent,
@@ -121,6 +128,86 @@ public sealed class ProviderCommandTests
 
             Assert.NotNull(missing);
             Assert.IsType<CommandResult.Error>(missing.Result);
+        }
+        finally
+        {
+            Directory.Delete(home, true);
+        }
+    }
+
+    /** models.dev 已收录的模型一律不写进 settings.yaml: 落盘为空, 但运行时(声明 ∪ 目录)仍能列出/选中全部。 */
+    [Fact]
+    public async Task ProviderAdd_Skips_Models_Known_To_ModelsDev()
+    {
+        var home = Path.Combine(Path.GetTempPath(), "dsh-provider-known", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(home);
+        try
+        {
+            File.WriteAllText(Path.Combine(home, "settings.yaml"), """
+                global_default_model: null
+                providers: {}
+                """);
+            using var app = await HarnessComposer.Compose(new HarnessOptions(new HarnessHome(home), Directory.GetCurrentDirectory()));
+            var commands = app.Ctx.Get<CommandsService>(CommandsService.ServiceName)!;
+            var agent = new FakeAgent(app.Ctx);
+            const string baseUrl = "https://api.kilo.ai/api/gateway/";
+            var catalogIds = ModelsDevCatalog.Embedded.ModelIdsFor("kilo", baseUrl);
+            Assert.NotEmpty(catalogIds);
+
+            var result = await commands.Execute(
+                agent,
+                $"/provider add kilo --base-url {baseUrl} --api-key sk-test --model-ids <all>",
+                TestContext.Current.CancellationToken);
+
+            Assert.NotNull(result);
+            var text = Assert.IsType<CommandResult.Success>(result.Result).Text ?? "";
+            Assert.Contains($"from the models.dev catalog", text);
+            var settings = HarnessSettings.Load(new HarnessHome(home));
+            Assert.Empty(settings.Providers["kilo"].Models);
+            Assert.NotEmpty(catalogIds);
+            var saved = File.ReadAllText(Path.Combine(home, "settings.yaml"));
+            // 空模型表写成 `models: {}`(不再铺开目录已收录的 id)。
+            Assert.Equal("models: {}", saved.Split('\n').FirstOrDefault(text => text.Contains("models", StringComparison.Ordinal))?.Trim());
+            Assert.DoesNotContain($"      {catalogIds[0]}:", saved);
+            // 默认模型仍落到目录里的首个模型, 否则默认模型会因为没有落盘条目而空掉。
+            Assert.Equal($"kilo/{catalogIds[0]}", settings.GlobalDefaultModel);
+
+            var llm = app.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName)!;
+            Assert.Equal(catalogIds.Count, llm.ListModels("kilo").Count);
+        }
+        finally
+        {
+            Directory.Delete(home, true);
+        }
+    }
+
+    /** 目录之外的自有模型照旧落盘: 只跳过目录已收录的那部分(中转站/私有部署的模型不会丢)。 */
+    [Fact]
+    public async Task ProviderAdd_Keeps_Models_Unknown_To_ModelsDev()
+    {
+        var home = Path.Combine(Path.GetTempPath(), "dsh-provider-unknown", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(home);
+        try
+        {
+            File.WriteAllText(Path.Combine(home, "settings.yaml"), """
+                global_default_model: null
+                providers: {}
+                """);
+            using var app = await HarnessComposer.Compose(new HarnessOptions(new HarnessHome(home), Directory.GetCurrentDirectory()));
+            var commands = app.Ctx.Get<CommandsService>(CommandsService.ServiceName)!;
+            var agent = new FakeAgent(app.Ctx);
+            const string baseUrl = "https://api.kilo.ai/api/gateway/";
+            var known = ModelsDevCatalog.Embedded.ModelIdsFor("kilo", baseUrl)[0];
+
+            var result = await commands.Execute(
+                agent,
+                $"/provider add kilo --base-url {baseUrl} --api-key sk-test --model-ids {known},my-local-model",
+                TestContext.Current.CancellationToken);
+
+            Assert.NotNull(result);
+            Assert.IsType<CommandResult.Success>(result.Result);
+            var settings = HarnessSettings.Load(new HarnessHome(home));
+            Assert.Equal(["my-local-model"], settings.Providers["kilo"].Models.Keys);
         }
         finally
         {

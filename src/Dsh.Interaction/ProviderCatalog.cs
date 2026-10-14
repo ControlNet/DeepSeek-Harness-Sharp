@@ -71,6 +71,38 @@ public static class ProviderCatalog
             .FirstOrDefault(entry => string.Equals(entry.Id, providerId, StringComparison.OrdinalIgnoreCase))
             ?.ModelIds;
 
+    /**
+     * `settings.yaml` 里一个 provider 的**有效模型**: 声明的(per-model 覆盖优先) ∪ 目录里的, 声明在前并按 id 去重。
+     * 目录来源与运行时推理一致(内置快照 ModelsDevCatalog.Embedded), 因此"写进 settings 的模型"只是目录之外的追加/覆盖:
+     * models.dev 已收录的模型不必落盘(见 ProviderCommand 的写入侧过滤)。
+     */
+    public static IReadOnlyList<string> EffectiveModels(string providerName, string? baseUrl, IEnumerable<string> declared)
+        => EffectiveModels(ModelsDevCatalog.Embedded, providerName, baseUrl, declared);
+
+    /** 同上, 目录可注入(单测用合成目录)。 */
+    public static IReadOnlyList<string> EffectiveModels(
+        ModelsDevCatalog catalog,
+        string providerName,
+        string? baseUrl,
+        IEnumerable<string> declared)
+    {
+        var ids = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var id in declared)
+        {
+            if (seen.Add(id))
+                ids.Add(id);
+        }
+
+        foreach (var id in catalog.ModelIdsFor(providerName, baseUrl))
+        {
+            if (seen.Add(id))
+                ids.Add(id);
+        }
+
+        return ids;
+    }
+
     /** 内置映射(优先于 npm 方言): DeepSeek 有专有协议族。 */
     private static readonly Dictionary<string, string> BuiltInTypes = new(StringComparer.OrdinalIgnoreCase)
     {

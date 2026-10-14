@@ -137,7 +137,9 @@ public static class ProviderCommand
         var factories = ctx.Get<LlmAdapterFactoryRegistry>(LlmAdapterFactoryRegistry.ServiceName, false);
         return string.Join('\n', settings.Providers.Select(entry =>
         {
-            var models = entry.Value.Models.Count > 0 ? $" models=[{string.Join(',', entry.Value.Models.Keys)}]" : "";
+            // 有效模型(声明 ∪ 目录): 目录已收录的不在 settings 里, 只看 Models.Count 会把它们漏掉。
+            var effective = ProviderCatalog.EffectiveModels(entry.Key, entry.Value.Options?.BaseUrl, entry.Value.Models.Keys);
+            var models = effective.Count > 0 ? $" models=[{string.Join(',', effective)}]" : "";
             var type = ProviderTypes.Canonical(entry.Value.Type);
             var wire = ProviderTypes.Parse(entry.Value.Type).Wire;
             var source = factories is not null && factories.TryResolve(wire, out var resolvedSource, out _)
@@ -186,34 +188,10 @@ public static class ProviderCommand
         var settings = HarnessSettings.Load(home);
         if (settings.Providers.ContainsKey(name))
             return new CommandResult.Error($"provider \"{name}\" already exists");
-        var models = new Dictionary<string, ProviderModelSettings>();
-        if (modelIds is not null)
-        {
-            IReadOnlyList<string>? ids = ProviderCatalog.IsAllModels(modelIds)
-                ? ProviderCatalog.AllModelsFor(home, name)
-                : modelIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (ids is null)
-                return new CommandResult.Error($"--model-ids {ProviderCatalog.AllModelsMarker} requires \"{name}\" to exist in the models.dev catalog");
-            foreach (var modelId in ids)
-                models[modelId] = new ProviderModelSettings { Name = modelId };
-            if (models.Count == 0)
-                return new CommandResult.Error($"--model-ids for \"{name}\" resolved to no models");
-        }
-        else
-        {
-            try
-            {
-                models = await FetchModelsAsync(baseUrl, apiKey);
-            }
-            catch (Exception error)
-            {
-                return new CommandResult.Error($"model auto-discovery failed for \"{name}\": {error.Message}");
-            }
-
-            if (models.Count == 0)
-                return new CommandResult.Error($"model auto-discovery for \"{name}\" returned no models");
-        }
-
+        var (models, error) = await DeclareModelsAsync(home, name, baseUrl, apiKey, modelIds);
+        if (error is { Length: > 0 })
+            return new CommandResult.Error(error);
+        var effective = ProviderCatalog.EffectiveModels(name, baseUrl, models.Keys);
         var provider = new ProviderSettings
         {
             Type = type,
@@ -226,7 +204,7 @@ public static class ProviderCommand
         };
         var updated = new HarnessSettings
         {
-            GlobalDefaultModel = settings.GlobalDefaultModel ?? (models.Count > 0 ? $"{name}/{models.Keys.First()}" : null),
+            GlobalDefaultModel = settings.GlobalDefaultModel ?? (effective.Count > 0 ? $"{name}/{effective[0]}" : null),
             CompactionModel = settings.CompactionModel,
             Subagent = settings.Subagent,
             Providers = new Dictionary<string, ProviderSettings>(settings.Providers)
@@ -244,7 +222,57 @@ public static class ProviderCommand
         var result = ProviderRegistrar.RegisterProvider(ctx, options, name, provider, isDefault: true);
         if (result.Handle is null)
             return new CommandResult.Error($"provider \"{name}\" saved but not activated: {result.Error}");
-        return new CommandResult.Success($"added provider \"{name}\" with {models.Count} model(s)");
+        var fromCatalog = effective.Count - models.Count;
+        var catalogNote = fromCatalog > 0 ? $" (+{fromCatalog} from the models.dev catalog, not written to settings.yaml)" : "";
+        return new CommandResult.Success($"added provider \"{name}\" with {models.Count} model(s){catalogNote}");
+    }
+
+    /**
+     * 要落盘的模型条目: `--model-ids` 给定时用它(或 <all> 展开目录), 否则打端点 /models 自动发现。
+     * models.dev 已收录的模型跳过不写(目录是唯一真相, settings 里只留目录之外的追加/覆盖)。
+     */
+    private static async Task<(Dictionary<string, ProviderModelSettings> Models, string? Error)> DeclareModelsAsync(
+        HarnessHome home,
+        string name,
+        string baseUrl,
+        string apiKey,
+        string? modelIds)
+    {
+        IReadOnlyList<string>? ids = null;
+        if (modelIds is not null)
+        {
+            ids = ProviderCatalog.IsAllModels(modelIds)
+                ? ProviderCatalog.AllModelsFor(home, name)
+                : modelIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (ids is null)
+                return ([], $"--model-ids {ProviderCatalog.AllModelsMarker} requires \"{name}\" to exist in the models.dev catalog");
+            if (ids.Count == 0)
+                return ([], $"--model-ids for \"{name}\" resolved to no models");
+        }
+        else
+        {
+            try
+            {
+                ids = [.. (await FetchModelsAsync(baseUrl, apiKey)).Keys];
+            }
+            catch (Exception failure)
+            {
+                return ([], $"model auto-discovery failed for \"{name}\": {failure.Message}");
+            }
+
+            if (ids.Count == 0)
+                return ([], $"model auto-discovery for \"{name}\" returned no models");
+        }
+
+        var known = new HashSet<string>(ModelsDevCatalog.Embedded.ModelIdsFor(name, baseUrl), StringComparer.Ordinal);
+        var models = new Dictionary<string, ProviderModelSettings>();
+        foreach (var modelId in ids)
+        {
+            if (!known.Contains(modelId))
+                models[modelId] = new ProviderModelSettings { Name = modelId };
+        }
+
+        return (models, null);
     }
 
     private static async Task<Dictionary<string, ProviderModelSettings>> FetchModelsAsync(string baseUrl, string apiKey)

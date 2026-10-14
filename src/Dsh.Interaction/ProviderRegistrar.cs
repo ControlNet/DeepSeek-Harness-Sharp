@@ -160,14 +160,19 @@ public sealed class ProviderRegistrar : IDisposable
                 + $"use type \"{ProviderTypes.OpenAiCompatibleResponses}\" for the Responses style");
         }
 
+        // 有效模型 = settings 声明 ∪ models.dev 目录(目录已收录的模型不必落盘, 但运行时要能列出/选中)。
+        var specs = ProviderCatalog.EffectiveModels(id, baseUrl, provider.Models.Keys)
+            .Select(modelId => provider.Models.TryGetValue(modelId, out var declared)
+                ? new ProviderModelSpec(modelId, declared.Name, declared.SystemPromptUpdate)
+                : new ProviderModelSpec(modelId))
+            .ToList();
         var resolved = new ResolvedLlmProvider(
             id,
             wire,
             baseUrl,
             apiKeyEnv,
             resolvedKey,
-            provider.Models.Select(model => new ProviderModelSpec(
-                model.Key, model.Value.Name, model.Value.SystemPromptUpdate)).ToList(),
+            specs,
             resolution.ApiStyle ?? legacyStyle);
         return new ProviderRegistrationResult(llm.RegisterAdapter([id], factory!.Create(resolved)), wire, source);
     }
