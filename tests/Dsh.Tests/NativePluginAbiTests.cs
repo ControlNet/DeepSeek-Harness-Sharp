@@ -15,11 +15,12 @@ namespace Dsh.Tests;
 public sealed class NativePluginAbiTests
 {
     private const string EchoTool = "native_echo";
+    private const string LengthTool = "native_length";
     private const string EchoLogMarker = "echo invoked";
     private const int LargeMessageLength = 200_000;
 
     [Fact]
-    public async Task PublishedSample_RunsToolOnce_ForLargeResults_AndKeepsManagedFaultsRecoverable()
+    public async Task PublishedSample_RunsToolOnce_AndTreatsPluginExceptionsAsToolErrors()
     {
         var ctx = new Context();
         _ = new SystemPrompt(ctx, new SystemPromptConfig());
@@ -43,6 +44,20 @@ public sealed class NativePluginAbiTests
         Assert.Equal(1, ctx.Root.Logger.Buffer.Count(line => line.Text.Contains(EchoLogMarker)));
         Assert.Equal(NativePluginState.Active, load.Plugin!.State);
         Assert.Throws<NullReferenceException>(() => LengthOf(null));
+
+        var failed = await tools.Execute(new ToolExecutionInput
+        {
+            CallId = ToolCallId.Create($"call-{Guid.NewGuid():N}"),
+            Name = LengthTool,
+            Arguments = JsonSerializer.SerializeToElement(new { }),
+            Agent = null,
+            Signal = default,
+        });
+
+        Assert.True(failed.IsError);
+        Assert.Equal(NativePluginState.Active, load.Plugin.State);
+        Assert.Contains(ctx.Root.Logger.Buffer, line => line.Text.Contains("invoke_tool failed"));
+        Assert.NotNull(tools.Get(EchoTool));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

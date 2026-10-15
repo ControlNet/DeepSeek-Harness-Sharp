@@ -62,6 +62,10 @@ int dsh_guard_call_void(dsh_void_fn fn, void* context)
     }
 }
 
+void dsh_guard_install(void)
+{
+}
+
 void* dsh_guard_suspend(void)
 {
     return 0;
@@ -148,7 +152,7 @@ static void dsh_guard_install_once(void)
     }
 }
 
-static void dsh_guard_install(void)
+void dsh_guard_install(void)
 {
     pthread_once(&dsh_guard_once, dsh_guard_install_once);
 }

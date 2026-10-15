@@ -20,10 +20,19 @@ public static unsafe class DshNativeGuard
     private static extern int dsh_guard_call_void(nint fn, nint context);
 
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void dsh_guard_install();
+
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern nint dsh_guard_suspend();
 
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern void dsh_guard_resume(nint saved);
+
+    /**
+     * 装载插件库之前调用:让插件自带运行时的信号处理器叠在 guard 之上,先把插件托管代码里的故障变成异常。
+     * guard 若后装,会抢先接走这些故障并越过插件运行时的托管帧跳回,下一次调用该插件即触发其运行时的致命错误。
+     */
+    public static void Install() => dsh_guard_install();
 
     /** 受护地调用工具函数; 返回 false 表示插件内发生故障(未写 result), 调用方应标记 Faulted 并卸载。 */
     public static bool TryInvokeTool(nint fn, nint context, int handle, byte* input, byte* output, int capacity, out int result)

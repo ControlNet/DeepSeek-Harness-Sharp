@@ -40,6 +40,13 @@ typedef void(DSH_GUARD_CALL* dsh_void_fn)(void* context);
 DSH_GUARD_EXPORT int dsh_guard_call_void(dsh_void_fn fn, void* context);
 
 /*
+ * 安装故障信号处理器(幂等;受护调用也会按需安装)。宿主在装载插件库之前调用:
+ * 插件自带的运行时(如 NativeAOT)随后把处理器叠在其上,先认领插件托管代码里的故障(空引用等)变成异常,认领不了的再回链到 guard。
+ * Windows 上为空操作。
+ */
+DSH_GUARD_EXPORT void dsh_guard_install(void);
+
+/*
  * 插件在受护调用中回调宿主托管代码时, 宿主先 suspend 再 resume(传回 suspend 的返回值)。
  * POSIX 上 siglongjmp 只能越过插件原生帧, 回调期间的故障交还运行时处理; Windows 上两者为空操作。
  */

@@ -114,6 +114,7 @@ public sealed unsafe class NativePluginLibrary : INativePlugin
         nint library;
         try
         {
+            DshNativeGuard.Install();
             if (!NativeLibrary.TryLoad(fullPath, out library))
                 return NativePluginLoad.Fail(NativePluginFailureKind.NotALibrary,
                     $"不是可加载的原生共享库(非 NativeLib=Shared 产物或依赖缺失): {fullPath}");
