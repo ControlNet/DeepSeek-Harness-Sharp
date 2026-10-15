@@ -165,22 +165,28 @@ public sealed partial class SubagentRuntime : Service, ISubagentService
         var observed = new ObservedRun(run, this);
         if (run.LocalAgent is { } local)
             Track(local.Id, observed);
-        _ = ObserveEndAsync(info, observed, parent.ScopeKey);
         Ctx.Events.Emit(DshScope.ScopeTarget(Ctx, parent.ScopeKey), new SubagentStartNotification(info));
+        // Callers await the observed result, so the end notification is out before the delegating tool returns.
+        // CI: the parent finished its turn while the end notification was still queued behind the same result.
+        observed.Result = ObserveEndAsync(info, run, parent.ScopeKey);
         return observed;
     }
 
-    private async Task ObserveEndAsync(SubagentRunInfo info, ISubagentRun run, ScopeKey parentScope)
+    private async Task<SubagentResult> ObserveEndAsync(SubagentRunInfo info, ISubagentRun run, ScopeKey parentScope)
     {
+        SubagentResult result;
         try
         {
-            var result = await run.Result;
-            EmitEnd(parentScope, info, result.StopReason, result.Output.Count > 0 ? result.Output : null, result.Interruption);
+            result = await run.Result;
         }
         catch
         {
             EmitEnd(parentScope, info, SubagentStopReason.Error, null, null);
+            throw;
         }
+
+        EmitEnd(parentScope, info, result.StopReason, result.Output.Count > 0 ? result.Output : null, result.Interruption);
+        return result;
     }
 
     private void EmitEnd(
@@ -231,7 +237,8 @@ public sealed partial class SubagentRuntime : Service, ISubagentService
 
         public IAgent? LocalAgent => inner.LocalAgent;
 
-        public Task<SubagentResult> Result => inner.Result;
+        /** Completes after the run's end notification has been emitted (set by ObserveRun). */
+        public Task<SubagentResult> Result { get; set; } = inner.Result;
 
         public async Task DisposeAsync()
         {
