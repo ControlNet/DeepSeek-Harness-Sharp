@@ -1,4 +1,4 @@
-﻿namespace Dsh.Account;
+﻿namespace Dsh.Core;
 
 /** 账号交互阶段: GUI 只读它决定展示哪一屏。 */
 public enum AccountPhase
@@ -48,9 +48,11 @@ public sealed record AccountSnapshot(
     string? AuthorizeUrl,
     string? FailureCode);
 
-/** 账号服务 seam: GUI 只依赖它, 便于 VM 层注入假实现。 */
+/** 账号服务 seam: GUI 只依赖它, 便于 VM 层注入假实现; 实现由 account 插件注册。 */
 public interface IAccountService
 {
+    public const string ServiceName = "account";
+
     event Action? Changed;
 
     event Action? SessionExpired;

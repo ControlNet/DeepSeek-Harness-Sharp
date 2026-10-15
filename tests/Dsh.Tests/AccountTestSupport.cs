@@ -2,6 +2,7 @@
 using System.Text;
 using Dsh.Account;
 using Dsh.Boot;
+using Dsh.Core;
 
 namespace Dsh.Tests;
 

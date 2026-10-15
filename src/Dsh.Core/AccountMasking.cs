@@ -1,4 +1,4 @@
-﻿namespace Dsh.Account;
+﻿namespace Dsh.Core;
 
 /** 账号标识脱敏: 手机号保留前 3 后 4, 邮箱保留首字符与域名。 */
 public static class AccountMasking

@@ -1,6 +1,7 @@
 ﻿using System.Net;
 using System.Text;
 using Dsh.Account;
+using Dsh.Core;
 
 namespace Dsh.Tests;
 
