@@ -168,6 +168,26 @@ public sealed class PresentToolTests
     }
 
     [Fact]
+    public async Task Deliverables_InheritedByFork()
+    {
+        using var environment = await GuiTestEnvironment.CreateAsync();
+        var session = environment.Agent.Session;
+        var expected = await CreateFile(session, "plan.docx");
+        session.Append(new TurnStartPayload(1));
+        await Present(environment, File("plan.docx", "计划"));
+        await environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(session);
+
+        var persistence = environment.App.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)!;
+        var forkId = SessionFork.Fork(persistence, session, session.Seq, "fork", session.Header.Cwd);
+        var agents = environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
+        var handle = await agents.Resume(
+            new ResumeAgentOptions(forkId, new AgentOptions("test", "test-model")),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal([new PresentedFile(expected, "计划")], SessionDeliverables.Collect(handle.Agent.Session.SnapshotEvents()));
+    }
+
+    [Fact]
     public async Task DeliverablesCommand_UnknownIndex_ReportsError()
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
