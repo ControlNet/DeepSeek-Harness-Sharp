@@ -8,6 +8,7 @@ using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Ptc;
 using Dsh.Runtime;
+using Dsh.ScriptHost;
 
 namespace Dsh.Tests;
 

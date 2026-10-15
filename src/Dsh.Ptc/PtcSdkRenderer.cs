@@ -1,6 +1,7 @@
 ﻿using System.Text;
 using System.Text.Json.Nodes;
 using Dsh.Llm;
+using Dsh.ScriptHost;
 
 namespace Dsh.Ptc;
 

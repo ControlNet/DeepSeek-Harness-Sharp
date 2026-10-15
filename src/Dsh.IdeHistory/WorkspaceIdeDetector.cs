@@ -1,14 +1,6 @@
-namespace Dsh.IdeHistory;
+using Dsh.Core;
 
-/** 工作区里检测到的 IDE 项目特征(可多选: 一个仓库可能同时有 .vscode/ 与 .idea/)。 */
-[Flags]
-public enum IdeWorkspaceKind
-{
-    None = 0,
-    VsCode = 1,
-    JetBrains = 2,
-    Zed = 4,
-}
+namespace Dsh.IdeHistory;
 
 /**
  * 工作区门控(§3): 从 cwd 向上找 IDE 项目标记, 只有命中的 IDE 才启用对应 provider 的工作区级查询;

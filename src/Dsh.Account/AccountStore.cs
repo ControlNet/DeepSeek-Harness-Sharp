@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Dsh.Boot;
+using Dsh.Core;
 
 namespace Dsh.Account;
 

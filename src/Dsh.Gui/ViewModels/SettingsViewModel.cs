@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using System.Reflection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Dsh.Account;
 using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Gui.Services;
@@ -54,7 +53,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _bridge = bridge;
         _gui = gui;
         _facade = facade;
-        Account = new AccountPanelViewModel(_ctx.Get<IAccountService>(AccountService.ServiceName, false));
+        Account = new AccountPanelViewModel(_ctx.Get<IAccountService>(IAccountService.ServiceName, false));
         foreach (var section in Sections)
             section.SelectCommand = new RelayCommand<SettingsNavItemViewModel>(SelectSection);
         Sections[0].IsSelected = true;

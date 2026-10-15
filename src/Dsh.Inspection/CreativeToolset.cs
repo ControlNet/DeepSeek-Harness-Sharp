@@ -1,5 +1,4 @@
 using Dsh.Core;
-using Dsh.Presets;
 using Dsh.Runtime;
 
 namespace Dsh.Inspection;

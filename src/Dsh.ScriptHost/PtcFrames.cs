@@ -1,6 +1,6 @@
 ﻿using System.Text.Json.Nodes;
 
-namespace Dsh.Ptc;
+namespace Dsh.ScriptHost;
 
 /** NDJSON 帧写入: 一行一个 JSON 对象, 以 \n 结尾; 写入串行化。 */
 public sealed class FrameWriter(TextWriter writer)

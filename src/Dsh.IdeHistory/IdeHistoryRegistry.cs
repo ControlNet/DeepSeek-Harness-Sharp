@@ -1,3 +1,5 @@
+using Dsh.Core;
+
 namespace Dsh.IdeHistory;
 
 public sealed class IdeHistoryRegistry

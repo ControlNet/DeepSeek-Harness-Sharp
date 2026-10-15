@@ -1,19 +1,18 @@
 using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Runtime;
-using Dsh.Subagent;
 
 namespace Dsh.Gui.Services;
 
-/** GUI 侧子代理查询: 直接消费进程内 SubagentRuntime 的持久化子树与 SessionStore, 不引入新协议; 服务缺失时退化为空。 */
+/** GUI 侧子代理查询: 经 ISubagentService 契约消费进程内子代理的持久化子树与 SessionStore, 不引入新协议; 服务缺失时退化为空。 */
 public sealed class SubagentDirectory
 {
-    private readonly SubagentRuntime? _runtime;
+    private readonly ISubagentService? _runtime;
     private readonly SessionStore? _store;
 
     public SubagentDirectory(Context ctx)
     {
-        _runtime = ctx.Get<SubagentRuntime>(SubagentRuntime.ServiceName, false);
+        _runtime = ctx.Get<ISubagentService>(ISubagentService.ServiceName, false);
         _store = ctx.Get<SessionStore>(SessionStore.ServiceName, false);
     }
 

@@ -2,7 +2,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 
-namespace Dsh.Ptc;
+namespace Dsh.ScriptHost;
 
 /** 同一可执行文件的隐藏 --ptc-host 模式: 在子进程内用 Roslyn 编译模型程序, 绑定调用经 NDJSON 帧桥回宿主。 */
 public static class PtcScriptHost

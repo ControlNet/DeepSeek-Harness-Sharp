@@ -86,6 +86,7 @@
     <ProjectReference Include="..\..\src\Dsh.Presets\Dsh.Presets.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Workflow\Dsh.Workflow.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Ptc\Dsh.Ptc.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.ScriptHost\Dsh.ScriptHost.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Web\Dsh.Web.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Sdk\Dsh.Sdk.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Acp\Dsh.Acp.csproj" />

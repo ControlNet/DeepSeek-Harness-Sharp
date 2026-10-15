@@ -23,7 +23,7 @@ public sealed record SubagentToolConfig
 
 public static class SubagentTool
 {
-    public const string DefaultToolName = "subagent";
+    public const string DefaultToolName = ISubagentService.DefaultToolName;
 
     private const string SpawnDescription =
         "Delegate a self-contained task to a subagent (a separate agent that works in its own context) "

@@ -1,6 +1,7 @@
 ﻿using Dsh.Boot;
 using Dsh.Llm;
 using Dsh.Runtime;
+using Dsh.Core;
 
 namespace Dsh.Account;
 
@@ -10,7 +11,7 @@ namespace Dsh.Account;
  */
 public sealed class AccountService : Service, IAccountService, IInferenceCredentials, IDisposable
 {
-    public const string ServiceName = "account";
+    public const string ServiceName = IAccountService.ServiceName;
 
     public const string PluginPackage = "@deepseek-ai/dsh-account";
 
