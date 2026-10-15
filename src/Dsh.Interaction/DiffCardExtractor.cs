@@ -23,6 +23,10 @@ public static class DiffCardExtractor
            ?? FromPatchTexts(argumentsJson, resultText)
            ?? FromPairs(toolName, argumentsJson, resultMeta);
 
+    /** 一个文件的 unified diff(如 `git diff` 输出)转卡片, 标题由调用方给出; 没有增删行(纯重命名、权限变更)时返回 null。 */
+    public static DiffCard? FromUnifiedDiff(string title, string patch)
+        => TryParseUnifiedDiff(patch) is { } card ? card with { Title = title } : null;
+
     public static IReadOnlyList<DiffLine> DiffLines(string? oldText, string? newText)
     {
         var oldLines = SplitLines(oldText);
