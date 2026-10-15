@@ -95,6 +95,9 @@ public static class PersistentBashTool
     private const string ShellResetMessage = "The persistent bash shell was reset; the next bash call starts from the workspace with a fresh current directory and environment.";
     private const int PollIntervalMs = 25;
 
+    /** Upper bound for a new shell to reach the first command: Git Bash and WSL bash on Windows can take seconds to start cold. */
+    private static readonly TimeSpan ShellStartupTimeout = TimeSpan.FromSeconds(30);
+
     private sealed record CommandMarkers(string Start, string End);
 
     private sealed record CapturedOutput(string Text, bool Incomplete, int? ExitCode);
@@ -255,9 +258,11 @@ public static class PersistentBashTool
         var shell = getShell(owner);
         var marker = MakeMarkers();
         var wrapped = WrapCommand(command, marker);
-        using var timeout = new CancellationTokenSource();
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(config.TimeoutMs));
-        using var fused = CancellationTokenSource.CreateLinkedTokenSource(upstream, timeout.Token);
+        var budget = TimeSpan.FromMilliseconds(config.TimeoutMs);
+        // The command budget starts once the start marker shows; until then only the shell startup bound applies.
+        // CI (Windows): a freshly reset bash took longer than the whole 500 ms budget to start, so a plain echo was reported as timed out.
+        using var timeout = new CancellationTokenSource(budget > ShellStartupTimeout ? budget : ShellStartupTimeout);
+        var commandStarted = false;
 
         shell.Cursor = shell.Handle.StdoutReader.ReadFrom(shell.Cursor).NextOffset;
         try
@@ -277,6 +282,11 @@ public static class PersistentBashTool
             var read = shell.Handle.StdoutReader.ReadFrom(shell.Cursor);
             if (CommandOutput(read.Text, marker, read.Lossy) is { } captured)
                 return RenderCaptured(captured, config.MaxOutputChars);
+            if (!commandStarted && read.Text.Contains(marker.Start, StringComparison.Ordinal))
+            {
+                commandStarted = true;
+                timeout.CancelAfter(budget);
+            }
             if (timeout.IsCancellationRequested)
             {
                 var partial = RenderCaptured(PartialOutput(read.Text, marker, read.Lossy), config.MaxOutputChars);

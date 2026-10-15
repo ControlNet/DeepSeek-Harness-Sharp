@@ -402,6 +402,8 @@ public class JobsTests : IDisposable
     [Collection(SerialProcessCollection.Name)]
     public sealed class PersistentBash : IDisposable
     {
+        private const int ShortTimeoutMs = 500;
+        private const int SlowStartupSeconds = 1;
         private readonly JobsTests _outer = new();
 
         public PersistentBash()
@@ -561,6 +563,46 @@ public class JobsTests : IDisposable
             });
             Assert.False(alive.IsError);
             Assert.Contains("alive", TextOf(alive));
+        }
+
+        /** The command budget starts when bash reaches the command: a shell that takes longer than the budget to start still runs a quick command. */
+        [Fact]
+        public async Task SlowShellStartup_DoesNotCountAgainstCommandTimeout()
+        {
+            if (OperatingSystem.IsWindows() || !BashAvailable())
+                return;
+            var root = TempTree.CreateDirectory("slow-bash");
+            try
+            {
+                var bashPath = new BashResolver(_outer._subprocess, null).Resolve(TestContext.Current.CancellationToken);
+                var slowBash = Path.Combine(root, "slow-bash");
+                await File.WriteAllTextAsync(slowBash, $"#!/bin/sh\nsleep {SlowStartupSeconds}\nexec '{bashPath}' \"$@\"\n", TestContext.Current.CancellationToken);
+                File.SetUnixFileMode(slowBash, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                var ctx = new Context();
+                _ = new SystemPrompt(ctx, new SystemPromptConfig());
+                var tools = new ToolRuntime(ctx);
+                using var subprocess = new SubprocessService(ctx);
+                var agents = new AgentRegistry(ctx);
+                PersistentBashTool.Register(ctx, new PersistentBashConfig { TimeoutMs = ShortTimeoutMs, BashPath = slowBash });
+                var agent = new FakeAgent(ctx, _outer._tempDir, agents);
+                agent.Register();
+
+                var result = await tools.Execute(new ToolExecutionInput
+                {
+                    CallId = ToolCallId.Create($"call-{Guid.NewGuid():N}"),
+                    Name = PersistentBashTool.ToolName,
+                    Arguments = JsonSerializer.SerializeToElement(new { command = "echo alive" }, DshJson.Options),
+                    Agent = agent,
+                    Signal = default,
+                });
+
+                Assert.False(result.IsError);
+                Assert.Equal("alive", TextOf(result).Trim());
+            }
+            finally
+            {
+                TempTree.Delete(root);
+            }
         }
     }
 }
