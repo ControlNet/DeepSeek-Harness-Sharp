@@ -28,7 +28,7 @@ public sealed class PluginReferenceRulesTests
 
     /** 共享库: 不含插件入口的纯能力库, 可被多个插件复用。 */
     private static readonly HashSet<string> SharedLibraries =
-        ["Dsh.Pty", "Dsh.Transport", "Dsh.RemoteHost", "Dsh.Sdk", "Dsh.ScriptHost", "Dsh.GitInspect"];
+        ["Dsh.Pty", "Dsh.Transport", "Dsh.RemoteHost", "Dsh.Sdk", "Dsh.ScriptHost", "Dsh.GitInspect", "Dsh.Notifications"];
 
     /** 卫星程序集: 实现所属插件自有的 SPI 并由其反射发现, 只允许引用所属插件。 */
     private static readonly Dictionary<string, HashSet<string>> SatelliteOwners = new()
