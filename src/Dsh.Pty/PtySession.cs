@@ -4,7 +4,7 @@ using System.Threading.Channels;
 
 namespace Dsh.Pty;
 
-public sealed class PtySession : IDisposable
+public sealed class PtySession : IDisposable, ITerminalConnection
 {
     private readonly PtyStartInfo _startInfo;
     private readonly object _gate = new();
@@ -329,6 +329,12 @@ public sealed class PtySession : IDisposable
             return;
 
         throw new ObjectDisposedException(nameof(PtySession));
+    }
+
+    ValueTask ITerminalConnection.ResizeAsync(TerminalSize size, CancellationToken cancellationToken)
+    {
+        Resize(size.Rows, size.Columns);
+        return ValueTask.CompletedTask;
     }
 
     public void Attach()
