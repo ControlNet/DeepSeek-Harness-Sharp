@@ -17,6 +17,9 @@ public sealed class TuiSettings(HarnessHome home)
     /** 输入栏高度的绝对上限(行): 同理兜住离谱值; 实际渲染还会按控制台高度再夹一次。 */
     public const int MaximumInputHeight = 40;
 
+    /** 前缀等待超时的上限(毫秒): 兜住手改配置里的离谱值。 */
+    public const int MaximumKeySequenceTimeoutMs = 60_000;
+
     /** 侧栏(单窗格右栏)宽度; null 表示没拖过, 用布局默认比例。 */
     public int? SidebarWidth
     {
@@ -48,6 +51,12 @@ public sealed class TuiSettings(HarnessHome home)
 
     /** GPU 后端: auto|vk|gl|cpu; 缺省 auto(auto 优先 Vk, 不可用回退 GL, 再回退 CPU)。 */
     public string GpuBackend => ReadString("gpuBackend", "auto");
+
+    /** 快捷键覆盖: 动作名 → 按键串(如 overview: "Ctrl+X W"); 未列出的动作用默认键位。 */
+    public IReadOnlyDictionary<string, object?>? Keys => Parameters().GetValueOrDefault("keys") as IReadOnlyDictionary<string, object?>;
+
+    /** 多键序列的前缀等待上限(毫秒); 缺省 0 = 一直等到下一个键。 */
+    public int KeySequenceTimeoutMs => Read("keySequenceTimeoutMs", MaximumKeySequenceTimeoutMs) ?? 0;
 
     private string ReadString(string key, string fallback)
         => Parameters().GetValueOrDefault(key) is string text && text.Length > 0 ? text : fallback;
