@@ -297,6 +297,15 @@ public sealed class GuiWorkspaceTests
                 await Task.Delay(TimeSpan.FromSeconds(1), ct);
                 Dispatcher.UIThread.RunJobs();
                 Assert.Equal(["列出计划", "1. 读笔记\n2. 归类", "已归类 3 条"], transcript.Messages.Select(message => message.Text));
+
+                // A prompt typed in the session view reaches the live agent (resuming it again is a no-op), and cancelling the turn is accepted.
+                transcript.Input = "再整理一次";
+                await transcript.SendCommand.ExecuteAsync(null);
+                Assert.False(transcript.HasError, transcript.Error);
+                await UntilAsync(() => transcript.Messages.Any(message => message is { Role: "你", Text: "再整理一次" }), "the sent prompt in the transcript");
+                await transcript.CancelCommand.ExecuteAsync(null);
+                Assert.False(transcript.HasError, transcript.Error);
+                Assert.Single(transcript.Messages, message => message.Text == "列出计划");
             }
             finally
             {
