@@ -31,6 +31,13 @@ public sealed class AcpClient
         return (JsonElement)result!;
     }
 
+    public async Task AuthenticateAsync(string token, CancellationToken cancellationToken = default)
+        => await _transport.RequestAsync(AcpMethods.Authenticate, new Dictionary<string, object?>
+        {
+            ["methodId"] = AcpMethods.LocalTokenAuthMethod,
+            ["_meta"] = new Dictionary<string, object?> { ["token"] = token },
+        }, cancellationToken);
+
     public async Task<string> NewSessionAsync(string cwd, CancellationToken cancellationToken = default)
     {
         var result = await _transport.RequestAsync(AcpMethods.NewSession, new Dictionary<string, object?>

@@ -4,6 +4,7 @@ using Dsh.Runtime.Events;
 using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Sdk;
+using Dsh.Transport;
 
 namespace Dsh.Acp;
 
@@ -24,18 +25,23 @@ public sealed class AcpServer
     private readonly string? _provider;
     private readonly string? _model;
     private readonly Func<Context, IDisposable>? _installAgentHooks;
+    private readonly LocalEndpointToken? _requiredToken;
     private readonly Dictionary<string, AcpSessionRecord> _sessions = [];
     private readonly List<Func<bool>> _disposers = [];
+    private volatile bool _authenticated;
     private bool _closed;
 
+    /** requiredToken gates every method except initialize/authenticate; null means the transport itself is trusted (e.g. stdio). */
     public AcpServer(Context ctx, IJsonRpcPeer transport, string? provider = null, string? model = null,
-        Func<Context, IDisposable>? installAgentHooks = null)
+        Func<Context, IDisposable>? installAgentHooks = null, LocalEndpointToken? requiredToken = null)
     {
         _ctx = ctx;
         _transport = transport;
         _provider = provider;
         _model = model;
         _installAgentHooks = installAgentHooks;
+        _requiredToken = requiredToken;
+        _authenticated = requiredToken is null;
         _disposers.Add(ctx.On<Dsh.Core.SessionEventNotification>(notification =>
         {
             var session = notification.Session;
@@ -52,12 +58,14 @@ public sealed class AcpServer
     {
         if (_closed)
             throw new InvalidOperationException("the ACP bridge has been disposed");
+        if (!_authenticated && method is not (AcpMethods.Initialize or AcpMethods.Authenticate))
+            throw new InvalidOperationException($"authenticate with \"{AcpMethods.LocalTokenAuthMethod}\" before calling {method}");
         switch (method)
         {
             case AcpMethods.Initialize:
                 return InitializeResult();
             case AcpMethods.Authenticate:
-                return new Dictionary<string, object?>();
+                return Authenticate(parameters);
             case AcpMethods.NewSession:
                 return await NewSessionAsync(Deserialize<NewSessionParams>(parameters));
             case AcpMethods.ListSessions:
@@ -102,7 +110,23 @@ public sealed class AcpServer
         _sessions.Clear();
     }
 
-    private static Dictionary<string, object?> InitializeResult()
+    private Dictionary<string, object?> Authenticate(JsonElement? parameters)
+    {
+        if (_requiredToken is null)
+            return [];
+        var presented = parameters is { } value
+            && value.TryGetProperty("methodId", out var methodId) && methodId.ValueEquals(AcpMethods.LocalTokenAuthMethod)
+            && value.TryGetProperty("_meta", out var meta) && meta.ValueKind == JsonValueKind.Object
+            && meta.TryGetProperty("token", out var token) && token.ValueKind == JsonValueKind.String
+                ? token.GetString()
+                : null;
+        if (!_requiredToken.Matches(presented))
+            throw new InvalidOperationException("ACP authentication failed");
+        _authenticated = true;
+        return [];
+    }
+
+    private Dictionary<string, object?> InitializeResult()
     {
         return new Dictionary<string, object?>
         {
@@ -128,9 +152,16 @@ public sealed class AcpServer
                     ["resume"] = new Dictionary<string, object?>(),
                 },
             },
-            ["authMethods"] = Array.Empty<object?>(),
+            ["authMethods"] = _requiredToken is null ? Array.Empty<object?>() : [LocalTokenAuthMethod()],
         };
     }
+
+    private static Dictionary<string, object?> LocalTokenAuthMethod() => new()
+    {
+        ["id"] = AcpMethods.LocalTokenAuthMethod,
+        ["name"] = "Local token",
+        ["description"] = "Send the content of <harness home>/run/dsh-acp.token as _meta.token",
+    };
 
     private async Task<Dictionary<string, object?>> NewSessionAsync(NewSessionParams parameters)
     {

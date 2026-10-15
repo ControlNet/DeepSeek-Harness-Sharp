@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using Dsh.Runtime;
 using Dsh.Boot;
 using Dsh.Sdk;
+using Dsh.Transport;
 
 namespace Dsh.Acp;
 
@@ -19,6 +20,7 @@ public sealed class AcpSocketServer : IDisposable
     private readonly Lock _gate = new();
     private Socket? _listener;
     private TcpListener? _tcpListener;
+    private LocalEndpointToken? _token;
     private Task? _acceptLoop;
 
     public AcpSocketServer(Context ctx, HarnessHome home, string? provider = null, string? model = null,
@@ -39,23 +41,19 @@ public sealed class AcpSocketServer : IDisposable
 
     public void Start()
     {
+        // Sessions auto-approve tool calls, so only clients holding the owner-only token may open them; it exists before the endpoint is reachable.
+        _token = LocalEndpointToken.Issue(_socketPath ?? _portFile!);
         if (OperatingSystem.IsWindows())
         {
             _tcpListener = new TcpListener(IPAddress.Loopback, 0);
             _tcpListener.Start();
             var port = ((IPEndPoint)_tcpListener.LocalEndpoint).Port;
-            Directory.CreateDirectory(Path.GetDirectoryName(_portFile!)!);
             File.WriteAllText(_portFile!, port.ToString());
             Endpoint = $"tcp://127.0.0.1:{port}";
         }
         else
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_socketPath!)!);
-            if (File.Exists(_socketPath))
-                File.Delete(_socketPath);
-            _listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            _listener.Bind(new UnixDomainSocketEndPoint(_socketPath!));
-            _listener.Listen(16);
+            _listener = OwnerOnlyFiles.ListenUnixSocket(_socketPath!, 16);
             Endpoint = $"unix://{_socketPath}";
         }
         _acceptLoop = Task.Run(() => AcceptLoopAsync(_stop.Token));
@@ -83,6 +81,7 @@ public sealed class AcpSocketServer : IDisposable
         }
         TryDelete(_socketPath);
         TryDelete(_portFile);
+        _token?.Dispose();
         _stop.Dispose();
     }
 
@@ -123,7 +122,7 @@ public sealed class AcpSocketServer : IDisposable
             using var reader = new StreamReader(stream);
             using var writer = new StreamWriter(stream) { AutoFlush = true };
             var transport = new JsonRpcLineTransport(reader, writer);
-            var server = new AcpServer(_ctx, transport, _provider, _model, _installAgentHooks);
+            var server = new AcpServer(_ctx, transport, _provider, _model, _installAgentHooks, _token);
             transport.RequestHandler = server.HandleRequestAsync;
             transport.NotificationHandler = (method, parameters) =>
             {

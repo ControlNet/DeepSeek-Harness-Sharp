@@ -63,6 +63,9 @@ public sealed class PtyDaemonRequest
 {
     public string Method { get; set; } = "";
 
+    /** Same-user proof read from the endpoint's token file (see LocalEndpointToken); every request must carry it. */
+    public string? Token { get; set; }
+
     public string? Id { get; set; }
 
     public PtyDaemonStartParams? Params { get; set; }

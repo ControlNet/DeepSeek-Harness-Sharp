@@ -29,6 +29,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 产物必须来自 tag 指向的那次提交的成功构建, 否则可能把别的提交(或别的分支)构建出的二进制挂到这个版本上。
+      - name: 校验 run 的提交与 tag 一致
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::run_id 必须是数字: $RUN_ID"
+            exit 1
+          fi
+          TAG_SHA="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
+          # 不要求 run 整体成功: 本工作流正是为“构建成功但发布步骤失败”的 run 补发资产。
+          RUN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.head_sha')"
+          echo "tag $TAG -> $TAG_SHA; run $RUN_ID -> $RUN_SHA"
+          if [ "$RUN_SHA" != "$TAG_SHA" ]; then
+            echo "::error::run $RUN_ID 构建的是 $RUN_SHA, 不是 tag $TAG 指向的 $TAG_SHA"
+            exit 1
+          fi
+
       - name: 取既有 run 的产物
         uses: actions/download-artifact@v4
         with:

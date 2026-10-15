@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using A2A;
@@ -16,16 +17,23 @@ public sealed class A2aHost : IDisposable
     private const string CardPath = "/.well-known/agent-card.json";
     private static readonly JsonSerializerOptions Json = A2AJsonUtilities.DefaultOptions;
 
+    private const string BearerPrefix = "Bearer ";
+
     private readonly A2AServer _server;
     private readonly AgentCard _card;
     private readonly HttpListener _listener = new();
     private readonly CancellationTokenSource _stop = new();
+    private readonly byte[]? _authToken;
     private Task? _loop;
 
     public A2aHost(DshAgentHandler handler, A2aHostOptions options)
     {
         var port = options.Port > 0 ? options.Port : ProbeFreePort();
         var host = string.IsNullOrWhiteSpace(options.Host) ? "127.0.0.1" : options.Host;
+        // The endpoint runs agent turns with the user's tools, so an unauthenticated listener must stay unreachable from other machines.
+        if (string.IsNullOrEmpty(options.AuthToken) && !IsLoopbackHost(host))
+            throw new InvalidOperationException($"a2a.host \"{host}\" is not a loopback address; set a2a.authToken before exposing the A2A server");
+        _authToken = string.IsNullOrEmpty(options.AuthToken) ? null : Encoding.UTF8.GetBytes(options.AuthToken);
         Endpoint = $"http://{host}:{port}";
         _listener.Prefixes.Add($"{Endpoint}/");
         _card = BuildCard(options.PublicUrl ?? Endpoint, options);
@@ -77,6 +85,11 @@ public sealed class A2aHost : IDisposable
         try
         {
             var request = context.Request;
+            if (!IsAuthorized(request))
+            {
+                RejectUnauthorized(context.Response);
+                return;
+            }
             var path = request.Url?.AbsolutePath ?? "";
             if (request.HttpMethod == "GET" && path.EndsWith(CardPath, StringComparison.OrdinalIgnoreCase))
             {
@@ -188,6 +201,32 @@ public sealed class A2aHost : IDisposable
         response.ContentLength64 = bytes.Length;
         await response.OutputStream.WriteAsync(bytes);
         response.Close();
+    }
+
+    private bool IsAuthorized(HttpListenerRequest request)
+    {
+        if (_authToken is null)
+            return true;
+        var header = request.Headers["Authorization"];
+        if (header is null || !header.StartsWith(BearerPrefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+        var presented = Encoding.UTF8.GetBytes(header[BearerPrefix.Length..].Trim());
+        return CryptographicOperations.FixedTimeEquals(presented, _authToken);
+    }
+
+    private static void RejectUnauthorized(HttpListenerResponse response)
+    {
+        response.StatusCode = (int)HttpStatusCode.Unauthorized;
+        response.Headers["WWW-Authenticate"] = "Bearer";
+        response.Close();
+    }
+
+    /** HttpListener wildcards (+, *) and unspecified addresses bind every interface, so only literal loopback names count. */
+    private static bool IsLoopbackHost(string host)
+    {
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return IPAddress.TryParse(host.Trim('[', ']'), out var address) && IPAddress.IsLoopback(address);
     }
 
     private static void TryFail(HttpListenerResponse response)

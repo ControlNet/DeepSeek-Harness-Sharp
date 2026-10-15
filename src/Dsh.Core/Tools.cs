@@ -347,6 +347,7 @@ public sealed class ToolRuntime : Service
     }
 
     // 以下两个成员由 dsh/service.call 桥按名字字符串调用(匹配不区分大小写)。
+    [RemoteCallable]
     public List<Dictionary<string, object?>> schemas(object? agent = null)
     {
         var scope = agent is IAgent resolved ? resolved.ScopeKey : null;
@@ -358,6 +359,7 @@ public sealed class ToolRuntime : Service
         }).ToList();
     }
 
+    [RemoteCallable]
     public async Task<Dictionary<string, object?>> execute(IDictionary<string, object?> input)
     {
         var name = input.TryGetValue("name", out var nameValue) ? nameValue as string : null;
