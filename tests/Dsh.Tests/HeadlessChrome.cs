@@ -23,6 +23,8 @@ internal sealed class HeadlessChrome : IAsyncDisposable
 
     /** A first start on a fresh CI runner sets up the profile and can take much longer than later ones. */
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(60);
+
+    private const int StartAttempts = 2;
     private static readonly TimeSpan DefaultWait = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(100);
 
@@ -48,20 +50,43 @@ internal sealed class HeadlessChrome : IAsyncDisposable
 
     public static async Task<HeadlessChrome> StartAsync(string artifacts, CancellationToken cancellationToken, int width = 1280, int height = 900)
     {
-        var profile = Path.Combine(artifacts, $"chrome-profile-{Guid.NewGuid():N}");
         var executable = ChromeCandidates.Select(AgentExecutableLocator.Resolve).FirstOrDefault(path => path is not null);
         if (executable is null)
             Assert.Skip($"Chrome is not installed on this machine (looked for {string.Join(", ", ChromeCandidates)})");
+        for (var attempt = 1; ; attempt++)
+        {
+            var chrome = Launch(executable, Path.Combine(artifacts, $"chrome-profile-{Guid.NewGuid():N}"), width, height);
+            try
+            {
+                var browserEndpoint = await chrome.ReadDevToolsEndpointAsync(cancellationToken);
+                await chrome.AttachToPageAsync(browserEndpoint, cancellationToken);
+                await chrome.SendAsync("Page.enable", "{}", cancellationToken);
+                await chrome.SendAsync("Page.addScriptToEvaluateOnNewDocument", $$"""{"source":"{{JsonEncodedText.Encode(ProblemRecorder)}}"}""", cancellationToken);
+                return chrome;
+            }
+            // A Chrome start on the Windows runner hung once without writing anything; Chrome is then started again with a new profile.
+            catch (TimeoutException) when (attempt < StartAttempts)
+            {
+                await chrome.DisposeAsync();
+            }
+        }
+    }
+
+    /**
+     * The mock keychain and basic password store keep macOS Chrome from waiting on a keychain prompt.
+     * Background networking, component updates, sync and extensions are off, so a fresh profile starts without fetching anything.
+     */
+    private static HeadlessChrome Launch(string executable, string profile, int width, int height)
+    {
         var start = new ProcessStartInfo(executable) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        // The mock keychain and basic password store keep macOS Chrome from waiting on a keychain prompt.
-        foreach (var argument in (string[])["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--use-mock-keychain", "--password-store=basic", $"--user-data-dir={profile}", "--remote-debugging-port=0", $"--window-size={width},{height}", "about:blank"])
+        foreach (var argument in (string[])
+                 [
+                     "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--use-mock-keychain", "--password-store=basic",
+                     "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-extensions",
+                     $"--user-data-dir={profile}", "--remote-debugging-port=0", $"--window-size={width},{height}", "about:blank",
+                 ])
             start.ArgumentList.Add(argument);
-        var chrome = new HeadlessChrome(Process.Start(start) ?? throw new InvalidOperationException($"{executable} did not start"), profile);
-        var browserEndpoint = await chrome.ReadDevToolsEndpointAsync(cancellationToken);
-        await chrome.AttachToPageAsync(browserEndpoint, cancellationToken);
-        await chrome.SendAsync("Page.enable", "{}", cancellationToken);
-        await chrome.SendAsync("Page.addScriptToEvaluateOnNewDocument", $$"""{"source":"{{JsonEncodedText.Encode(ProblemRecorder)}}"}""", cancellationToken);
-        return chrome;
+        return new HeadlessChrome(Process.Start(start) ?? throw new InvalidOperationException($"{executable} did not start"), profile);
     }
 
     /** Sends one DevTools command to the page and returns its result; pushed DevTools events are skipped. */
