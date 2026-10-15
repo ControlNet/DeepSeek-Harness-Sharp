@@ -1,5 +1,6 @@
 using Dsh.Runtime;
 using Dsh.Llm;
+using Dsh.Runtime.Events;
 
 namespace Dsh.Core;
 
@@ -37,6 +38,16 @@ public sealed class AgentLoop : Service, IAgentFactory
         agents.SetFactory(this);
         Ctx.Get<SessionProjectionRegistry>(SessionProjectionRegistry.ServiceName, false)
             ?.Register(TurnBoundaryProjectionDefinition.Instance);
+        ctx.On<AgentDisposedNotification>(notification => Release(notification.Agent));
+    }
+
+    /** 注册表移除本工厂造出的 agent 时收尾:退订其投影并释放会话(连同子代理会话),持久化随之关闭写句柄。 */
+    private void Release(IAgent agent)
+    {
+        if (agent is not AgentLoopAgent loopAgent)
+            return;
+        loopAgent.Dispose();
+        Ctx.Get<SessionStore>(SessionStore.ServiceName, false)?.Release(loopAgent.Id);
     }
 
     public Task<IAgent> CreateAgent(Context owner, CreateAgentOptions options, CancellationToken signal = default)

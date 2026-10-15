@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 
 namespace Dsh.Llm;
@@ -123,21 +124,17 @@ public delegate IAsyncEnumerable<StreamChunk> AdapterStreamDelegate(GenerateOpti
 
 public sealed record PreparedAdapterCall(string Model, AdapterStreamDelegate Stream);
 
+/** 标记"由 agent 循环发起"的请求;标记随请求对象一起回收,不随进程累积。 */
 public static class AgentLoopRequestMarker
 {
-    private static readonly HashSet<GenerateOptions> Marked = new(ReferenceEqualityComparer.Instance);
-    private static readonly Lock Gate = new();
+    private static readonly ConditionalWeakTable<GenerateOptions, object> Marked = [];
+    private static readonly object Flag = new();
 
     public static T Mark<T>(T request) where T : GenerateOptions
     {
-        lock (Gate)
-            Marked.Add(request);
+        Marked.AddOrUpdate(request, Flag);
         return request;
     }
 
-    public static bool IsMarked(GenerateOptions request)
-    {
-        lock (Gate)
-            return Marked.Contains(request);
-    }
+    public static bool IsMarked(GenerateOptions request) => Marked.TryGetValue(request, out _);
 }

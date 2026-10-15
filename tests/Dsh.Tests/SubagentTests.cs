@@ -87,11 +87,11 @@ public class SubagentTests
         public ScriptedAdapter Adapter { get; }
 
         public async Task<AgentLoopAgent> CreateParent(string id)
-        {
-            var handle = await Agents.Create(new CreateAgentOptions(
+            => (AgentLoopAgent)(await CreateParentHandle(id)).Agent;
+
+        public async Task<AgentHandle> CreateParentHandle(string id)
+            => await Agents.Create(new CreateAgentOptions(
                 SessionId.Create(id), null, new AgentOptions("test-provider", "test-model")));
-            return (AgentLoopAgent)handle.Agent;
-        }
 
         public Session? ChildOf(SessionId parentId, int depth = 1)
             => Sessions.List().SingleOrDefault(session =>
@@ -187,6 +187,34 @@ public class SubagentTests
         Assert.Equal(child.Id, fixture.Adapter.Requests[1].SessionId);
         Assert.Contains(fixture.Adapter.Requests[1].Messages, message =>
             message.Content.OfType<TextBlock>().Any(block => block.Text == "do the delegated thing"));
+    }
+
+    /** 子 run 结束即退订其投影; 父 agent 释放时父子会话一并离开 store, 订阅数回到创建前。 */
+    [Fact]
+    public async Task FinishedDelegation_ReleasesSubscriptions_AndParentReleaseDropsSessions()
+    {
+        using var fixture = new SubagentFixture(
+        [
+            _ => ToolCallAnswer("call-sub-1", "subagent", """{"description":"release task","prompt":"do it"}"""),
+            _ => TextAnswer("child answer"),
+            _ => TextAnswer("parent done"),
+        ]);
+        var disposed = CollectEvents<SessionDisposedNotification, SessionId>(fixture.Ctx, notification => notification.Session.Id);
+        var baseline = fixture.Ctx.EventSubscriptions.Count;
+        var handle = await fixture.CreateParentHandle("session-parent-release");
+        var parent = (AgentLoopAgent)handle.Agent;
+
+        parent.Followup(MessageFactory.CreateUserText("start"));
+        await parent.WhenIdle();
+        var child = fixture.ChildOf(parent.Id);
+        Assert.NotNull(child);
+        handle.Dispose.Dispose();
+
+        Assert.Null(fixture.Sessions.Get(parent.Id));
+        Assert.Null(fixture.Sessions.Get(child.Id));
+        Assert.Contains(parent.Id, disposed);
+        Assert.Contains(child.Id, disposed);
+        Assert.Equal(baseline, fixture.Ctx.EventSubscriptions.Count);
     }
 
     [Fact]

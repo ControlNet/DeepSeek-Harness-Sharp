@@ -148,6 +148,7 @@ public static class InProcessDriver
             foreach (var disposable in _composition)
                 disposable.Dispose();
             _structured?.Dispose();
+            _child.Dispose();
         }
 
         private void AttachDescriptorAppend(Context childCtx, Session session, SubagentDescriptorPayload descriptor)
