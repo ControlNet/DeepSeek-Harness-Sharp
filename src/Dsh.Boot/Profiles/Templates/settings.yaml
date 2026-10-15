@@ -61,11 +61,15 @@ rules: []
 # arrowColor 缺省跟随 highlightColor, 其余缺省不留痕; 示例见下)。sidebarWidth/inputHeight/gpuBackend 亦在此配。
 # keys 改快捷键:动作名: 按键串(修饰键 Ctrl/Alt 用 + 连接, 多键序列用空格分隔, 如 "Ctrl+X W");未写的动作用默认键位,TUI 内 /keys 列出全部动作与当前绑定;
 # 首键须带 Ctrl/Alt 或为 F 键, 冲突(同一按键串多个动作/一个是另一个的前缀)记 WARN 并回退默认。keySequenceTimeoutMs 为前缀等待超时(毫秒, 缺省 0 = 一直等)。
+# web_search 搜索引擎: 模型用 engine 参数选引擎; 省略 engine 时走通用网页搜索 @deepseek-ai/dsh-web-search-deepseek(需在其参数里配 apiKey)。
+# GitHub @deepseek-ai/dsh-web-search-github 提供 github-repos(搜仓库)与 github-code(搜代码, 需 token); 参数 token 可选, 不配时仓库搜索每 IP 每分钟 10 次, 配了是 30 次。
+# Stack Overflow @deepseek-ai/dsh-web-search-stackoverflow 提供 stackoverflow(搜问题); 参数 key 可选(在 stackapps.com 注册应用获得), 不配时每 IP 每天 300 次, 配了是 10000 次。
+# 这两个引擎默认开启, 各自写 false 即单独关闭; token/key 只从本文件读取, 日志里会脱敏。
 plugins:
   "@deepseek-ai/dsh-memory": false
   "@deepseek-ai/dsh-toon": false
   "@deepseek-ai/dsh-checkpoints": false
-  # 下面两段是示例, 默认不打开:
+  # 下面几段是示例, 默认不打开:
   # "@deepseek-ai/dsh-ide-history":
   #   timeline: true    # 支持IDE(JetBrains/VSCode)历史记录进入timestamp fork/revert/jump时间线，默认为false
   #   timeline_limit: 30
@@ -77,6 +81,11 @@ plugins:
   #   keys:
   #     overview: F5
   #     newSession: "Ctrl+X Ctrl+N"
+  # "@deepseek-ai/dsh-web-search-github":
+  #   token: <GitHub token>    # 可选; 开启 github-code 并提高限流, 只需公开仓库的只读权限
+  # "@deepseek-ai/dsh-web-search-stackoverflow":
+  #   key: <Stack Exchange key>    # 可选; 提高每日配额
+  # "@deepseek-ai/dsh-web-search-stackoverflow": false    # 单独关闭 Stack Overflow 引擎
 
 # 下面这块由 `dsharp config schema --write-template` 从各插件声明生成(编译期 schema, 不靠反射):
 # 顶层 settings 与每个插件支持的参数都会列在这里, 全部是注释, 不会改变默认行为。

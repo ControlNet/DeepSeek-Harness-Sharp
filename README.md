@@ -62,6 +62,27 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    ```
 
    动作名:`newSession`、`sessionMenu`、`detach`、`deleteSessionMenu`、`agentList`、`overview`、`openShell`、`quit`、`splitPane`、`closePane`、`prevSession`、`nextSession`、`focusLeft`/`focusRight`/`focusUp`/`focusDown`、`focusNextPane`、`interrupt`(默认 `Ctrl+C`,连按两次退出)、`promptCommandMenu`(默认 `Ctrl+P`)。按键串的首键必须带 `Ctrl`/`Alt` 或是 F 键(否则会吞掉正常输入);同一按键串绑了多个动作、或一个按键串是另一个的前缀时,启动时记 WARN 日志并让冲突的自定义项回退默认。按下前缀后再按 `Esc` 或未绑定的键即取消。焦点在 shell 窗格时,`interrupt` 与 `promptCommandMenu` 的按键直达 shell,其余动作仍由 DSH 处理。
+9. 网页搜索引擎:`web_search` 工具的 `engine` 参数选择搜索引擎,同一次调用里的所有查询都发给这个引擎;不填 `engine` 时走通用网页搜索。系统提示词会列出当前可用的引擎,每条搜索结果都标明回答它的引擎及其局限(只搜了哪类对象、限流额度)。
+
+   | 引擎 | 插件包 | 搜索范围 | 凭据参数 | 未配置凭据时的限制 |
+   | --- | --- | --- | --- | --- |
+   | `deepseek-official`(默认) | `@deepseek-ai/dsh-web-search-deepseek` | 全网网页 | `apiKey`(必填) | 不可用 |
+   | `github-repos` | `@deepseek-ai/dsh-web-search-github` | GitHub 仓库的名称、描述与 topic(查询里加 `in:readme` 可搜 README) | `token`(可选) | 每 IP 每分钟 10 次(配置后 30 次) |
+   | `github-code` | `@deepseek-ai/dsh-web-search-github` | GitHub 默认分支上的文件内容 | `token`(必填) | 不可用(配置后每分钟 10 次) |
+   | `stackoverflow` | `@deepseek-ai/dsh-web-search-stackoverflow` | Stack Overflow 的问题(标题、正文、标签) | `key`(可选,在 stackapps.com 注册应用获得) | 每 IP 每天 300 次(配置后 10000 次) |
+
+   GitHub 与 Stack Overflow 引擎默认开启,各自在 `plugins:` 段写 `false` 即单独关闭;凭据只从 `settings.yaml` 读取,日志里会脱敏:
+
+   ```yaml
+   plugins:
+     "@deepseek-ai/dsh-web-search-github":
+       token: <GitHub token>          # 可选; 开启 github-code 并提高限流, 只需公开仓库只读权限
+     "@deepseek-ai/dsh-web-search-stackoverflow":
+       key: <Stack Exchange key>      # 可选; 提高每日配额
+     # "@deepseek-ai/dsh-web-search-stackoverflow": false   # 单独关闭 Stack Overflow 引擎
+   ```
+
+   注意 `/plugins disable|enable` 会丢弃该插件的参数,重新启用后需要再写一次 `token`/`key`。
 
 ## 图形界面
 
