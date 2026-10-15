@@ -101,8 +101,10 @@ public sealed class ProjectMemoryTests
 
         Assert.True(Encoding.UTF8.GetByteCount(result) <= 512 + 32);
         Assert.Contains("## Corrections", result);
+        Assert.Contains("- c1 :: keep me", result);
         Assert.Contains("… (truncated)", result);
-        Assert.DoesNotContain("f29", result);
+        // Match the rendered record, not a bare substring: the header holds a random temp path whose GUID can contain "f29".
+        Assert.DoesNotContain("- f29 :: ", result);
     }
 
     [Fact]
