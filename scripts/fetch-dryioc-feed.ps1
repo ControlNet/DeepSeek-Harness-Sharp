@@ -1,10 +1,11 @@
 <#
 确保本地 NuGet feed(packages/)包含 Dsh.Runtime 依赖的 DryIoc.dll。
 需要的版本直接从 src/Dsh.Runtime/Dsh.Runtime.csproj 的 PackageReference 读取。
-构建用的 commit 取 dadhi/DryIoc 默认分支的最新 commit(运行时解析, 不硬编码)。
+构建用的 commit 与 CI 产物 nupkg 的 SHA256 固定在 src/Dsh.Runtime/dryioc.pin, 升级 DryIoc 时只改那一处。
 该版本不在 nuget.org 的 DryIoc 线上, 且包 ID 是 DryIoc.dll 而非 DryIoc。
-默认从源码构建; 本地已有 nupkg 时比较其构建 commit 与远程最新 commit, 不一致(或无标记)则重建。
-每个 nupkg 旁边的 <包名>.commit 戳记文件记录它构建自哪个 commit。
+CI 产物: 只取上游默认分支 push 触发、head_sha 等于固定 commit 的成功 run, 下载后 SHA256 必须等于固定值。
+源码构建: 检出固定 commit 并核对 HEAD; dotnet pack 不可复现, 产物哈希与 CI 产物不同, 由戳记记录本地构建的哈希。
+每个 nupkg 旁边的 <包名>.commit 戳记文件记录 "<commit> <sha256> <artifact|source>"。
 
 用法:
     pwsh -File scripts/fetch-dryioc-feed.ps1
@@ -38,6 +39,7 @@ $RootDir = Split-Path -Parent $PSScriptRoot
 $FeedDir = Join-Path $RootDir 'packages'
 $WorkDir = Join-Path $RootDir 'artifacts020/.dryioc-src'
 $Csproj = Join-Path $RootDir 'src/Dsh.Runtime/Dsh.Runtime.csproj'
+$PinFile = Join-Path $RootDir 'src/Dsh.Runtime/dryioc.pin'
 
 $PackageId = 'DryIoc.dll'
 $RepoUrl = 'https://github.com/dadhi/DryIoc.git'
@@ -69,38 +71,39 @@ function Get-RequiredPackageVersion {
     return $match.Groups[1].Value
 }
 
-function Get-LatestCommit {
-    Assert-Command git
-    $line = git ls-remote $RepoUrl HEAD 2>$null | Select-Object -First 1
-    if (-not $line) {
-        throw "无法从 $RepoUrl 解析最新 commit。"
+function Read-Pin([string]$Key) {
+    $match = Select-String -LiteralPath $PinFile -Pattern "^$Key=(\S+)" | Select-Object -First 1
+    if (-not $match) {
+        throw "无法从 $PinFile 读取 $Key。"
     }
-    return ($line -split '\s+')[0]
+    return $match.Matches[0].Groups[1].Value
 }
 
-# 远程不可达时返回 $null(离线容忍), 由调用方决定降级行为。
-function Try-GetLatestCommit {
-    try {
-        return Get-LatestCommit
-    }
-    catch {
-        return $null
-    }
+function Get-Sha256([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-function Read-BuildStamp([string]$StampFile) {
-    if (-not (Test-Path -LiteralPath $StampFile)) {
-        return $null
+function Write-BuildStamp([string]$StampFile, [string]$Commit, [string]$Nupkg, [string]$Origin) {
+    Set-Content -LiteralPath $StampFile -Value "$Commit $(Get-Sha256 $Nupkg) $Origin" -NoNewline
+}
+
+# 本地包与固定版本一致: 戳记 commit 等于固定 commit; CI 产物的哈希须等于固定值, 源码构建的哈希须等于构建时记录的值。
+function Test-LocalPackageMatchesPin([string]$TargetNupkg, [string]$StampFile) {
+    if (-not (Test-Path -LiteralPath $TargetNupkg) -or -not (Test-Path -LiteralPath $StampFile)) {
+        return $false
     }
-    $value = (Get-Content -LiteralPath $StampFile -Raw).Trim()
-    return $value.Length -gt 0 ? $value : $null
+    $stamp = @((Get-Content -LiteralPath $StampFile -Raw).Trim() -split '\s+')
+    if ($stamp[0] -ne $PinCommit) {
+        return $false
+    }
+    $actual = Get-Sha256 $TargetNupkg
+    if ($stamp.Count -ge 3 -and $stamp[2] -eq 'source') {
+        return $actual -eq $stamp[1]
+    }
+    return $actual -eq $PinSha256
 }
 
-function Write-BuildStamp([string]$StampFile, [string]$Commit) {
-    Set-Content -LiteralPath $StampFile -Value $Commit -NoNewline
-}
-
-# 从 CI 产物下载; 无 gh CLI 或下载不到时返回 $false, 由调用方回退。
+# 从固定 commit 的 CI 产物下载; 无 gh CLI、找不到符合条件的 run 或哈希不符时返回 $false, 由调用方回退。
 function Get-FromGhArtifact([string]$TargetNupkg, [string]$StampFile) {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         return $false
@@ -110,41 +113,43 @@ function Get-FromGhArtifact([string]$TargetNupkg, [string]$StampFile) {
         return $false
     }
 
-    $runs = gh run list --repo $GhRepo --workflow $GhWorkflow --status success --limit 20 --json databaseId,headSha | ConvertFrom-Json
-    foreach ($run in $runs) {
-        $json = gh api "repos/$GhRepo/actions/runs/$($run.databaseId)/artifacts" 2>$null
-        if (-not $json) {
-            continue
-        }
-        $hasArtifact = ($json | ConvertFrom-Json).artifacts |
-            Where-Object { $_.name -eq $GhArtifact -and -not $_.expired }
-        if (-not $hasArtifact) {
-            continue
-        }
+    $branch = gh api "repos/$GhRepo" --jq '.default_branch'
+    if ($LASTEXITCODE -ne 0 -or -not $branch) {
+        return $false
+    }
+    $runs = (gh api "repos/$GhRepo/actions/workflows/$GhWorkflow/runs?branch=$branch&event=push&status=success&head_sha=$PinCommit" | ConvertFrom-Json).workflow_runs
+    $run = $runs | Where-Object { $_.head_sha -eq $PinCommit -and $_.event -eq 'push' -and $_.head_branch -eq $branch } | Select-Object -First 1
+    if (-not $run) {
+        Write-Warning "上游 $branch 分支上没有 commit $($PinCommit.Substring(0, 12)) 的成功 push run。"
+        return $false
+    }
 
-        if (Test-Path -LiteralPath $WorkDir) {
-            Remove-Item -LiteralPath $WorkDir -Recurse -Force
-        }
-        New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
-        $staged = Join-Path $WorkDir ([System.IO.Path]::GetFileName($TargetNupkg))
-        gh run download $run.databaseId --repo $GhRepo --name $GhArtifact --dir $WorkDir *> $null
-        if (Test-Path -LiteralPath $staged) {
-            New-Item -ItemType Directory -Path $FeedDir -Force | Out-Null
-            Copy-Item -LiteralPath $staged -Destination $TargetNupkg -Force
-            Write-BuildStamp $StampFile $run.headSha
-            Remove-Item -LiteralPath $WorkDir -Recurse -Force
-            return $true
-        }
+    if (Test-Path -LiteralPath $WorkDir) {
+        Remove-Item -LiteralPath $WorkDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
+    $staged = Join-Path $WorkDir ([System.IO.Path]::GetFileName($TargetNupkg))
+    gh run download $run.id --repo $GhRepo --name $GhArtifact --dir $WorkDir *> $null
+    if (-not (Test-Path -LiteralPath $staged)) {
+        Write-Warning "run $($run.id) 的 $GhArtifact 产物不可用(可能已过期)。"
         Remove-Item -LiteralPath $WorkDir -Recurse -Force
         return $false
     }
-    return $false
+    $actual = Get-Sha256 $staged
+    if ($actual -ne $PinSha256) {
+        Write-Warning "CI 产物哈希不符: 期望 $PinSha256, 实际 $actual; 拒绝使用。"
+        Remove-Item -LiteralPath $WorkDir -Recurse -Force
+        return $false
+    }
+    New-Item -ItemType Directory -Path $FeedDir -Force | Out-Null
+    Copy-Item -LiteralPath $staged -Destination $TargetNupkg -Force
+    Write-BuildStamp $StampFile $PinCommit $TargetNupkg 'artifact'
+    Remove-Item -LiteralPath $WorkDir -Recurse -Force
+    return $true
 }
 
 # 在指定 commit 上本地构建; 与 CI 一样产出包 ID 为 DryIoc.dll 的 nupkg。
-function Build-FromSource([string]$Commit, [string]$StampFile) {
-    Assert-DotnetSdk
-
+function Build-FromSource([string]$Commit) {
     if (Test-Path -LiteralPath $WorkDir) {
         Remove-Item -LiteralPath $WorkDir -Recurse -Force
     }
@@ -158,6 +163,9 @@ function Build-FromSource([string]$Commit, [string]$StampFile) {
     git -c core.longpaths=true clone --filter=blob:none --no-checkout $RepoUrl $WorkDir
     git -C $WorkDir fetch --depth 1 origin $Commit
     git -C $WorkDir -c core.longpaths=true checkout --quiet $Commit
+    if ((git -C $WorkDir rev-parse HEAD) -ne $Commit) {
+        throw "检出的 commit 与固定的 $Commit 不一致。"
+    }
 
     # 部分克隆(blob:none)下 SourceLink 读取 git 会失败, 需关闭版本查询。
     dotnet build (Join-Path $WorkDir 'src/DryIoc/DryIoc.csproj') -c Release `
@@ -171,7 +179,6 @@ function Build-FromSource([string]$Commit, [string]$StampFile) {
         -p:EnableSourceControlManagerQueries=false -p:EnableSourceLink=false `
         -o $FeedDir
 
-    Write-BuildStamp $StampFile $Commit
     Remove-Item -LiteralPath $WorkDir -Recurse -Force
 }
 
@@ -183,7 +190,7 @@ function Assert-ProducedVersion([string]$TargetNupkg, [string]$Version) {
     $produced = Get-ChildItem -LiteralPath $FeedDir -Filter "$PackageId.*.nupkg" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($produced) {
-        throw "上游最新产出的版本是 $($produced.Name), 与 csproj 要求的 $Version 不一致; 请同步更新 $Csproj 的 PackageReference。"
+        throw "固定 commit 产出的版本是 $($produced.Name), 与 csproj 要求的 $Version 不一致; 请同步更新 $Csproj 的 PackageReference 或 $PinFile。"
     }
     throw "构建结束但未在 $FeedDir 找到任何 $PackageId.*.nupkg, 请检查上面的输出。"
 }
@@ -191,42 +198,32 @@ function Assert-ProducedVersion([string]$TargetNupkg, [string]$Version) {
 $PackageVersion = Get-RequiredPackageVersion
 $TargetNupkg = Join-Path $FeedDir "$PackageId.$PackageVersion.nupkg"
 $StampFile = "$TargetNupkg.commit"
+$PinCommit = Read-Pin 'commit'
+$PinSha256 = Read-Pin 'sha256'
+if ($PinCommit -cnotmatch '^[0-9a-f]{40}$' -or $PinSha256 -cnotmatch '^[0-9a-f]{64}$') {
+    throw "$PinFile 的 commit 须为 40 位、sha256 须为 64 位小写十六进制。"
+}
 
-if ((Test-Path -LiteralPath $TargetNupkg) -and -not $Force) {
-    $localCommit = Read-BuildStamp $StampFile
-    $remoteCommit = Try-GetLatestCommit
-    if ($null -eq $remoteCommit) {
-        if ($null -eq $localCommit) {
-            Write-Warning "本地包无 commit 戳记且远程不可达, 无法判断是否过期, 保留现有包: $TargetNupkg"
-        }
-        else {
-            Write-Host "远程不可达, 保留现有包(构建自 $($localCommit.Substring(0, [Math]::Min(12, $localCommit.Length)))): $TargetNupkg"
-        }
-        exit 0
-    }
-    if ($null -ne $localCommit -and $localCommit -eq $remoteCommit) {
-        Write-Host "本地 feed 已是最新($($remoteCommit.Substring(0, 12))): $TargetNupkg"
-        exit 0
-    }
-    if ($null -eq $localCommit) {
-        Write-Host "本地包无 commit 戳记, 重新构建以与远程 $($remoteCommit.Substring(0, 12)) 对齐..."
-    }
-    else {
-        Write-Host "远程已更新($($localCommit.Substring(0, [Math]::Min(12, $localCommit.Length))) -> $($remoteCommit.Substring(0, 12))), 重新构建..."
-    }
+if (-not $Force -and (Test-LocalPackageMatchesPin $TargetNupkg $StampFile)) {
+    Write-Host "本地 feed 已是固定版本($($PinCommit.Substring(0, 12))): $TargetNupkg"
+    exit 0
 }
 
 if ($UseGhArtifact) {
     if (Get-FromGhArtifact $TargetNupkg $StampFile) {
-        Write-Host "已从 CI 产物写入本地 feed: $TargetNupkg"
+        Write-Host "已从 CI 产物写入本地 feed(SHA256 已校验): $TargetNupkg"
         exit 0
     }
-    Write-Warning 'gh CLI 不可用或 CI 产物下载失败, 回退到源码构建。'
+    Write-Warning 'gh CLI 不可用或 CI 产物不可用/校验失败, 回退到源码构建。'
 }
 
-$Commit = Get-LatestCommit
-Build-FromSource $Commit $StampFile
+# 先移除与固定版本不符的旧包, 免得构建失败或版本不符时旧文件冒充新产物。
+Assert-DotnetSdk
+Remove-Item -LiteralPath $TargetNupkg, $StampFile -Force -ErrorAction SilentlyContinue
+Build-FromSource $PinCommit
 Assert-ProducedVersion $TargetNupkg $PackageVersion
+Write-BuildStamp $StampFile $PinCommit $TargetNupkg 'source'
+Write-Host "源码构建的包哈希为 $(Get-Sha256 $TargetNupkg)(dotnet pack 不可复现, 与固定的 CI 产物哈希不同属正常; 来源由固定 commit 保证)。"
 
 Write-Host "已写入本地 feed: $TargetNupkg"
 Write-Host '下一步: dotnet restore'
