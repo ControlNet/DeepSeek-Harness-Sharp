@@ -24,10 +24,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
     };
 
     private static IDisposable RegisterPlanMode(Context ctx, object? config)
-    {
-        _ = new PlanModeController(ctx, PlanModeConfigFrom(config));
-        return new NoopDisposable();
-    }
+        => new PlanModeController(ctx, PlanModeConfigFrom(config));
 
     private static PlanModeConfig PlanModeConfigFrom(object? config)
     {
@@ -36,12 +33,5 @@ public sealed class Plugin(string packageName) : IDshPlugin
         {
             Section = string.IsNullOrWhiteSpace(section) ? PlanModeConfig.DefaultSection : section,
         };
-    }
-
-    private sealed class NoopDisposable : IDisposable
-    {
-        public void Dispose()
-        {
-        }
     }
 }
