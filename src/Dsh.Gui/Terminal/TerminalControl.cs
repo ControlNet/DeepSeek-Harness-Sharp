@@ -157,8 +157,8 @@ public sealed partial class TerminalControl : Control
         InvalidateVisual();
     }
 
-    /** 按当前尺寸重算格子数; 变化时先改会话(屏幕模型 + 对端 PTY)再通知调用方。 */
-    private void UpdateGrid()
+    /** 按当前尺寸重算格子数; 变化(或刚绑定会话)时先改会话(屏幕模型 + 对端 PTY)再通知调用方。 */
+    private void UpdateGrid(bool sessionBound = false)
     {
         if (Bounds.Width <= 0 || Bounds.Height <= 0)
             return;
@@ -167,7 +167,7 @@ public sealed partial class TerminalControl : Control
         GridSize = grid;
         // 会话的屏幕已是该尺寸时 Resize 什么也不做; 新绑定的会话靠这里拿到控件的实际尺寸。
         _attached?.Resize(grid);
-        if (changed)
+        if (changed || sessionBound)
             GridResized?.Invoke(this, grid);
     }
 
@@ -178,7 +178,7 @@ public sealed partial class TerminalControl : Control
             return;
         _attached = session;
         session.Changed += OnSessionChanged;
-        UpdateGrid();
+        UpdateGrid(sessionBound: true);
         InvalidateVisual();
     }
 

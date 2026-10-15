@@ -85,7 +85,7 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
         var session = new TerminalSession(connection, InitialSize);
         session.Exited += () => Dispatcher.UIThread.Post(() => Status = $"{_origin} · 已退出");
         session.Start();
-        Session = session;
         Status = origin;
+        Session = session;
     }
 }

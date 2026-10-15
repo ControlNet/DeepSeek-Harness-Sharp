@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Avalonia.Controls;
 using Avalonia.Headless;
@@ -5,6 +6,8 @@ using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Dsh.Gui.Terminal;
+using Dsh.Gui.ViewModels;
+using Dsh.Gui.Views;
 
 namespace Dsh.Tests;
 
@@ -73,6 +76,47 @@ public sealed class TerminalControlHeadlessTests
         await WaitForLineAsync(session, line => line == "after-42");
         await pty.StopAsync();
     });
+
+    [Fact]
+    public async Task Terminal_Window_Shows_The_Grid_And_Dispose_Stops_The_Local_Shell() => await HeadlessGui.RunAsync(async () =>
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        var before = PtyHost.Default.List().Select(info => info.Id).ToHashSet();
+        var viewModel = new TerminalViewModel("本地终端");
+        var window = new TerminalWindow(viewModel);
+        window.Show();
+        await viewModel.StartLocalAsync(Path.Combine(AppContext.BaseDirectory, "terminal-window-home"));
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Matches(@"· \d+x\d+$", viewModel.Status);
+        var started = PtyHost.Default.List().Single(info => !before.Contains(info.Id));
+        window.Close();
+        await viewModel.DisposeAsync();
+
+        Assert.DoesNotContain(PtyHost.Default.List(), info => info.Id == started.Id);
+        Assert.True(await ExitsAsync(started.Pid!.Value), $"shell pid {started.Pid} still running");
+    });
+
+    private static async Task<bool> ExitsAsync(int pid)
+    {
+        var deadline = DateTime.UtcNow + OutputTimeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                if (process.HasExited)
+                    return true;
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+            await Task.Delay(50);
+        }
+        return false;
+    }
 
     /** 一边泵 UI 消息一边等屏幕上出现满足条件的行(含滚回), 超时则带上当前屏幕内容失败。 */
     private static async Task WaitForLineAsync(TerminalSession session, Func<string, bool> predicate)

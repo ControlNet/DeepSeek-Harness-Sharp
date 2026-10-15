@@ -46,10 +46,6 @@ public sealed class TerminalFontSet
 
     public double LineThickness { get; }
 
-    public bool IsFixedPitch => _faces[0].Metrics.IsFixedPitch;
-
-    public string PrimaryFamilyName => _faces[0].FamilyName;
-
     public TerminalGlyph Resolve(int codepoint, CellStyle style)
     {
         var face = FaceIndex(style);

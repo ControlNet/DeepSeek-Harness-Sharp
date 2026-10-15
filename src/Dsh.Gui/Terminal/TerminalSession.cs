@@ -35,8 +35,6 @@ public sealed class TerminalSession : IAsyncDisposable
 
     public VtScreen Screen { get; }
 
-    public bool HasExited { get; private set; }
-
     /** 屏幕内容、尺寸或退出状态变化; 在后台线程上触发, 订阅方自行切回 UI 线程并合并帧。 */
     public event Action? Changed;
 
@@ -93,7 +91,7 @@ public sealed class TerminalSession : IAsyncDisposable
         }
         catch (Exception error) when (error is OperationCanceledException or IOException or ObjectDisposedException)
         {
-            HasExited = true;
+            // 会话被释放或连接中断: 不是子进程自然退出, 不追加退出提示。
         }
     }
 
@@ -101,7 +99,6 @@ public sealed class TerminalSession : IAsyncDisposable
     {
         lock (Gate)
             Screen.Feed(ExitedNotice);
-        HasExited = true;
         _outgoing.Writer.TryComplete();
         Exited?.Invoke();
         Changed?.Invoke();
