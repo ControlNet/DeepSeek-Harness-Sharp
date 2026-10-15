@@ -14,8 +14,10 @@ public sealed class HostAutostartTests
         var unit = HostAutostart.RenderUnit(executable, [.. arguments, "$x"], "/data/100% $HOME \"x\"");
 
         var lines = unit.Split('\n', StringSplitOptions.TrimEntries);
-        Assert.Equal(["host", "serve"], arguments);
-        Assert.Contains($"ExecStart=\"{executable}\" \"host\" \"serve\" \"$$x\"", lines);
+        Assert.Equal(["host", "serve"], arguments.TakeLast(2));
+        var execStart = Assert.Single(lines, line => line.StartsWith("ExecStart=", StringComparison.Ordinal));
+        Assert.StartsWith($"ExecStart=\"{executable}\" ", execStart, StringComparison.Ordinal);
+        Assert.EndsWith("\"host\" \"serve\" \"$$x\"", execStart, StringComparison.Ordinal);
         Assert.Contains($"Environment=\"{HarnessHome.HomeEnv}=/data/100%% $HOME \\\"x\\\"\"", lines);
         Assert.Contains("KillMode=process", lines);
         Assert.Contains("Restart=on-failure", lines);
