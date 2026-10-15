@@ -2,7 +2,8 @@
 
   <!--
     原生故障遏制库 dsh_plugin_guard: 由宿主/测试程序在构建时用本机 C 工具链编译, 并随输出部署。
-    Windows 用 cl(经 VS 的 VsDevCmd 定位), Unix 用 cc; 找不到工具链时告警跳过, 不中断 .NET 构建。
+    编译器驱动由 DshNativeCompiler 指定: Windows 用 cl 风格驱动(默认 cl, 可选 clang-cl), Unix 用 gcc 风格驱动(默认 cc, 可选 clang/gcc)。
+    Windows 上两种驱动都在 vswhere 定位到的 VsDevCmd 环境里运行; 找不到 VS 的 C++ 工具集时告警跳过, 不中断 .NET 构建。
     源见 native/plugin_guard/guard.c。
   -->
 
@@ -11,26 +12,39 @@
     <DshGuardFile Condition="$([MSBuild]::IsOSPlatform('Windows'))">dsh_plugin_guard.dll</DshGuardFile>
     <DshGuardFile Condition="$([MSBuild]::IsOSPlatform('Linux'))">libdsh_plugin_guard.so</DshGuardFile>
     <DshGuardFile Condition="$([MSBuild]::IsOSPlatform('OSX'))">libdsh_plugin_guard.dylib</DshGuardFile>
+    <DshProbeFile Condition="$([MSBuild]::IsOSPlatform('Windows'))">dsh_fault_probe.dll</DshProbeFile>
+    <DshProbeFile Condition="$([MSBuild]::IsOSPlatform('Linux'))">libdsh_fault_probe.so</DshProbeFile>
+    <DshProbeFile Condition="$([MSBuild]::IsOSPlatform('OSX'))">libdsh_fault_probe.dylib</DshProbeFile>
+    <DshNativeCompiler Condition="'$(DshNativeCompiler)' == '' And $([MSBuild]::IsOSPlatform('Windows'))">cl</DshNativeCompiler>
+    <DshNativeCompiler Condition="'$(DshNativeCompiler)' == ''">cc</DshNativeCompiler>
+    <DshVsWhere>$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer\vswhere.exe</DshVsWhere>
+    <!-- DshShipFaultProbe=true 让探针随发布产物附带: 只由 guard 所有者构建, 与 guard 一样经项目引用进入宿主的输出与发布目录。 -->
+    <DshBuildFaultProbe Condition="'$(DshGuardOwner)' == 'true' And '$(DshShipFaultProbe)' == 'true'">true</DshBuildFaultProbe>
   </PropertyGroup>
 
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-    <DshVsDevCmdCandidate Include="$(MSBuildProgramFiles32)\Microsoft Visual Studio\**\VsDevCmd.bat" />
-  </ItemGroup>
+  <!-- VS 2022 起默认装在 64 位 Program Files 下, 由 vswhere 按 C++ 工具集定位 VsDevCmd.bat。 -->
+  <Target Name="ResolveDshVsDevCmd" Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <Exec Condition="Exists('$(DshVsWhere)')"
+          Command="&quot;$(DshVsWhere)&quot; -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find Common7\Tools\VsDevCmd.bat"
+          ConsoleToMSBuild="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="DshVsDevCmd" />
+    </Exec>
+  </Target>
 
-  <Target Name="BuildDshPluginGuard" BeforeTargets="BeforeBuild" Condition="'$(DshGuardOwner)' == 'true'">
+  <Target Name="BuildDshPluginGuard" BeforeTargets="BeforeBuild" DependsOnTargets="ResolveDshVsDevCmd"
+          Condition="'$(DshGuardOwner)' == 'true'">
     <PropertyGroup>
       <DshGuardOutputDir>$(IntermediateOutputPath)dsh-guard\</DshGuardOutputDir>
       <DshGuardOutput>$(DshGuardOutputDir)$(DshGuardFile)</DshGuardOutput>
-      <DshVsDevCmd>@(DshVsDevCmdCandidate->'%(FullPath)')</DshVsDevCmd>
     </PropertyGroup>
     <MakeDir Directories="$(DshGuardOutputDir)" />
     <Exec Condition="$([MSBuild]::IsOSPlatform('Windows')) And '$(DshVsDevCmd)' != ''"
-          Command="call &quot;$(DshVsDevCmd)&quot; -arch=x64 -no_logo &amp;&amp; cl /nologo /utf-8 /TC /LD &quot;$(DshGuardSource)&quot; /Fo:&quot;$(DshGuardOutputDir)guard.obj&quot; /Fe:&quot;$(DshGuardOutput)&quot;"
+          Command="call &quot;$(DshVsDevCmd)&quot; -arch=x64 -no_logo &amp;&amp; $(DshNativeCompiler) /nologo /utf-8 /TC /LD &quot;$(DshGuardSource)&quot; /Fo:&quot;$(DshGuardOutputDir)guard.obj&quot; /Fe:&quot;$(DshGuardOutput)&quot;"
           StandardOutputImportance="low" />
     <Warning Condition="$([MSBuild]::IsOSPlatform('Windows')) And '$(DshVsDevCmd)' == ''"
              Text="dsh_plugin_guard: 未找到 VsDevCmd.bat(需 VS 的 C++ 工具集), 跳过原生故障遏制库构建" />
     <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))"
-          Command="cc -O2 -fPIC -shared -pthread -o &quot;$(DshGuardOutput)&quot; &quot;$(DshGuardSource)&quot;"
+          Command="$(DshNativeCompiler) -O2 -fPIC -shared -pthread -o &quot;$(DshGuardOutput)&quot; &quot;$(DshGuardSource)&quot;"
           StandardOutputImportance="low" />
   </Target>
 
@@ -52,32 +66,26 @@
     </ItemGroup>
   </Target>
 
-  <!-- 仅测试需要: 会访问违例的真实原生探针, 验证 guard 的遏制。由 DshBuildFaultProbe=true 开启。 -->
-  <Target Name="BuildDshFaultProbe" BeforeTargets="BeforeBuild" Condition="'$(DshBuildFaultProbe)' == 'true'">
+  <!-- 会访问违例的真实原生探针, 验证 guard 的遏制: 测试工程以 DshBuildFaultProbe=true 自建, 发布以 DshShipFaultProbe=true 附带。 -->
+  <Target Name="BuildDshFaultProbe" BeforeTargets="BeforeBuild" DependsOnTargets="ResolveDshVsDevCmd"
+          Condition="'$(DshBuildFaultProbe)' == 'true'">
     <PropertyGroup>
       <DshProbeSource>$(MSBuildThisFileDirectory)..\fault_probe\fault_probe.c</DshProbeSource>
-      <DshProbeFile Condition="$([MSBuild]::IsOSPlatform('Windows'))">dsh_fault_probe.dll</DshProbeFile>
-      <DshProbeFile Condition="$([MSBuild]::IsOSPlatform('Linux'))">libdsh_fault_probe.so</DshProbeFile>
-      <DshProbeFile Condition="$([MSBuild]::IsOSPlatform('OSX'))">libdsh_fault_probe.dylib</DshProbeFile>
       <DshProbeOutputDir>$(IntermediateOutputPath)dsh-guard\</DshProbeOutputDir>
       <DshProbeOutput>$(DshProbeOutputDir)$(DshProbeFile)</DshProbeOutput>
-      <DshVsDevCmd>@(DshVsDevCmdCandidate->'%(FullPath)')</DshVsDevCmd>
     </PropertyGroup>
     <MakeDir Directories="$(DshProbeOutputDir)" />
     <Exec Condition="$([MSBuild]::IsOSPlatform('Windows')) And '$(DshVsDevCmd)' != ''"
-          Command="call &quot;$(DshVsDevCmd)&quot; -arch=x64 -no_logo &amp;&amp; cl /nologo /utf-8 /TC /LD &quot;$(DshProbeSource)&quot; /Fo:&quot;$(DshProbeOutputDir)fault_probe.obj&quot; /Fe:&quot;$(DshProbeOutput)&quot;"
+          Command="call &quot;$(DshVsDevCmd)&quot; -arch=x64 -no_logo &amp;&amp; $(DshNativeCompiler) /nologo /utf-8 /TC /LD &quot;$(DshProbeSource)&quot; /Fo:&quot;$(DshProbeOutputDir)fault_probe.obj&quot; /Fe:&quot;$(DshProbeOutput)&quot;"
           StandardOutputImportance="low" />
     <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))"
-          Command="cc -O2 -fPIC -shared -o &quot;$(DshProbeOutput)&quot; &quot;$(DshProbeSource)&quot;"
+          Command="$(DshNativeCompiler) -O2 -fPIC -shared -o &quot;$(DshProbeOutput)&quot; &quot;$(DshProbeSource)&quot;"
           StandardOutputImportance="low" />
   </Target>
 
   <Target Name="IncludeDshFaultProbe" BeforeTargets="GetCopyToOutputDirectoryItems"
           DependsOnTargets="BuildDshFaultProbe" Condition="'$(DshBuildFaultProbe)' == 'true'">
     <PropertyGroup>
-      <DshProbeFile Condition="$([MSBuild]::IsOSPlatform('Windows'))">dsh_fault_probe.dll</DshProbeFile>
-      <DshProbeFile Condition="$([MSBuild]::IsOSPlatform('Linux'))">libdsh_fault_probe.so</DshProbeFile>
-      <DshProbeFile Condition="$([MSBuild]::IsOSPlatform('OSX'))">libdsh_fault_probe.dylib</DshProbeFile>
       <DshProbeOutputDir>$(IntermediateOutputPath)dsh-guard\</DshProbeOutputDir>
       <DshProbeOutput>$(DshProbeOutputDir)$(DshProbeFile)</DshProbeOutput>
     </PropertyGroup>
