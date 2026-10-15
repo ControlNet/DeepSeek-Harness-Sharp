@@ -82,15 +82,16 @@ public sealed class TerminalControlHeadlessTests
     {
         if (OperatingSystem.IsWindows())
             return;
-        var before = PtyHost.Default.List().Select(info => info.Id).ToHashSet();
+        // PtyHost.Default 是进程级单例: 用唯一的 Home 认出本用例起的会话, 不受其它用例的会话干扰。
+        var home = Path.Combine(AppContext.BaseDirectory, $"terminal-window-home-{Guid.NewGuid():N}");
         var viewModel = new TerminalViewModel("本地终端");
         var window = new TerminalWindow(viewModel);
         window.Show();
-        await viewModel.StartLocalAsync(Path.Combine(AppContext.BaseDirectory, "terminal-window-home"));
+        await viewModel.StartLocalAsync(home);
         Dispatcher.UIThread.RunJobs();
 
         Assert.Matches(@"· \d+x\d+$", viewModel.Status);
-        var started = PtyHost.Default.List().Single(info => !before.Contains(info.Id));
+        var started = PtyHost.Default.List().Single(info => info.Home == home);
         window.Close();
         await viewModel.DisposeAsync();
 
