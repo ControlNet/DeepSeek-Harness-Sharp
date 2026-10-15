@@ -400,7 +400,7 @@ public sealed class PtySession : IDisposable, ITerminalConnection
         if (unix is not null)
         {
             unix.Exited -= OnUnixExited;
-            await unix.StopAsync();
+            await unix.StopAsync().ConfigureAwait(false);
             lock (_gate)
             {
                 _status = PtySessionStatus.Exited;
@@ -414,13 +414,15 @@ public sealed class PtySession : IDisposable, ITerminalConnection
         if (conPty is not null)
         {
             conPty.Exited -= OnConPtyExited;
-            await conPty.StopAsync();
+            await conPty.StopAsync().ConfigureAwait(false);
             lock (_gate)
             {
                 _status = PtySessionStatus.Exited;
                 _exitCode ??= 0;
             }
 
+            // The ConPTY output pipe does not reach EOF when the process ends (see OnConPtyExited), so the pump cannot end the pane subscriptions.
+            CompleteSubscribers();
             return;
         }
 
@@ -430,7 +432,7 @@ public sealed class PtySession : IDisposable, ITerminalConnection
             try
             {
                 process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync();
+                await process.WaitForExitAsync().ConfigureAwait(false);
             }
             catch (InvalidOperationException)
             {

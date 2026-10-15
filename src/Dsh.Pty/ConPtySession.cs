@@ -145,7 +145,7 @@ internal sealed class ConPtySession : IDisposable
         try
         {
             TerminateProcess(_processHandle, 0);
-            await Task.Run(() => WaitForSingleObject(_processHandle, 5000));
+            await Task.Run(() => WaitForSingleObject(_processHandle, 5000)).ConfigureAwait(false);
         }
         catch
         {
@@ -168,7 +168,7 @@ internal sealed class ConPtySession : IDisposable
 
     private async Task MonitorExit()
     {
-        await Task.Run(() => WaitForSingleObject(_processHandle, Infinite));
+        await Task.Run(() => WaitForSingleObject(_processHandle, Infinite)).ConfigureAwait(false);
         int? exitCode = null;
         if (GetExitCodeProcess(_processHandle, out var code))
             exitCode = (int)code;

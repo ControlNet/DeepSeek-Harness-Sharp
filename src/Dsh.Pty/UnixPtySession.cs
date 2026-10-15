@@ -58,11 +58,11 @@ internal sealed class UnixPtySession : IDisposable
 
         UnixPtyNative.Terminate(_pid);
         var monitor = _monitorTask;
-        if (monitor is not null && await Task.WhenAny(monitor, Task.Delay(TerminateGrace)) != monitor)
+        if (monitor is not null && await Task.WhenAny(monitor, Task.Delay(TerminateGrace)).ConfigureAwait(false) != monitor)
         {
             UnixPtyNative.Kill(_pid);
             // 有界等待: 某些平台/状态下 reap 迟迟不到, 不能无限等(否则调用方挂死); Dispose 会取消 _cts 收尾。
-            await Task.WhenAny(monitor, Task.Delay(TerminateGrace));
+            await Task.WhenAny(monitor, Task.Delay(TerminateGrace)).ConfigureAwait(false);
         }
 
         Dispose();
@@ -96,7 +96,7 @@ internal sealed class UnixPtySession : IDisposable
                     return;
                 }
 
-                await Task.Delay(50, _cts.Token);
+                await Task.Delay(50, _cts.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
