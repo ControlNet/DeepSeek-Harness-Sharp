@@ -232,7 +232,14 @@ public static class HarnessEntrypoint
             cancellation.Cancel();
         };
         return await Dsh.WebBridge.WebBridgeCommand.RunAsync(home.Root, arguments, Console.Out, Console.Error,
-            () => HostAutostart.EnsureRunningAsync(home, token: null), cancellation.Token);
+            () => HostAutostart.EnsureRunningAsync(home, token: null), cancellation.Token, StartLocalMachineHost);
+    }
+
+    /** Another local machine of the web bridge's fleet (a second harness home) gets its host started detached, as `dsharp session` does. */
+    private static Task StartLocalMachineHost(Dsh.Fleet.MachineSpec machine, CancellationToken cancellationToken)
+    {
+        HostAutostart.StartDetached(token: null, machine.HarnessHome);
+        return Task.CompletedTask;
     }
 
     /**

@@ -21,13 +21,19 @@ internal readonly record struct HttpStatus(int Code, string Reason)
 internal static class HttpResponse
 {
     public const string PlainText = "text/plain; charset=utf-8";
+    public const string Json = "application/json; charset=utf-8";
 
-    /** connect-src 'self' also admits the same-origin ws:// and wss:// endpoint. */
+    /**
+     * connect-src 'self' also admits the same-origin ws:// and wss:// endpoint.
+     * Scripts stay same-origin only, with neither inline scripts nor eval.
+     * style-src admits inline styles because xterm.js injects generated <style> elements for its cell metrics, theme and scrollbar; without them the terminal renders unsized and uncoloured.
+     * Inline styles cannot run script, and the page never inserts host text as markup.
+     */
     private const string SecurityHeaders =
         "X-Content-Type-Options: nosniff\r\n"
         + "Referrer-Policy: no-referrer\r\n"
         + "X-Frame-Options: DENY\r\n"
-        + "Content-Security-Policy: default-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'\r\n";
+        + "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'\r\n";
 
     public static Task WriteTextAsync(Stream stream, HttpStatus status, string text, CancellationToken cancellationToken)
         => WriteAsync(stream, status, Encoding.UTF8.GetBytes(text), PlainText, "", cancellationToken);

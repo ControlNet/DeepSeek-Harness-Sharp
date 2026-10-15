@@ -5,6 +5,9 @@
 /** JSON-RPC "method not found", returned for requests the host sends to the browser. */
 const METHOD_NOT_FOUND = -32601;
 
+/** Error code of requests made while the WebSocket is not open (the WebSocket close code of normal closure). */
+const CONNECTION_CLOSED = 1000;
+
 /** A JSON-RPC error response from the host. */
 export class RpcError extends Error {
   constructor(error) {
@@ -14,10 +17,11 @@ export class RpcError extends Error {
   }
 }
 
-/** The bridge endpoint of the page's own origin; the session cookie set by /api/login authenticates it. */
-export function bridgeUrl() {
+/** The bridge endpoint of the page's own origin, optionally for one machine of the bridge's fleet; the session cookie set by /api/login authenticates it. */
+export function bridgeUrl(machine) {
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${scheme}//${location.host}/ws`;
+  const query = machine === undefined ? '' : `?machine=${encodeURIComponent(machine)}`;
+  return `${scheme}//${location.host}/ws${query}`;
 }
 
 export class HostRpc {
@@ -42,8 +46,10 @@ export class HostRpc {
     });
   }
 
-  /** Sends a request and resolves with its result, or rejects with RpcError. */
+  /** Sends a request and resolves with its result, or rejects with RpcError; a socket that is no longer open rejects at once instead of dropping the message. */
   request(method, params) {
+    if (this.#socket.readyState !== WebSocket.OPEN)
+      return Promise.reject(new RpcError({ code: CONNECTION_CLOSED, message: 'not connected' }));
     const id = this.#nextId++;
     const message = params === undefined ? { jsonrpc: '2.0', id, method } : { jsonrpc: '2.0', id, method, params };
     return new Promise((resolve, reject) => {
@@ -69,8 +75,12 @@ export class HostRpc {
     this.#closeHandlers.push(handler);
   }
 
+  get isOpen() {
+    return this.#socket.readyState === WebSocket.OPEN;
+  }
+
   close() {
-    this.#socket.close(1000);
+    this.#socket.close(CONNECTION_CLOSED);
   }
 
   #dispatch(message) {

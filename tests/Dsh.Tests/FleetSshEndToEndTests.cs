@@ -110,7 +110,7 @@ public sealed class FleetSshEndToEndTests
         }
     }
 
-    private static string RequireEnvironment()
+    internal static string RequireEnvironment()
     {
         if (!OperatingSystem.IsLinux() || !File.Exists(Sshd))
             Assert.Skip($"needs Linux with {Sshd}");
@@ -121,7 +121,7 @@ public sealed class FleetSshEndToEndTests
      * The release archive of this build: the output directory with only this platform's native runtimes (the others are most of its size).
      * Built once per test directory and kept, because a caller-provided archive is not deleted after deployment.
      */
-    private static async Task<string> BuildArchiveAsync(string executable, string rid, string root, CancellationToken cancellationToken)
+    internal static async Task<string> BuildArchiveAsync(string executable, string rid, string root, CancellationToken cancellationToken)
     {
         Assert.Equal(Rid, rid);
         var archive = Path.Combine(root, RemoteDsharpInstaller.AssetName(rid));
@@ -134,7 +134,7 @@ public sealed class FleetSshEndToEndTests
     }
 
     /** The real ~/.ssh/known_hosts and ~/.dsharp must look the same after the test as before it. */
-    private sealed record RealHomeGuard(DateTime? KnownHosts, bool Deployed)
+    internal sealed record RealHomeGuard(DateTime? KnownHosts, bool Deployed)
     {
         private static string UserHome => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 

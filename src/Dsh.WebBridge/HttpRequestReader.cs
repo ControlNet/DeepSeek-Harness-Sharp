@@ -3,10 +3,23 @@ using System.Text;
 
 namespace Dsh.WebBridge;
 
-/** One parsed HTTP/1.1 request: method, path without query, headers (case-insensitive, repeated ones joined by ", ") and the body. */
-internal sealed record HttpRequest(string Method, string Path, IReadOnlyDictionary<string, string> Headers, byte[] Body)
+/** One parsed HTTP/1.1 request: method, path without query, the raw query (without '?'), headers (case-insensitive, repeated ones joined by ", ") and the body. */
+internal sealed record HttpRequest(string Method, string Path, string Query, IReadOnlyDictionary<string, string> Headers, byte[] Body)
 {
     public string? Header(string name) => Headers.GetValueOrDefault(name);
+
+    /** The decoded value of the first `name=value` query parameter, or null when the query has none. */
+    public string? QueryValue(string name)
+    {
+        foreach (var pair in Query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var equals = pair.IndexOf('=');
+            if (equals > 0 && pair.AsSpan(0, equals).SequenceEqual(name))
+                return Uri.UnescapeDataString(pair[(equals + 1)..].Replace('+', ' '));
+        }
+
+        return null;
+    }
 }
 
 /**
@@ -33,11 +46,11 @@ internal static class HttpRequestReader
         if (filled == 0)
             return null;
         var lines = Encoding.Latin1.GetString(buffer, 0, headLength).Split("\r\n");
-        var (method, path) = ParseRequestLine(lines[0]);
+        var (method, path, query) = ParseRequestLine(lines[0]);
         var headers = ParseHeaders(lines.AsSpan(1));
         var leftover = buffer.AsMemory(headLength + HeadTerminator.Length, filled - headLength - HeadTerminator.Length);
         var body = await ReadBodyAsync(stream, headers, leftover, cancellationToken).ConfigureAwait(false);
-        return new HttpRequest(method, path, headers, body);
+        return new HttpRequest(method, path, query, headers, body);
     }
 
     /** Fills the buffer until the blank line that ends the head; returns the bytes read and the head's length without its terminator. */
@@ -58,13 +71,13 @@ internal static class HttpRequestReader
         throw new InvalidDataException("request head too large");
     }
 
-    private static (string Method, string Path) ParseRequestLine(string line)
+    private static (string Method, string Path, string Query) ParseRequestLine(string line)
     {
         var parts = line.Split(' ');
         if (parts.Length != 3 || !parts[2].StartsWith("HTTP/1.", StringComparison.Ordinal) || !parts[1].StartsWith('/'))
             throw new InvalidDataException("malformed request line");
         var query = parts[1].IndexOf('?');
-        return (parts[0], query >= 0 ? parts[1][..query] : parts[1]);
+        return query >= 0 ? (parts[0], parts[1][..query], parts[1][(query + 1)..]) : (parts[0], parts[1], "");
     }
 
     private static Dictionary<string, string> ParseHeaders(ReadOnlySpan<string> lines)
