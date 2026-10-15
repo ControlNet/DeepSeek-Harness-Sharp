@@ -22,7 +22,7 @@ public class BoardTests
             Tools = new ToolRuntime(Ctx);
             Agents = new AgentRegistry(Ctx);
             Loop = new AgentLoop(Ctx);
-            Board = SwarmBoard.Register(Ctx);
+            Board = SwarmBoard.Register(Ctx, Clock);
             _tools = BoardTools.Apply(Ctx);
             Tools.Register(new ToolDefinition
             {
@@ -42,6 +42,8 @@ public class BoardTests
         public AgentRegistry Agents { get; }
         public AgentLoop Loop { get; }
         public SwarmBoard Board { get; }
+
+        public ManualClock Clock { get; } = new();
 
         public async Task<AgentLoopAgent> CreateMain(string id)
         {
@@ -243,7 +245,7 @@ public class BoardTests
         var before = await Execute(fixture, main, "call-read-before", BoardTools.ReadToolName, new JsonObject());
         Assert.Equal(1, before.GetProperty("claims").GetArrayLength());
 
-        await Task.Delay(1100, TestContext.Current.CancellationToken);
+        fixture.Clock.Advance(TimeSpan.FromSeconds(1));
 
         var after = await Execute(fixture, main, "call-read-after", BoardTools.ReadToolName, new JsonObject());
         Assert.Equal(0, after.GetProperty("claims").GetArrayLength());
