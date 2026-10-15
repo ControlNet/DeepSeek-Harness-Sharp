@@ -1,0 +1,82 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1d1f23;
+  --bg: #f7f7f8;
+  --muted: #5f6570;
+  --accent: #2f6fdf;
+  --error: #c62828;
+  --panel: #ffffff;
+  --border: #d9dbe0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e6e7ea;
+    --bg: #15171a;
+    --muted: #9aa0aa;
+    --accent: #6c9cff;
+    --error: #ff6b6b;
+    --panel: #1e2125;
+    --border: #33373d;
+  }
+}
+
+* { box-sizing: border-box; }
+
+/* Author display rules such as form { display: grid } would otherwise override the hidden attribute. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }
+h2 { font-size: 1.1rem; }
+
+#status { color: var(--muted); }
+#status[data-state="connected"] { color: var(--accent); }
+#status[data-state="error"], .error { color: var(--error); }
+
+form {
+  display: grid;
+  gap: 0.5rem;
+  padding: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+input, button { font: inherit; padding: 0.6rem; border-radius: 6px; border: 1px solid var(--border); }
+button { background: var(--accent); color: #fff; border: none; }
+.hint { color: var(--muted); font-size: 0.9rem; margin: 0; }
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  padding: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+
+pre {
+  padding: 1rem;
+  overflow-x: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}

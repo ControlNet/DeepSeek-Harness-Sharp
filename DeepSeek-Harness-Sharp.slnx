@@ -61,6 +61,7 @@
     <Project Path="src/Dsh.Tui.GL/Dsh.Tui.GL.csproj" />
     <Project Path="src/Dsh.Tui.Vk/Dsh.Tui.Vk.csproj" />
     <Project Path="src/Dsh.Web/Dsh.Web.csproj" />
+    <Project Path="src/Dsh.WebBridge/Dsh.WebBridge.csproj" />
     <Project Path="src/Dsh.Workflow/Dsh.Workflow.csproj" />
   </Folder>
   <Folder Name="/tests/">
