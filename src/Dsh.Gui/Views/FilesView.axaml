@@ -1,0 +1,121 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Dsh.Gui.ViewModels"
+             xmlns:views="using:Dsh.Gui.Views"
+             xmlns:ae="using:AvaloniaEdit"
+             x:Class="Dsh.Gui.Views.FilesView"
+             x:DataType="vm:FilesViewModel"
+             x:CompileBindings="True"
+             FontFamily="{DynamicResource Font.Ui}"
+             FontSize="{DynamicResource FontSize.Body}">
+  <UserControl.Styles>
+    <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
+    <Style Selector="TreeViewItem" x:DataType="vm:FileNodeViewModel">
+      <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+    </Style>
+  </UserControl.Styles>
+
+  <UserControl.KeyBindings>
+    <KeyBinding Gesture="Ctrl+S" Command="{Binding Editor.SaveCommand, FallbackValue={x:Null}}" />
+  </UserControl.KeyBindings>
+
+  <Grid ColumnDefinitions="400,6,*" Margin="12">
+    <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto" RowSpacing="8">
+      <Grid ColumnDefinitions="*,Auto">
+        <SelectableTextBlock Classes="Mono" Text="{Binding RootPath}" TextWrapping="Wrap" VerticalAlignment="Center" />
+        <Button Grid.Column="1" Classes="Ghost" Content="刷新" Command="{Binding RefreshCommand}" ToolTip.Tip="重新列举选中的目录" />
+      </Grid>
+
+      <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="6">
+        <TextBox Text="{Binding NameInput, Mode=TwoWay}" PlaceholderText="名称（新建文件夹 / 重命名）" />
+        <Button Grid.Column="1" Classes="Ghost" Content="新建文件夹" Command="{Binding CreateFolderCommand}" />
+        <Button Grid.Column="2" Classes="Ghost" Content="重命名" Command="{Binding RenameCommand}" />
+        <Button Grid.Column="3" Classes="Ghost" Content="删除" Command="{Binding DeleteCommand}" />
+      </Grid>
+
+      <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="6">
+        <Button Classes="Primary" Content="打开" Command="{Binding OpenCommand}" />
+        <Button Classes="Ghost" Content="上传…" Click="OnUploadClick" ToolTip.Tip="上传本机文件到选中的目录（同名文件会被替换）" />
+        <Button Classes="Ghost" Content="下载…" Click="OnDownloadSelectedClick" />
+      </StackPanel>
+
+      <TreeView Grid.Row="3" x:Name="Tree" ItemsSource="{Binding Roots}"
+                SelectedItem="{Binding Selected, Mode=TwoWay}"
+                DoubleTapped="OnTreeDoubleTapped"
+                Background="{DynamicResource Brush.Bg.Inset}">
+        <TreeView.ItemTemplate>
+          <TreeDataTemplate ItemsSource="{Binding Children}" x:DataType="vm:FileNodeViewModel">
+            <StackPanel Orientation="Horizontal" Spacing="8" ToolTip.Tip="{Binding Path}">
+              <Path Classes="Icon" Data="{StaticResource Icon.Folder}" IsVisible="{Binding IsDirectory}" />
+              <TextBlock Text="{Binding Name}" />
+              <TextBlock Classes="Tertiary" Text="{Binding SizeText}" VerticalAlignment="Center" />
+              <TextBlock Classes="Tertiary" Text="{Binding ModifiedText}" VerticalAlignment="Center" />
+            </StackPanel>
+          </TreeDataTemplate>
+        </TreeView.ItemTemplate>
+      </TreeView>
+
+      <StackPanel Grid.Row="4" Spacing="4" IsVisible="{Binding Transfers.Count}">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Classes="Secondary" Text="传输" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Classes="Ghost" Content="清除已结束" Command="{Binding ClearFinishedTransfersCommand}" />
+        </Grid>
+        <ScrollViewer MaxHeight="180">
+          <ItemsControl ItemsSource="{Binding Transfers}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:FileTransferViewModel">
+                <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="6" Margin="0,2">
+                  <TextBlock Classes="Tertiary" Text="{Binding DirectionText}" />
+                  <TextBlock Grid.Column="1" Text="{Binding Name}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RemotePath}" />
+                  <Button Grid.Column="2" Grid.RowSpan="2" Classes="Ghost" Content="取消" Command="{Binding CancelCommand}"
+                          IsVisible="{Binding IsRunning}" VerticalAlignment="Center" />
+                  <ProgressBar Grid.Row="1" Grid.Column="0" Minimum="0" Maximum="100" Value="{Binding Percent}" Width="60" MinWidth="60" />
+                  <TextBlock Grid.Row="1" Grid.Column="1" Classes="Tertiary" Text="{Binding ProgressText}" TextTrimming="CharacterEllipsis" />
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </StackPanel>
+
+      <views:OperationStatusBar Grid.Row="5" />
+    </Grid>
+
+    <GridSplitter Grid.Column="1" ResizeDirection="Columns" Background="Transparent" />
+
+    <TextBlock Grid.Column="2" Classes="Tertiary" Text="双击文件，或选中后点“打开”查看与编辑"
+               HorizontalAlignment="Center" VerticalAlignment="Center"
+               IsVisible="{Binding Editor, Converter={x:Static ObjectConverters.IsNull}}" />
+
+    <Grid Grid.Column="2" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="8" Margin="6,0,0,0"
+          IsVisible="{Binding Editor, Converter={x:Static ObjectConverters.IsNotNull}}">
+      <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="6">
+        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <TextBlock Classes="Title" Text="{Binding Editor.FileName, FallbackValue=''}" />
+          <TextBlock Text="●" Foreground="{DynamicResource Brush.Status.Warning}" ToolTip.Tip="有未保存的修改"
+                     IsVisible="{Binding Editor.IsDirty, FallbackValue=False}" VerticalAlignment="Center" />
+        </StackPanel>
+        <Button Grid.Column="1" Classes="Primary" Content="保存" Command="{Binding Editor.SaveCommand, FallbackValue={x:Null}}" ToolTip.Tip="Ctrl+S" />
+        <Button Grid.Column="2" Classes="Ghost" Content="重新加载" Command="{Binding Editor.ReloadCommand, FallbackValue={x:Null}}" />
+        <Button Grid.Column="3" Classes="Ghost" Content="关闭" Command="{Binding CloseEditorCommand}" />
+      </Grid>
+
+      <SelectableTextBlock Grid.Row="1" Classes="Mono" Foreground="{DynamicResource Brush.Text.Tertiary}"
+                           Text="{Binding Editor.Path, FallbackValue=''}" TextWrapping="Wrap" />
+
+      <StackPanel Grid.Row="2" Spacing="10" IsVisible="{Binding Editor.IsInfoOnly, FallbackValue=False}" VerticalAlignment="Top">
+        <TextBlock Text="{Binding Editor.Info, FallbackValue=''}" TextWrapping="Wrap" />
+        <Button Classes="Primary" Content="下载到本机…" Click="OnDownloadOpenedClick" HorizontalAlignment="Left" />
+      </StackPanel>
+
+      <Border Grid.Row="2" Background="{DynamicResource Brush.Bg.Inset}" CornerRadius="{DynamicResource CornerRadius.Control}"
+              IsVisible="{Binding Editor.IsText, FallbackValue=False}">
+        <ae:TextEditor x:Name="TextEditor" ShowLineNumbers="True"
+                       FontFamily="{DynamicResource Font.Mono}" FontSize="{DynamicResource FontSize.Body}"
+                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" />
+      </Border>
+
+      <views:OperationStatusBar Grid.Row="3" DataContext="{Binding Editor}" />
+    </Grid>
+  </Grid>
+</UserControl>

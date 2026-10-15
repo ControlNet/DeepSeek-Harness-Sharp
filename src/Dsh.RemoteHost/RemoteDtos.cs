@@ -49,8 +49,11 @@ public sealed record RemoteApprovalResponse(string RequestId, bool Allow, string
 
 public sealed record RemoteFilePath(string Path);
 
-/** 远端文件系统中的一项: 名称 + 绝对路径 + 是否目录。 */
-public sealed record RemoteDirectoryEntry(string Name, string Path, bool IsDirectory);
+/**
+ * 远端文件系统中的一项: 名称 + 绝对路径 + 是否目录。
+ * Size(文件字节数, 目录为 0)与 ModifiedAt(Unix 毫秒)是后加的可选字段, 旧 host 不发送时为 null。
+ */
+public sealed record RemoteDirectoryEntry(string Name, string Path, bool IsDirectory, long? Size = null, long? ModifiedAt = null);
 
 /** 一次远端目录列举: 被列举目录的绝对路径 + 父目录(根为 null) + 子项。 */
 public sealed record RemoteDirectoryListing(string Path, string? Parent, IReadOnlyList<RemoteDirectoryEntry> Entries);

@@ -37,9 +37,9 @@ public sealed class HostFileSystem(HostPathPolicy policy)
             throw new DirectoryNotFoundException($"remote directory does not exist: {info.FullName}");
         var entries = new List<RemoteDirectoryEntry>();
         foreach (var child in info.EnumerateDirectories().OrderBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase))
-            entries.Add(new RemoteDirectoryEntry(child.Name, child.FullName, true));
+            entries.Add(new RemoteDirectoryEntry(child.Name, child.FullName, true, 0, ModifiedAt(child)));
         foreach (var child in info.EnumerateFiles().OrderBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase))
-            entries.Add(new RemoteDirectoryEntry(child.Name, child.FullName, false));
+            entries.Add(new RemoteDirectoryEntry(child.Name, child.FullName, false, child.Length, ModifiedAt(child)));
         var parent = info.Parent is { } candidate && policy.IsAllowed(candidate.FullName) ? candidate.FullName : null;
         return new RemoteDirectoryListing(info.FullName, parent, entries);
     }
@@ -105,8 +105,10 @@ public sealed class HostFileSystem(HostPathPolicy policy)
         if (!info.Exists && !isLink)
             return new RemoteFileStat(path, false);
         var size = info is FileInfo { Exists: true } file ? file.Length : 0;
-        return new RemoteFileStat(path, true, info is DirectoryInfo, isLink, size, new DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeMilliseconds());
+        return new RemoteFileStat(path, true, info is DirectoryInfo, isLink, size, ModifiedAt(info));
     }
+
+    private static long ModifiedAt(FileSystemInfo info) => new DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeMilliseconds();
 
     private static string TemporarySibling(string target, string id)
         => Path.Combine(Path.GetDirectoryName(target) ?? ".", $".{Path.GetFileName(target)}.{id}.part");
