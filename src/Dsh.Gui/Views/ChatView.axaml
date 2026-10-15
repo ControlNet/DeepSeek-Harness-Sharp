@@ -14,7 +14,7 @@
 
   <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" Background="{DynamicResource Brush.Bg.Chat}">
 
-    <Grid x:Name="ChatHeader" Grid.Row="0" ColumnDefinitions="*,Auto,Auto,Auto,Auto"
+    <Grid x:Name="ChatHeader" Grid.Row="0" ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto"
           Classes="chatHeader" Classes.collapsed="{Binding !IsSidebarVisible}">
       <StackPanel Spacing="2">
         <TextBlock Text="{Binding SessionTitle}" Classes="Title" />
@@ -86,7 +86,53 @@
         </Button.Flyout>
       </Button>
 
-      <Button Grid.Column="3" Classes="Chip" Margin="8,0,0,0" VerticalAlignment="Center" ToolTip.Tip="会话模式">
+      <Button Grid.Column="3" Name="DeliverablesChip" Classes="Chip" Margin="8,0,0,0" VerticalAlignment="Center" ToolTip.Tip="交付物">
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <Path Classes="Icon" Width="14" Height="14" Data="{StaticResource Icon.Attach}" />
+          <TextBlock Text="交付物" />
+          <Border IsVisible="{Binding Deliverables.HasItems}" Padding="5,1" CornerRadius="999"
+                  Background="{DynamicResource Brush.Accent.Soft}" VerticalAlignment="Center">
+            <TextBlock Text="{Binding Deliverables.Badge}" Classes="Tertiary" />
+          </Border>
+        </StackPanel>
+        <Button.Flyout>
+          <Flyout Placement="BottomEdgeAlignedRight">
+            <StackPanel Width="420" Spacing="4">
+              <TextBlock Text="当前会话没有交付物" Classes="Tertiary" IsVisible="{Binding !Deliverables.HasItems}" />
+              <ScrollViewer MaxHeight="360" HorizontalScrollBarVisibility="Disabled">
+                <ItemsControl ItemsSource="{Binding Deliverables.Items}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:DeliverableItemViewModel">
+                      <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,3">
+                        <StackPanel Spacing="1" ToolTip.Tip="{Binding Path}">
+                          <TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis" />
+                          <TextBlock Text="{Binding Description}" Classes="Secondary" TextTrimming="CharacterEllipsis"
+                                     IsVisible="{Binding HasDescription}" />
+                          <TextBlock Text="{Binding Path}" Classes="Tertiary" TextTrimming="CharacterEllipsis" />
+                          <TextBlock Text="文件已不存在" Classes="Tertiary" IsVisible="{Binding !Exists}" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Classes="Chip" Margin="8,0,0,0" VerticalAlignment="Center"
+                                IsEnabled="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).Deliverables.CanOpen}"
+                                Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).OpenDeliverableCommand}"
+                                CommandParameter="{Binding}" ToolTip.Tip="用系统默认程序打开">
+                          <TextBlock Text="打开" />
+                        </Button>
+                        <Button Grid.Column="2" Classes="Icon" Width="26" Height="26" Margin="4,0,0,0" VerticalAlignment="Center"
+                                Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).CopyDeliverablePathCommand}"
+                                CommandParameter="{Binding}" ToolTip.Tip="复制路径">
+                          <Path Classes="Icon" Width="14" Height="14" Data="{StaticResource Icon.Copy}" />
+                        </Button>
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </StackPanel>
+          </Flyout>
+        </Button.Flyout>
+      </Button>
+
+      <Button Grid.Column="4" Classes="Chip" Margin="8,0,0,0" VerticalAlignment="Center" ToolTip.Tip="会话模式">
         <StackPanel Orientation="Horizontal" Spacing="6">
           <Path Classes="Icon" Width="14" Height="14" Data="{StaticResource Icon.Shield}" />
           <TextBlock Text="{Binding ModeLabel}" />
@@ -101,7 +147,7 @@
         </Button.Flyout>
       </Button>
 
-      <Button Grid.Column="4" Classes="Ghost" Margin="8,0,0,0" VerticalAlignment="Center" ToolTip.Tip="会话日志">
+      <Button Grid.Column="5" Classes="Ghost" Margin="8,0,0,0" VerticalAlignment="Center" ToolTip.Tip="会话日志">
         <StackPanel Orientation="Horizontal" Spacing="6">
           <Path Classes="Icon" Width="14" Height="14" Data="{StaticResource Icon.Download}" />
           <TextBlock Text="Session log" />
