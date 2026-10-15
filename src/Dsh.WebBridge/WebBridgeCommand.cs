@@ -1,10 +1,15 @@
 using System.Globalization;
 using System.Net.Sockets;
+using Dsh.Boot;
+using Dsh.Fleet;
 using Dsh.Transport;
 
 namespace Dsh.WebBridge;
 
-/** `dsharp host web [--port N] [--print-token]`: runs the bridge until cancelled, or prints the running bridge's access token. */
+/**
+ * `dsharp host web [--port N] [--print-token]`: runs the bridge until cancelled, or prints the running bridge's access token.
+ * The bridge serves this computer and every machine of the harness home's machine list (fleet/machines.json).
+ */
 public static class WebBridgeCommand
 {
     public const string PortOption = "--port";
@@ -14,14 +19,18 @@ public static class WebBridgeCommand
 
     private readonly record struct WebBridgeArguments(int Port, bool PrintToken, string? Error);
 
-    /** ensureHostAsync runs before the bridge starts listening, e.g. to start the host daemon the bridge relays to. */
+    /**
+     * ensureHostAsync runs before the bridge starts listening, e.g. to start the host daemon of this harness home.
+     * startLocalHost starts the host of another local machine (another harness home) when it is not reachable; only the executable knows how to launch itself.
+     */
     public static async Task<int> RunAsync(
         string root,
         IReadOnlyList<string> arguments,
         TextWriter output,
         TextWriter error,
         Func<Task> ensureHostAsync,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<MachineSpec, CancellationToken, Task>? startLocalHost = null)
     {
         var (port, printToken, problem) = Parse(arguments);
         if (problem is not null)
@@ -33,7 +42,7 @@ public static class WebBridgeCommand
         if (printToken)
             return await PrintTokenAsync(root, output, error, cancellationToken).ConfigureAwait(false);
         await ensureHostAsync().ConfigureAwait(false);
-        return await ServeAsync(root, port, output, error, cancellationToken).ConfigureAwait(false);
+        return await ServeAsync(Options(root, port, startLocalHost), output, error, cancellationToken).ConfigureAwait(false);
     }
 
     private static WebBridgeArguments Parse(IReadOnlyList<string> arguments)
@@ -77,22 +86,30 @@ public static class WebBridgeCommand
         return 0;
     }
 
-    private static async Task<int> ServeAsync(string root, int port, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    /** This computer first (the default target), then the stored machines, deployed with the stored preferences. */
+    private static WebBridgeOptions Options(string root, int port, Func<MachineSpec, CancellationToken, Task>? startLocalHost)
+    {
+        var config = new MachineStore(new HarnessHome(root)).Load();
+        var fleet = new FleetOptions { ClientName = WebBridgeServer.DefaultClientName, Deploy = config.Deploy, StartLocalHost = startLocalHost };
+        return new WebBridgeOptions(root, port, [MachineSpec.Local(root), .. config.Machines], fleet);
+    }
+
+    private static async Task<int> ServeAsync(WebBridgeOptions options, TextWriter output, TextWriter error, CancellationToken cancellationToken)
     {
         WebBridgeServer server;
         try
         {
-            server = WebBridgeServer.Start(new WebBridgeOptions(root, port));
+            server = WebBridgeServer.Start(options);
         }
         catch (SocketException failure) when (failure.SocketErrorCode == SocketError.AddressAlreadyInUse)
         {
-            await error.WriteLineAsync($"dsharp: port {port} on 127.0.0.1 is already in use; pick another with {PortOption} N").ConfigureAwait(false);
+            await error.WriteLineAsync($"dsharp: port {options.Port} on 127.0.0.1 is already in use; pick another with {PortOption} N").ConfigureAwait(false);
             return 1;
         }
 
         await using (server)
         {
-            await PrintBannerAsync(output, root, server.Port).ConfigureAwait(false);
+            await PrintBannerAsync(output, options, server.Port).ConfigureAwait(false);
             try
             {
                 await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
@@ -105,12 +122,17 @@ public static class WebBridgeCommand
         return 0;
     }
 
-    private static async Task PrintBannerAsync(TextWriter output, string root, int port)
+    /** Where to open the page on this computer, how to log in, which machines it reaches, and how a phone or another computer gets to the loopback-only port. */
+    private static async Task PrintBannerAsync(TextWriter output, WebBridgeOptions options, int port)
     {
         var url = WebBridgeEndpoint.LocalUrl(port);
+        var login = $"ssh -N -L {port}:127.0.0.1:{port} {Environment.UserName}@{Environment.MachineName}";
         await output.WriteLineAsync($"dsharp web bridge listening on {url} (loopback only)").ConfigureAwait(false);
-        await output.WriteLineAsync($"web access token: {WebBridgeEndpoint.TokenFile(root)} (new on every start; show it with `dsharp host web {PrintTokenOption}`)").ConfigureAwait(false);
+        await output.WriteLineAsync($"machines: {string.Join(", ", (options.Machines ?? []).Select(machine => $"{machine.Name} ({machine.Target})"))}").ConfigureAwait(false);
+        await output.WriteLineAsync($"web access token: {WebBridgeEndpoint.TokenFile(options.HostRoot)} (new on every start; show it with `dsharp host web {PrintTokenOption}`)").ConfigureAwait(false);
         await output.WriteLineAsync($"first login: open {url}#token=<token>, or paste the token into the login page").ConfigureAwait(false);
-        await output.WriteLineAsync($"from another device: ssh -N -L {port}:127.0.0.1:{port} {Environment.UserName}@{Environment.MachineName}, then open {url} there").ConfigureAwait(false);
+        await output.WriteLineAsync($"from another computer: {login}, then open {url} there").ConfigureAwait(false);
+        await output.WriteLineAsync($"through a jump host: ssh -N -J <user>@<jump-host> -L {port}:127.0.0.1:{port} {Environment.UserName}@{Environment.MachineName}").ConfigureAwait(false);
+        await output.WriteLineAsync($"from a phone or tablet: forward local port {port} to 127.0.0.1:{port} on this computer in an SSH client app (e.g. Termius, JuiceSSH, Blink), then open {url} in the phone's browser and paste the token").ConfigureAwait(false);
     }
 }

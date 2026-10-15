@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Text;
 using Dsh.Transport;
 
 namespace Dsh.WebBridge;
@@ -12,6 +13,9 @@ namespace Dsh.WebBridge;
 internal static class HostRelay
 {
     private const int ReceiveChunkBytes = 16 * 1024;
+
+    /** RFC 6455 caps a close frame's reason at 123 UTF-8 bytes. */
+    private const int MaxCloseReasonBytes = 123;
 
     /** How long the bridge waits to deliver its close frame before it drops the socket. */
     private static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(2);
@@ -26,9 +30,9 @@ internal static class HostRelay
         {
             host = await connectHost(cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception error) when (error is IOException or SocketException or InvalidOperationException)
+        catch (Exception error) when (error is IOException or SocketException or InvalidOperationException or TimeoutException or NotSupportedException or System.ComponentModel.Win32Exception)
         {
-            await CloseAsync(socket, new RelayEnd(WebSocketCloseStatus.InternalServerError, "host daemon not reachable")).ConfigureAwait(false);
+            await CloseAsync(socket, new RelayEnd(WebSocketCloseStatus.InternalServerError, error.Message)).ConfigureAwait(false);
             return;
         }
 
@@ -96,11 +100,22 @@ internal static class HostRelay
         using var timeout = new CancellationTokenSource(CloseTimeout);
         try
         {
-            await socket.CloseOutputAsync(status, end.Reason, timeout.Token).ConfigureAwait(false);
+            await socket.CloseOutputAsync(status, FitCloseReason(end.Reason), timeout.Token).ConfigureAwait(false);
         }
         catch (Exception error) when (IsConnectionEnd(error))
         {
         }
+    }
+
+    /** Long reasons (an ssh error, a deployment failure) are cut on a character boundary so the close frame stays valid. */
+    private static string FitCloseReason(string reason)
+    {
+        var length = reason.Length;
+        while (Encoding.UTF8.GetByteCount(reason.AsSpan(0, length)) > MaxCloseReasonBytes)
+            length--;
+        if (length < reason.Length && length > 0 && char.IsHighSurrogate(reason[length - 1]))
+            length--;
+        return reason[..length];
     }
 
     private static bool IsConnectionEnd(Exception error)

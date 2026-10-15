@@ -21,6 +21,7 @@ internal readonly record struct HttpStatus(int Code, string Reason)
 internal static class HttpResponse
 {
     public const string PlainText = "text/plain; charset=utf-8";
+    public const string Json = "application/json; charset=utf-8";
 
     /** connect-src 'self' also admits the same-origin ws:// and wss:// endpoint. */
     private const string SecurityHeaders =
