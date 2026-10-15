@@ -62,6 +62,9 @@ public class TerminalInputParserTests
     [InlineData("\u001b[H", ConsoleKey.Home)]
     [InlineData("\u001b[F", ConsoleKey.End)]
     [InlineData("\u001bOA", ConsoleKey.UpArrow)]
+    [InlineData("\u001b[1;5C", ConsoleKey.RightArrow)]
+    [InlineData("\u001b[3;5~", ConsoleKey.Delete)]
+    [InlineData("\u001b[5;2~", ConsoleKey.PageUp)]
     public void Escape_Sequences_Map_To_Named_Keys(string sequence, ConsoleKey expected)
     {
         var parser = new TerminalInputParser();
