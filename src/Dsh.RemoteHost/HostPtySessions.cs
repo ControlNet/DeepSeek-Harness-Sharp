@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using Dsh.AgentAdapters;
 using Dsh.Pty;
 
 namespace Dsh.RemoteHost;
@@ -16,6 +17,8 @@ public sealed record HostPtyDaemon(string SocketPath, string? PortFile, Func<Can
  * host.pty.* 的托管: PTY 由 PTY daemon 持有, 不随 host 进程或任何客户端连接结束。
  * 每个连接 attach 时各开一条 daemon 订阅(首帧是整屏快照, 多端互不抢字节);
  * host 自己再为每个 PTY 保持一条订阅, 用于写入、跟踪活动时间与退出码, 并同步到会话登记表。
+ * External agent sessions (kind external) are PTYs too; their screen is classified with the adapter's rules after output, which sets
+ * Running / WaitingForUser in the registry and raises ScreenStateChanged for notifications.
  */
 public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon daemon, string? harnessHome) : IAsyncDisposable
 {
@@ -34,17 +37,68 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
     private const string ExitedStatus = nameof(PtySessionStatus.Exited);
 
     private readonly ConcurrentDictionary<string, Task<PtyRemoteSession>> _watchers = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, HostScreenWatch> _screens = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _lifetime = new();
 
-    public async Task<string> StartAsync(RemotePtyStartRequest request, string workingDirectory, CancellationToken cancellationToken)
+    /** A watched agent's screen changed state (session id, new state). */
+    public event Action<string, AgentScreenState>? ScreenStateChanged;
+
+    public Task<string> StartAsync(RemotePtyStartRequest request, string workingDirectory, CancellationToken cancellationToken)
+        => LaunchAsync(request, workingDirectory, HostSessionKinds.Terminal, null, null, cancellationToken);
+
+    /** Starts an external agent's TUI as an external session and classifies its screen with Rules (no classification for AgentScreenRules.None). */
+    public async Task<string> StartAgentAsync(
+        RemotePtyStartRequest request,
+        string workingDirectory,
+        string agentKind,
+        IReadOnlyDictionary<string, string>? environment,
+        AgentScreenRules rules,
+        CancellationToken cancellationToken)
+    {
+        var id = await LaunchAsync(request, workingDirectory, HostSessionKinds.External, agentKind, environment, cancellationToken).ConfigureAwait(false);
+        WatchScreen(id, rules);
+        return id;
+    }
+
+    /** Classifies a running PTY's screen after each burst of output; also used to re-attach rules to agents that survived a host restart. */
+    public void WatchScreen(string ptyId, AgentScreenRules rules)
+    {
+        if (rules == AgentScreenRules.None)
+            return;
+        var watch = new HostScreenWatch(rules, token => ScreenLinesAsync(ptyId, token), state => OnScreenState(ptyId, state));
+        if (!_screens.TryAdd(ptyId, watch))
+            _ = watch.DisposeAsync().AsTask();
+    }
+
+    /** The visible screen as text lines, rebuilt from the daemon's redraw snapshot at the PTY's current size. */
+    public async Task<IReadOnlyList<string>> ScreenLinesAsync(string ptyId, CancellationToken cancellationToken)
+    {
+        var pty = (await PtyDaemonClient.ListAsync(daemon.SocketPath, daemon.PortFile, cancellationToken).ConfigureAwait(false))
+            .FirstOrDefault(candidate => candidate.Id == ptyId) ?? throw new InvalidOperationException($"PTY session not found: {ptyId}");
+        var snapshot = await PtyDaemonClient.SnapshotAsync(ptyId, daemon.SocketPath, daemon.PortFile, cancellationToken).ConfigureAwait(false);
+        var screen = new VtScreen(pty.Columns, pty.Rows);
+        screen.Feed(snapshot.AsSpan());
+        return [.. Enumerable.Range(0, screen.Height).Select(row => RowText(screen.Row(row)))];
+    }
+
+    private async Task<string> LaunchAsync(
+        RemotePtyStartRequest request,
+        string workingDirectory,
+        string kind,
+        string? agentKind,
+        IReadOnlyDictionary<string, string>? environment,
+        CancellationToken cancellationToken)
     {
         await daemon.EnsureRunningAsync(cancellationToken).ConfigureAwait(false);
+        var variables = new Dictionary<string, string?>(TerminalEnvironment);
+        foreach (var (name, value) in environment ?? new Dictionary<string, string>())
+            variables[name] = value;
         var parameters = new PtyDaemonStartParams
         {
             FileName = request.FileName,
             Arguments = [.. request.Arguments],
             WorkingDirectory = workingDirectory,
-            Environment = new Dictionary<string, string?>(TerminalEnvironment),
+            Environment = variables,
             Home = harnessHome,
         };
         parameters.Columns = request.Columns ?? parameters.Columns;
@@ -52,9 +106,24 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
         var started = await PtyDaemonClient.StartAsync(parameters, daemon.SocketPath, daemon.PortFile, cancellationToken).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         registry.Register(new RemoteHostSession(
-            started.Id, HostSessionKinds.Terminal, null, workingDirectory, request.Title ?? started.Command, HostSessionStatuses.Running, now, now, 0, null));
+            started.Id, kind, agentKind, workingDirectory, request.Title ?? started.Command, HostSessionStatuses.Running, now, now, 0, null));
         await WatcherAsync(started.Id, cancellationToken).ConfigureAwait(false);
         return started.Id;
+    }
+
+    private void OnScreenState(string ptyId, AgentScreenState state)
+    {
+        var waiting = state is AgentScreenState.WaitingForInput or AgentScreenState.WaitingForApproval;
+        registry.SetLiveStatus(ptyId, waiting ? HostSessionStatuses.WaitingForUser : HostSessionStatuses.Running);
+        ScreenStateChanged?.Invoke(ptyId, state);
+    }
+
+    private static string RowText(ReadOnlySpan<Cell> row)
+    {
+        var characters = new char[row.Length];
+        for (var index = 0; index < row.Length; index++)
+            characters[index] = row[index].Character;
+        return new string(characters).TrimEnd();
     }
 
     /** 任何连接的输入都经 host 的那条订阅写入; daemon 里不是本 host 起的 PTY 也能写。 */
@@ -80,10 +149,10 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
         return StreamAsync(ptyId, session, cancellationToken);
     }
 
-    /** host 重启后对账: 登记表里的终端若仍在 daemon 里运行就复活并重新跟踪, 否则保持 Exited。 */
+    /** host 重启后对账: 登记表里的终端与外部 Agent 若仍在 daemon 里运行就复活并重新跟踪, 否则保持 Exited。 */
     public async Task RestoreAsync(CancellationToken cancellationToken)
     {
-        var terminals = registry.List().Where(session => session.Kind == HostSessionKinds.Terminal).ToList();
+        var terminals = registry.List().Where(session => session.Kind is HostSessionKinds.Terminal or HostSessionKinds.External).ToList();
         if (terminals.Count == 0 || !await PtyDaemonClient.IsRunningAsync(daemon.SocketPath, daemon.PortFile, cancellationToken).ConfigureAwait(false))
             return;
         var running = (await PtyDaemonClient.ListAsync(daemon.SocketPath, daemon.PortFile, cancellationToken).ConfigureAwait(false))
@@ -101,6 +170,9 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
     public async ValueTask DisposeAsync()
     {
         await _lifetime.CancelAsync().ConfigureAwait(false);
+        foreach (var screen in _screens.Values)
+            await screen.DisposeAsync().ConfigureAwait(false);
+        _screens.Clear();
         foreach (var watcher in _watchers.Values)
         {
             if (watcher.IsCompletedSuccessfully)
@@ -137,7 +209,11 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
         try
         {
             await foreach (var _ in session.Output.ReadAllAsync(_lifetime.Token).ConfigureAwait(false))
+            {
                 registry.Touch(ptyId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                if (_screens.TryGetValue(ptyId, out var screen))
+                    screen.Poke();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -145,6 +221,8 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
         }
 
         _watchers.TryRemove(ptyId, out _);
+        if (_screens.TryRemove(ptyId, out var finished))
+            await finished.DisposeAsync().ConfigureAwait(false);
         await session.DisposeAsync().ConfigureAwait(false);
         if (!_lifetime.IsCancellationRequested)
             registry.MarkExited(ptyId, await ExitCodeAsync(ptyId).ConfigureAwait(false));

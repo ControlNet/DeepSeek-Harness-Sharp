@@ -1,4 +1,7 @@
-﻿namespace Dsh.RemoteHost;
+﻿using Dsh.GitInspect;
+using Dsh.Notifications;
+
+namespace Dsh.RemoteHost;
 
 /**
  * 远端工作区能力边界: 本地显示、远端执行。
@@ -69,4 +72,71 @@ public interface IRemoteHost
 
     /** 终止远端某个 PTY。 */
     Task StopPtyAsync(string ptyId, CancellationToken cancellationToken = default);
+
+    /** Agent kinds this host can start (needs agent.sessions). */
+    Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken = default);
+
+    /** Starts any kind of session (harness, terminal-mode or ACP-mode agent) and returns its registry record. */
+    Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken = default);
+
+    /** One user turn for an ACP or harness session; events arrive through SubscribeAsync. */
+    Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken = default);
+
+    Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken = default);
+
+    Task StopAgentAsync(string sessionId, CancellationToken cancellationToken = default);
+
+    /** Restarts an exited agent session; terminal-mode agents come back under a new session id. */
+    Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken = default);
+
+    /** host.git.*: ProjectPath is any directory inside the repository (needs git.inspect). */
+    Task<GitStatus> GitStatusAsync(string projectPath, CancellationToken cancellationToken = default);
+
+    Task<GitDiff> GitDiffAsync(RemoteGitDiffRequest request, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<GitCommitSummary>> GitLogAsync(RemoteGitLogRequest request, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<GitWorktree>> ListWorktreesAsync(string projectPath, CancellationToken cancellationToken = default);
+
+    Task<GitWorktree> AddWorktreeAsync(RemoteGitWorktreeAdd request, CancellationToken cancellationToken = default);
+
+    Task RemoveWorktreeAsync(RemoteGitWorktreeRemove request, CancellationToken cancellationToken = default);
+
+    /** host.fs.* (needs fs.transfer); a missing path stats as Exists = false. */
+    Task<RemoteFileStat> StatAsync(string path, CancellationToken cancellationToken = default);
+
+    Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default);
+
+    Task RenameAsync(string from, string to, bool overwrite = false, CancellationToken cancellationToken = default);
+
+    Task DeleteAsync(string path, bool recursive = false, CancellationToken cancellationToken = default);
+
+    Task<RemoteUploadRef> BeginUploadAsync(string path, bool overwrite = true, CancellationToken cancellationToken = default);
+
+    /** Returns the number of bytes the host has received so far. */
+    Task<long> UploadChunkAsync(string uploadId, long offset, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default);
+
+    Task<RemoteFileStat> CommitUploadAsync(string uploadId, long? size = null, CancellationToken cancellationToken = default);
+
+    Task AbortUploadAsync(string uploadId, CancellationToken cancellationToken = default);
+
+    Task<RemoteFileChunk> DownloadChunkAsync(string path, long offset, int? length = null, CancellationToken cancellationToken = default);
+
+    /** Streams Source to Path chunk by chunk and replaces Path atomically at the end; an error aborts the upload. */
+    Task<RemoteFileStat> UploadFileAsync(string path, Stream source, bool overwrite = true, CancellationToken cancellationToken = default);
+
+    /** Copies Path into Destination chunk by chunk; returns the number of bytes copied. */
+    Task<long> DownloadFileAsync(string path, Stream destination, CancellationToken cancellationToken = default);
+
+    /** host.notify.* (needs notify.history). */
+    Task<RemoteNotifyPage> ListNotificationsAsync(RemoteNotifyQuery? query = null, CancellationToken cancellationToken = default);
+
+    /** Returns how many notifications became read. */
+    Task<int> MarkNotificationsReadAsync(RemoteNotifyMarkRead request, CancellationToken cancellationToken = default);
+
+    /** host.notify.added pushes. */
+    IAsyncEnumerable<NotificationRecord> NotificationsAddedAsync(CancellationToken cancellationToken = default);
+
+    /** host.notify.changed pushes (read marks made by any client). */
+    IAsyncEnumerable<RemoteNotifyChanged> NotificationChangesAsync(CancellationToken cancellationToken = default);
 }

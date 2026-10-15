@@ -12,8 +12,10 @@ using Dsh.Runtime.Events;
 namespace Dsh.Host;
 
 /**
- * 远端宿主能力后端: 直连进程内 harness 服务(会话 / 事件 / 工具 / 文件), PTY 交给 PTY daemon 托管。
+ * 远端宿主能力后端: 直连进程内 harness 服务(会话 / 事件 / 工具), PTY 交给 PTY daemon 托管。
  * 事件经 ctx 通知转成推送流; 审批/问答经 HarnessDecisionBridge 进入待决策队列; 会话状态经 HarnessSessionTracker 进入登记表。
+ * External agents (terminal and ACP mode) live in ExternalAgentSessions; ACP sessions answer host.session.subscribe/message/interrupt
+ * from their transcript, so clients drive them like harness sessions.
  */
 public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposable
 {
@@ -25,17 +27,22 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
     private readonly Lock _providerGate = new();
     private readonly HashSet<string> _registeredProviders = new(StringComparer.OrdinalIgnoreCase);
     private readonly HostPtySessions _ptys;
+    private readonly ExternalAgentSessions _agents;
     private readonly HarnessDecisionBridge _decisions;
     private readonly HarnessSessionTracker _tracker;
 
-    private HarnessRemoteHostBackend(HarnessApp app, HostPendingDecisions pending, HostSessionRegistry sessions, HostPtySessions ptys)
+    private HarnessRemoteHostBackend(HarnessApp app, AcpSessionServices services, HostPtySessions ptys, ExternalAgentSessions agents)
     {
         _app = app;
-        Pending = pending;
-        Sessions = sessions;
+        Pending = services.Pending;
+        Sessions = services.Registry;
+        Notifications = services.Notifications;
+        Files = new HostFileSystem(HostPathPolicy.ForHome(Sessions, app.Home.Root));
         _ptys = ptys;
-        _decisions = new HarnessDecisionBridge(app.Ctx, pending);
-        _tracker = new HarnessSessionTracker(app.Ctx, sessions, pending);
+        _agents = agents;
+        _decisions = new HarnessDecisionBridge(app.Ctx, Pending);
+        _tracker = new HarnessSessionTracker(app.Ctx, Sessions, Pending);
+        ptys.ScreenStateChanged += Notifications.ReportScreen;
     }
 
     /** 读回会话登记表并与 PTY daemon 对账; ptyDaemon 为空时用与 `dsharp tui list` 相同的默认 daemon。 */
@@ -43,14 +50,21 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
     {
         var pending = new HostPendingDecisions();
         var sessions = await HostSessionRegistry.OpenAsync(Path.Combine(app.Home.HostPath, RegistryFileName), pending, cancellationToken).ConfigureAwait(false);
+        var notifications = await HostNotificationCenter.OpenAsync(Path.Combine(app.Home.HostPath, HostNotificationCenter.FileName), sessions, pending, cancellationToken).ConfigureAwait(false);
+        var services = new AcpSessionServices(sessions, pending, notifications);
         var ptys = new HostPtySessions(sessions, ptyDaemon ?? HostPtyDaemon.Default(), app.Home.Root);
         await ptys.RestoreAsync(cancellationToken).ConfigureAwait(false);
-        return new HarnessRemoteHostBackend(app, pending, sessions, ptys);
+        var agents = await ExternalAgentSessions.OpenAsync(app.Home.HostPath, services, ptys, cancellationToken).ConfigureAwait(false);
+        return new HarnessRemoteHostBackend(app, services, ptys, agents);
     }
 
     public HostPendingDecisions Pending { get; }
 
     public HostSessionRegistry Sessions { get; }
+
+    public HostFileSystem Files { get; }
+
+    public HostNotificationCenter Notifications { get; }
 
     private AgentRegistry Registry => _app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)
         ?? throw new InvalidOperationException("AgentRegistry 未注册");
@@ -81,7 +95,7 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
     public async Task<RemoteSessionInfo> CreateSessionAsync(string cwd, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken)
     {
         // 会话 cwd 必须是绝对路径(POSIX 与 Windows 皆然): 空/相对一律解析到远端家目录。
-        var resolved = string.IsNullOrWhiteSpace(cwd) ? ExpandHome("~") : ExpandHome(cwd);
+        var resolved = HostPathPolicy.Expand(cwd);
         var options = ResolveAgentOptions(selection, provider);
         var handle = await Registry.Create(new CreateAgentOptions(Cwd: resolved, AgentOptions: options), cancellationToken).ConfigureAwait(false);
         _handles[handle.Agent.Id.Value] = handle;
@@ -172,6 +186,8 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
 
     public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken)
     {
+        if (_agents.IsAcp(sessionId))
+            return PromptAgentAsync(sessionId, text, cancellationToken);
         var content = new List<ContentBlock>();
         if (text.Length > 0)
             content.Add(new TextBlock(text));
@@ -187,6 +203,8 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
     /** 中断即放弃这一轮: 该会话还在等回答的审批/问答一并取消。 */
     public Task InterruptAsync(string sessionId, CancellationToken cancellationToken)
     {
+        if (_agents.IsAcp(sessionId))
+            return _agents.CancelAsync(sessionId, cancellationToken);
         Require(sessionId).Cancel(new AgentCancelCause.User());
         Pending.CancelSession(sessionId);
         return Task.CompletedTask;
@@ -202,40 +220,70 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
         return Task.FromResult(names);
     }
 
-    public Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken)
-        => File.ReadAllBytesAsync(ExpandHome(path), cancellationToken);
+    public Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken)
+        => ExternalAgentSessions.CatalogAsync(cancellationToken);
 
-    public Task WriteFileAsync(string path, byte[] content, CancellationToken cancellationToken)
-        => File.WriteAllBytesAsync(ExpandHome(path), content, cancellationToken);
-
-    public Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken)
+    /** Harness sessions (agent kind dsharp) go through host.session.create semantics; every other kind is an external agent. */
+    public async Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken)
     {
-        var directory = ExpandHome(path);
-        var info = new DirectoryInfo(directory);
-        if (!info.Exists)
-            throw new DirectoryNotFoundException($"远端目录不存在: {info.FullName}");
-        var entries = new List<RemoteDirectoryEntry>();
-        foreach (var child in info.EnumerateDirectories().OrderBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase))
-            entries.Add(new RemoteDirectoryEntry(child.Name, child.FullName, true));
-        foreach (var child in info.EnumerateFiles().OrderBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase))
-            entries.Add(new RemoteDirectoryEntry(child.Name, child.FullName, false));
-        return Task.FromResult(new RemoteDirectoryListing(info.FullName, info.Parent?.FullName, entries));
+        if (request.AgentKind != HostAgentKinds.Dsharp)
+            return await _agents.StartAsync(request, cancellationToken).ConfigureAwait(false);
+        var directory = await ExternalAgentSessions.PrepareDirectoryAsync(request.ProjectPath, request.Worktree, cancellationToken).ConfigureAwait(false);
+        var created = await CreateSessionAsync(directory, request.Selection, request.Provider, cancellationToken).ConfigureAwait(false);
+        if (request.InitialPrompt is { } prompt)
+            await SendMessageAsync(created.Id, prompt, [], cancellationToken).ConfigureAwait(false);
+        return Sessions.Get(created.Id) ?? throw new InvalidOperationException($"session {created.Id} was not registered");
     }
 
-    /** 远端用户的 `~`/空 路径折算为家目录: 用户填 `~/dsh-deploy` 时也能浏览。 */
-    private static string ExpandHome(string path)
+    public Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken)
     {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrWhiteSpace(path) || path.Trim() == "~")
-            return home;
-        var trimmed = path.Trim();
-        if (trimmed.StartsWith("~/", StringComparison.Ordinal) || trimmed.StartsWith("~\\", StringComparison.Ordinal))
-            return Path.Combine(home, trimmed[2..]);
-        return Path.GetFullPath(trimmed);
+        if (_agents.IsAcp(sessionId))
+        {
+            _agents.Prompt(sessionId, text);
+            return Task.CompletedTask;
+        }
+        return KindOf(sessionId) == HostSessionKinds.Harness
+            ? SendMessageAsync(sessionId, text, [], cancellationToken)
+            : throw new InvalidOperationException($"session {sessionId} takes input through its terminal (host.pty.write)");
     }
+
+    public Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken)
+        => KindOf(sessionId) switch
+        {
+            HostSessionKinds.Harness => InterruptAsync(sessionId, cancellationToken),
+            HostSessionKinds.Acp => _agents.CancelAsync(sessionId, cancellationToken),
+            _ => throw new InvalidOperationException($"session {sessionId} is cancelled through its terminal (host.pty.write)"),
+        };
+
+    /** A harness session ends by releasing its agent; terminals and external agents end their process. */
+    public Task StopAgentAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        switch (KindOf(sessionId))
+        {
+            case HostSessionKinds.Harness:
+                if (_handles.TryRemove(sessionId, out var handle))
+                    handle.Dispose.Dispose();
+                return Task.CompletedTask;
+            case HostSessionKinds.Terminal:
+                return _ptys.StopAsync(sessionId, cancellationToken);
+            default:
+                return _agents.StopAsync(sessionId, cancellationToken);
+        }
+    }
+
+    public async Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        if (KindOf(sessionId) != HostSessionKinds.Harness)
+            return await _agents.ResumeAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        await ResumeSessionAsync(sessionId, null, null, cancellationToken).ConfigureAwait(false);
+        return Sessions.Get(sessionId) ?? throw new InvalidOperationException($"session {sessionId} was not registered");
+    }
+
+    private string KindOf(string sessionId)
+        => Sessions.Get(sessionId)?.Kind ?? throw new InvalidOperationException($"unknown session: {sessionId}");
 
     public Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken)
-        => _ptys.StartAsync(request, ExpandHome(request.Cwd ?? ""), cancellationToken);
+        => _ptys.StartAsync(request, HostPathPolicy.Expand(request.Cwd ?? ""), cancellationToken);
 
     public Task WritePtyAsync(string ptyId, byte[] data, CancellationToken cancellationToken)
         => _ptys.WriteAsync(ptyId, data, cancellationToken);
@@ -252,6 +300,8 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
     /** 活会话先挂监听、再记下补发截止点, 两者之间新追加的事件不会漏; 非活会话只补发持久化的历史。 */
     public Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
     {
+        if (_agents.IsAcp(sessionId))
+            return _agents.SubscribeAsync(sessionId, fromSeq, cancellationToken);
         var id = SessionId.Create(sessionId);
         if (Registry.Get(id) is not { } live)
             return Task.FromResult(ReadPersisted(id, fromSeq).Select(sessionEvent => ToInfo(sessionId, sessionEvent)).ToAsyncEnumerable());
@@ -338,15 +388,21 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
     private static string Platform()
         => OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
 
-    /** 先解开瀑布并取消全部未决请求(放开还在等回答的工具), 再结束会话; PTY 留在 daemon 里, 登记表最后落盘。 */
+    /**
+     * 先停通知(host 自己退出造成的会话结束不进历史), 再解开瀑布并取消全部未决请求(放开还在等回答的工具), 再结束会话;
+     * ACP agents end with the host; PTY 留在 daemon 里, 登记表最后落盘。
+     */
     public async ValueTask DisposeAsync()
     {
+        _ptys.ScreenStateChanged -= Notifications.ReportScreen;
+        await Notifications.DisposeAsync().ConfigureAwait(false);
         _decisions.Dispose();
         Pending.Dispose();
         _tracker.Dispose();
         foreach (var handle in _handles.Values)
             handle.Dispose.Dispose();
         _handles.Clear();
+        await _agents.DisposeAsync().ConfigureAwait(false);
         await _ptys.DisposeAsync().ConfigureAwait(false);
         await Sessions.DisposeAsync().ConfigureAwait(false);
     }

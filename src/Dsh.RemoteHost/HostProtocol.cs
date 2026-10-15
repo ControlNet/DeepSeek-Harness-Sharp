@@ -1,4 +1,6 @@
 using System.Text.Json.Serialization;
+using Dsh.GitInspect;
+using Dsh.Notifications;
 
 namespace Dsh.RemoteHost;
 
@@ -44,6 +46,33 @@ public static class HostProtocol
     public const string MethodPendingList = "host.pending.list";
     public const string MethodSessionsList = "host.sessions.list";
 
+    public const string MethodAgentCatalog = "host.agent.catalog";
+    public const string MethodAgentStart = "host.agent.start";
+    public const string MethodAgentPrompt = "host.agent.prompt";
+    public const string MethodAgentCancel = "host.agent.cancel";
+    public const string MethodAgentStop = "host.agent.stop";
+    public const string MethodAgentResume = "host.agent.resume";
+
+    public const string MethodGitStatus = "host.git.status";
+    public const string MethodGitDiff = "host.git.diff";
+    public const string MethodGitLog = "host.git.log";
+    public const string MethodGitWorktreeList = "host.git.worktree.list";
+    public const string MethodGitWorktreeAdd = "host.git.worktree.add";
+    public const string MethodGitWorktreeRemove = "host.git.worktree.remove";
+
+    public const string MethodFsStat = "host.fs.stat";
+    public const string MethodFsMkdir = "host.fs.mkdir";
+    public const string MethodFsRename = "host.fs.rename";
+    public const string MethodFsDelete = "host.fs.delete";
+    public const string MethodFsUploadBegin = "host.fs.upload.begin";
+    public const string MethodFsUploadChunk = "host.fs.upload.chunk";
+    public const string MethodFsUploadCommit = "host.fs.upload.commit";
+    public const string MethodFsUploadAbort = "host.fs.upload.abort";
+    public const string MethodFsDownload = "host.fs.download";
+
+    public const string MethodNotifyList = "host.notify.list";
+    public const string MethodNotifyMarkRead = "host.notify.markRead";
+
     /** 服务端 -> 客户端 推送。 */
     public const string NotificationEvent = "host.event";
     public const string NotificationApproval = "host.approval";
@@ -51,6 +80,8 @@ public static class HostProtocol
     public const string NotificationPtyOutput = "host.pty.output";
     public const string NotificationPendingResolved = "host.pending.resolved";
     public const string NotificationSessionsChanged = "host.sessions.changed";
+    public const string NotificationNotifyAdded = "host.notify.added";
+    public const string NotificationNotifyChanged = "host.notify.changed";
 }
 
 /** 能力标记: 客户端据此判断对端是否支持某项新增功能, 旧宿主不发 capabilities 即视为都不支持。 */
@@ -68,7 +99,20 @@ public static class HostCapabilities
     /** host.pty.resize。 */
     public const string PtyResize = "pty.resize";
 
-    public static readonly IReadOnlyList<string> All = [PendingBroadcast, SessionRegistry, PtyDaemon, PtyResize];
+    /** host.agent.*: external agents in terminal or ACP mode and harness sessions behind one start entry point. */
+    public const string AgentSessions = "agent.sessions";
+
+    /** host.git.*: status, diff, log and worktrees of a project repository. */
+    public const string GitInspect = "git.inspect";
+
+    /** host.fs.*: stat, mkdir, rename, delete and chunked upload/download; every host.file.* and host.fs.* path is checked against the host's allowed roots. */
+    public const string FsTransfer = "fs.transfer";
+
+    /** host.notify.*: the host's persistent notification history, read marks shared by every client. */
+    public const string NotifyHistory = "notify.history";
+
+    public static readonly IReadOnlyList<string> All =
+        [PendingBroadcast, SessionRegistry, PtyDaemon, PtyResize, AgentSessions, GitInspect, FsTransfer, NotifyHistory];
 }
 
 /** 握手请求: 客户端声明的协议版本与 token; ClientName 是客户端自报的显示名(如 "gui@laptop"), 用于标注由谁回答了审批。 */
@@ -87,7 +131,7 @@ public sealed record HostHelloResponse(
 public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Platform, string HomeRoot, IReadOnlyList<string>? Capabilities = null);
 
 /** 源生成的 JSON 上下文(AOT/裁剪安全)。 */
-[JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, UseStringEnumConverter = true)]
 [JsonSerializable(typeof(HostHelloRequest))]
 [JsonSerializable(typeof(HostHelloResponse))]
 [JsonSerializable(typeof(HostInfo))]
@@ -131,4 +175,33 @@ public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Pl
 [JsonSerializable(typeof(IReadOnlyList<RemoteHostSession>))]
 [JsonSerializable(typeof(IReadOnlyList<RemoteApprovalRequest>))]
 [JsonSerializable(typeof(IReadOnlyList<RemoteQuestionRequest>))]
+[JsonSerializable(typeof(int))]
+[JsonSerializable(typeof(RemoteAgentCatalogEntry))]
+[JsonSerializable(typeof(IReadOnlyList<RemoteAgentCatalogEntry>))]
+[JsonSerializable(typeof(RemoteAgentStartRequest))]
+[JsonSerializable(typeof(RemoteAgentPrompt))]
+[JsonSerializable(typeof(RemoteFileStat))]
+[JsonSerializable(typeof(RemoteFsRename))]
+[JsonSerializable(typeof(RemoteFsDelete))]
+[JsonSerializable(typeof(RemoteUploadBegin))]
+[JsonSerializable(typeof(RemoteUploadRef))]
+[JsonSerializable(typeof(RemoteUploadChunk))]
+[JsonSerializable(typeof(RemoteUploadCommit))]
+[JsonSerializable(typeof(RemoteDownloadRequest))]
+[JsonSerializable(typeof(RemoteFileChunk))]
+[JsonSerializable(typeof(RemoteGitRequest))]
+[JsonSerializable(typeof(RemoteGitDiffRequest))]
+[JsonSerializable(typeof(RemoteGitLogRequest))]
+[JsonSerializable(typeof(RemoteGitWorktreeAdd))]
+[JsonSerializable(typeof(RemoteGitWorktreeRemove))]
+[JsonSerializable(typeof(GitStatus))]
+[JsonSerializable(typeof(GitDiff))]
+[JsonSerializable(typeof(IReadOnlyList<GitCommitSummary>))]
+[JsonSerializable(typeof(GitWorktree))]
+[JsonSerializable(typeof(IReadOnlyList<GitWorktree>))]
+[JsonSerializable(typeof(RemoteNotifyQuery))]
+[JsonSerializable(typeof(RemoteNotifyPage))]
+[JsonSerializable(typeof(RemoteNotifyMarkRead))]
+[JsonSerializable(typeof(RemoteNotifyChanged))]
+[JsonSerializable(typeof(NotificationRecord))]
 public partial class HostProtocolJsonContext : JsonSerializerContext;

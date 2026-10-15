@@ -41,12 +41,14 @@ public sealed class RemoteHostCapabilityTests
         Assert.Single(await client.ListSessionsAsync(Ct));
         Assert.Equal(["read", "write"], await client.ListToolsAsync(created.Id, Ct));
 
-        await client.WriteFileAsync("/work/a.txt", "hello"u8.ToArray(), Ct);
-        Assert.Equal("hello"u8.ToArray(), await client.ReadFileAsync("/work/a.txt", Ct));
+        var work = Path.Combine(backend.Root, "work");
+        Directory.CreateDirectory(Path.Combine(work, "sub"));
+        await client.WriteFileAsync(Path.Combine(work, "a.txt"), "hello"u8.ToArray(), Ct);
+        Assert.Equal("hello"u8.ToArray(), await client.ReadFileAsync(Path.Combine(work, "a.txt"), Ct));
 
-        var listing = await client.ListDirectoryAsync("/work", Ct);
-        Assert.Equal("/work", listing.Path);
-        Assert.Equal("/", listing.Parent);
+        var listing = await client.ListDirectoryAsync(work, Ct);
+        Assert.Equal(work, listing.Path);
+        Assert.Equal(backend.Root, listing.Parent);
         Assert.Contains(listing.Entries, entry => entry is { Name: "sub", IsDirectory: true });
 
         var events = new List<RemoteEventInfo>();
@@ -155,27 +157,21 @@ public sealed class RemoteHostCapabilityTests
         Assert.True(condition(), "condition not met in time");
     }
 
-    /** 记录/回放式的远端后端替身; 不依赖 harness。待决策队列与会话登记表用真实实现。 */
+    /** 记录/回放式的远端后端替身; 不依赖 harness。待决策队列、会话登记表、文件系统(限于 Root)与通知历史用真实实现。 */
     internal sealed class FakeBackend : IRemoteHostBackend, IAsyncDisposable
     {
         private readonly string _directory;
         private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
         private readonly Dictionary<string, Channel<RemoteEventInfo>> _events = [];
-        private readonly Dictionary<string, byte[]> _files = [];
-        private readonly Dictionary<string, RemoteDirectoryListing> _directories = new(StringComparer.Ordinal)
-        {
-            ["/work"] = new RemoteDirectoryListing(
-                "/work",
-                "/",
-                [new RemoteDirectoryEntry("sub", "/work/sub", true), new RemoteDirectoryEntry("a.txt", "/work/a.txt", false)]),
-        };
         private readonly Dictionary<string, Channel<RemotePtyOutput>> _pty = [];
 
-        private FakeBackend(string directory, HostPendingDecisions pending, HostSessionRegistry sessions)
+        private FakeBackend(string directory, HostPendingDecisions pending, HostSessionRegistry sessions, HostNotificationCenter notifications)
         {
             _directory = directory;
             Pending = pending;
             Sessions = sessions;
+            Notifications = notifications;
+            Files = new HostFileSystem(new HostPathPolicy([directory], () => []));
         }
 
         public static async Task<FakeBackend> CreateAsync(CancellationToken cancellationToken)
@@ -183,12 +179,20 @@ public sealed class RemoteHostCapabilityTests
             var directory = TempTree.CreateDirectory("rh-cap");
             var pending = new HostPendingDecisions();
             var sessions = await HostSessionRegistry.OpenAsync(Path.Combine(directory, "sessions.json"), pending, cancellationToken);
-            return new FakeBackend(directory, pending, sessions);
+            var notifications = await HostNotificationCenter.OpenAsync(Path.Combine(directory, HostNotificationCenter.FileName), sessions, pending, cancellationToken);
+            return new FakeBackend(directory, pending, sessions, notifications);
         }
+
+        /** The only directory the fake host's file system may touch. */
+        public string Root => _directory;
 
         public HostPendingDecisions Pending { get; }
 
         public HostSessionRegistry Sessions { get; }
+
+        public HostFileSystem Files { get; }
+
+        public HostNotificationCenter Notifications { get; }
 
         /** 后端完成订阅(挂好事件通道)时置位。 */
         public TaskCompletionSource Subscribed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -231,19 +235,17 @@ public sealed class RemoteHostCapabilityTests
         public Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<string>>(["read", "write"]);
 
-        public Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken)
-            => Task.FromResult(_files.TryGetValue(path, out var bytes) ? bytes : throw new FileNotFoundException(path));
+        public Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public Task WriteFileAsync(string path, byte[] content, CancellationToken cancellationToken)
-        {
-            _files[path] = content;
-            return Task.CompletedTask;
-        }
+        public Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken)
-            => Task.FromResult(_directories.TryGetValue(path, out var listing)
-                ? listing
-                : throw new DirectoryNotFoundException(path));
+        public Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task StopAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken)
         {
@@ -287,6 +289,7 @@ public sealed class RemoteHostCapabilityTests
 
         public async ValueTask DisposeAsync()
         {
+            await Notifications.DisposeAsync();
             Pending.Dispose();
             await Sessions.DisposeAsync();
             TempTree.Delete(_directory);

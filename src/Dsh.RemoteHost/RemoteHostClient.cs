@@ -2,6 +2,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
+using Dsh.GitInspect;
+using Dsh.Notifications;
 using Dsh.Transport;
 
 namespace Dsh.RemoteHost;
@@ -22,6 +24,8 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     private readonly Channel<RemoteQuestionRequest> _questions = Channel.CreateUnbounded<RemoteQuestionRequest>();
     private readonly Channel<RemotePendingResolved> _resolutions = ObservationChannel<RemotePendingResolved>();
     private readonly Channel<RemoteHostSession> _sessionChanges = ObservationChannel<RemoteHostSession>();
+    private readonly Channel<NotificationRecord> _notificationsAdded = ObservationChannel<NotificationRecord>();
+    private readonly Channel<RemoteNotifyChanged> _notificationChanges = ObservationChannel<RemoteNotifyChanged>();
 
     /** 推送处理在握手之前挂好: host 在 hello 应答之后立即补发未决请求, 晚挂会漏掉它们。 */
     private RemoteHostClient(JsonRpcPeer peer)
@@ -214,6 +218,136 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     public Task StopPtyAsync(string ptyId, CancellationToken cancellationToken = default)
         => SendAsync(HostProtocol.MethodPtyStop, Serialize(new RemotePtyRef(ptyId), HostProtocolJsonContext.Default.RemotePtyRef), HostProtocolJsonContext.Default.Boolean, cancellationToken);
 
+    public Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodAgentCatalog, null, HostProtocolJsonContext.Default.IReadOnlyListRemoteAgentCatalogEntry, cancellationToken);
+
+    public Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodAgentStart, Serialize(request, HostProtocolJsonContext.Default.RemoteAgentStartRequest), HostProtocolJsonContext.Default.RemoteHostSession, cancellationToken);
+
+    public Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodAgentPrompt, Serialize(new RemoteAgentPrompt(sessionId, text), HostProtocolJsonContext.Default.RemoteAgentPrompt), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodAgentCancel, SessionRef(sessionId), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task StopAgentAsync(string sessionId, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodAgentStop, SessionRef(sessionId), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodAgentResume, SessionRef(sessionId), HostProtocolJsonContext.Default.RemoteHostSession, cancellationToken);
+
+    public Task<GitStatus> GitStatusAsync(string projectPath, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodGitStatus, Serialize(new RemoteGitRequest(projectPath), HostProtocolJsonContext.Default.RemoteGitRequest), HostProtocolJsonContext.Default.GitStatus, cancellationToken);
+
+    public Task<GitDiff> GitDiffAsync(RemoteGitDiffRequest request, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodGitDiff, Serialize(request, HostProtocolJsonContext.Default.RemoteGitDiffRequest), HostProtocolJsonContext.Default.GitDiff, cancellationToken);
+
+    public Task<IReadOnlyList<GitCommitSummary>> GitLogAsync(RemoteGitLogRequest request, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodGitLog, Serialize(request, HostProtocolJsonContext.Default.RemoteGitLogRequest), HostProtocolJsonContext.Default.IReadOnlyListGitCommitSummary, cancellationToken);
+
+    public Task<IReadOnlyList<GitWorktree>> ListWorktreesAsync(string projectPath, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodGitWorktreeList, Serialize(new RemoteGitRequest(projectPath), HostProtocolJsonContext.Default.RemoteGitRequest), HostProtocolJsonContext.Default.IReadOnlyListGitWorktree, cancellationToken);
+
+    public Task<GitWorktree> AddWorktreeAsync(RemoteGitWorktreeAdd request, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodGitWorktreeAdd, Serialize(request, HostProtocolJsonContext.Default.RemoteGitWorktreeAdd), HostProtocolJsonContext.Default.GitWorktree, cancellationToken);
+
+    public Task RemoveWorktreeAsync(RemoteGitWorktreeRemove request, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodGitWorktreeRemove, Serialize(request, HostProtocolJsonContext.Default.RemoteGitWorktreeRemove), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task<RemoteFileStat> StatAsync(string path, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodFsStat, FilePath(path), HostProtocolJsonContext.Default.RemoteFileStat, cancellationToken);
+
+    public Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodFsMkdir, FilePath(path), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task RenameAsync(string from, string to, bool overwrite = false, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodFsRename, Serialize(new RemoteFsRename(from, to, overwrite), HostProtocolJsonContext.Default.RemoteFsRename), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task DeleteAsync(string path, bool recursive = false, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodFsDelete, Serialize(new RemoteFsDelete(path, recursive), HostProtocolJsonContext.Default.RemoteFsDelete), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task<RemoteUploadRef> BeginUploadAsync(string path, bool overwrite = true, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodFsUploadBegin, Serialize(new RemoteUploadBegin(path, overwrite), HostProtocolJsonContext.Default.RemoteUploadBegin), HostProtocolJsonContext.Default.RemoteUploadRef, cancellationToken);
+
+    public Task<long> UploadChunkAsync(string uploadId, long offset, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default)
+        => SendAsync(
+            HostProtocol.MethodFsUploadChunk,
+            Serialize(new RemoteUploadChunk(uploadId, offset, Convert.ToBase64String(content.Span)), HostProtocolJsonContext.Default.RemoteUploadChunk),
+            HostProtocolJsonContext.Default.Int64,
+            cancellationToken);
+
+    public Task<RemoteFileStat> CommitUploadAsync(string uploadId, long? size = null, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodFsUploadCommit, Serialize(new RemoteUploadCommit(uploadId, size), HostProtocolJsonContext.Default.RemoteUploadCommit), HostProtocolJsonContext.Default.RemoteFileStat, cancellationToken);
+
+    public Task AbortUploadAsync(string uploadId, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodFsUploadAbort, Serialize(new RemoteUploadRef(uploadId), HostProtocolJsonContext.Default.RemoteUploadRef), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task<RemoteFileChunk> DownloadChunkAsync(string path, long offset, int? length = null, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodFsDownload, Serialize(new RemoteDownloadRequest(path, offset, length), HostProtocolJsonContext.Default.RemoteDownloadRequest), HostProtocolJsonContext.Default.RemoteFileChunk, cancellationToken);
+
+    public async Task<RemoteFileStat> UploadFileAsync(string path, Stream source, bool overwrite = true, CancellationToken cancellationToken = default)
+    {
+        var upload = await BeginUploadAsync(path, overwrite, cancellationToken).ConfigureAwait(false);
+        var buffer = new byte[upload.ChunkBytes];
+        long sent = 0;
+        try
+        {
+            int read;
+            while ((read = await source.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false, cancellationToken).ConfigureAwait(false)) > 0)
+                sent = await UploadChunkAsync(upload.UploadId, sent, buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+            return await CommitUploadAsync(upload.UploadId, sent, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await AbortUploadQuietlyAsync(upload.UploadId).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    public async Task<long> DownloadFileAsync(string path, Stream destination, CancellationToken cancellationToken = default)
+    {
+        long offset = 0;
+        while (true)
+        {
+            var chunk = await DownloadChunkAsync(path, offset, null, cancellationToken).ConfigureAwait(false);
+            var bytes = Convert.FromBase64String(chunk.Base64);
+            await destination.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+            offset += bytes.Length;
+            if (chunk.Eof || bytes.Length == 0)
+                return offset;
+        }
+    }
+
+    public Task<RemoteNotifyPage> ListNotificationsAsync(RemoteNotifyQuery? query = null, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodNotifyList, Serialize(query ?? new RemoteNotifyQuery(), HostProtocolJsonContext.Default.RemoteNotifyQuery), HostProtocolJsonContext.Default.RemoteNotifyPage, cancellationToken);
+
+    public Task<int> MarkNotificationsReadAsync(RemoteNotifyMarkRead request, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodNotifyMarkRead, Serialize(request, HostProtocolJsonContext.Default.RemoteNotifyMarkRead), HostProtocolJsonContext.Default.Int32, cancellationToken);
+
+    public IAsyncEnumerable<NotificationRecord> NotificationsAddedAsync(CancellationToken cancellationToken = default)
+        => _notificationsAdded.Reader.ReadAllAsync(cancellationToken);
+
+    public IAsyncEnumerable<RemoteNotifyChanged> NotificationChangesAsync(CancellationToken cancellationToken = default)
+        => _notificationChanges.Reader.ReadAllAsync(cancellationToken);
+
+    /** The upload is already gone when the host rejected it; a closed connection discards it on the host side anyway. */
+    private async Task AbortUploadQuietlyAsync(string uploadId)
+    {
+        if (_peer.IsClosed)
+            return;
+        try
+        {
+            await AbortUploadAsync(uploadId, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is IOException or JsonRpcException or ObjectDisposedException)
+        {
+        }
+    }
+
+    private static JsonElement SessionRef(string sessionId) => Serialize(new RemoteSessionRef(sessionId), HostProtocolJsonContext.Default.RemoteSessionRef);
+
+    private static JsonElement FilePath(string path) => Serialize(new RemoteFilePath(path), HostProtocolJsonContext.Default.RemoteFilePath);
+
     private async Task PumpPtyInputAsync(string ptyId, Stream input, CancellationToken cancellationToken)
     {
         var buffer = new byte[4096];
@@ -261,6 +395,12 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
                 break;
             case HostProtocol.NotificationSessionsChanged when Parse(message, HostProtocolJsonContext.Default.RemoteHostSession) is { } session:
                 _sessionChanges.Writer.TryWrite(session);
+                break;
+            case HostProtocol.NotificationNotifyAdded when Parse(message, HostProtocolJsonContext.Default.NotificationRecord) is { } added:
+                _notificationsAdded.Writer.TryWrite(added);
+                break;
+            case HostProtocol.NotificationNotifyChanged when Parse(message, HostProtocolJsonContext.Default.RemoteNotifyChanged) is { } changed:
+                _notificationChanges.Writer.TryWrite(changed);
                 break;
             case HostProtocol.NotificationPtyOutput when Parse(message, HostProtocolJsonContext.Default.RemotePtyOutput) is { } output
                 && _ptyStreams.TryGetValue(output.PtyId, out var pty):

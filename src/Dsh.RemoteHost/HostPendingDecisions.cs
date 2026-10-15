@@ -6,6 +6,9 @@ public readonly record struct PendingResolver(string Name, string? ConnectionId)
     public static readonly PendingResolver Host = new("host", null);
 }
 
+/** A request that just started waiting for an answer; Summary is the tool of an approval or the first question's text. */
+public sealed record HostPendingAsked(string Kind, string RequestId, string SessionId, string Summary);
+
 /**
  * 远端发起、等待用户决策的审批与问答: 广播给所有连接, 先答者生效, 随后向所有连接推送 host.pending.resolved。
  * 请求一直保留到有人回答, 或所属会话被中断/结束(取消); 新连接订阅时先补发全部未决请求。
@@ -22,6 +25,9 @@ public sealed class HostPendingDecisions : IDisposable
 
     /** 某会话的未决数量变化(参数为会话 id); 在锁外触发。 */
     public event Action<string>? CountChanged;
+
+    /** A new approval or question was raised; raised outside the lock. */
+    public event Action<HostPendingAsked>? Asked;
 
     private sealed record PendingEntry(
         string Kind,
@@ -104,6 +110,7 @@ public sealed class HostPendingDecisions : IDisposable
             _broadcast.Publish(entry.Asked);
         }
         CountChanged?.Invoke(entry.SessionId);
+        Asked?.Invoke(new HostPendingAsked(entry.Kind, requestId, entry.SessionId, entry.Approval?.Tool ?? entry.Question?.Questions.FirstOrDefault()?.Question ?? ""));
         return await entry.Completion.Task.ConfigureAwait(false) as T;
     }
 

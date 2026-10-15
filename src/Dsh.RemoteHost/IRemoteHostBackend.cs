@@ -12,6 +12,12 @@ public interface IRemoteHostBackend
     /** 本 host 创建或恢复的会话登记表(host.sessions.*)。 */
     HostSessionRegistry Sessions { get; }
 
+    /** host.file.*, host.fs.* and the path boundary of host.git.*. */
+    HostFileSystem Files { get; }
+
+    /** The machine's notification history (host.notify.*). */
+    HostNotificationCenter Notifications { get; }
+
     Task<HostInfo> InfoAsync(CancellationToken cancellationToken);
 
     Task<IReadOnlyList<RemoteSessionInfo>> ListSessionsAsync(CancellationToken cancellationToken);
@@ -26,12 +32,23 @@ public interface IRemoteHostBackend
 
     Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken);
 
-    Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken);
+    /** Agent kinds that can be started on this machine, with the probed executables and versions. */
+    Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken);
 
-    /** 列出远端某目录的子项; Path 支持 `~` 前缀。 */
-    Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken);
+    /** Starts a harness, terminal-mode or ACP-mode session and returns its registry record. */
+    Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken);
 
-    Task WriteFileAsync(string path, byte[] content, CancellationToken cancellationToken);
+    /** Sends one user turn to an ACP or harness session; returns once the turn has been handed over, not when it ends. */
+    Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken);
+
+    /** Cancels the running turn of an ACP or harness session. */
+    Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken);
+
+    /** Ends the session's process (or harness agent) and marks it exited. */
+    Task StopAgentAsync(string sessionId, CancellationToken cancellationToken);
+
+    /** Restarts an exited session with its agent's resume arguments; a terminal-mode agent comes back as a new session. */
+    Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken);
 
     Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken);
 

@@ -132,21 +132,29 @@ public sealed class RemoteHostPersistenceTests
     {
         private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
 
-        private SessionBackend(HostPendingDecisions pending, HostSessionRegistry sessions)
+        private SessionBackend(string root, HostPendingDecisions pending, HostSessionRegistry sessions, HostNotificationCenter notifications)
         {
             Pending = pending;
             Sessions = sessions;
+            Notifications = notifications;
+            Files = new HostFileSystem(new HostPathPolicy([root], () => []));
         }
 
         public static async Task<SessionBackend> CreateAsync(string root, CancellationToken cancellationToken)
         {
             var pending = new HostPendingDecisions();
-            return new SessionBackend(pending, await HostSessionRegistry.OpenAsync(Path.Combine(root, "sessions.json"), pending, cancellationToken));
+            var sessions = await HostSessionRegistry.OpenAsync(Path.Combine(root, "sessions.json"), pending, cancellationToken);
+            var notifications = await HostNotificationCenter.OpenAsync(Path.Combine(root, HostNotificationCenter.FileName), sessions, pending, cancellationToken);
+            return new SessionBackend(root, pending, sessions, notifications);
         }
 
         public HostPendingDecisions Pending { get; }
 
         public HostSessionRegistry Sessions { get; }
+
+        public HostFileSystem Files { get; }
+
+        public HostNotificationCenter Notifications { get; }
 
         public Task<HostInfo> InfoAsync(CancellationToken cancellationToken)
             => Task.FromResult(new HostInfo(HostProtocol.Version, "test", "test", "/home"));
@@ -171,12 +179,17 @@ public sealed class RemoteHostPersistenceTests
         public Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<string>>([]);
 
-        public Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken) => Task.FromResult(Array.Empty<byte>());
+        public Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken)
-            => Task.FromResult(new RemoteDirectoryListing(path, null, []));
+        public Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public Task WriteFileAsync(string path, byte[] content, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task StopAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken) => Task.FromResult("");
 
@@ -194,6 +207,7 @@ public sealed class RemoteHostPersistenceTests
 
         public async ValueTask DisposeAsync()
         {
+            await Notifications.DisposeAsync();
             Pending.Dispose();
             await Sessions.DisposeAsync();
         }

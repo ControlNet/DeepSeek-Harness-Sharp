@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Dsh.Transport;
+using static Dsh.RemoteHost.HostRpc;
 
 namespace Dsh.RemoteHost;
 
@@ -22,9 +23,6 @@ public sealed class RemoteHostServer(
 
     /** JSON-RPC server-defined error code: a method other than hello was called before a successful hello. */
     private const int NotAuthenticated = -32001;
-
-    /** JSON-RPC standard error code: invalid method parameters. */
-    private const int InvalidParams = -32602;
 
     /**
      * 发布版本: 远端部署是否过期的判据与 host.info 上报的版本都用它, 取自 InformationalVersion 去掉构建追加的 "+提交号"。
@@ -64,12 +62,8 @@ public sealed class RemoteHostServer(
         await closed.Task.ConfigureAwait(false);
         await pumps.CancelAsync().ConfigureAwait(false);
         connection.StopAll();
+        await connection.Uploads.DisposeAsync().ConfigureAwait(false);
     }
-
-    private static JsonElement Serialize<T>(T value, JsonTypeInfo<T> info)
-        => JsonSerializer.SerializeToElement(value, info);
-
-    private static readonly JsonElement True = Serialize(true, HostProtocolJsonContext.Default.Boolean);
 
     private HostInfo StaticInfo() => new(
         HostProtocol.Version,
@@ -78,13 +72,16 @@ public sealed class RemoteHostServer(
         RemoteHostEndpoint.DefaultRoot(),
         Capabilities);
 
-    private static T Require<T>(JsonRpcMessage message, JsonTypeInfo<T> info, string error)
-        => (message.Params is { } element ? JsonSerializer.Deserialize(element, info) : default)
-            ?? throw new JsonRpcException(InvalidParams, error);
-
     /** 一条连接的处理与推送状态。 */
     private sealed class Connection(RemoteHostServer server, JsonRpcPeer peer, string id, CancellationToken lifetime)
     {
+        private const string PtyPrefix = "host.pty";
+        private const string AgentPrefix = "host.agent";
+        private const string GitPrefix = "host.git";
+        private const string FilePrefix = "host.file";
+        private const string FsPrefix = "host.fs";
+        private const string NotifyPrefix = "host.notify";
+
         private readonly KeyedPumps _eventPumps = new(lifetime);
         private readonly KeyedPumps _ptyPumps = new(lifetime);
         private readonly List<HostSubscription> _subscriptions = [];
@@ -94,6 +91,9 @@ public sealed class RemoteHostServer(
         private volatile bool _authenticated = !server.RequiresToken;
 
         private PendingResolver Resolver => new(_clientName ?? id, id);
+
+        /** Chunked uploads started on this connection; discarded when it ends. */
+        public HostUploads Uploads { get; } = new();
 
         /** 无 token 的 host 从连接建立起就推送; 有 token 的等 hello 通过后再推, 未认证的连接收不到任何请求内容。 */
         public void StartIfTrusted()
@@ -128,11 +128,23 @@ public sealed class RemoteHostServer(
                 case HostProtocol.MethodInfo:
                     return Serialize(await InfoAsync(cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.HostInfo);
             }
-            var backend = server._backend
-                ?? throw new JsonRpcException(JsonRpcPeer.MethodNotFound, $"method not found: {name}");
-            return name.StartsWith("host.pty.", StringComparison.Ordinal)
-                ? await HandlePtyAsync(backend, name, message, cancellationToken).ConfigureAwait(false)
-                : await HandleBackendAsync(backend, name, message, cancellationToken).ConfigureAwait(false);
+            var backend = server._backend ?? throw MethodNotFound(name);
+            return Family(name) switch
+            {
+                PtyPrefix => await HandlePtyAsync(backend, name, message, cancellationToken).ConfigureAwait(false),
+                AgentPrefix => await HostAgentMethods.HandleAsync(backend, name, message, cancellationToken).ConfigureAwait(false),
+                GitPrefix => await HostGitMethods.HandleAsync(backend.Files.Policy, name, message, cancellationToken).ConfigureAwait(false),
+                FilePrefix or FsPrefix => await HostFileMethods.HandleAsync(backend.Files, Uploads, name, message, cancellationToken).ConfigureAwait(false),
+                NotifyPrefix => await HostNotifyMethods.HandleAsync(backend.Notifications, name, message, cancellationToken).ConfigureAwait(false),
+                _ => await HandleBackendAsync(backend, name, message, cancellationToken).ConfigureAwait(false),
+            };
+        }
+
+        /** The method family: the first two dot-separated segments ("host.fs" of "host.fs.upload.begin"). */
+        private static string Family(string name)
+        {
+            var second = name.IndexOf('.', name.IndexOf('.') + 1);
+            return second < 0 ? name : name[..second];
         }
 
         private HostHelloResponse Hello(JsonRpcMessage message)
@@ -212,11 +224,11 @@ public sealed class RemoteHostServer(
                     return Serialize(await backend.ListToolsAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListString);
                 }
                 default:
-                    return await HandleDecisionsAndFilesAsync(backend, name, message, cancellationToken).ConfigureAwait(false);
+                    return HandleDecisions(backend, name, message);
             }
         }
 
-        private async ValueTask<JsonElement?> HandleDecisionsAndFilesAsync(IRemoteHostBackend backend, string name, JsonRpcMessage message, CancellationToken cancellationToken)
+        private JsonElement HandleDecisions(IRemoteHostBackend backend, string name, JsonRpcMessage message)
         {
             switch (name)
             {
@@ -232,25 +244,8 @@ public sealed class RemoteHostServer(
                 }
                 case HostProtocol.MethodPendingList:
                     return Serialize(backend.Pending.List(), HostProtocolJsonContext.Default.RemotePendingList);
-                case HostProtocol.MethodFileRead:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteFilePath, "read requires path");
-                    var bytes = await backend.ReadFileAsync(request.Path, cancellationToken).ConfigureAwait(false);
-                    return Serialize(new RemoteFileContent(request.Path, Convert.ToBase64String(bytes)), HostProtocolJsonContext.Default.RemoteFileContent);
-                }
-                case HostProtocol.MethodFileWrite:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteFileContent, "write requires path and content");
-                    await backend.WriteFileAsync(request.Path, Convert.FromBase64String(request.Base64), cancellationToken).ConfigureAwait(false);
-                    return True;
-                }
-                case HostProtocol.MethodFileList:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteFilePath, "list requires path");
-                    return Serialize(await backend.ListDirectoryAsync(request.Path, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteDirectoryListing);
-                }
                 default:
-                    throw new JsonRpcException(JsonRpcPeer.MethodNotFound, $"method not found: {name}");
+                    throw MethodNotFound(name);
             }
         }
 
@@ -298,7 +293,7 @@ public sealed class RemoteHostServer(
         {
             if (server._backend is not { } backend)
                 return;
-            HostSubscription[] subscriptions = [backend.Pending.Subscribe(), backend.Sessions.Subscribe()];
+            HostSubscription[] subscriptions = [backend.Pending.Subscribe(), backend.Sessions.Subscribe(), backend.Notifications.Subscribe()];
             lock (_subscriptions)
                 _subscriptions.AddRange(subscriptions);
             foreach (var subscription in subscriptions)

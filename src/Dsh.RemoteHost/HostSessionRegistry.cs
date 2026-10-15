@@ -40,6 +40,9 @@ public sealed class HostSessionRegistry : IAsyncDisposable
         _saver = Task.Run(SaveLoopAsync);
     }
 
+    /** Every published change, with the record as clients see it; raised under the registry lock, so handlers must only hand the record off. */
+    public event Action<RemoteHostSession>? Changed;
+
     /** 读出上次的登记表; 上一个 host 进程托管的会话已随它结束, 一律记为 Exited(仍活着的终端由 HostPtySessions 对账后复活)。 */
     public static async Task<HostSessionRegistry> OpenAsync(string storePath, HostPendingDecisions pending, CancellationToken cancellationToken)
     {
@@ -84,6 +87,10 @@ public sealed class HostSessionRegistry : IAsyncDisposable
     /** 基础状态(Running / Idle); 离开 Exited 时清掉退出码。 */
     public void SetStatus(string sessionId, string status)
         => Update(sessionId, record => record with { Status = status, ExitCode = status == HostSessionStatuses.Exited ? record.ExitCode : null });
+
+    /** Interaction state read off a live session (Running / WaitingForUser); ignored once the session has exited, so a late reading cannot revive it. */
+    public void SetLiveStatus(string sessionId, string status)
+        => Update(sessionId, record => record.Status == HostSessionStatuses.Exited ? record : record with { Status = status });
 
     public void SetTitle(string sessionId, string? title) => Update(sessionId, record => record with { Title = title });
 
@@ -139,6 +146,7 @@ public sealed class HostSessionRegistry : IAsyncDisposable
         entry.Pushed = projected;
         _broadcast.Publish(HostNotification.Create(HostProtocol.NotificationSessionsChanged, projected, HostProtocolJsonContext.Default.RemoteHostSession));
         _saveRequests.Writer.TryWrite(true);
+        Changed?.Invoke(projected);
     }
 
     /** 对外状态: Exited 优先; 否则有未决请求即 WaitingForUser; 否则基础状态。 */
