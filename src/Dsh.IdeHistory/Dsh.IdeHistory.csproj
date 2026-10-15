@@ -15,7 +15,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dsh.Core\Dsh.Core.csproj" />
-    <ProjectReference Include="..\Dsh.Boot\Dsh.Boot.csproj" />
   </ItemGroup>
 
 </Project>
