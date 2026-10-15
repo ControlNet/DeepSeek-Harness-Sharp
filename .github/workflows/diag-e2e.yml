@@ -23,6 +23,13 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then pwsh -NoProfile -File scripts/fetch-dryioc-feed.ps1 -UseGhArtifact; else bash scripts/fetch-dryioc-feed.sh --use-gh-artifact; fi
       - run: dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
       - run: dotnet build DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -c Debug --nologo
+      - name: sqlite
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install sqlite --no-progress -y
+          $dll = Get-ChildItem 'C:\ProgramData\chocolatey\lib\sqlite' -Recurse -Filter 'sqlite3.dll' | Select-Object -First 1
+          Copy-Item $dll.FullName 'tests/Dsh.Tests/bin/Debug/net10.0/' -Force
       - name: e2e
         shell: bash
         run: |
