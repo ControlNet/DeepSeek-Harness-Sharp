@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using Dsh.Boot;
 using Dsh.Plugins;
-using Dsh.Ptc;
+using Dsh.ScriptHost;
 using Dsh.Tui;
 
 namespace Dsh.Host;

@@ -7,7 +7,7 @@
     <ProjectReference Include="..\Dsh.Plugins.Abstractions\Dsh.Plugins.Abstractions.csproj" />
     <ProjectReference Include="..\Dsh.Core\Dsh.Core.csproj" />
     <ProjectReference Include="..\Dsh.Llm\Dsh.Llm.csproj" />
-    <ProjectReference Include="..\Dsh.Ptc\Dsh.Ptc.csproj" />
+    <ProjectReference Include="..\Dsh.ScriptHost\Dsh.ScriptHost.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

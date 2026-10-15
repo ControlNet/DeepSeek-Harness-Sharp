@@ -1,4 +1,4 @@
-﻿namespace Dsh.Ptc;
+﻿namespace Dsh.ScriptHost;
 
 /** PTC run 失败分类, 与上游 8 分类对齐。 */
 public static class PtcFailureKinds

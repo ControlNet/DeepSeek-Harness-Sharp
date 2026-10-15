@@ -4,7 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Core;
 
-namespace Dsh.Ptc;
+namespace Dsh.ScriptHost;
 
 public sealed record PtcToolCall(string ToolName, JsonObject Arguments, int Id);
 
