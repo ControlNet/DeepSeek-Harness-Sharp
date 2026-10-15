@@ -151,24 +151,32 @@ public sealed class PtyDaemon : IAsyncDisposable
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            Socket client;
-            if (OperatingSystem.IsWindows())
+            Socket? client;
+            try
             {
-                if (_tcpListener is null)
-                    return;
-                client = await _tcpListener.AcceptSocketAsync(cancellationToken);
+                client = await AcceptAsync(cancellationToken);
             }
-            else
+            catch (Exception error) when (cancellationToken.IsCancellationRequested
+                && error is OperationCanceledException or SocketException or ObjectDisposedException)
             {
-                if (_listener is null)
-                    return;
-                client = await _listener.AcceptAsync(cancellationToken);
+                // StopAsync can dispose the listener between the loop check and the next accept (CI: ObjectDisposedException from DisposeAsync on Windows).
+                return;
             }
 
+            if (client is null)
+                return;
             lock (_gate)
                 _clientSockets.Add(client);
             _ = HandleClientAsync(client, cancellationToken);
         }
+    }
+
+    /** Null once StopAsync has released the listener. */
+    private async Task<Socket?> AcceptAsync(CancellationToken cancellationToken)
+    {
+        if (OperatingSystem.IsWindows())
+            return _tcpListener is { } tcp ? await tcp.AcceptSocketAsync(cancellationToken) : null;
+        return _listener is { } unix ? await unix.AcceptAsync(cancellationToken) : null;
     }
 
     private async Task HandleClientAsync(Socket socket, CancellationToken cancellationToken)
