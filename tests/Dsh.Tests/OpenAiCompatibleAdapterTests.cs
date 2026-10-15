@@ -100,9 +100,9 @@ public class OpenAiCompatibleAdapterTests
         var (body, png) = await CaptureToolResultImageRequest(useResponses: false);
 
         var messages = body.RootElement.GetProperty("messages").EnumerateArray().ToList();
-        Assert.Equal(["user", "assistant", "tool", "user"], messages.Select(message => message.GetProperty("role").GetString()));
+        Assert.Equal(["user", "assistant", "tool", "tool", "user"], messages.Select(message => message.GetProperty("role").GetString()));
         Assert.Equal("envelope", messages[2].GetProperty("content").GetString());
-        var relayed = messages[3].GetProperty("content").EnumerateArray().ToList();
+        var relayed = messages[4].GetProperty("content").EnumerateArray().ToList();
         Assert.Contains("call_1", relayed[0].GetProperty("text").GetString());
         Assert.Equal($"data:image/png;base64,{Convert.ToBase64String(png)}", relayed[1].GetProperty("image_url").GetProperty("url").GetString());
     }
@@ -113,7 +113,7 @@ public class OpenAiCompatibleAdapterTests
         var (body, png) = await CaptureToolResultImageRequest(useResponses: true);
 
         var input = body.RootElement.GetProperty("input").EnumerateArray().ToList();
-        var output = input.FindIndex(item => item.GetProperty("type").GetString() == "function_call_output");
+        var output = input.FindLastIndex(item => item.GetProperty("type").GetString() == "function_call_output");
         var image = input.FindIndex(item => item.GetRawText().Contains(Convert.ToBase64String(png), StringComparison.Ordinal));
         Assert.True(output >= 0 && image > output, body.RootElement.GetRawText());
         Assert.Contains("input_image", input[image].GetRawText());
@@ -124,6 +124,7 @@ public class OpenAiCompatibleAdapterTests
         byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         var image = new ImageAttachmentRef("img-1", "image/png", png.Length, 1, 1, "shot.png");
         var callId = ToolCallId.Create("call_1");
+        var parallelId = ToolCallId.Create("call_2");
         var handler = new CapturingHandler();
         var adapter = new OpenAiCompatibleAdapter(
             "relay", "https://example.invalid/v1", "sk-test",
@@ -136,8 +137,12 @@ public class OpenAiCompatibleAdapterTests
             Messages =
             [
                 MessageFactory.CreateUserText("look"),
-                MessageFactory.CreateAssistantMessage([new ToolCallBlock(callId, "read_image", """{"file_path":"shot.png"}""")], "relay", "vision-model"),
+                MessageFactory.CreateAssistantMessage(
+                    [new ToolCallBlock(callId, "read_image", """{"file_path":"shot.png"}"""), new ToolCallBlock(parallelId, "bash", """{"command":"ls"}""")],
+                    "relay",
+                    "vision-model"),
                 MessageFactory.CreateToolResultMessage(callId, [new TextBlock("envelope"), new ImageBlock(image)], false),
+                MessageFactory.CreateToolResultMessage(parallelId, [new TextBlock("shot.png")], false),
             ],
             Attachments = new Dictionary<string, byte[]> { [image.AttachmentId] = png },
         };

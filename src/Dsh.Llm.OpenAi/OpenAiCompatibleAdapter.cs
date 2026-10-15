@@ -253,7 +253,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     private IReadOnlyList<ChatMessage> ToChatMessages(GenerateOptions options)
     {
         var messages = new List<ChatMessage>();
-        foreach (var message in options.Messages)
+        foreach (var message in ToolResultImages.Relay(options.Messages))
         {
             switch (message.Role)
             {
@@ -274,8 +274,6 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
                                 result.ToolCallId.Value,
                                 FlattenText(result.Content))]));
                             }
-                            if (ToolResultImages.RelayContent(toolResults) is { } relay)
-                                messages.Add(new ChatMessage(ChatRole.User, ToUserContents(options, relay)));
                             break;
                         }
                         messages.Add(new ChatMessage(ChatRole.User, ToUserContents(options, message.Content)));

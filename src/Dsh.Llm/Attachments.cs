@@ -111,7 +111,8 @@ public static class AttachmentHydration
 
 /**
  * Chat Completions 系协议(OpenAI 兼容、DeepSeek)的 tool 消息只能承载文本。
- * 工具结果里的图片因此改由紧跟在该批 tool 消息之后的一条 user 消息携带, 并标明来自哪次工具调用。
+ * 工具结果里的图片因此改由紧跟在一串连续工具结果之后的一条 user 消息携带, 并标明来自哪次工具调用。
+ * 并行调用的结果各自是一条消息, 图片必须等整串结束再放, 否则 user 消息会插进 tool 消息之间被端点拒绝。
  */
 public static class ToolResultImages
 {
@@ -119,19 +120,31 @@ public static class ToolResultImages
     public static bool Any(IReadOnlyList<ContentBlock> blocks)
         => blocks.Any(block => block is ImageBlock || (block is ToolResultBlock result && Any(result.Content)));
 
-    /** 把工具结果里的图片转成 user 消息内容(每次调用一行说明 + 其图片); 没有图片时返回 null。 */
-    public static IReadOnlyList<ContentBlock>? RelayContent(IReadOnlyList<ToolResultBlock> results)
+    /** 返回在每串连续工具结果消息之后插入了图片转发消息的列表; 没有工具结果图片时原样返回。 */
+    public static IReadOnlyList<Message> Relay(IReadOnlyList<Message> messages)
     {
-        List<ContentBlock>? relay = null;
-        foreach (var result in results)
+        if (!messages.Any(message => message.Content.Any(block => block is ToolResultBlock result && Any(result.Content))))
+            return messages;
+        var relayed = new List<Message>(messages.Count + 1);
+        List<ContentBlock>? pending = null;
+        foreach (var message in messages)
         {
-            var images = result.Content.OfType<ImageBlock>().ToList();
-            if (images.Count == 0)
-                continue;
-            relay ??= [];
-            relay.Add(new TextBlock($"Image output of tool call {result.ToolCallId.Value}:\n"));
-            relay.AddRange(images);
+            var results = message.Content.OfType<ToolResultBlock>().ToList();
+            if (results.Count == 0 && pending is not null)
+            {
+                relayed.Add(MessageFactory.CreateUserMessage(pending));
+                pending = null;
+            }
+            relayed.Add(message);
+            foreach (var result in results.Where(result => result.Content.Any(block => block is ImageBlock)))
+            {
+                pending ??= [];
+                pending.Add(new TextBlock($"Image output of tool call {result.ToolCallId.Value}:\n"));
+                pending.AddRange(result.Content.OfType<ImageBlock>());
+            }
         }
-        return relay;
+        if (pending is not null)
+            relayed.Add(MessageFactory.CreateUserMessage(pending));
+        return relayed;
     }
 }

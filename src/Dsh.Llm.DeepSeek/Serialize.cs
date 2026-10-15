@@ -75,7 +75,7 @@ public static class WireSerialize
     public static IReadOnlyList<WireMessage> SerializeMessages(GenerateOptions options)
     {
         var wire = new List<WireMessage>();
-        foreach (var message in options.Messages)
+        foreach (var message in ToolResultImages.Relay(options.Messages))
         {
             switch (message.Role)
             {
@@ -97,8 +97,6 @@ public static class WireSerialize
                             var content = FlattenText(result.Content);
                             wire.Add(new WireMessage("tool", JsonValue.Create(content.Length > 0 ? content : "(no output)"), ToolCallId: result.ToolCallId.Value));
                         }
-                        if (ToolResultImages.RelayContent(toolResults) is { } relay)
-                            wire.Add(new WireMessage("user", UserContent(options, relay)));
                         break;
                     }
             }

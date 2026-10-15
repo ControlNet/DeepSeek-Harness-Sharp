@@ -132,9 +132,9 @@ public sealed class AttachmentTests : IDisposable
             .Select(message => JsonNode.Parse(JsonSerializer.Serialize(message, DeepSeekWireJsonContext.Default.WireMessage))!)
             .ToList();
 
-        Assert.Equal(["user", "assistant", "tool", "user"], wire.Select(message => message["role"]!.GetValue<string>()));
+        Assert.Equal(["user", "assistant", "tool", "tool", "user"], wire.Select(message => message["role"]!.GetValue<string>()));
         Assert.Equal("envelope", wire[2]["content"]!.GetValue<string>());
-        var relayed = wire[3]["content"]!.AsArray();
+        var relayed = wire[4]["content"]!.AsArray();
         Assert.Contains("call_1", relayed[0]!["text"]!.GetValue<string>());
         Assert.Equal(AttachmentResolution.DataUrl(options, reference), relayed[1]!["image_url"]!["url"]!.GetValue<string>());
     }
@@ -174,6 +174,7 @@ public sealed class AttachmentTests : IDisposable
     private static GenerateOptions ToolResultImageOptions(string model, ImageAttachmentRef reference, byte[] bytes)
     {
         var callId = ToolCallId.Create("call_1");
+        var parallelId = ToolCallId.Create("call_2");
         return new GenerateOptions
         {
             Provider = "deepseek-official",
@@ -181,8 +182,12 @@ public sealed class AttachmentTests : IDisposable
             Messages =
             [
                 MessageFactory.CreateUserText("look"),
-                MessageFactory.CreateAssistantMessage([new ToolCallBlock(callId, "read_image", """{"file_path":"a.png"}""")], "deepseek-official", model),
+                MessageFactory.CreateAssistantMessage(
+                    [new ToolCallBlock(callId, "read_image", """{"file_path":"a.png"}"""), new ToolCallBlock(parallelId, "bash", """{"command":"ls"}""")],
+                    "deepseek-official",
+                    model),
                 MessageFactory.CreateToolResultMessage(callId, [new TextBlock("envelope"), new ImageBlock(reference)], false),
+                MessageFactory.CreateToolResultMessage(parallelId, [new TextBlock("a.png")], false),
             ],
             Attachments = new Dictionary<string, byte[]> { [reference.AttachmentId] = bytes },
         };
