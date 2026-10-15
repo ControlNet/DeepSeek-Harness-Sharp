@@ -219,6 +219,13 @@ jobs:
           -p:DshNativeCompiler=${{ matrix.native-cc }}
           --nologo -v m
 
+      - name: 校验发布产物含原生故障遏制库
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/${{ matrix.rid }}/publish"
+          ls "$PUB" | grep -E '^(lib)?dsh_plugin_guard\.(dll|so|dylib)$' || { echo "::error::发布产物缺少 dsh_plugin_guard"; exit 1; }
+
       - name: GUI 主线程冒烟（macOS）
         # 无显示环境不保证能起窗口: 只断言 GUI 不再在子线程初始化 Avalonia(尽力而为)。
         if: runner.os == 'macOS'
