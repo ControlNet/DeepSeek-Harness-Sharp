@@ -203,6 +203,91 @@ public sealed class SdkTests
         Directory.Delete(home, true);
     }
 
+    [Fact]
+    public async Task SdkServer_ServiceCall_AwaitsGenericValueTask()
+    {
+        var (server, transport, _) = ProbeServer();
+        await using var lifetime = transport;
+
+        var result = await server.ServiceCallAsync(new ServiceCallParams(SdkProbeService.Name, nameof(SdkProbeService.CountAsync)));
+
+        Assert.Equal(SdkProbeService.Count, ((JsonElement)result!).GetInt32());
+    }
+
+    [Fact]
+    public async Task SdkServer_ServiceCall_RejectsMethodsNotDeclaredRemoteCallable()
+    {
+        var (server, transport, probe) = ProbeServer();
+        await using var lifetime = transport;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            server.ServiceCallAsync(new ServiceCallParams(SdkProbeService.Name, nameof(SdkProbeService.Reset))));
+
+        Assert.False(probe.ResetCalled);
+    }
+
+    [Fact]
+    public async Task SdkServer_ServiceCall_AllowsMethodsOfRemoteCallableInterface()
+    {
+        var (server, transport, _) = ProbeServer();
+        await using var lifetime = transport;
+
+        var result = await server.ServiceCallAsync(new ServiceCallParams(SdkProbeService.Name, nameof(ISdkProbeQueries.Describe)));
+
+        Assert.Equal(SdkProbeService.Description, ((JsonElement)result!).GetString());
+    }
+
+    [Fact]
+    public async Task SdkServer_ServiceCall_RejectsServiceOfInactiveOwner()
+    {
+        var ctx = new Dsh.Runtime.Context();
+        var probe = new SdkProbeService();
+        var activation = ctx.Plugin(Dsh.Runtime.PluginDefinition.From((pluginCtx, _) =>
+        {
+            pluginCtx.Provide(SdkProbeService.Name, probe);
+            throw new InvalidOperationException("activation failed");
+        }, "failing-probe"));
+        await activation.WaitAsync();
+        var pair = new DuplexTransportPair();
+        await using var transport = pair.Server;
+        var server = new HarnessSdkServer(ctx, transport);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            server.ServiceCallAsync(new ServiceCallParams(SdkProbeService.Name, nameof(ISdkProbeQueries.Describe))));
+    }
+
+    private static (HarnessSdkServer Server, JsonRpcLineTransport Transport, SdkProbeService Probe) ProbeServer()
+    {
+        var ctx = new Dsh.Runtime.Context();
+        var probe = new SdkProbeService();
+        ctx.Provide(SdkProbeService.Name, probe);
+        var pair = new DuplexTransportPair();
+        return (new HarnessSdkServer(ctx, pair.Server), pair.Server, probe);
+    }
+
+    [Dsh.Runtime.RemoteCallable]
+    public interface ISdkProbeQueries
+    {
+        string Describe();
+    }
+
+    /** Test fixture service: exposes one whitelisted ValueTask<T> method, one whitelisted interface and one method without the marker. */
+    public sealed class SdkProbeService : ISdkProbeQueries
+    {
+        public const string Name = "sdk-probe";
+        public const int Count = 42;
+        public const string Description = "sdk probe";
+
+        public bool ResetCalled { get; private set; }
+
+        [Dsh.Runtime.RemoteCallable]
+        public ValueTask<int> CountAsync() => ValueTask.FromResult(Count);
+
+        public string Describe() => Description;
+
+        public void Reset() => ResetCalled = true;
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow.AddSeconds(2);
