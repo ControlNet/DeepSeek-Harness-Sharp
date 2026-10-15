@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        os: [windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -31,19 +31,23 @@ jobs:
           $dll = Get-ChildItem 'C:\ProgramData\chocolatey\lib\sqlite' -Recurse -Filter 'sqlite3.dll' | Select-Object -First 1
           Copy-Item $dll.FullName 'tests/Dsh.Tests/bin/Debug/net10.0/' -Force
           Copy-Item $dll.FullName 'DeepSeek-Harness-Sharp/bin/Debug/net10.0/' -Force
-      - name: host probe
+      - name: pipe probe
         shell: bash
         run: |
           H="$PWD/.daemon-tests/probe"; mkdir -p "$H"; printf 'logging:\n  file: false\n' > "$H/settings.yaml"
-          EXE=DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp; [ -x "$EXE" ] || EXE="$EXE.exe"
-          DSH_HOME="$H" "$EXE" host serve > "$H/out.txt" 2>&1 & P=$!
-          sleep 20; ls -la "$H" "$H/run" || true; cat "$H/out.txt"; kill $P 2>/dev/null || true
+          EXE=DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp.exe
+          start=$(date +%s); DSH_HOME="$H" timeout 90 "$EXE" session list | cat; echo "exit ${PIPESTATUS[0]} after $(( $(date +%s) - start ))s"
       - name: e2e
         shell: bash
         run: |
           EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"; [ -x "$EXE" ] || EXE="$EXE.exe"
           ls /usr/sbin/sshd || true
           "$EXE" -noColor -parallel none -trait- "Category=LlmSmoke" -class Dsh.Tests.FleetLocalHostTests -class Dsh.Tests.FleetSshEndToEndTests -class Dsh.Tests.WebBridgeHubTests -class Dsh.Tests.WebBridgeSshTunnelTests -class Dsh.Tests.WebUiBrowserTests -class Dsh.Tests.WebBridgeTests -class Dsh.Tests.FleetConnectionTests
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: webui-${{ matrix.os }}
+          path: artifacts020/webui/*.png
       - name: leftovers
         if: always()
         shell: bash
