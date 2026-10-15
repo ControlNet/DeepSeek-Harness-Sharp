@@ -317,6 +317,7 @@ public sealed class TerminalInputParser
 internal sealed class TerminalInputReader : ITerminalInputSource
 {
     private const short PollIn = 0x0001;
+    private const int FGetFl = 3;
     private const int FSetFl = 4;
     private const int ONonBlock = 0x800;
     private const int StdinFd = 0;
@@ -344,6 +345,10 @@ internal sealed class TerminalInputReader : ITerminalInputSource
     }
 
     public bool EndOfStream { get; private set; }
+
+    /** 内核视角的唤醒管道状态: 两端都带 O_NONBLOCK 时, 排空管道读到空会立即返回而不是阻塞。 */
+    internal bool WakePipeIsNonBlocking
+        => (fcntl(_wakeRead, FGetFl, 0) & ONonBlock) != 0 && (fcntl(_wakeWrite, FGetFl, 0) & ONonBlock) != 0;
 
     public TerminalInputEvent? Read(int timeoutMs)
     {
