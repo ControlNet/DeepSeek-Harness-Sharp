@@ -47,7 +47,7 @@ public enum SessionLineageKind
  * 会话血缘: Session 由 Parent 派生。
  * ParentSeq 是父会话里的派生点: fork 为最后一条继承事件, 子代理为日志里能定位到的派生事件, 定位不到时为 null。
  */
-public sealed record SessionLineage(SessionId Session, SessionLineageKind Kind, SessionId Parent, long? ParentSeq);
+public readonly record struct SessionLineage(SessionId Session, SessionLineageKind Kind, SessionId Parent, long? ParentSeq);
 
 /**
  * 会话事件图的消费侧契约: 节点与边都从会话日志派生, 日志仍是唯一真相源。
