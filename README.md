@@ -107,6 +107,40 @@ DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui --session <会话 id>
   - NativeAOT 不支持在运行期装载托管 dll:`plugins/` 中的托管插件启动时逐文件 WARN 并跳过(被跳过的插件不会出现在 `/plugins list`),其余插件照常启用、程序正常启动;要使用托管插件就把它编译进镜像;
   - 会话持久化(JSONL + Zstd)在 JIT 与 AOT 下均可用。
 
+## 各版本新增功能
+
+0.1.1 起的发布说明未单独张贴,这里按版本折叠列出新增能力(0.1.0 的完整发布说明见[讨论区](https://github.com/deepseek-ai/deepseek-harness/discussions/8952))。
+
+<details>
+<summary><b>0.1.1</b> — SSH 远程工作区、macOS 支持、TUI 增强</summary>
+
+- **SSH 远程工作区**:新增中立传输层(长度分帧 + JSON-RPC 2.0)与远端宿主,GUI 可保存/打开远端工作区,自动在远端部署 `dsharp` 并测试连接,远端会话/消息/工具/文件/终端(PTY)/审批走同一条通道。
+- **命令改名**:`dsh` → `dsharp`。
+- **macOS**:加入 macOS 的 CI 测试与 JIT 发布,修复 Unix PTY 绑定与 GUI 主线程启动。
+- **TUI**:24 位/256 色真彩渲染;attach 或调整尺寸后整帧重绘;Pty→Session→Pane 总览;`Ctrl+X ,` / `Ctrl+X .` 切换同一 Pty 下的会话;`/plugins remove` 变为真正卸载。
+- **时间线/回滚**:`/timestamp` 预览与跳转、会话截断、检查点回滚。
+- **其它**:提示词按路径引用的图片可随请求发送;过大的工具结果自动落盘;原生 AOT 插件加载带故障遏制;看板新增 `board_claim`/`board_release` 软行锁。
+</details>
+
+<details>
+<summary><b>0.1.2</b> — 远程工作区打磨</summary>
+
+- 远端会话跟随客户端选择的模型与提供方。
+- 远端部署按发布版本取键,过期守护进程自动重启。
+- 修复 Avalonia 12.1.3+ 上托盘图标不显示;Avalonia 升到 12.1.4。
+- GUI 远端会话列表放入独立滚动区。
+</details>
+
+<details>
+<summary><b>0.2.0</b> — Vulkan 渲染后端、可配置主题、设置面统一</summary>
+
+- **Vulkan 渲染后端**:TUI 新增可插拔 GPU 宿主抽象与 Vulkan 后端,按 DRM 卡的 PCI 槽位选设备;裸控制台可经 SDL KMS/DRM 直接驱动;无 root 即可安装 Vulkan loader;OpenGL 后端拆分到独立模块。
+- **界面**:TUI 颜色可配置;会话选择显示标题与时间戳;IDE 历史并入 `/timestamp` 时间线(可开关);同一守护进程下的 Pty 可直接进入。
+- **设置**:插件配置面在编译期生成 schema;GUI 列出提供方生效后的模型;`settings.yaml` 只保留 models.dev 未收录的模型;存储路径统一到一个根。
+- **会话**:`fork` 改为按事件种子继承,修复派生会话内容缺失。
+- 发布 macOS JIT 构建。
+</details>
+
 ## settings.yaml 结构
 
 配置文件为 `~/.dsh/settings.yaml`;首次运行按 `src/Dsh.Boot/Profiles/Templates/settings.yaml` 生成带注释的模板(可用 `$DSH_HOME` 或 `storage.root` 指定其它 harness home 做隔离测试)。
