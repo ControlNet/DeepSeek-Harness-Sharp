@@ -15,6 +15,7 @@ namespace Dsh.Tools;
 [JsonSerializable(typeof(BashRunValue))]
 [JsonSerializable(typeof(ReadResultValue))]
 [JsonSerializable(typeof(ReadFileLine))]
+[JsonSerializable(typeof(ReadImageValue))]
 [JsonSerializable(typeof(SubprocessOutputRead))]
 [JsonSerializable(typeof(WriteResultValue))]
 [JsonSerializable(typeof(EditResultValue))]

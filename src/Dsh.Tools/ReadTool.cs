@@ -21,7 +21,7 @@ public static class ReadTool
 {
     public const string ToolName = "read";
 
-    private const string SectionText = "Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files.";
+    private const string SectionText = "Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files. To look at an image file, use read_image instead.";
 
     public static IDisposable Register(Context ctx, ReadToolCaps? caps = null)
     {
@@ -98,10 +98,7 @@ public static class ReadTool
     private static Task<object?> Execute(JsonElement args, ToolRunContext exec, ReadToolCaps caps)
     {
         var (filePath, offset, limit) = ParseArgs(args, caps.Limit);
-        var target = WorkspacePath.Resolve(exec, filePath);
-        exec.Signal.ThrowIfCancellationRequested();
-        if (!File.Exists(target))
-            throw new HarnessException($"file not found: \"{target}\"", "FS_NOT_FOUND");
+        var target = WorkspacePath.ResolveExistingFile(exec, filePath);
         var content = File.ReadAllText(target, new UTF8Encoding(false, false));
         var window = BuildWindow(content, offset, limit, caps, target);
         return Task.FromResult<object?>(new ReadResultValue(target, offset, window.Lines, window.TotalLines));

@@ -6,7 +6,7 @@ using Dsh.Tools;
 
 namespace Dsh.Tests;
 
-public class ToolsTests : IDisposable
+public partial class ToolsTests : IDisposable
 {
     private readonly Context _ctx;
     private readonly ToolRuntime _tools;
@@ -50,9 +50,10 @@ public class ToolsTests : IDisposable
 
     private sealed class FakeAgent : IAgent
     {
-        public FakeAgent(Context ctx, string directory)
+        public FakeAgent(Context ctx, string directory, AgentOptions? options = null)
         {
             Ctx = ctx;
+            Options = options ?? new AgentOptions();
             var id = SessionId.Create($"session-{Guid.NewGuid():N}");
             Session = Session.Create(id, null, new SessionHeader
             {
@@ -69,7 +70,7 @@ public class ToolsTests : IDisposable
         public ScopeKey ScopeKey { get; } = new();
         public Context Ctx { get; }
         public AgentStatus Status => AgentStatus.Idle;
-        public AgentOptions Options { get; } = new();
+        public AgentOptions Options { get; }
 
         public void Cancel(AgentCancelCause cause, bool keepInbox = false) { }
         public Task WhenIdle() => Task.CompletedTask;

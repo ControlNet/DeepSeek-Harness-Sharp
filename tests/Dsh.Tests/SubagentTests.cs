@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
+using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Interaction;
 using Dsh.Llm;
@@ -17,10 +18,18 @@ public class SubagentTests
     private sealed class ScriptedAdapter : LlmAdapter
     {
         private readonly Queue<Func<GenerateOptions, IReadOnlyList<StreamChunk>>> _script;
+        private readonly IReadOnlyList<string> _models;
+        private readonly LlmModelReasoningInfo? _reasoning;
 
-        public ScriptedAdapter(string provider, IEnumerable<Func<GenerateOptions, IReadOnlyList<StreamChunk>>> script)
+        public ScriptedAdapter(
+            string provider,
+            IEnumerable<Func<GenerateOptions, IReadOnlyList<StreamChunk>>> script,
+            IReadOnlyList<string>? models = null,
+            LlmModelReasoningInfo? reasoning = null)
         {
             _script = new Queue<Func<GenerateOptions, IReadOnlyList<StreamChunk>>>(script);
+            _models = models ?? [];
+            _reasoning = reasoning;
             ProviderInfo = new LlmProviderInfo(provider, provider);
         }
 
@@ -29,6 +38,12 @@ public class SubagentTests
         public override LlmProviderInfo ProviderInfo { get; }
 
         public override ResolvedRetryPolicy ProviderRetryPolicy => ResolvedRetryPolicy.Resolve(null, "test");
+
+        public override IReadOnlyList<LlmModelInfo> ListModels()
+            => [.. _models.Select(model => new LlmModelInfo(ProviderInfo.Id, model, model))];
+
+        public override LlmResolvedModelInfo ResolveModel(string model)
+            => new(ProviderInfo.Id, model, model, Reasoning: _reasoning);
 
         public override IAsyncEnumerable<StreamChunk> Stream(GenerateOptions options, CancellationToken cancellationToken)
         {
@@ -56,29 +71,33 @@ public class SubagentTests
         private readonly IDisposable _fork;
         private readonly IDisposable _tool;
         private readonly IDisposable _control;
+        private readonly IDisposable _models;
 
         public SubagentFixture(
             IEnumerable<Func<GenerateOptions, IReadOnlyList<StreamChunk>>> script,
-            SubagentToolConfig? toolConfig = null)
+            SubagentToolConfig? toolConfig = null,
+            IReadOnlyList<string>? models = null)
         {
             Ctx = new Context();
             Sessions = new SessionStore(Ctx);
             _ = new SystemPrompt(Ctx, new SystemPromptConfig());
             Tools = new ToolRuntime(Ctx);
-            var llm = new LlmRuntime(Ctx);
+            Llm = new LlmRuntime(Ctx);
             Agents = new AgentRegistry(Ctx);
             _ = new AgentLoop(Ctx);
             Approval = ApprovalService.Register(Ctx);
             Subagents = new SubagentRuntime(Ctx);
-            Adapter = new ScriptedAdapter("test-provider", script);
-            llm.RegisterAdapter(["test-provider"], Adapter);
+            Adapter = new ScriptedAdapter("test-provider", script, models);
+            Llm.RegisterAdapter(["test-provider"], Adapter);
             _spawn = SubagentInProcessProviders.RegisterSpawn(Ctx);
             _fork = SubagentInProcessProviders.RegisterFork(Ctx);
             _tool = SubagentTool.Apply(Ctx, toolConfig ?? new SubagentToolConfig { Provider = "spawn" });
             _control = SubagentControlTools.ApplyListAgents(Ctx);
+            _models = SubagentModelsTool.Apply(Ctx);
         }
 
         public Context Ctx { get; }
+        public LlmRuntime Llm { get; }
         public SessionStore Sessions { get; }
         public ToolRuntime Tools { get; }
         public ApprovalService Approval { get; }
@@ -101,6 +120,7 @@ public class SubagentTests
         {
             _tool.Dispose();
             _control.Dispose();
+            _models.Dispose();
             _spawn.Dispose();
             _fork.Dispose();
         }
@@ -541,6 +561,136 @@ public class SubagentTests
         {
             control.Dispose();
         }
+    }
+
+    private static Task<ToolExecutionResult> ExecuteTool(SubagentFixture fixture, string name, JsonObject args, IAgent? agent)
+        => fixture.Tools.Execute(new ToolExecutionInput
+        {
+            CallId = ToolCallId.Create($"call-{Guid.NewGuid():N}"),
+            Name = name,
+            Arguments = JsonDocument.Parse(args.ToJsonString()).RootElement,
+            Agent = agent,
+            Signal = default,
+        });
+
+    private static IEnumerable<Func<GenerateOptions, IReadOnlyList<StreamChunk>>> EchoRoute(int calls)
+        => Enumerable.Repeat<Func<GenerateOptions, IReadOnlyList<StreamChunk>>>(
+            options => TextAnswer($"{options.Provider}/{options.Model}/{options.ReasoningEffort}"), calls);
+
+    /** Every row list_subagent_models returns is accepted unchanged by the subagent tool's model selection and reaches that route. */
+    [Fact]
+    public async Task ListedModelRoutes_AreAcceptedBySubagentModelSelection()
+    {
+        using var fixture = new SubagentFixture(EchoRoute(1), models: ["test-model"]);
+        var reasoning = new LlmModelReasoningInfo(
+            [new LlmReasoningEffortInfo(ReasoningEffortId.Create("low"), "Low"), new LlmReasoningEffortInfo(ReasoningEffortId.Create("high"), "High")],
+            ReasoningEffortId.Create("high"));
+        var alternate = new ScriptedAdapter("alt-provider", EchoRoute(2), ["alt-fast", "vendor/alt-nested"], reasoning);
+        using var registration = fixture.Llm.RegisterAdapter(["alt-provider"], alternate);
+        var parent = await fixture.CreateParent("session-parent-models");
+
+        var listing = Assert.IsType<ToolExecutionResult.Success>(await ExecuteTool(fixture, SubagentModelsTool.ToolName, new JsonObject(), parent));
+        var rows = listing.Value.EnumerateArray().ToList();
+        Assert.Equal(
+            ["alt-provider/alt-fast", "alt-provider/vendor/alt-nested", "test-provider/test-model"],
+            rows.Select(row => $"{row.GetProperty("provider").GetString()}/{row.GetProperty("model").GetString()}"));
+
+        foreach (var row in rows)
+        {
+            var provider = row.GetProperty("provider").GetString();
+            var model = row.GetProperty("model").GetString();
+            var args = new JsonObject
+            {
+                ["description"] = "route check",
+                ["prompt"] = "report your route",
+                ["provider"] = provider,
+                ["model"] = model,
+            };
+            var effort = row.TryGetProperty("reasoningEfforts", out var efforts) ? efforts[0].GetString() : null;
+            if (effort is not null)
+                args["reasoning_effort"] = effort;
+            var delegated = Assert.IsType<ToolExecutionResult.Success>(await ExecuteTool(fixture, "subagent", args, parent));
+            Assert.Equal($"{provider}/{model}/{effort}", string.Concat(delegated.Content.OfType<TextBlock>().Select(block => block.Text)));
+        }
+        Assert.Equal(["alt-fast", "vendor/alt-nested"], alternate.Requests.Select(request => request.Model));
+        Assert.Equal(["test-model"], fixture.Adapter.Requests.Select(request => request.Model));
+    }
+
+    [Fact]
+    public async Task SubagentModelSelection_RejectsHalfRoutesAndUnregisteredProviders()
+    {
+        using var fixture = new SubagentFixture([], models: ["test-model"]);
+        var parent = await fixture.CreateParent("session-parent-model-errors");
+
+        var half = await ExecuteTool(fixture, "subagent", new JsonObject
+        {
+            ["description"] = "half route",
+            ["prompt"] = "p",
+            ["model"] = "test-model",
+        }, parent);
+        Assert.Contains("must be supplied together", Assert.IsType<ToolExecutionResult.Failure>(half).Error.Message);
+
+        var unknown = await ExecuteTool(fixture, "subagent", new JsonObject
+        {
+            ["description"] = "unknown route",
+            ["prompt"] = "p",
+            ["provider"] = "keyless-provider",
+            ["model"] = "m",
+        }, parent);
+        Assert.Contains("keyless-provider", Assert.IsType<ToolExecutionResult.Failure>(unknown).Error.Message);
+
+        var filtered = await ExecuteTool(fixture, SubagentModelsTool.ToolName, new JsonObject { ["provider"] = "keyless-provider" }, parent);
+        Assert.Contains("providers with a configured API key: test-provider", Assert.IsType<ToolExecutionResult.Failure>(filtered).Error.Message);
+        Assert.Empty(fixture.Adapter.Requests);
+        Assert.Null(fixture.ChildOf(parent.Id));
+    }
+
+    private sealed class NoCredentials : ICredentials
+    {
+        public string? Get(string reference) => null;
+    }
+
+    /** Providers are listed through the real settings registration path: one without an API key never appears. */
+    [Fact]
+    public async Task ListSubagentModels_OmitsProvidersWithoutApiKey()
+    {
+        var ctx = new Context();
+        _ = new SystemPrompt(ctx, new SystemPromptConfig());
+        var tools = new ToolRuntime(ctx);
+        _ = new LlmRuntime(ctx);
+        _ = new LlmAdapterFactoryRegistry(ctx);
+        ctx.SetOwn("credentials", new NoCredentials());
+        using var openAi = new Dsh.Llm.OpenAi.Plugin().Apply(ctx, null);
+        var options = new HarnessOptions(new HarnessHome(AppContext.BaseDirectory));
+        const string unreachableBaseUrl = "http://127.0.0.1:9/v1";
+        var keyed = ProviderRegistrar.RegisterProvider(ctx, options, "keyed-provider", new ProviderSettings
+        {
+            Options = new ProviderOptions { BaseUrl = unreachableBaseUrl, ApiKey = "test-only-key" },
+            Models = { ["keyed-model"] = new ProviderModelSettings { Name = "Keyed Model" } },
+        }, isDefault: false);
+        var keyless = ProviderRegistrar.RegisterProvider(ctx, options, "keyless-provider", new ProviderSettings
+        {
+            Options = new ProviderOptions { BaseUrl = unreachableBaseUrl, ApiKeyEnv = "DSH_TEST_UNSET_API_KEY" },
+            Models = { ["keyless-model"] = new ProviderModelSettings { Name = "Keyless Model" } },
+        }, isDefault: false);
+        using var keyedHandle = keyed.Handle;
+        Assert.NotNull(keyedHandle);
+        Assert.Null(keyless.Handle);
+        using var listTool = SubagentModelsTool.Apply(ctx);
+
+        var result = await tools.Execute(new ToolExecutionInput
+        {
+            CallId = ToolCallId.Create("call-list-models-keyless"),
+            Name = SubagentModelsTool.ToolName,
+            Arguments = JsonDocument.Parse("{}").RootElement,
+            Signal = default,
+        });
+
+        var row = Assert.Single(Assert.IsType<ToolExecutionResult.Success>(result).Value.EnumerateArray());
+        Assert.Equal("keyed-provider", row.GetProperty("provider").GetString());
+        Assert.Equal("keyed-model", row.GetProperty("model").GetString());
+        Assert.Equal("Keyed Model", row.GetProperty("name").GetString());
+        Assert.DoesNotContain("keyless", string.Concat(result.Content.OfType<TextBlock>().Select(block => block.Text)));
     }
 
     private sealed class WeakProvider : ISubagentProvider

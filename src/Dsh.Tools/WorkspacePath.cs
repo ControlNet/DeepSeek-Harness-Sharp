@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dsh.Core;
+using Dsh.Llm;
 
 namespace Dsh.Tools;
 
@@ -21,4 +22,14 @@ internal static class WorkspacePath
            && path.Trim().Length > 0
             ? [Resolve(exec, path)]
             : [];
+
+    /** read 系工具(read、read_image)共用的读取目标: 按会话工作目录解析, 文件不存在时报 FS_NOT_FOUND。 */
+    public static string ResolveExistingFile(ToolRunContext exec, string path)
+    {
+        var target = Resolve(exec, path);
+        exec.Signal.ThrowIfCancellationRequested();
+        if (!File.Exists(target))
+            throw new HarnessException($"file not found: \"{target}\"", "FS_NOT_FOUND");
+        return target;
+    }
 }

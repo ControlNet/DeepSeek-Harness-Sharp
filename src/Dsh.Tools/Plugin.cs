@@ -48,7 +48,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
         Subprocess => RegisterSubprocess(ctx),
         ToolBash => BashTool.Register(ctx),
         ToolPwsh => PwshTool.Register(ctx),
-        ToolFs => new CompositeDisposable(ReadTool.Register(ctx), WriteTool.Register(ctx), EditTool.Register(ctx)),
+        ToolFs => new CompositeDisposable(ReadTool.Register(ctx), ReadImageTool.Register(ctx), WriteTool.Register(ctx), EditTool.Register(ctx)),
         ToolFsSearch => new CompositeDisposable(GlobTool.Register(ctx), GrepTool.Register(ctx)),
         ToolTodo => TodoWriteTool.Register(ctx, ConfigOf(config)?.GetValueOrDefault("allowParallelInProgress") as bool? ?? true),
         ToolStrReplaceEditor => StrReplaceEditorTool.Register(ctx, StrReplaceEditorConfigFrom(config)),
