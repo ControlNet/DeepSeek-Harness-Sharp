@@ -111,19 +111,20 @@ public static class NativePluginBridge
         {
             if (plugin.State == NativePluginState.Faulted)
                 throw new InvalidOperationException($"native plugin \"{plugin.Package}\" is faulted and no longer callable");
+            string? result;
             try
             {
-                var result = invoke(args.GetRawText());
-                if (result is null)
-                    throw new InvalidOperationException($"native plugin \"{plugin.Package}\" tool \"{name}\" failed");
-                return Task.FromResult<object?>(JsonDocument.Parse(result).RootElement.Clone());
+                result = invoke(args.GetRawText());
             }
-            catch (Exception error)
+            catch (NativePluginFaultException error)
             {
                 logger.Error("%s", $"native plugin \"{plugin.Package}\" tool \"{name}\" invoke failed: {error.Message}");
                 Fault(name, error);
                 throw;
             }
+            if (result is null)
+                throw new InvalidOperationException($"native plugin \"{plugin.Package}\" tool \"{name}\" failed");
+            return Task.FromResult<object?>(JsonDocument.Parse(result).RootElement.Clone());
         }
 
         /** 故障遏制(进程内、按插件):标记 Faulted + 移除其全部工具 + 尽力卸载;二次同类故障由 quarantine 禁装。 */

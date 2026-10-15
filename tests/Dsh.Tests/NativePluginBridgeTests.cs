@@ -135,6 +135,30 @@ public sealed class NativePluginBridgeTests
         Assert.Contains(ctx.Root.Logger.Buffer, message => message.Text.Contains("invoke failed"));
     }
 
+    /** 插件给出无效结果只是这次工具调用出错, 不是原生故障: 插件保持可用, 工具不被移除。 */
+    [Fact]
+    public async Task InvalidToolResult_IsToolError_WithoutFaultingPlugin()
+    {
+        var ctx = new Context();
+        _ = new SystemPrompt(ctx, new SystemPromptConfig());
+        var tools = new ToolRuntime(ctx);
+        var plugin = new FakeNativePlugin { ReturnsInvalidJson = true };
+        using var registration = (IDisposable)NativePluginBridge.CreateDefinition(plugin).Apply(ctx, null)!;
+
+        var result = await tools.Execute(new ToolExecutionInput
+        {
+            CallId = ToolCallId.Create($"call-{Guid.NewGuid():N}"),
+            Name = "native_echo",
+            Arguments = JsonDocument.Parse("""{"message":"hi"}""").RootElement,
+            Agent = null,
+            Signal = default,
+        });
+
+        Assert.True(result.IsError);
+        Assert.Equal(NativePluginState.Active, plugin.State);
+        Assert.NotNull(tools.Get("native_echo"));
+    }
+
     [Fact]
     public void TryLoad_NonNativeFile_ReportsStructuredFailure()
     {
@@ -212,6 +236,8 @@ public sealed class NativePluginBridgeTests
 
         public bool Faulting { get; init; }
 
+        public bool ReturnsInvalidJson { get; init; }
+
         public NativePluginState State { get; private set; } = NativePluginState.Loaded;
 
         public void Activate(INativePluginHost host)
@@ -228,7 +254,9 @@ public sealed class NativePluginBridgeTests
                 input =>
                 {
                     if (Faulting)
-                        throw new InvalidOperationException("boom");
+                        throw new NativePluginFaultException("boom");
+                    if (ReturnsInvalidJson)
+                        return "not json";
                     using var document = JsonDocument.Parse(input);
                     var message = document.RootElement.GetProperty("message").GetString();
                     return JsonSerializer.Serialize(new { text = $"echo:{message}" });
