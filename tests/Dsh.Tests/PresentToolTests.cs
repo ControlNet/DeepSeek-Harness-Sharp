@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Core;
+using Dsh.Deliverables;
 using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Runtime;
@@ -76,8 +77,10 @@ public sealed class PresentToolTests
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var session = environment.Agent.Session;
+        var schema = environment.App.Ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!.Schemas().Single(tool => tool.Name == ToolName);
+        Assert.Contains($"at most {PresentTool.MaxFiles} per call", schema.Parameters["properties"]!["files"]!["description"]!.GetValue<string>());
         var files = new List<JsonObject>();
-        for (var index = 0; index < 9; index++)
+        for (var index = 0; index <= PresentTool.MaxFiles; index++)
         {
             await CreateFile(session, $"part-{index}.txt");
             files.Add(File($"part-{index}.txt"));
@@ -87,7 +90,7 @@ public sealed class PresentToolTests
         var result = await Present(environment, [.. files]);
 
         Assert.True(result.IsError);
-        Assert.Contains("1 to 8 files", TextOf(result));
+        Assert.Contains($"1 to {PresentTool.MaxFiles} files", TextOf(result));
         Assert.DoesNotContain(session.SnapshotEvents(), IsPresented);
     }
 

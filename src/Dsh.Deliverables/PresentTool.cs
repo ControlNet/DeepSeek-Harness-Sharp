@@ -19,7 +19,7 @@ public static class PresentTool
 {
     public const string ToolName = "present";
 
-    /** Enforced per-call ceiling; the parameter description recommends at most four. */
+    /** Per-call ceiling, shared by the parameter description and the execution check. */
     public const int MaxFiles = 8;
 
     private const string Description =
@@ -112,7 +112,7 @@ public static class PresentTool
         => string.Join('\n', value.GetProperty("files").EnumerateArray()
             .Select(file => $"Presented {file.GetProperty("path").GetString()}"));
 
-    private static readonly JsonObject Parameters = JsonNode.Parse("""
+    private static readonly JsonObject Parameters = JsonNode.Parse($$"""
         {
           "type": "object",
           "additionalProperties": false,
@@ -120,7 +120,7 @@ public static class PresentTool
           "properties": {
             "files": {
               "type": "array",
-              "description": "Usually the 1-2 most important deliverables; at most 4 per call.",
+              "description": "Usually the 1-2 most important deliverables; at most {{MaxFiles}} per call.",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
