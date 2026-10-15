@@ -97,6 +97,8 @@ public static class WireSerialize
                             var content = FlattenText(result.Content);
                             wire.Add(new WireMessage("tool", JsonValue.Create(content.Length > 0 ? content : "(no output)"), ToolCallId: result.ToolCallId.Value));
                         }
+                        if (ToolResultImages.RelayContent(toolResults) is { } relay)
+                            wire.Add(new WireMessage("user", UserContent(options, relay)));
                         break;
                     }
             }

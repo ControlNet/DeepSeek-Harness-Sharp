@@ -1,3 +1,6 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
 using Dsh.Llm;
 using Dsh.Llm.OpenAi;
 
@@ -78,6 +81,105 @@ public class OpenAiCompatibleAdapterTests
         Assert.Equal(["low", "high"], parsed["kilo/object-variants"].Efforts.Select(effort => effort.Id.Value));
         Assert.False(parsed.ContainsKey("kilo/plain"));
         Assert.False(parsed.ContainsKey("kilo/empty-variants"));
+    }
+
+    [Fact]
+    public void ResolveModel_Reports_ModelsDev_Input_Modalities()
+    {
+        var known = new OpenAiCompatibleAdapter("deepseek", "https://api.deepseek.com", "sk-test", metadataSource: new NoReasoningSource());
+        var relay = new OpenAiCompatibleAdapter("relay", "https://example.invalid/v1", "sk-test", metadataSource: new NoReasoningSource());
+
+        Assert.Equal(["text"], known.ResolveModel("deepseek-v4-pro").InputModalities);
+        Assert.Contains("image", known.ResolveModel("deepseek-flash").InputModalities!);
+        Assert.Null(relay.ResolveModel("deepseek-flash").InputModalities);
+    }
+
+    [Fact]
+    public async Task ChatCompletions_Relays_Tool_Result_Images_In_A_Following_User_Message()
+    {
+        var (body, png) = await CaptureToolResultImageRequest(useResponses: false);
+
+        var messages = body.RootElement.GetProperty("messages").EnumerateArray().ToList();
+        Assert.Equal(["user", "assistant", "tool", "user"], messages.Select(message => message.GetProperty("role").GetString()));
+        Assert.Equal("envelope", messages[2].GetProperty("content").GetString());
+        var relayed = messages[3].GetProperty("content").EnumerateArray().ToList();
+        Assert.Contains("call_1", relayed[0].GetProperty("text").GetString());
+        Assert.Equal($"data:image/png;base64,{Convert.ToBase64String(png)}", relayed[1].GetProperty("image_url").GetProperty("url").GetString());
+    }
+
+    [Fact]
+    public async Task Responses_Relays_Tool_Result_Images_After_The_Function_Output()
+    {
+        var (body, png) = await CaptureToolResultImageRequest(useResponses: true);
+
+        var input = body.RootElement.GetProperty("input").EnumerateArray().ToList();
+        var output = input.FindIndex(item => item.GetProperty("type").GetString() == "function_call_output");
+        var image = input.FindIndex(item => item.GetRawText().Contains(Convert.ToBase64String(png), StringComparison.Ordinal));
+        Assert.True(output >= 0 && image > output, body.RootElement.GetRawText());
+        Assert.Contains("input_image", input[image].GetRawText());
+    }
+
+    private static async Task<(JsonDocument Body, byte[] Png)> CaptureToolResultImageRequest(bool useResponses)
+    {
+        byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        var image = new ImageAttachmentRef("img-1", "image/png", png.Length, 1, 1, "shot.png");
+        var callId = ToolCallId.Create("call_1");
+        var handler = new CapturingHandler();
+        var adapter = new OpenAiCompatibleAdapter(
+            "relay", "https://example.invalid/v1", "sk-test",
+            httpClient: new HttpClient(handler), useResponses: useResponses,
+            metadataSource: new NoReasoningSource());
+        var options = new GenerateOptions
+        {
+            Provider = "relay",
+            Model = "vision-model",
+            Messages =
+            [
+                MessageFactory.CreateUserText("look"),
+                MessageFactory.CreateAssistantMessage([new ToolCallBlock(callId, "read_image", """{"file_path":"shot.png"}""")], "relay", "vision-model"),
+                MessageFactory.CreateToolResultMessage(callId, [new TextBlock("envelope"), new ImageBlock(image)], false),
+            ],
+            Attachments = new Dictionary<string, byte[]> { [image.AttachmentId] = png },
+        };
+        try
+        {
+            await foreach (var _ in adapter.Stream(options, CancellationToken.None))
+            {
+            }
+        }
+        catch (LlmException)
+        {
+            // The scripted reply is a chat-completions stream; only the captured request body matters here.
+        }
+        return (JsonDocument.Parse(handler.Body!), png);
+    }
+
+    private sealed class CapturingHandler : HttpMessageHandler
+    {
+        private const string Sse = """
+            data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"vision-model","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"}}]}
+
+            data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"vision-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+            """;
+
+        public string? Body { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent($"{Sse}\n", Encoding.UTF8, "text/event-stream"),
+            };
+        }
+    }
+
+    private sealed class NoReasoningSource : IModelReasoningSource
+    {
+        public LlmModelReasoningInfo? ReasoningFor(string model) => null;
     }
 
     private sealed class StubReasoningSource(string model, LlmModelReasoningInfo reasoning) : IModelReasoningSource

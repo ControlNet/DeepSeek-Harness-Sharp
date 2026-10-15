@@ -101,7 +101,7 @@ internal static class AnthropicWire
             ["name"] = call.Name,
             ["input"] = ParseArguments(call.Arguments),
         },
-        ToolResultBlock result => SerializeToolResult(result),
+        ToolResultBlock result => SerializeToolResult(options, result),
         ImageBlock image => new JsonObject
         {
             ["type"] = "image",
@@ -117,17 +117,14 @@ internal static class AnthropicWire
             "UNSUPPORTED_CONTENT")),
     };
 
-    private static JsonObject SerializeToolResult(ToolResultBlock result)
+    /** tool_result 的 content 原生接受 text 与 image 块。 */
+    private static JsonObject SerializeToolResult(GenerateOptions options, ToolResultBlock result)
     {
         var content = new JsonArray();
         foreach (var block in result.Content)
         {
-            if (block is TextBlock text)
-                content.Add(new JsonObject
-                {
-                    ["type"] = "text",
-                    ["text"] = text.Text,
-                });
+            if (block is TextBlock or ImageBlock)
+                content.Add(SerializeBlock(options, block));
             else
                 throw new LlmException(new LlmFailure(
                     $"Anthropic tool result does not support content block \"{block.Type}\"",

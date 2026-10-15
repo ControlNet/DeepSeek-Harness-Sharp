@@ -135,17 +135,11 @@ public sealed class DeepSeekAdapter : LlmAdapter
         DeepSeekConnectionOptions connection,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        if (options.Messages.Any(message => message.Content.Any(block => block is ImageBlock)))
+        if (options.Messages.Any(message => ToolResultImages.Any(message.Content))
+            && connection.Models.FirstOrDefault(entry => entry.Id == options.Model)?.InputModalities?.Contains("image") != true)
         {
-            var model = connection.Models.FirstOrDefault(entry => entry.Id == options.Model);
-            if (model?.InputModalities?.Contains("image") != true)
-            {
-                throw new LlmException(new LlmFailure(
-                    $"DeepSeek model \"{options.Model}\" does not accept image input.",
-                    "UNSUPPORTED_CONTENT"));
-            }
             throw new LlmException(new LlmFailure(
-                "DeepSeek image conversion requires the durable attachment service.",
+                $"DeepSeek model \"{options.Model}\" does not accept image input.",
                 "UNSUPPORTED_CONTENT"));
         }
 

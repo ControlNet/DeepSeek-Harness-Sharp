@@ -108,3 +108,30 @@ public static class AttachmentHydration
         }
     }
 }
+
+/**
+ * Chat Completions 系协议(OpenAI 兼容、DeepSeek)的 tool 消息只能承载文本。
+ * 工具结果里的图片因此改由紧跟在该批 tool 消息之后的一条 user 消息携带, 并标明来自哪次工具调用。
+ */
+public static class ToolResultImages
+{
+    /** 内容(含嵌套的工具结果)里是否带图片。 */
+    public static bool Any(IReadOnlyList<ContentBlock> blocks)
+        => blocks.Any(block => block is ImageBlock || (block is ToolResultBlock result && Any(result.Content)));
+
+    /** 把工具结果里的图片转成 user 消息内容(每次调用一行说明 + 其图片); 没有图片时返回 null。 */
+    public static IReadOnlyList<ContentBlock>? RelayContent(IReadOnlyList<ToolResultBlock> results)
+    {
+        List<ContentBlock>? relay = null;
+        foreach (var result in results)
+        {
+            var images = result.Content.OfType<ImageBlock>().ToList();
+            if (images.Count == 0)
+                continue;
+            relay ??= [];
+            relay.Add(new TextBlock($"Image output of tool call {result.ToolCallId.Value}:\n"));
+            relay.AddRange(images);
+        }
+        return relay;
+    }
+}
