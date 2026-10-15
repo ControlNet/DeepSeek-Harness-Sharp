@@ -11,7 +11,7 @@ using Dsh.Tui.Services;
 namespace Dsh.Tui;
 
 /**
- * TUI 外壳: 持有 pane 集合与二叉分割树, 把键盘/鼠标路由到焦点 pane, 并处理 Ctrl+X 全局前缀。
+ * TUI 外壳: 持有 pane 集合与二叉分割树, 把键盘/鼠标路由到焦点 pane, 并按 KeyBindingTable 分发快捷键(默认 Ctrl+X 前缀序列)。
  * 单 pane 时绘制路径与历史行为一致 (Main + RightPanel + Input + Status)。
  * Ctrl+X 组合键走 TerminalRawMode 的进程级原始输入捕获, 不经过宿主编辑控件, 因此 Windows 上不会触发"剪切"。
  */
@@ -57,7 +57,8 @@ public sealed class ChatWindow : IDisposable
     private bool _agentsActive;
     private bool _exitRequested;
     private long? _exitConfirmAt;
-    private bool _ctrlXPrefix;
+    private readonly KeyBindingTable _keys;
+    private readonly KeySequenceMatcher _keySequence;
     private readonly Func<bool> _unsubscribe;
     private readonly Func<bool> _approvalSubscription;
     private readonly Func<bool> _questionsSubscription;
@@ -75,6 +76,11 @@ public sealed class ChatWindow : IDisposable
             TuiTheme.Load(settings);
         _rightPanelWidth = settings?.SidebarWidth;
         _inputHeight = settings?.InputHeight;
+        var (keys, keyWarnings) = KeyBindingTable.Load(settings?.Keys);
+        foreach (var warning in keyWarnings)
+            ctx.LoggerFor("tui").Warn(warning);
+        _keys = keys;
+        _keySequence = new KeySequenceMatcher(keys, settings?.KeySequenceTimeoutMs ?? 0);
         _subagents = new SubagentDirectory(ctx);
         LoadSkillCandidates();
         LoadProviderCatalogCandidates();
@@ -215,10 +221,49 @@ public sealed class ChatWindow : IDisposable
         InputPane.HandlePaste(text);
     }
 
+    /** 切窗格的一组动作: 提示里合写成 `方向键/O`。 */
+    internal static readonly TuiAction[] FocusActions =
+        [TuiAction.FocusLeft, TuiAction.FocusRight, TuiAction.FocusUp, TuiAction.FocusDown, TuiAction.FocusNextPane];
+
+    /** 前缀等待中的提示里列出的动作(聊天输入焦点)。 */
+    private static readonly KeyHint[] ChatPrefixHints =
+    [
+        new("新会话", TuiAction.NewSession),
+        new("会话", TuiAction.SessionMenu),
+        new("detach", TuiAction.Detach),
+        new("删会话", TuiAction.DeleteSessionMenu),
+        new("子代理", TuiAction.AgentList),
+        new("总览", TuiAction.Overview),
+        new("开 shell", TuiAction.OpenShell),
+        new("分屏", TuiAction.SplitPane),
+        new("关窗格", TuiAction.ClosePane),
+        new("切窗格", FocusActions),
+        new("切会话", TuiAction.PrevSession, TuiAction.NextSession),
+        new("退出", TuiAction.Quit),
+    ];
+
+    /** 前缀等待中的提示里列出的动作(shell 窗格焦点)。 */
+    private static readonly KeyHint[] ShellPrefixHints =
+    [
+        new("新会话", TuiAction.NewSession),
+        new("会话", TuiAction.SessionMenu),
+        new("detach", TuiAction.Detach),
+        new("子代理", TuiAction.AgentList),
+        new("总览", TuiAction.Overview),
+        new("开 shell", TuiAction.OpenShell),
+        new("分屏", TuiAction.SplitPane),
+        new("关窗格", TuiAction.ClosePane),
+        new("切会话", TuiAction.PrevSession, TuiAction.NextSession),
+        new("退出", TuiAction.Quit),
+    ];
+
+    /** 当前生效的快捷键表(默认键位叠加 settings.yaml 的 keys 段): 分发与所有提示文本同源。 */
+    internal KeyBindingTable KeyBindings => _keys;
+
     public void HandleKey(ConsoleKeyInfo key)
     {
         RenderVersion++;
-        // 无键名也无字符的事件(纯修饰键按下等)不携带任何意图, 放行会误消费 Ctrl+X 前缀与审批态。
+        // 无键名也无字符的事件(纯修饰键按下等)不携带任何意图, 放行会误消费等待中的前缀与审批态。
         if (key.Key == ConsoleKey.NoName && key.KeyChar == '\0')
             return;
         if (_overviewActive)
@@ -233,23 +278,11 @@ public sealed class ChatWindow : IDisposable
             return;
         }
 
-        // 焦点在 shell 窗格: 按键直达 PTY(含 Ctrl+C 交给 shell), 只有 Ctrl+X 前缀仍归窗口。
-        var shell = FocusedPane as ShellPane;
-        if (shell is not null)
+        // 焦点在 shell 窗格: 按键直达 PTY(含 Ctrl+C 交给 shell), 只有窗口级动作的按键序列仍归窗口。
+        if (FocusedPane is ShellPane shell)
         {
-            if (_ctrlXPrefix)
-            {
-                _ctrlXPrefix = false;
-                HandleCtrlXKey(key);
-                return;
-            }
-            if (key.Key == ConsoleKey.X && (key.Modifiers & ConsoleModifiers.Control) != 0)
-            {
-                _ctrlXPrefix = true;
-                SetCtrlXHint("Ctrl+X: N 新会话 - S 会话 - D detach - A 子代理 - W 总览 - T 开 shell - + 分屏 - - 关窗格 - ,/. 切会话 - Q 退出");
-                return;
-            }
-            shell.HandleKey(key);
+            if (!TryDispatchKey(key, KeyContext.Shell))
+                shell.HandleKey(key);
             return;
         }
 
@@ -260,144 +293,173 @@ public sealed class ChatWindow : IDisposable
             return;
         }
 
-        if (_ctrlXPrefix)
-        {
-            _ctrlXPrefix = false;
-            HandleCtrlXKey(key);
+        if (TryDispatchKey(key, KeyContext.Chat))
             return;
-        }
-
-        if ((key.Modifiers & ConsoleModifiers.Control) != 0)
-        {
-            switch (key.Key)
-            {
-                case ConsoleKey.X:
-                    _ctrlXPrefix = true;
-                    SetCtrlXHint("Ctrl+X: N 新会话 - S 会话 - D detach - K 删会话 - A 子代理 - W 总览 - T 开 shell - + 分屏 - - 关窗格 - 方向键/O 切窗格 - ,/. 切会话 - Q 退出");
-                    return;
-                case ConsoleKey.C:
-                    if (input.Busy)
-                    {
-                        ClearExitConfirm();
-                        input.Agent.Cancel(new AgentCancelCause.User());
-                        return;
-                    }
-                    if (_exitConfirmAt is { } firstPress
-                        && Environment.TickCount64 - firstPress <= ExitConfirmWindowMs)
-                    {
-                        _exitConfirmAt = null;
-                        RequestExit();
-                        return;
-                    }
-                    _exitConfirmAt = Environment.TickCount64;
-                    input.StatusText = "再按一次 Ctrl+C 退出";
-                    return;
-                case ConsoleKey.P:
-                    ClearExitConfirm();
-                    input.OpenPromptCommandMenu();
-                    return;
-                default:
-                    ClearExitConfirm();
-                    break;
-            }
-        }
-        else
-        {
-            ClearExitConfirm();
-        }
-
-        if (FocusedPane is SubagentPane subagent)
-        {
-            if (subagent.HandleKey(key))
-                return;
-        }
-
+        ClearExitConfirm();
+        if (FocusedPane is SubagentPane subagent && subagent.HandleKey(key))
+            return;
         input.HandleKey(key);
     }
 
-    private void HandleCtrlXKey(ConsoleKeyInfo key)
+    /** 前缀等待超时则收起提示; 主循环空闲时调用(超时为 0 时什么也不做)。 */
+    public void ExpireKeySequence()
     {
-        var input = InputPane;
-        key = NormalizeSubcommandKey(key);
-        // 在 pty 层视图里: ","/".' 切该 pty 的会话, "W" 开总览, "-" 就是退出这一层(这一层不是会话里的窗格),
-        // 其余子命令都作用在会话/窗格上, 先退出这一层再执行, 否则会对着不显示的东西下手。
-        if (_ptyLayer is not null)
-        {
-            if (key.Key is ConsoleKey.OemMinus or ConsoleKey.Subtract)
-            {
-                LeavePtyLayer();
-                return;
-            }
-
-            if (key.Key is not (ConsoleKey.OemComma or ConsoleKey.OemPeriod or ConsoleKey.W))
-                LeavePtyLayer();
-        }
-
-        switch (key.Key)
-        {
-            case ConsoleKey.N:
-                RunSlashCommand(input, "/new");
-                return;
-            case ConsoleKey.S:
-                input.Input = "/session ";
-                input.Cursor = input.Input.Length;
-                input.RefreshMenus();
-                // 终端窗格内 Ctrl+X S: 把焦点带回 DSH 命令行, 保证 /session 可输入(不打断 shell 进程)。
-                FocusPane(input.Id);
-                return;
-            case ConsoleKey.D:
-                RequestDetach(input);
-                return;
-            case ConsoleKey.K:
-                input.Input = "/session delete ";
-                input.Cursor = input.Input.Length;
-                input.RefreshMenus();
-                return;
-            case ConsoleKey.A:
-                OpenAgentList();
-                return;
-            case ConsoleKey.W:
-                OpenOverview();
-                return;
-            case ConsoleKey.T:
-                AddShellPane();
-                return;
-            case ConsoleKey.Q:
-                RequestExit();
-                return;
-            case ConsoleKey.OemPlus or ConsoleKey.Add:
-                SplitFocusedPane();
-                return;
-            case ConsoleKey.OemMinus or ConsoleKey.Subtract:
-                CloseFocusedPane();
-                return;
-            case ConsoleKey.OemComma:
-                SwitchSessionInPty(-1);
-                return;
-            case ConsoleKey.OemPeriod:
-                SwitchSessionInPty(1);
-                return;
-            case ConsoleKey.LeftArrow:
-                MoveFocus(FocusDirection.Left);
-                return;
-            case ConsoleKey.RightArrow:
-                MoveFocus(FocusDirection.Right);
-                return;
-            case ConsoleKey.UpArrow:
-                MoveFocus(FocusDirection.Up);
-                return;
-            case ConsoleKey.DownArrow:
-                MoveFocus(FocusDirection.Down);
-                return;
-            case ConsoleKey.O:
-                FocusPane(PaneTree.NextPane(_paneLayout, _focusedPaneId));
-                return;
-        }
-
-        input.RefreshMenuStatus();
+        if (!_keySequence.Expire(Environment.TickCount64))
+            return;
+        InputPane.RefreshMenuStatus();
+        RenderVersion++;
     }
 
-    private void SetCtrlXHint(string hint)
+    /** 按键 → 动作: 命中则执行, 前缀则提示后续键; 返回 false 表示这个键与快捷键无关, 由调用方照常处理。 */
+    private bool TryDispatchKey(ConsoleKeyInfo key, KeyContext context)
+    {
+        ExpireKeySequence();
+        var match = _keySequence.Feed(KeyChord.From(key), context, Environment.TickCount64);
+        switch (match.Kind)
+        {
+            case KeyMatchKind.None:
+                return false;
+            case KeyMatchKind.Pending:
+                SetFocusedStatus(_keys.PrefixHint(match.Typed, context == KeyContext.Shell ? ShellPrefixHints : ChatPrefixHints));
+                return true;
+            case KeyMatchKind.Cancelled:
+                // 前缀之后接不上的键: 前缀作废、这个键不再输入(与 tmux 的前缀语义一致)。
+                if (PrepareForWindowAction(null))
+                    InputPane.RefreshMenuStatus();
+                return true;
+            default:
+                RunKeyAction(match.Action, match.IsSequence);
+                return true;
+        }
+    }
+
+    private void RunKeyAction(TuiAction action, bool sequence)
+    {
+        if (action == TuiAction.Interrupt)
+        {
+            Interrupt();
+            return;
+        }
+
+        // 单键动作视为一次普通按键, 打断"再按一次 Ctrl+C 退出"; 序列动作(前缀之后)不打断。
+        if (!sequence)
+            ClearExitConfirm();
+        if (KeyBindingTable.AppliesIn(action, KeyContext.Shell) && !PrepareForWindowAction(action))
+            return;
+        RunBoundAction(action);
+    }
+
+    /**
+     * 在 pty 层视图里: 切该 pty 的会话与总览留在这一层, 关窗格就是退出这一层(这一层不是会话里的窗格);
+     * 其余动作作用在会话/窗格上, 先退出这一层再执行, 否则会对着不显示的东西下手。
+     * 返回 false 表示动作已经被"退出这一层"消化。
+     */
+    private bool PrepareForWindowAction(TuiAction? action)
+    {
+        if (_ptyLayer is null)
+            return true;
+        if (action == TuiAction.ClosePane)
+        {
+            LeavePtyLayer();
+            return false;
+        }
+
+        if (action is not (TuiAction.PrevSession or TuiAction.NextSession or TuiAction.Overview))
+            LeavePtyLayer();
+        return true;
+    }
+
+    private void RunBoundAction(TuiAction action)
+    {
+        var input = InputPane;
+        switch (action)
+        {
+            case TuiAction.NewSession:
+                RunSlashCommand(input, "/new");
+                return;
+            case TuiAction.SessionMenu:
+                PrefillCommand(input, "/session ");
+                // 终端窗格内打开会话菜单: 把焦点带回 DSH 命令行, 保证 /session 可输入(不打断 shell 进程)。
+                FocusPane(input.Id);
+                return;
+            case TuiAction.Detach:
+                RequestDetach(input);
+                return;
+            case TuiAction.DeleteSessionMenu:
+                PrefillCommand(input, "/session delete ");
+                return;
+            case TuiAction.AgentList:
+                OpenAgentList();
+                return;
+            case TuiAction.Overview:
+                OpenOverview();
+                return;
+            case TuiAction.OpenShell:
+                AddShellPane();
+                return;
+            case TuiAction.Quit:
+                RequestExit();
+                return;
+            case TuiAction.SplitPane:
+                SplitFocusedPane();
+                return;
+            case TuiAction.ClosePane:
+                CloseFocusedPane();
+                return;
+            case TuiAction.PrevSession or TuiAction.NextSession:
+                SwitchSessionInPty(action == TuiAction.NextSession ? 1 : -1);
+                return;
+            case TuiAction.FocusLeft or TuiAction.FocusRight or TuiAction.FocusUp or TuiAction.FocusDown:
+                MoveFocus(FocusDirectionOf(action));
+                return;
+            case TuiAction.FocusNextPane:
+                FocusPane(PaneTree.NextPane(_paneLayout, _focusedPaneId));
+                return;
+            case TuiAction.PromptCommandMenu:
+                input.OpenPromptCommandMenu();
+                return;
+        }
+    }
+
+    private static FocusDirection FocusDirectionOf(TuiAction action)
+        => action switch
+        {
+            TuiAction.FocusLeft => FocusDirection.Left,
+            TuiAction.FocusRight => FocusDirection.Right,
+            TuiAction.FocusUp => FocusDirection.Up,
+            _ => FocusDirection.Down,
+        };
+
+    private static void PrefillCommand(ChatPane input, string command)
+    {
+        input.Input = command;
+        input.Cursor = input.Input.Length;
+        input.RefreshMenus();
+    }
+
+    /** 中断键: 回合进行中取消回合; 空闲时连按两次(间隔不超过 ExitConfirmWindowMs)退出。 */
+    private void Interrupt()
+    {
+        var input = InputPane;
+        if (input.Busy)
+        {
+            ClearExitConfirm();
+            input.Agent.Cancel(new AgentCancelCause.User());
+            return;
+        }
+
+        if (_exitConfirmAt is { } firstPress && Environment.TickCount64 - firstPress <= ExitConfirmWindowMs)
+        {
+            _exitConfirmAt = null;
+            RequestExit();
+            return;
+        }
+
+        _exitConfirmAt = Environment.TickCount64;
+        input.StatusText = $"再按一次 {_keys.Keys(TuiAction.Interrupt)} 退出";
+    }
+
+    private void SetFocusedStatus(string hint)
     {
         var target = FocusedPane as ShellPane;
         if (target is not null)
@@ -1197,6 +1259,14 @@ public sealed class ChatWindow : IDisposable
         new("gpu", "选择 GPU / 渲染后端", (pane, text) => { SelectGpu(pane, text); return Task.CompletedTask; },
             [new CommandArgumentSchema("adapter", "select", "GPU 适配器(选择并回车即写入, 重启生效)")]),
         new("exit", "退出 TUI", (_, _) => { RequestExit(); return Task.CompletedTask; }),
+        new("keys", "列出当前按键绑定", (pane, _) =>
+        {
+            // 逐行追加: 整段长文本会被折叠成一行预览, 快捷键表要直接可读。
+            pane.AppendRaw($"  快捷键(settings.yaml: plugins.\"{TuiSettings.Package}\".keys 可改):\n");
+            foreach (var line in _keys.Describe())
+                pane.AppendRaw($"    {line}\n");
+            return Task.CompletedTask;
+        }),
         new("timestamp", "定位/回退/派生到某条用户消息", TimestampCommand,
             [new CommandArgumentSchema("action", "select", "jump(查看) / revert(截断到该消息之前) / fork(派生新会话)"),
              new CommandArgumentSchema("seq", "select", "用户消息 seq(见 /timestamp 无参数列出)")]),
@@ -1967,7 +2037,7 @@ public sealed class ChatWindow : IDisposable
             if (shell.LayerPtyId is { Length: > 0 } layer)
                 shell.LayerBanner = PtyLayerStatusText(layer);
             else
-                shell.StatusText = "shell 窗格: 按键直达 shell - Ctrl+X - 关闭 - Ctrl+X 方向键/O 切窗格";
+                shell.StatusText = $"shell 窗格: 按键直达 shell - {_keys.Keys(TuiAction.ClosePane)} 关闭 - {_keys.Keys(FocusActions)} 切窗格";
         }
         RenderVersion++;
     }
@@ -1987,30 +2057,6 @@ public sealed class ChatWindow : IDisposable
     }
 
     /**
-     * Ctrl+X 子命令按键归一: Unix/pty 宿主对 '+'/'-' 只给字符、不上报 OemPlus/OemMinus(Windows conhost 才会),
-     * 统一按字符补齐 ConsoleKey, 保证分屏/关窗格在两类宿主上行为一致。
-     */
-    private static ConsoleKeyInfo NormalizeSubcommandKey(ConsoleKeyInfo key)
-    {
-        var target = key.KeyChar switch
-        {
-            '+' => ConsoleKey.OemPlus,
-            '-' => ConsoleKey.OemMinus,
-            ',' => ConsoleKey.OemComma,
-            '.' => ConsoleKey.OemPeriod,
-            _ => (ConsoleKey?)null,
-        };
-        if (target is null || key.Key == target)
-            return key;
-        return new ConsoleKeyInfo(
-            key.KeyChar,
-            target.Value,
-            (key.Modifiers & ConsoleModifiers.Shift) != 0,
-            (key.Modifiers & ConsoleModifiers.Alt) != 0,
-            (key.Modifiers & ConsoleModifiers.Control) != 0);
-    }
-
-    /**
      * Ctrl+X ,/. : 在"当前窗格所属 Pty"的会话列表里循环切换(tmux 的 window 切换语义), 不按归属分叉:
      * - 本进程的会话 → 聚焦已有窗格, 没有窗格就装进输入窗格并聚焦;
      * - 别的进程(该 pty 的常驻 DSH)的会话 → 请对面把焦点切到该会话的窗格(既有的 focus 控制消息), 本窗格的镜像随之显示它。
@@ -2026,14 +2072,14 @@ public sealed class ChatWindow : IDisposable
             var order = new List<string>([.. local.Select(session => session.Value), .. remote]);
             if (order.Count == 0)
             {
-                SetCtrlXHint($"pty {pty ?? "(未归属)"} 下没有可切换的会话");
+                SetFocusedStatus($"pty {pty ?? "(未归属)"} 下没有可切换的会话");
                 return;
             }
 
             if (order.Count == 1)
             {
                 FocusOrSwitchSession(pty, order[0]);
-                SetCtrlXHint($"pty {pty} 下只有 1 个会话: {order[0]}");
+                SetFocusedStatus($"pty {pty} 下只有 1 个会话: {order[0]}");
                 return;
             }
 
@@ -2041,12 +2087,12 @@ public sealed class ChatWindow : IDisposable
             var index = currentId is { Length: > 0 } ? order.FindIndex(id => string.Equals(id, currentId, StringComparison.Ordinal)) : -1;
             var nextIndex = ((index + direction) % order.Count + order.Count) % order.Count;
             var next = order[nextIndex];
-            SetCtrlXHint($"切换到会话 {ShortSession(next)} ({nextIndex + 1}/{order.Count}) - pty {pty}");
+            SetFocusedStatus($"切换到会话 {ShortSession(next)} ({nextIndex + 1}/{order.Count}) - pty {pty}");
             await FocusOrSwitchSessionAsync(pty, next);
         }
         catch (Exception error)
         {
-            SetCtrlXHint($"切换会话失败: {error.Message}");
+            SetFocusedStatus($"切换会话失败: {error.Message}");
         }
     }
 
@@ -2073,7 +2119,7 @@ public sealed class ChatWindow : IDisposable
             .FirstOrDefault(pane => string.Equals(pane.SessionId, sessionId, StringComparison.Ordinal))?.Id;
         if (paneId is null || pty is null)
         {
-            SetCtrlXHint($"会话 {ShortSession(sessionId)} 没有可聚焦的窗格");
+            SetFocusedStatus($"会话 {ShortSession(sessionId)} 没有可聚焦的窗格");
             return;
         }
 
@@ -2515,7 +2561,7 @@ public sealed class ChatWindow : IDisposable
             ? "会话: (无)"
             : "会话: " + string.Join(' ', order.Select((id, index) =>
                 $"{index + 1}:{ShortSession(id)}{(string.Equals(id, current, StringComparison.Ordinal) ? "*" : "")}"));
-        return $"[pty {ptyId}] 层 - {list} - Ctrl+X ,/. 切会话 - Ctrl+X W 总览 - Ctrl+X D 离开 DSH";
+        return $"[pty {ptyId}] 层 - {list} - {_keys.Keys(TuiAction.PrevSession, TuiAction.NextSession)} 切会话 - {_keys.Keys(TuiAction.Overview)} 总览 - {_keys.Keys(TuiAction.Detach)} 离开 DSH";
     }
 
     /** 该 daemon pty 发布上来的会话 id(没有该 pty 时为空)。 */
@@ -2615,7 +2661,7 @@ public sealed class ChatWindow : IDisposable
     {
         var area = OverlayArea(grid);
         var lines = _agentItems.Select(AgentLine).ToList();
-        PopupList.Draw(grid, area, "子代理 (Ctrl+X A)", lines, _agentsIndex);
+        PopupList.Draw(grid, area, $"子代理 ({_keys.Keys(TuiAction.AgentList)})", lines, _agentsIndex);
     }
 
     private ConsoleRect OverlayArea(CellGrid grid)
