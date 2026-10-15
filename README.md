@@ -71,7 +71,7 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    | `github-code` | `@deepseek-ai/dsh-web-search-github` | GitHub 默认分支上的文件内容 | `token`(必填) | 不可用(配置后每分钟 10 次) |
    | `stackoverflow` | `@deepseek-ai/dsh-web-search-stackoverflow` | Stack Overflow 的问题(标题、正文、标签) | `key`(可选,在 stackapps.com 注册应用获得) | 每 IP 每天 300 次(配置后 10000 次) |
 
-   GitHub 与 Stack Overflow 引擎默认开启,各自在 `plugins:` 段写 `false` 即单独关闭;凭据只从 `settings.yaml` 读取,日志里会脱敏:
+   GitHub 与 Stack Overflow 引擎默认开启,各自在 `plugins:` 段写 `false` 即单独关闭;凭据只从 `settings.yaml` 读取,不会写进日志或错误信息(日志另对 GitHub token 做脱敏):
 
    ```yaml
    plugins:

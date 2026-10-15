@@ -64,7 +64,7 @@ rules: []
 # web_search 搜索引擎: 模型用 engine 参数选引擎; 省略 engine 时走通用网页搜索 @deepseek-ai/dsh-web-search-deepseek(需在其参数里配 apiKey)。
 # GitHub @deepseek-ai/dsh-web-search-github 提供 github-repos(搜仓库)与 github-code(搜代码, 需 token); 参数 token 可选, 不配时仓库搜索每 IP 每分钟 10 次, 配了是 30 次。
 # Stack Overflow @deepseek-ai/dsh-web-search-stackoverflow 提供 stackoverflow(搜问题); 参数 key 可选(在 stackapps.com 注册应用获得), 不配时每 IP 每天 300 次, 配了是 10000 次。
-# 这两个引擎默认开启, 各自写 false 即单独关闭; token/key 只从本文件读取, 日志里会脱敏。
+# 这两个引擎默认开启, 各自写 false 即单独关闭; token/key 只从本文件读取, 不会写进日志或错误信息。
 plugins:
   "@deepseek-ai/dsh-memory": false
   "@deepseek-ai/dsh-toon": false

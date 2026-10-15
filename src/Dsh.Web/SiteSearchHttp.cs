@@ -48,7 +48,10 @@ internal static class SiteSearchHttp
     public static string Excerpt(string text)
     {
         var collapsed = string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        return collapsed.Length <= SnippetMaxChars ? collapsed : $"{collapsed[..SnippetMaxChars].TrimEnd()}…";
+        if (collapsed.Length <= SnippetMaxChars)
+            return collapsed;
+        var cut = char.IsHighSurrogate(collapsed[SnippetMaxChars - 1]) ? SnippetMaxChars - 1 : SnippetMaxChars;
+        return $"{collapsed[..cut].TrimEnd()}…";
     }
 
     public static string? OptionalString(JsonElement element, string name)
