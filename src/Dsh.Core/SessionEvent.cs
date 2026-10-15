@@ -22,6 +22,7 @@ public static class SessionEventCodec
 {
     private static readonly Dictionary<string, Func<JsonElement, JsonSerializerOptions, SessionEventPayload>> Readers = [];
     private static readonly Dictionary<string, Action<SessionEventPayload, Utf8JsonWriter, JsonSerializerOptions>> Writers = [];
+    private static readonly HashSet<string> IgnorableTypes = [];
 
     static SessionEventCodec()
     {
@@ -45,22 +46,36 @@ public static class SessionEventCodec
             (payload, writer, options) => DshJson.Serialize(writer, payload.Message));
     }
 
-    public static void Register<T>(string type) where T : SessionEventPayload
+    public static void Register<T>(string type, bool ignorable = false) where T : SessionEventPayload
         => Register<T>(type,
             (element, options) => DshJson.Deserialize<T>(element)
                 ?? throw new JsonException($"invalid \"{type}\" payload"),
-            static (payload, writer, options) => DshJson.Serialize(writer, payload));
+            static (payload, writer, options) => DshJson.Serialize(writer, payload),
+            ignorable);
 
+    /**
+     * ignorable: 该类型的事件写盘时带 `ignorable:true`, 不认识该类型的版本读到时跳过它而不是拒开整份日志。
+     * 只适用于不进入模型上下文、不改变折叠语义的事件; surface 事件被跳过会让旧版本拼出不同的上下文, 因此不允许。
+     */
     public static void Register<T>(
         string type,
         Func<JsonElement, JsonSerializerOptions, T> reader,
-        Action<T, Utf8JsonWriter, JsonSerializerOptions> writer) where T : SessionEventPayload
+        Action<T, Utf8JsonWriter, JsonSerializerOptions> writer,
+        bool ignorable = false) where T : SessionEventPayload
     {
+        if (ignorable && SessionEventTypes.SurfaceEligible.Contains(type))
+            throw new ArgumentException($"surface event type \"{type}\" cannot be registered as ignorable", nameof(ignorable));
         Readers[type] = (element, options) => reader(element, options);
         Writers[type] = (payload, w, options) => writer((T)payload, w, options);
+        if (ignorable)
+            IgnorableTypes.Add(type);
+        else
+            IgnorableTypes.Remove(type);
     }
 
     public static bool IsRegistered(string type) => Readers.ContainsKey(type);
+
+    public static bool IsIgnorable(string type) => IgnorableTypes.Contains(type);
 
     public static SessionEventPayload ReadPayload(string type, JsonElement data, bool ignorable, JsonSerializerOptions options)
     {
