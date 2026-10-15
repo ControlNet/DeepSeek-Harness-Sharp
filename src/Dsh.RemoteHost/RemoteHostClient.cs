@@ -15,8 +15,8 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     private readonly JsonRpcPeer _peer;
     private readonly ConcurrentDictionary<string, Channel<RemoteEventInfo>> _eventStreams = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Channel<RemotePtyOutput>> _ptyStreams = new(StringComparer.Ordinal);
-    private Channel<RemoteApprovalRequest>? _approvals;
-    private Channel<RemoteQuestionRequest>? _questions;
+    private readonly Channel<RemoteApprovalRequest> _approvals = Channel.CreateUnbounded<RemoteApprovalRequest>();
+    private readonly Channel<RemoteQuestionRequest> _questions = Channel.CreateUnbounded<RemoteQuestionRequest>();
 
     private RemoteHostClient(JsonRpcPeer peer, HostHelloResponse hello)
     {
@@ -114,8 +114,7 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
 
     public async IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var channel = _approvals ??= Channel.CreateUnbounded<RemoteApprovalRequest>();
-        await foreach (var item in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var item in _approvals.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             yield return item;
     }
 
@@ -124,8 +123,7 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
 
     public async IAsyncEnumerable<RemoteQuestionRequest> QuestionsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var channel = _questions ??= Channel.CreateUnbounded<RemoteQuestionRequest>();
-        await foreach (var item in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var item in _questions.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             yield return item;
     }
 
@@ -197,10 +195,10 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
                 events.Writer.TryWrite(item);
                 break;
             case HostProtocol.NotificationApproval when Parse(message, HostProtocolJsonContext.Default.RemoteApprovalRequest) is { } request:
-                (_approvals ??= Channel.CreateUnbounded<RemoteApprovalRequest>()).Writer.TryWrite(request);
+                _approvals.Writer.TryWrite(request);
                 break;
             case HostProtocol.NotificationQuestion when Parse(message, HostProtocolJsonContext.Default.RemoteQuestionRequest) is { } question:
-                (_questions ??= Channel.CreateUnbounded<RemoteQuestionRequest>()).Writer.TryWrite(question);
+                _questions.Writer.TryWrite(question);
                 break;
             case HostProtocol.NotificationPtyOutput when Parse(message, HostProtocolJsonContext.Default.RemotePtyOutput) is { } output
                 && _ptyStreams.TryGetValue(output.PtyId, out var pty):
