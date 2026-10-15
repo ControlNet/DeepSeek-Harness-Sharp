@@ -47,6 +47,25 @@ skills:
 # 全局规则
 rules: []
 
+# 机器清单与远端自动部署偏好: GUI 的“机器”页、`dsharp machine` 与 `dsharp host web` 共用, 也会改写本段。
+# 本机(local)是隐式的, 不用写; 省略的字段取默认值。密码认证的 password 以明文保存(本文件仅属主可读写)。
+# fleet:
+#   machines:
+#     - name: build
+#       kind: ssh
+#       host: build.internal
+#       user: dev
+#       auth: key            # agent | key | password
+#       keyPath: ~/.ssh/id_ed25519
+#       harnessHome: ~/.dsh-build
+#     - name: second
+#       kind: local
+#       harnessHome: /srv/second-home
+#   deploy:
+#     autoDeploy: false      # 默认 true: 连接前在远端安装/升级 dsharp
+#     releaseVersion: latest
+#     via: auto              # auto | client | server
+
 # 插件开关:true/false 或 {enabled: true, ...插件参数}
 # 插件发现即启用;只有这里显式禁用的插件才会关闭。/plugins 命令会改写本段。
 # 项目记忆 @deepseek-ai/dsh-memory 默认关闭,用 /memory on 开启;
@@ -140,6 +159,15 @@ plugins:
 #   attachments:
 #   telemetry:
 #   run:
+# fleet:  # 映射(见子项)
+#   machines:  # 列表
+#   deploy:  # 映射(见子项)
+#     autoDeploy:
+#     releaseBaseUrl:
+#     releaseVersion:  # latest 或发布标签(带不带 v 前缀均可)
+#     downloadProxy:  # 本机下载发布包时用的代理
+#     via:  # auto / client / server: 发布包在哪里下载
+#     serverProxy:  # 远端下载发布包时用的代理
 # plugins:  # 映射(见子项)
 #   enabled: true
 #   parameters:  # 映射(见子项)

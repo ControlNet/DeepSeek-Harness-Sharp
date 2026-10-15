@@ -4,7 +4,7 @@ using Dsh.Gui.Services;
 
 namespace Dsh.Tests;
 
-/** 机器清单: GUI 与 CLI 共用的 fleet/machines.json, 以及从旧 GUI 设置里一次性迁移远程工作区。 */
+/** 机器清单: GUI、CLI 与 WebBridge 共用 settings.yaml 的 fleet 段, 以及从 fleet/machines.json 和旧 GUI 设置里一次性迁移。 */
 public sealed class MachineStoreTests : IDisposable
 {
     private readonly string _root = TempTree.CreateDirectory("fleet-store");
@@ -12,12 +12,12 @@ public sealed class MachineStoreTests : IDisposable
     public void Dispose() => TempTree.Delete(_root);
 
     [Fact]
-    public void Machines_RoundTrip_With_All_Fields_In_An_OwnerOnly_File()
+    public void Machines_RoundTrip_With_All_Fields_In_The_OwnerOnly_Settings_File()
     {
         var store = new MachineStore(new HarnessHome(_root));
         MachineSpec[] machines =
         [
-            MachineSpec.Ssh("build", "build-box.internal", 22, "builder", SshAuth.Password) with { Proxy = "nc -x 127.0.0.1:1080 %h %p", RemotePath = "~/work", Password = "s3cret" },
+            MachineSpec.Ssh("build", "build-box.internal", 22, "builder", SshAuth.Password) with { Proxy = "nc -x 127.0.0.1:1080 %h %p", RemotePath = "~/work", Password = "null" },
             MachineSpec.Ssh("gpu", "gpu-box.internal", 2222, "dev", SshAuth.Key) with { KeyPath = "C:/keys/id_ed25519", HarnessHome = "~/.dsh-gpu", SshOptions = ["UserKnownHostsFile=/tmp/kh"] },
             MachineSpec.Local("/srv/second-home", "second"),
         ];
@@ -84,8 +84,68 @@ public sealed class MachineStoreTests : IDisposable
         Assert.False(gui.ContainsKey("remoteWorkspaces"));
         Assert.False(gui.ContainsKey("remoteAutoDeploy"));
         Assert.Equal(GuiSettings.ThemeLight, new GuiSettings(home).Load().Theme);
-        Assert.True(File.Exists(new MachineStore(home).FilePath));
+        Assert.NotNull(HarnessSettings.Load(home).Fleet);
         Assert.Equal(imported.Machines, new MachineStore(home).Load().Machines);
+    }
+
+    /** 早期版本的 fleet/machines.json: 首次加载时写进 settings.yaml 的 fleet 段并删除该文件。 */
+    [Fact]
+    public void Machines_Json_Is_Imported_Into_Settings_And_Deleted()
+    {
+        var home = new HarnessHome(_root);
+        var store = new MachineStore(home);
+        Directory.CreateDirectory(Path.GetDirectoryName(store.LegacyFilePath)!);
+        File.WriteAllText(store.LegacyFilePath, """
+            {
+              "machines": [
+                { "name": "build", "kind": "ssh", "host": "build.internal", "port": 2200, "user": "dev", "auth": "key", "keyPath": "~/.ssh/id_ed25519" },
+                { "name": "second", "kind": "local", "harnessHome": "/srv/second-home" }
+              ],
+              "deploy": { "autoDeploy": false, "via": "client" }
+            }
+            """);
+
+        var imported = store.Load();
+
+        Assert.False(File.Exists(store.LegacyFilePath));
+        Assert.Equal(
+            [MachineSpec.Ssh("build", "build.internal", 2200, "dev", SshAuth.Key) with { KeyPath = "~/.ssh/id_ed25519" }, MachineSpec.Local("/srv/second-home", "second")],
+            imported.Machines);
+        Assert.Equal((false, DownloadVia.Client), (imported.Deploy.AutoDeploy, imported.Deploy.Via));
+        Assert.Equal(imported.Machines, store.Load().Machines);
+        Assert.Equal(2, HarnessSettings.Load(home).Fleet!.Machines.Count);
+    }
+
+    /** 只改写 fleet 段: 注释、其它段与 CRLF 换行原样保留; 删掉最后一台机器后文件回到原样。 */
+    [Fact]
+    public void Saving_Rewrites_Only_The_Fleet_Section_And_Keeps_Comments_And_Crlf()
+    {
+        var home = new HarnessHome(_root);
+        Directory.CreateDirectory(_root);
+        var original = string.Join("\r\n",
+            "# my settings",
+            "global_default_model: deepseek-official/deepseek-v4-flash  # keep this comment",
+            "",
+            "# providers I use",
+            "providers:",
+            "  deepseek-official:",
+            "    type: deepseek",
+            "plugins:",
+            "  \"@deepseek-ai/dsh-memory\": false",
+            "");
+        File.WriteAllText(home.SettingsFile, original);
+        var store = new MachineStore(home);
+
+        store.Upsert(MachineSpec.Ssh("box", "box.internal", 22, "me", SshAuth.Agent));
+        var saved = File.ReadAllText(home.SettingsFile);
+
+        Assert.StartsWith(original.TrimEnd(), saved, StringComparison.Ordinal);
+        Assert.DoesNotContain("\n", saved.Replace("\r\n", "", StringComparison.Ordinal), StringComparison.Ordinal);
+        Assert.Contains("fleet:", saved, StringComparison.Ordinal);
+        Assert.Equal("box.internal", Assert.Single(store.Load().Machines).Host);
+
+        Assert.True(store.Remove("box"));
+        Assert.Equal(original, File.ReadAllText(home.SettingsFile));
     }
 
     [Fact]
@@ -94,7 +154,7 @@ public sealed class MachineStoreTests : IDisposable
         var home = new HarnessHome(_root);
         Assert.Empty(new MachineStore(home).Load().Machines);
         Assert.False(File.Exists(home.SettingsFile));
-        Assert.False(File.Exists(new MachineStore(home).FilePath));
+        Assert.False(File.Exists(new MachineStore(home).LegacyFilePath));
     }
 
     private static void WriteLegacyGuiSettings(HarnessHome home)

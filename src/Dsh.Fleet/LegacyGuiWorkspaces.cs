@@ -3,7 +3,7 @@ using Dsh.Boot;
 namespace Dsh.Fleet;
 
 /**
- * One-time import of the SSH remote workspaces that GUI builds before the fleet store kept under settings.yaml -> plugins."@deepseek-ai/dsh-gui".
+ * One-time import, into the fleet section of settings.yaml, of the SSH remote workspaces that older GUI builds kept under plugins."@deepseek-ai/dsh-gui".
  * Reading never creates settings.yaml; removal drops only the keys listed here and leaves the rest of the GUI parameters untouched.
  */
 internal static class LegacyGuiWorkspaces

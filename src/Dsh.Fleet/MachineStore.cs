@@ -1,26 +1,32 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dsh.Boot;
-using Dsh.Transport;
 
 namespace Dsh.Fleet;
 
 /**
- * The machine list and deployment preferences shared by the GUI and the CLI: `<harness home>/fleet/machines.json`.
- * The file holds SSH passwords when password authentication is used, so it is written owner-only.
- * When the file does not exist yet, the remote workspaces that older GUI builds kept in settings.yaml are imported once and removed from there, so there is only ever one list.
+ * The machine list and deployment preferences shared by the GUI, the CLI and the web bridge: the `fleet:` section of settings.yaml.
+ * settings.yaml is owner-only, so the SSH passwords of password authentication stay private.
+ * Reading never creates settings.yaml; saving rewrites only the fleet section and keeps comments, the other sections and the file's line endings.
+ * Earlier layouts are imported on the first read and then removed, so there is only ever one list: `<home>/fleet/machines.json`, and the remote workspaces older GUI builds kept under plugins."@deepseek-ai/dsh-gui".
  */
 public sealed class MachineStore(HarnessHome home)
 {
-    public const string DirectoryName = "fleet";
-    public const string FileName = "machines.json";
+    public const string LegacyDirectoryName = "fleet";
+    public const string LegacyFileName = "machines.json";
 
-    public string FilePath => Path.Combine(home.SubPath(DirectoryName), FileName);
+    public string FilePath => home.SettingsFile;
+
+    public string LegacyFilePath => Path.Combine(home.SubPath(LegacyDirectoryName), LegacyFileName);
 
     public FleetConfig Load()
     {
-        if (File.Exists(FilePath))
-            return Parse(File.ReadAllText(FilePath));
+        if (File.Exists(LegacyFilePath))
+            return ImportLegacyFile();
+        if (!File.Exists(FilePath))
+            return FleetConfig.Empty;
+        if (HarnessSettings.Load(home).Fleet is { } fleet)
+            return FromSettings(fleet);
         if (LegacyGuiWorkspaces.Read(home) is not { } legacy)
             return FleetConfig.Empty;
         Save(legacy);
@@ -28,12 +34,13 @@ public sealed class MachineStore(HarnessHome home)
         return legacy;
     }
 
+    /** Settings are re-read right before writing, so a section another client changed in the meantime is not reverted. */
     public void Save(FleetConfig config)
     {
         Validate(config.Machines);
-        OwnerOnlyFiles.EnsureDirectory(home.SubPath(DirectoryName));
-        var document = new MachineStoreDocument([.. config.Machines], config.Deploy);
-        OwnerOnlyFiles.Write(FilePath, JsonSerializer.Serialize(document, FleetJsonContext.Default.MachineStoreDocument));
+        var settings = HarnessSettings.Load(home);
+        settings.Fleet = ToSettings(config);
+        settings.Save(home);
     }
 
     /** Adds a machine, or replaces the one with the same name. */
@@ -57,10 +64,92 @@ public sealed class MachineStore(HarnessHome home)
         return true;
     }
 
-    private static FleetConfig Parse(string json)
+    /** machines.json was the whole list while it existed, so it replaces whatever settings.yaml holds. */
+    private FleetConfig ImportLegacyFile()
     {
-        var document = JsonSerializer.Deserialize(json, FleetJsonContext.Default.MachineStoreDocument);
-        return document is null ? FleetConfig.Empty : new FleetConfig(document.Machines ?? [], document.Deploy ?? new DeploySettings());
+        var document = JsonSerializer.Deserialize(File.ReadAllText(LegacyFilePath), FleetJsonContext.Default.LegacyMachineDocument);
+        var config = document is null ? FleetConfig.Empty : new FleetConfig(document.Machines ?? [], document.Deploy ?? new DeploySettings());
+        Save(config);
+        File.Delete(LegacyFilePath);
+        return config;
+    }
+
+    private static FleetConfig FromSettings(FleetSettings fleet)
+        => new([.. fleet.Machines.Select(FromSettings)], FromSettings(fleet.Deploy));
+
+    private static MachineSpec FromSettings(MachineSettings machine)
+        => new(
+            machine.Name ?? "",
+            machine.Kind ?? MachineKinds.Ssh,
+            machine.Host ?? "",
+            machine.Port ?? MachineSpec.DefaultSshPort,
+            machine.User ?? "",
+            machine.Auth ?? SshAuth.Agent,
+            machine.KeyPath,
+            machine.Proxy,
+            machine.RemotePath,
+            machine.Password,
+            machine.HarnessHome,
+            machine.SshOptions);
+
+    private static DeploySettings FromSettings(FleetDeploySettings? deploy)
+    {
+        var defaults = new DeploySettings();
+        if (deploy is null)
+            return defaults;
+        return new DeploySettings
+        {
+            AutoDeploy = deploy.AutoDeploy ?? defaults.AutoDeploy,
+            ReleaseBaseUrl = deploy.ReleaseBaseUrl ?? defaults.ReleaseBaseUrl,
+            ReleaseVersion = deploy.ReleaseVersion ?? defaults.ReleaseVersion,
+            DownloadProxy = deploy.DownloadProxy,
+            Via = deploy.Via ?? defaults.Via,
+            ServerProxy = deploy.ServerProxy,
+        };
+    }
+
+    /** Defaults are left out, so the section only shows what the user chose; an empty list with default preferences removes the section. */
+    private static FleetSettings? ToSettings(FleetConfig config)
+    {
+        if (config.Machines.Count == 0 && config.Deploy == new DeploySettings())
+            return null;
+        return new FleetSettings { Machines = [.. config.Machines.Select(ToSettings)], Deploy = ToSettings(config.Deploy) };
+    }
+
+    private static MachineSettings ToSettings(MachineSpec machine)
+    {
+        var ssh = !machine.IsLocal;
+        return new MachineSettings
+        {
+            Name = machine.Name,
+            Kind = machine.Kind,
+            Host = ssh ? machine.Host : null,
+            Port = ssh && machine.Port != MachineSpec.DefaultSshPort ? machine.Port : null,
+            User = ssh && machine.User.Length > 0 ? machine.User : null,
+            Auth = ssh ? machine.Auth : null,
+            KeyPath = machine.KeyPath,
+            Proxy = machine.Proxy,
+            RemotePath = machine.RemotePath,
+            Password = machine.Password,
+            HarnessHome = machine.HarnessHome,
+            SshOptions = machine.SshOptions is { Count: > 0 } options ? [.. options] : null,
+        };
+    }
+
+    private static FleetDeploySettings? ToSettings(DeploySettings deploy)
+    {
+        var defaults = new DeploySettings();
+        if (deploy == defaults)
+            return null;
+        return new FleetDeploySettings
+        {
+            AutoDeploy = deploy.AutoDeploy == defaults.AutoDeploy ? null : deploy.AutoDeploy,
+            ReleaseBaseUrl = deploy.ReleaseBaseUrl == defaults.ReleaseBaseUrl ? null : deploy.ReleaseBaseUrl,
+            ReleaseVersion = deploy.ReleaseVersion == defaults.ReleaseVersion ? null : deploy.ReleaseVersion,
+            DownloadProxy = deploy.DownloadProxy,
+            Via = deploy.Via == defaults.Via ? null : deploy.Via,
+            ServerProxy = deploy.ServerProxy,
+        };
     }
 
     private static void Validate(IReadOnlyList<MachineSpec> machines)
@@ -77,11 +166,12 @@ public sealed class MachineStore(HarnessHome home)
     }
 }
 
-internal sealed record MachineStoreDocument(List<MachineSpec>? Machines, DeploySettings? Deploy);
+/** The layout of `<home>/fleet/machines.json`, read once to import it into settings.yaml. */
+internal sealed record LegacyMachineDocument(List<MachineSpec>? Machines, DeploySettings? Deploy);
 
-/** Source-generated JSON for the machine list and for reading event envelopes (AOT and trimming safe). */
-[JsonSourceGenerationOptions(WriteIndented = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
-[JsonSerializable(typeof(MachineStoreDocument))]
+/** Source-generated JSON for the legacy machine list and for reading event envelopes (AOT and trimming safe). */
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(LegacyMachineDocument))]
 [JsonSerializable(typeof(EventEnvelope))]
 internal sealed partial class FleetJsonContext : JsonSerializerContext;
 

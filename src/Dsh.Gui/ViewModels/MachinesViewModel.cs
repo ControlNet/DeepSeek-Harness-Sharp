@@ -7,7 +7,7 @@ using Dsh.RemoteHost;
 namespace Dsh.Gui.ViewModels;
 
 /**
- * 机器管理页: 机器清单(fleet/machines.json, 与 CLI 的 `dsharp machine` 共用)的增删改, 以及测试连接、手动部署与诊断。
+ * 机器管理页: 机器清单(settings.yaml 的 fleet 段, 与 CLI 的 `dsharp machine` 和 WebBridge 共用)的增删改, 以及测试连接、手动部署与诊断。
  * 用法: new MachinesViewModel(store, options) 后 Load(); 集成方有常驻的 FleetClient 时调用 AttachFleet 显示实时连接状态, 并在 MachinesChanged 时按新清单重建它。
  * 测试连接与 `dsharp machine test` 相同: 只连接不部署、不自动拉起本机 host; 部署与诊断直接用 RemoteDsharpInstaller 与 FleetDoctor。
  * 后台线程的事件经构造时捕获的同步上下文回到 UI 线程(没有上下文时就地执行)。

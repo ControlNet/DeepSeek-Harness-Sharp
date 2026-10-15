@@ -15,7 +15,7 @@ public sealed partial class MachineRowViewModel(MachineSpec spec, bool isImplici
 
     public string Target => spec.Target;
 
-    /** 隐式的本机(local): 不在 machines.json 里, 不能编辑或删除。 */
+    /** 隐式的本机(local): 不在机器清单里, 不能编辑或删除。 */
     public bool IsImplicit => isImplicit;
 
     [ObservableProperty]
@@ -184,7 +184,7 @@ public sealed partial class MachineEditorViewModel : ObservableObject
 }
 
 /**
- * 自动部署偏好(与机器清单存在同一个 machines.json 里, 所有 SSH 机器共用)的表单。
+ * 自动部署偏好(与机器清单同在 settings.yaml 的 fleet 段, 所有 SSH 机器共用)的表单。
  * 下载代理用于本机下载, 远端代理在远端解析, 用于远端直接下载。
  */
 public sealed partial class DeploySettingsEditorViewModel : ObservableObject

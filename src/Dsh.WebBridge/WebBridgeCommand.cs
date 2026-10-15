@@ -8,7 +8,7 @@ namespace Dsh.WebBridge;
 
 /**
  * `dsharp host web [--port N] [--print-token]`: runs the bridge until cancelled, or prints the running bridge's access token.
- * The bridge serves this computer and every machine of the harness home's machine list (fleet/machines.json).
+ * The bridge serves this computer and every machine of the harness home's machine list (the fleet section of settings.yaml).
  */
 public static class WebBridgeCommand
 {

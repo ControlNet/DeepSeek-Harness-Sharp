@@ -44,6 +44,9 @@ public sealed class HarnessSettings
     [YamlMember(Alias = "storage")]
     public StorageSettings? Storage { get; set; }
 
+    [YamlMember(Alias = "fleet")]
+    public FleetSettings? Fleet { get; set; }
+
     [YamlIgnore]
     public Dictionary<string, PluginSetting> Plugins { get; set; } = [];
 
@@ -86,8 +89,10 @@ public sealed class HarnessSettings
     {
         var path = Path.Combine(home.Root, "settings.yaml");
         Directory.CreateDirectory(home.Root);
+        // Strings that read back as another type (a password "null", a key "123") are quoted, or they would not round-trip.
         var serializer = new StaticSerializerBuilder(new DshYamlStaticContext())
             .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
+            .WithQuotingNecessaryStrings()
             .Build();
         var text = serializer.Serialize(this);
         if (!File.Exists(path))

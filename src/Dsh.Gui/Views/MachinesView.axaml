@@ -101,7 +101,7 @@
             <TextBox Grid.Column="1" Text="{Binding HarnessHome, Mode=TwoWay}" PlaceholderText="SSH：留空 = 远端默认（~/.dsh）；本机条目必填" />
           </Grid>
           <TextBlock Classes="Tertiary" TextWrapping="Wrap" IsVisible="{Binding IsPassword}"
-                     Text="密码以明文保存在本机 harness home 下仅本人可读的 fleet/machines.json 中，请自行评估风险。" />
+                     Text="密码以明文保存在本机 harness home 下仅本人可读的 settings.yaml（fleet 段）中，请自行评估风险。" />
           <Button Classes="Primary" Content="保存" HorizontalAlignment="Left"
                   Command="{Binding $parent[UserControl].((vm:MachinesViewModel)DataContext).SaveCommand}" />
         </StackPanel>

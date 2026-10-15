@@ -17,7 +17,7 @@ namespace Dsh.GuiViewsHarness;
  * 用法: dsh-gui-views files|git|machines [项目路径]
  * 连接本机的 host(harness home 按 DSH_HOME / ~/.dsh 解析, 与 dsharp 自身一致; 只连接, 不拉起), 把一个视图放进一个裸窗口。
  * 文件选择框用 Avalonia 自绘的对话框, 画在同一个(私有 Xvfb)显示上, 不经桌面门户。
- * files 以项目路径为根目录, git 以项目路径为项目; machines 编辑同一个 harness home 下的 fleet/machines.json。
+ * files 以项目路径为根目录, git 以项目路径为项目; machines 编辑同一个 harness home 下 settings.yaml 的 fleet 段。
  */
 [SupportedOSPlatform("linux")]
 internal static class Program

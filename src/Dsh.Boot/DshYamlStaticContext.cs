@@ -17,6 +17,9 @@ namespace Dsh.Boot;
 [YamlSerializable(typeof(LoggingSettings))]
 [YamlSerializable(typeof(StorageSettings))]
 [YamlSerializable(typeof(ToolResultsSettings))]
+[YamlSerializable(typeof(FleetSettings))]
+[YamlSerializable(typeof(MachineSettings))]
+[YamlSerializable(typeof(FleetDeploySettings))]
 public partial class DshYamlStaticContext : StaticContext
 {
 }

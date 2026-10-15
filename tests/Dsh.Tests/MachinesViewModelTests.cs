@@ -5,7 +5,7 @@ using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
 
-/** 机器管理页的视图模型: 经真实 MachineStore(machines.json)增删改机器与部署设置, 对真实 host 测试连接与诊断。 */
+/** 机器管理页的视图模型: 经真实 MachineStore(settings.yaml 的 fleet 段)增删改机器与部署设置, 对真实 host 测试连接与诊断。 */
 public sealed class MachinesViewModelTests : IDisposable
 {
     private readonly string _home = TempTree.CreateDirectory("machines-vm");
