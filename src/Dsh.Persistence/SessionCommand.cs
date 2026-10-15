@@ -60,8 +60,9 @@ public static class SessionCommand
                 return Task.FromResult<CommandResult>(new CommandResult.Error($"session not found: {id}"));
             if (id == invocation.Agent.Id)
                 return Task.FromResult<CommandResult>(new CommandResult.Error("cannot delete the current session"));
-            persistence.Delete(id);
+            // 先移除 agent: 会话随之释放, 持久化正常收尾写句柄; 再删记录。
             ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)?.Remove(id);
+            persistence.Delete(id);
             return Task.FromResult<CommandResult>(new CommandResult.Success($"deleted session {id}"));
         }
 
