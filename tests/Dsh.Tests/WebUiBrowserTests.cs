@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Dsh.AgentAdapters;
 using Dsh.Fleet;
+using Xunit.Sdk;
 
 namespace Dsh.Tests;
 
@@ -104,7 +105,9 @@ public sealed class WebUiBrowserTests
         await phone.WaitForAsync("document.querySelector('.xterm-rows')", Ct, SessionWait);
         Assert.Equal("flex", await phone.EvaluateAsync("getComputedStyle(document.querySelector('.key-bar')).display", Ct));
         Assert.Equal("true", await phone.EvaluateAsync("String([...document.querySelectorAll('.key-bar .key')].every((key) => key.getBoundingClientRect().height >= 44))", Ct));
-        await TypeInTerminalAsync(phone, TestShell.Wait(120), tap: true);
+        // Ctrl+C goes in only once the shell runs the wait, so it cannot reach the shell before the wait starts.
+        await TypeInTerminalAsync(phone, TestShell.Sequence(TestShell.EchoAnswer("busy"), TestShell.Wait(120)), tap: true);
+        await WaitForTerminalTextAsync(phone, "busy-42");
         await phone.TapAsync(".key-bar .key[aria-label='Ctrl+C']", Ct);
         await TypeInTerminalAsync(phone, TestShell.EchoAnswer("phone"), tap: true);
         await WaitForTerminalTextAsync(phone, "phone-42");
@@ -283,8 +286,18 @@ public sealed class WebUiBrowserTests
         await chrome.PressEnterAsync(Ct);
     }
 
-    private static Task WaitForTerminalTextAsync(HeadlessChrome chrome, string expected)
-        => chrome.WaitForAsync($"document.querySelector('.xterm-rows').textContent.includes({JsonSerializer.Serialize(expected)})", Ct, SessionWait);
+    /** A failure shows what the terminal does show. */
+    private static async Task WaitForTerminalTextAsync(HeadlessChrome chrome, string expected)
+    {
+        try
+        {
+            await chrome.WaitForAsync($"document.querySelector('.xterm-rows').textContent.includes({JsonSerializer.Serialize(expected)})", Ct, SessionWait);
+        }
+        catch (XunitException error)
+        {
+            Assert.Fail($"{error.Message}; terminal: {await chrome.EvaluateAsync("document.querySelector('.xterm-rows').textContent", Ct)}");
+        }
+    }
 
     /** A selector as a "some element matches" expression. */
     private static string Query(string selector) => $"document.querySelector({JsonSerializer.Serialize(selector)})";
