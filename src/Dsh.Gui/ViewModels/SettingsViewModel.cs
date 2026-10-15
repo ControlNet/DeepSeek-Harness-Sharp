@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
 using Dsh.Core;
+using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Interaction;
 using Dsh.Llm;
@@ -583,39 +584,41 @@ public sealed partial class SettingsViewModel : ObservableObject
     public Action<string, string, bool>? Notify { get; set; }
 
     /** 远端目录选择器(由视图注入): 给定工作区与初始目录, 返回选中目录; 取消返回 null。 */
-    public Func<SshWorkspace, string?, Task<string?>>? RemoteFolderPicker { get; set; }
+    public Func<MachineSpec, string?, Task<string?>>? RemoteFolderPicker { get; set; }
 
     /** 远端缺少 dsharp 时自动下载并部署(仿 VS Code Server; 不注册 PATH 命令)。 */
     [ObservableProperty]
     private bool _remoteAutoDeploy = true;
 
     [ObservableProperty]
-    private string _remoteReleaseBaseUrl = GuiSettings.DefaultReleaseBaseUrl;
+    private string _remoteReleaseBaseUrl = DeploySettings.DefaultReleaseBaseUrl;
 
     [ObservableProperty]
-    private string _remoteReleaseVersion = GuiSettings.DefaultReleaseVersion;
+    private string _remoteReleaseVersion = DeploySettings.LatestVersion;
 
     [ObservableProperty]
     private string _remoteDownloadProxy = "";
 
     /** 下载位置: auto(先远端后本地)/client(仅本地下发)/server(仅远端直下)。 */
     [ObservableProperty]
-    private string _remoteDownloadVia = "auto";
+    private string _remoteDownloadVia = DownloadVia.Auto;
 
     /** 远端直下时的代理(为空则用远端自带代理/直连)。 */
     [ObservableProperty]
     private string _remoteServerProxy = "";
 
-    internal RemoteDsharpInstaller.Options BuildDeployOptions()
-        => new(
-            RemoteReleaseBaseUrl,
-            RemoteReleaseVersion,
-            string.IsNullOrWhiteSpace(RemoteDownloadProxy) ? null : RemoteDownloadProxy,
-            string.IsNullOrWhiteSpace(RemoteDownloadVia) ? "auto" : RemoteDownloadVia,
-            string.IsNullOrWhiteSpace(RemoteServerProxy) ? null : RemoteServerProxy);
+    internal DeploySettings BuildDeploySettings() => new()
+    {
+        AutoDeploy = RemoteAutoDeploy,
+        ReleaseBaseUrl = RemoteReleaseBaseUrl,
+        ReleaseVersion = RemoteReleaseVersion,
+        DownloadProxy = string.IsNullOrWhiteSpace(RemoteDownloadProxy) ? null : RemoteDownloadProxy,
+        Via = string.IsNullOrWhiteSpace(RemoteDownloadVia) ? DownloadVia.Auto : RemoteDownloadVia,
+        ServerProxy = string.IsNullOrWhiteSpace(RemoteServerProxy) ? null : RemoteServerProxy,
+    };
 
     /** 下载位置可选项(auto=先远端后本地)。 */
-    public IReadOnlyList<string> DownloadViaOptions { get; } = ["auto", "client", "server"];
+    public IReadOnlyList<string> DownloadViaOptions { get; } = [DownloadVia.Auto, DownloadVia.Client, DownloadVia.Server];
 
     /** 远程连接类操作进行中(测试连接/浏览目录), 期间禁用按钮避免重入。 */
     [ObservableProperty]
@@ -652,33 +655,34 @@ public sealed partial class SettingsViewModel : ObservableObject
             SelectedRemoteWorkspace = RemoteWorkspaces.FirstOrDefault();
     }
 
+    /** 远程工作区就是机器清单(fleet/machines.json)里的 SSH 机器, 与 CLI 的 `dsharp machine` 共用; CLI 加的本机条目原样保留。 */
     [RelayCommand]
     private void SaveRemoteWorkspaces()
     {
-        _gui.Save(_gui.Load() with
+        var store = new MachineStore(_home);
+        var others = store.Load().Machines.Where(machine => machine.Kind != MachineKinds.Ssh);
+        try
         {
-            RemoteWorkspaces = [.. RemoteWorkspaces.Select(row => row.ToModel())],
-            RemoteAutoDeploy = RemoteAutoDeploy,
-            RemoteReleaseBaseUrl = RemoteReleaseBaseUrl,
-            RemoteReleaseVersion = RemoteReleaseVersion,
-            RemoteDownloadProxy = RemoteDownloadProxy,
-            RemoteDownloadVia = RemoteDownloadVia,
-            RemoteServerProxy = RemoteServerProxy,
-        });
-        Status = $"远程工作区已保存（{RemoteWorkspaces.Count} 个）";
+            store.Save(new FleetConfig([.. others, .. RemoteWorkspaces.Select(row => row.ToModel())], BuildDeploySettings()));
+            Status = $"远程工作区已保存（{RemoteWorkspaces.Count} 个）";
+        }
+        catch (InvalidOperationException error)
+        {
+            Status = $"远程工作区未保存: {error.Message}";
+        }
     }
 
     private void LoadRemoteWorkspaces()
     {
-        var snapshot = _gui.Load();
-        RemoteAutoDeploy = snapshot.RemoteAutoDeploy;
-        RemoteReleaseBaseUrl = snapshot.RemoteReleaseBaseUrl;
-        RemoteReleaseVersion = snapshot.RemoteReleaseVersion;
-        RemoteDownloadProxy = snapshot.RemoteDownloadProxy;
-        RemoteDownloadVia = snapshot.RemoteDownloadVia;
-        RemoteServerProxy = snapshot.RemoteServerProxy;
+        var config = new MachineStore(_home).Load();
+        RemoteAutoDeploy = config.Deploy.AutoDeploy;
+        RemoteReleaseBaseUrl = config.Deploy.ReleaseBaseUrl;
+        RemoteReleaseVersion = config.Deploy.ReleaseVersion;
+        RemoteDownloadProxy = config.Deploy.DownloadProxy ?? "";
+        RemoteDownloadVia = config.Deploy.Via;
+        RemoteServerProxy = config.Deploy.ServerProxy ?? "";
         RemoteWorkspaces.Clear();
-        foreach (var workspace in snapshot.RemoteWorkspaces)
+        foreach (var workspace in config.Machines.Where(machine => machine.Kind == MachineKinds.Ssh))
         {
             var row = SshWorkspaceRowViewModel.From(workspace);
             row.Owner = this;
@@ -700,8 +704,8 @@ public sealed partial class SettingsViewModel : ObservableObject
             var workspace = row.ToModel();
             string? hostCommand = null;
             if (RemoteAutoDeploy)
-                hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, BuildDeployOptions(), message => Notify?.Invoke("远端部署", message, false), CancellationToken.None)).CommandPath;
-            Notify?.Invoke("连接成功", await SshRemoteWorkspaceLauncher.TestAsync(workspace, hostCommand, CancellationToken.None), false);
+                hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, BuildDeploySettings(), message => Notify?.Invoke("远端部署", message, false), CancellationToken.None)).CommandPath;
+            Notify?.Invoke("连接成功", await SshHostLauncher.TestAsync(workspace, hostCommand, GuiSettings.RemoteClientName, CancellationToken.None), false);
         }
         catch (Exception error)
         {
@@ -908,7 +912,7 @@ public sealed class PluginRowViewModel(string package, string description, bool 
     public string WireAction => $"{(Enabled ? "disable" : "enable")}:{Package}";
 }
 
-/** “远程”分页的一行: 可编辑字段, 保存时转回 SshWorkspace。 */
+/** “远程”分页的一行: 可编辑字段, 保存时转回机器清单里的 SSH 机器(界面不编辑的字段沿用原记录)。 */
 public sealed partial class SshWorkspaceRowViewModel : ObservableObject
 {
     public static IReadOnlyList<string> AuthModes { get; } = [SshAuth.Password, SshAuth.Key, SshAuth.Agent];
@@ -940,6 +944,9 @@ public sealed partial class SshWorkspaceRowViewModel : ObservableObject
     [ObservableProperty]
     private string? _remotePath;
 
+    /** 载入时的原记录: 保存时保留界面不编辑的字段(远端 harness home、额外 ssh 选项)。 */
+    private MachineSpec? _source;
+
     public bool IsPassword => Auth == SshAuth.Password;
 
     public bool IsKey => Auth == SshAuth.Key;
@@ -967,19 +974,22 @@ public sealed partial class SshWorkspaceRowViewModel : ObservableObject
 
     partial void OnPortChanged(string value) => OnPropertyChanged(nameof(Summary));
 
-    public SshWorkspace ToModel() => new(
-        Name,
-        Host,
-        int.TryParse(Port, out var port) ? port : 22,
-        User,
-        Auth,
-        KeyPath,
-        Proxy,
-        RemotePath,
-        Password);
-
-    public static SshWorkspaceRowViewModel From(SshWorkspace workspace) => new()
+    public MachineSpec ToModel() => (_source ?? MachineSpec.Ssh(Name, Host, MachineSpec.DefaultSshPort, User, Auth)) with
     {
+        Name = Name,
+        Host = Host,
+        Port = int.TryParse(Port, out var port) ? port : MachineSpec.DefaultSshPort,
+        User = User,
+        Auth = Auth,
+        KeyPath = KeyPath,
+        Proxy = Proxy,
+        RemotePath = RemotePath,
+        Password = Password,
+    };
+
+    public static SshWorkspaceRowViewModel From(MachineSpec workspace) => new()
+    {
+        _source = workspace,
         Name = workspace.Name,
         Host = workspace.Host,
         Port = workspace.Port.ToString(),

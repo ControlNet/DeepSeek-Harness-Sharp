@@ -7,6 +7,7 @@ using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
@@ -76,10 +77,10 @@ public sealed class GuiRemoteWorkspaceTests
     /** 与 Themes/Tokens.axaml 的 Layout.RemoteSectionMaxHeight 保持一致(布局断言用)。 */
     private const double RemoteSectionMaxHeight = 260;
 
-    private static IReadOnlyList<SshWorkspace> SampleWorkspaces() =>
+    private static IReadOnlyList<MachineSpec> SampleWorkspaces() =>
     [
-        new SshWorkspace("实验室 GPU", "gpu-box.internal", 22, "dev", SshAuth.Password, RemotePath: "~/dsh-deploy"),
-        new SshWorkspace("构建机", "build-box.internal", 22, "builder", SshAuth.Key, KeyPath: "~/.ssh/id_ed25519"),
+        MachineSpec.Ssh("实验室 GPU", "gpu-box.internal", 22, "dev", SshAuth.Password) with { RemotePath = "~/dsh-deploy" },
+        MachineSpec.Ssh("构建机", "build-box.internal", 22, "builder", SshAuth.Key) with { KeyPath = "~/.ssh/id_ed25519" },
     ];
 
     /** 工作区菜单里“最近工作区”与“打开新工作区…”之间应有“远程工作区”, 悬停右拉列出已保存条目; 设置页“远程”页签可编辑保存。 */
@@ -88,10 +89,7 @@ public sealed class GuiRemoteWorkspaceTests
     {
         var environment = await GuiTestEnvironment.CreateAsync();
         using var environmentScope = environment;
-        new GuiSettings(environment.App.Home).Save(new GuiSettings(environment.App.Home).Load() with
-        {
-            RemoteWorkspaces = SampleWorkspaces(),
-        });
+        new MachineStore(environment.App.Home).Save(FleetConfig.Empty with { Machines = SampleWorkspaces() });
 
         var window = new MainWindow(environment.App, environment.Agent);
         var viewModel = window.ViewModel!;
@@ -164,7 +162,7 @@ public sealed class GuiRemoteWorkspaceTests
 
         viewModel.Preferences.SelectedRemoteWorkspace!.Name = "改名后的工作区";
         viewModel.Preferences.SaveRemoteWorkspacesCommand.Execute(null);
-        Assert.Contains(new GuiSettings(environment.App.Home).Load().RemoteWorkspaces,
+        Assert.Contains(new MachineStore(environment.App.Home).Load().Machines,
             workspace => workspace.Name == "改名后的工作区");
 
         window.Close();
@@ -186,15 +184,7 @@ public sealed class GuiRemoteWorkspaceTests
         {
             var environment = await GuiTestEnvironment.CreateAsync();
             using var environmentScope = environment;
-            var settings = new GuiSettings(environment.App.Home);
-            settings.Save(settings.Load() with
-            {
-                RemoteWorkspaces =
-                [
-                    new SshWorkspace(spec.Name, spec.Host, spec.Port, spec.User, spec.Auth,
-                        RemotePath: spec.RemotePath, Password: spec.Password),
-                ],
-            });
+            new MachineStore(environment.App.Home).Save(FleetConfig.Empty with { Machines = [spec.ToMachine()] });
 
             var window = new MainWindow(environment.App, environment.Agent);
             var viewModel = window.ViewModel!;
@@ -307,17 +297,17 @@ public sealed class GuiRemoteWorkspaceTests
         TarFile.CreateFromDirectory(publish, tarPath, includeBaseDirectory: false);
         try
         {
-            var workspace = new SshWorkspace(spec.Name, spec.Host, spec.Port, spec.User, spec.Auth, RemotePath: spec.RemotePath, Password: spec.Password);
+            var workspace = spec.ToMachine();
             var result = await RemoteDsharpInstaller.EnsureAsync(
                 workspace,
-                new RemoteDsharpInstaller.Options("https://example.invalid", "latest", null),
+                new DeploySettings { ReleaseBaseUrl = "https://example.invalid", Via = DownloadVia.Client },
                 null,
                 TestContext.Current.CancellationToken,
                 (_, _, _) => Task.FromResult(tarPath));
             Assert.EndsWith("/dsharp", result.CommandPath);
             Assert.Contains("/.dsharp/", result.CommandPath.Replace('\\', '/'));
 
-            var summary = await SshRemoteWorkspaceLauncher.TestAsync(workspace, result.CommandPath, TestContext.Current.CancellationToken);
+            var summary = await SshHostLauncher.TestAsync(workspace, result.CommandPath, GuiSettings.RemoteClientName, TestContext.Current.CancellationToken);
             Assert.Contains("已连接", summary);
         }
         finally
@@ -380,5 +370,8 @@ public sealed class GuiRemoteWorkspaceTests
         string? Password = null,
         string? KeyPath = null,
         string? Proxy = null,
-        string? RemotePath = null);
+        string? RemotePath = null)
+    {
+        public MachineSpec ToMachine() => MachineSpec.Ssh(Name, Host, Port, User, Auth) with { RemotePath = RemotePath, Password = Password };
+    }
 }
