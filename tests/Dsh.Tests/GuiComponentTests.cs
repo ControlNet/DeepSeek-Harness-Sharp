@@ -8,6 +8,9 @@ namespace Dsh.Tests;
 /** GUI 里可独立验证的组件: 审批提示、消息折叠、token 统计、统一决策窗口。 */
 public sealed class GuiComponentTests
 {
+    /** Just above TokenStatsViewModel's 0.1 s floor for a measurable request. */
+    private static readonly TimeSpan MeasurableRequest = TimeSpan.FromMilliseconds(150);
+
     [Fact]
     public void ApprovalHints_PickPrimaryArgument_And_FlagDestructiveCommands()
     {
@@ -97,7 +100,8 @@ public sealed class GuiComponentTests
     [Fact]
     public void TokenStats_TrackUsageLatencyAndCache()
     {
-        var stats = new TokenStatsViewModel();
+        var clock = new ManualClock();
+        var stats = new TokenStatsViewModel(clock);
         stats.ObserveTurn(2, 3);
         Assert.Equal("轮 2 · 步 3", stats.Rounds);
 
@@ -111,7 +115,7 @@ public sealed class GuiComponentTests
         // 重放历史会话时事件瞬间连发, 这时算出来的 tok/s 没有意义, 应当留空。
         Assert.Equal(TokenStatsViewModel.Empty, stats.TokensPerSecond);
 
-        Thread.Sleep(150);
+        clock.Advance(MeasurableRequest);
         stats.ObserveUsage(new TokenUsage(1000, 200, CacheReadTokens: 500));
         Assert.NotEqual(TokenStatsViewModel.Empty, stats.TokensPerSecond);
 
@@ -229,5 +233,17 @@ public sealed class GuiComponentTests
             catalog.Select(choice => choice.ProviderId));
         Assert.All(catalog, choice => Assert.NotNull(choice.Type));
         Assert.All(catalog, choice => Assert.StartsWith(ProviderChoiceViewModel.CatalogPrefix, choice.Display, StringComparison.Ordinal));
+    }
+
+    /** Test clock: time moves only when the test advances it. */
+    private sealed class ManualClock : TimeProvider
+    {
+        private long _now;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => _now;
+
+        public void Advance(TimeSpan duration) => _now += duration.Ticks;
     }
 }
