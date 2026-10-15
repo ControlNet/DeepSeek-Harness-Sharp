@@ -215,11 +215,16 @@ public sealed class HttpFetchProvider : IWebFetchProvider
 {
     private readonly HttpFetchLimits _limits;
     private readonly Func<string, CancellationToken, Task<IReadOnlyList<PublicAddress>>> _resolveAddresses;
+    private readonly OutboundProxy _proxy;
 
-    public HttpFetchProvider(HttpFetchLimits? limits = null, Func<string, CancellationToken, Task<IReadOnlyList<PublicAddress>>>? resolveAddresses = null)
+    public HttpFetchProvider(
+        HttpFetchLimits? limits = null,
+        Func<string, CancellationToken, Task<IReadOnlyList<PublicAddress>>>? resolveAddresses = null,
+        OutboundProxy? proxy = null)
     {
         _limits = limits ?? new HttpFetchLimits();
         _resolveAddresses = resolveAddresses ?? ((host, token) => WebFetchHttpNetwork.ResolvePublicAddresses(host, token));
+        _proxy = proxy ?? new OutboundProxy();
     }
 
     public string Id => WebFetchHttpPolicy.LocalFetchProviderId;
@@ -296,13 +301,7 @@ public sealed class HttpFetchProvider : IWebFetchProvider
     {
         try
         {
-            var addresses = await _resolveAddresses(url.Host, signal).ConfigureAwait(false);
-            var handler = new SocketsHttpHandler
-            {
-                AllowAutoRedirect = false,
-                ConnectCallback = (context, token) => ConnectPinnedAsync(addresses, context.DnsEndPoint.Port, token),
-            };
-            var client = new HttpClient(handler, disposeHandler: true);
+            var client = new HttpClient(await HandlerFor(url, signal).ConfigureAwait(false), disposeHandler: true);
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -333,6 +332,27 @@ public sealed class HttpFetchProvider : IWebFetchProvider
         {
             throw new WebError($"web fetch failed: {error.Message}", WebErrorCodes.ProviderError, error);
         }
+    }
+
+    /**
+     * 直连时把连接钉在已校验的公网地址上, 防 DNS 重绑定。
+     * 经代理时连接的是代理而非目标, 无法钉住目标地址: 只拦截非公网 IP 字面量, 域名由代理(即出口)解析。
+     */
+    private async Task<SocketsHttpHandler> HandlerFor(Uri url, CancellationToken signal)
+    {
+        if (_proxy.ProxyFor(url) is not null)
+        {
+            if (WebFetchHttpNetwork.IsNonPublicIpLiteral(url.Host))
+                throw new WebError($"URL hostname \"{url.Host}\" is a non-public IP address", WebErrorCodes.BlockedUrl);
+            return _proxy.CreateHandler(allowAutoRedirect: false);
+        }
+        var addresses = await _resolveAddresses(url.Host, signal).ConfigureAwait(false);
+        return new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            UseProxy = false,
+            ConnectCallback = (context, token) => ConnectPinnedAsync(addresses, context.DnsEndPoint.Port, token),
+        };
     }
 
     private static async ValueTask<Stream> ConnectPinnedAsync(IReadOnlyList<PublicAddress> addresses, int port, CancellationToken signal)
@@ -456,7 +476,7 @@ public static class WebFetchHttp
             MaxRedirects = resolved.MaxRedirects,
             UserAgent = resolved.UserAgent,
         };
-        return web.RegisterFetchProvider(new HttpFetchProvider(limits));
+        return web.RegisterFetchProvider(new HttpFetchProvider(limits, proxy: OutboundProxy.FromContext(ctx)));
     }
 
     private static WebFetchHttpConfig FromDictionary(IReadOnlyDictionary<string, object?> dict)

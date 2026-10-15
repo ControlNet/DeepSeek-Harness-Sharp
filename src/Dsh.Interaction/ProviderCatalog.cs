@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Dsh.Boot;
 using Dsh.Llm;
+using Dsh.Runtime;
 
 namespace Dsh.Interaction;
 
@@ -55,7 +56,7 @@ public static class ProviderCatalog
 
     private const string CacheFileName = "models-dev.json";
     private static readonly TimeSpan FreshFor = TimeSpan.FromDays(7);
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(20) };
+    private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(20);
 
     public static string CacheFile(HarnessHome home) => Path.Combine(home.CachePath, CacheFileName);
 
@@ -152,6 +153,7 @@ public static class ProviderCatalog
     /** 缓存过期(或强制)时联网拉取并写缓存; 失败时退回已有缓存(附错误说明)。 */
     public static async Task<ProviderCatalogSnapshot> LoadAsync(
         HarnessHome home,
+        OutboundProxy proxy,
         bool refresh,
         CancellationToken signal = default)
     {
@@ -160,7 +162,8 @@ public static class ProviderCatalog
             return cached;
         try
         {
-            var json = await Http.GetStringAsync(SourceUrl, signal);
+            using var http = new HttpClient(proxy.CreateHandler()) { Timeout = FetchTimeout };
+            var json = await http.GetStringAsync(SourceUrl, signal);
             var snapshot = Parse(json);
             // 存储根可能已被删除(测试结束清理 / 用户切换 home): 不重建目录, 否则会留下"只剩 cache"的空家目录。
             if (!Directory.Exists(home.Root))

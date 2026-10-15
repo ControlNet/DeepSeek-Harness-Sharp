@@ -72,6 +72,7 @@ internal sealed class DeepSeekAdapterFactory(string homeRoot, Context ctx) : ILl
                 throw new LlmException(new LlmFailure(reason, LlmFailureCodes.InvalidCredential));
             },
             ResolveUserId = () => AnonymousUserId.Resolve(homeRoot),
+            HttpClient = new HttpClient(OutboundProxy.FromContext(ctx).CreateHandler()),
         });
     }
 

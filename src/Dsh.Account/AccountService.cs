@@ -55,7 +55,7 @@ public sealed class AccountService : Service, IAccountService, IInferenceCredent
         Origin = ResolveOrigin(config);
         InferenceOrigin = AccountOrigins.InferenceOrigin(config.InferenceOrigin);
         _store = new AccountStore(home, protector);
-        var handler = httpHandler ?? new HttpClientHandler { AllowAutoRedirect = false };
+        var handler = httpHandler ?? OutboundProxy.FromContext(ctx).CreateHandler(allowAutoRedirect: false);
         _client = new PlatformClient(handler, Origin, config.ClientPlatform, Version(), config.Locale, config.RequestTimeoutMs, disposeHandler: true, Log);
         ctx.Provide(IInferenceCredentials.ServiceName, this, Check);
     }

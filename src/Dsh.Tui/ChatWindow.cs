@@ -2871,7 +2871,7 @@ public sealed class ChatWindow : IDisposable
     {
         try
         {
-            var snapshot = await ProviderCatalog.LoadAsync(_home, refresh: false);
+            var snapshot = await ProviderCatalog.LoadAsync(_home, OutboundProxy.FromContext(_ctx), refresh: false);
             _providerCatalog = snapshot;
             _providerCatalogCandidates = CatalogCandidates(snapshot);
             if (snapshot.Error is { Length: > 0 } error)

@@ -44,6 +44,9 @@ public sealed class HarnessSettings
     [YamlMember(Alias = "storage")]
     public StorageSettings? Storage { get; set; }
 
+    [YamlMember(Alias = "network")]
+    public NetworkSettings? Network { get; set; }
+
     [YamlIgnore]
     public Dictionary<string, PluginSetting> Plugins { get; set; } = [];
 
