@@ -76,7 +76,7 @@ public sealed class FleetSshEndToEndTests
             ssh.Kill();
             await FleetConnectionTests.WaitForAsync(() => states.Contains(MachineConnectionState.Reconnecting)
                 && connection.State == MachineConnectionState.Connected && connection.LinkProcess is { } next && next != ssh);
-            Assert.Contains(connection.Sessions, session => session.SessionId == shell && session.Kind == HostSessionKinds.Terminal);
+            await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session.SessionId == shell && session.Kind == HostSessionKinds.Terminal));
 
             await AssertCliSeesTheMachineAsync(executable, machine, shell);
         }

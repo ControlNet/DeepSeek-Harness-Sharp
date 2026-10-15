@@ -166,7 +166,15 @@ public sealed class FleetLocalHostTests
         await using var connection = new MachineConnection(MachineSpec.Local(home), FleetConnectionTests.TestOptions);
         connection.Start();
         await connection.WaitSettledAsync(Ct);
-        await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session.SessionId == sessionId && session.Status == status));
+        try
+        {
+            await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session.SessionId == sessionId && session.Status == status));
+        }
+        catch (OperationCanceledException) when (!Ct.IsCancellationRequested)
+        {
+            var sessions = string.Join(", ", connection.Sessions.Select(session => $"{session.SessionId}={session.Status}"));
+            Assert.Fail($"{sessionId} never became {status}; connection {connection.State} ({connection.Detail}); sessions: {sessions}");
+        }
     }
 
     private static async Task PumpAsync(PtySession session, StringBuilder transcript)

@@ -243,6 +243,8 @@ public sealed class GuiWorkspaceTests
                 await session.AddShellCommand.ExecuteAsync(null);
                 var shellTab = session.Tabs[^1];
                 Assert.True(shellTab is { IsClosable: true, IsSelected: true });
+                // The shell's session reaches the fleet through the host's session push, after the command has returned.
+                await UntilAsync(() => workspace.Fleet.Find("alpha")!.Sessions.Any(item => item.Kind == HostSessionKinds.Terminal), "the shell's session");
                 var shellSessions = workspace.Fleet.Find("alpha")!.Sessions.Where(item => item.Kind == HostSessionKinds.Terminal).ToList();
                 shellTab.Terminal!.Session!.Send("pwd\r"u8);
                 // On a CI checkout the project path is longer than the 80 columns, so pwd prints it across two rows.
