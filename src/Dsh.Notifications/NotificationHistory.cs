@@ -87,21 +87,21 @@ public sealed class NotificationHistory
         return true;
     }
 
-    /** Marks the given notifications read; returns how many were unread before. */
-    public Task<int> MarkReadAsync(IEnumerable<string> ids, CancellationToken cancellationToken = default)
+    /** Marks the given notifications read; returns the ids that were unread before. */
+    public Task<IReadOnlyList<string>> MarkReadAsync(IEnumerable<string> ids, CancellationToken cancellationToken = default)
     {
         var wanted = ids.ToHashSet(StringComparer.Ordinal);
         return MarkAsync(record => wanted.Contains(record.Id), cancellationToken);
     }
 
     /** Marks every matching notification read, e.g. everything of one session after the user opened it. */
-    public Task<int> MarkAllReadAsync(NotificationFilter? filter = null, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<string>> MarkAllReadAsync(NotificationFilter? filter = null, CancellationToken cancellationToken = default)
     {
         var matcher = filter ?? NotificationFilter.All;
         return MarkAsync(matcher.Matches, cancellationToken);
     }
 
-    private async Task<int> MarkAsync(Func<NotificationRecord, bool> predicate, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<string>> MarkAsync(Func<NotificationRecord, bool> predicate, CancellationToken cancellationToken)
     {
         await _writeGate.WaitAsync(cancellationToken);
         List<string> changed;
@@ -117,7 +117,7 @@ public sealed class NotificationHistory
         }
         if (changed.Count > 0)
             Changed?.Invoke();
-        return changed.Count;
+        return changed;
     }
 
     private List<string> MarkInMemory(Func<NotificationRecord, bool> predicate)

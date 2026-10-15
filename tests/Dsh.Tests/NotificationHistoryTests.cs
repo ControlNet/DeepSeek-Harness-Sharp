@@ -46,7 +46,7 @@ public sealed class NotificationHistoryTests : IDisposable
 
         var reopened = await OpenAsync();
 
-        Assert.Equal((2, 0), (marked, markedAgain));
+        Assert.Equal((2, 0), (marked.Count, markedAgain.Count));
         Assert.Equal(3, (await File.ReadAllLinesAsync(FilePath, TestContext.Current.CancellationToken)).Length);
         Assert.All(reopened.Query(), record => Assert.True(record.IsRead));
         Assert.Equal(0, reopened.CountUnread());

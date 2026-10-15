@@ -17,6 +17,7 @@ public sealed class AcpAgentProcess : IAsyncDisposable
     private readonly Process _process;
     private readonly StringBuilder _standardError = new();
     private readonly Lock _standardErrorLock = new();
+    private readonly TaskCompletionSource<int> _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private AcpAgentProcess(Process process)
     {
@@ -29,6 +30,9 @@ public sealed class AcpAgentProcess : IAsyncDisposable
     public int ProcessId => _process.Id;
 
     public bool HasExited => _process.HasExited;
+
+    /** Completes with the exit code once the agent process has exited (killed by DisposeAsync or on its own). */
+    public Task<int> Exited => _exited.Task;
 
     /** The most recent stderr output of the agent, bounded to a few kilobytes. */
     public string StandardErrorTail
@@ -70,11 +74,26 @@ public sealed class AcpAgentProcess : IAsyncDisposable
         process.Start();
         var agent = new AcpAgentProcess(process);
         process.ErrorDataReceived += (_, line) => agent.AppendStandardError(line.Data);
+        process.Exited += (_, _) => agent.RecordExit();
         process.BeginErrorReadLine();
+        if (process.HasExited)
+            agent.RecordExit();
         return agent;
     }
 
     public Task WaitForExitAsync(CancellationToken cancellationToken = default) => _process.WaitForExitAsync(cancellationToken);
+
+    /** The Exited event may still be in flight when DisposeAsync releases the process; a disposed process has no exit code to read. */
+    private void RecordExit()
+    {
+        try
+        {
+            _exited.TrySetResult(_process.ExitCode);
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
 
     private void AppendStandardError(string? line)
     {
@@ -103,6 +122,7 @@ public sealed class AcpAgentProcess : IAsyncDisposable
             _process.Kill(entireProcessTree: true);
             await _process.WaitForExitAsync();
         }
+        RecordExit();
         _process.Dispose();
     }
 }
