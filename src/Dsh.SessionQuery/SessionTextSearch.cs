@@ -4,8 +4,6 @@ using Microsoft.Data.Sqlite;
 
 namespace Dsh.SessionQuery;
 
-public sealed record SessionQueryHit(string SessionId, long Seq, string Type, string Snippet);
-
 /** 会话事件文本的检索后端:有 SQLite 时用 FTS5,缺失时用进程内匹配;数据始终来自本地会话文件。 */
 public interface ISessionTextSearch : IDisposable
 {

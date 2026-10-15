@@ -14,7 +14,6 @@ using Dsh.Llm;
 using Dsh.RemoteHost;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
-using Dsh.SessionQuery;
 
 namespace Dsh.Gui.ViewModels;
 
@@ -395,7 +394,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             await Task.Delay(ContentSearchDebounceMs, signal);
-            var service = _ctx.Get<SessionQueryService>(SessionQueryService.ServiceName, false);
+            var service = _ctx.Get<ISessionQueryService>(ISessionQueryService.ServiceName, false);
             if (service is null)
                 return;
             foreach (var hit in service.Search(query, ContentSearchLimit))
