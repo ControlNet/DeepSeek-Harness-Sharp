@@ -15,12 +15,14 @@ public sealed class FleetConnectionTests
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    /** Fast heartbeat and backoff so that drops are noticed and repaired within the test's time budget. */
+    /**
+     * Fast heartbeat and backoff so that drops are noticed and repaired within the test's time budget.
+     * The ping timeout stays at the default: a stopped host closes the connection and fails the next ping at once, while a short timeout drops healthy links on a loaded machine.
+     */
     internal static readonly FleetOptions TestOptions = new()
     {
         ClientName = "fleet-test",
         HeartbeatInterval = TimeSpan.FromMilliseconds(200),
-        HeartbeatTimeout = TimeSpan.FromSeconds(2),
         InitialBackoff = TimeSpan.FromMilliseconds(100),
         MaxBackoff = TimeSpan.FromSeconds(1),
     };
