@@ -1196,7 +1196,7 @@ public class ChatWindowMenuTests : IDisposable
     public async Task TimestampCandidates_IncludeIdeHistory_OnlyWhenTimelineEnabled()
     {
         using (var chat = await CreateChat(configure: (ctx, _) =>
-            ctx.Provide(Dsh.IdeHistory.IIdeHistoryService.ServiceName, new StubIdeHistoryService(timelineEnabled: false))))
+            ctx.Provide(IIdeHistoryService.ServiceName, new StubIdeHistoryService(timelineEnabled: false))))
         {
             Type(chat, "message for timeline");
             Press(chat, ConsoleKey.Enter);
@@ -1205,7 +1205,7 @@ public class ChatWindowMenuTests : IDisposable
         }
 
         using (var chat = await CreateChat(configure: (ctx, _) =>
-            ctx.Provide(Dsh.IdeHistory.IIdeHistoryService.ServiceName, new StubIdeHistoryService(timelineEnabled: true))))
+            ctx.Provide(IIdeHistoryService.ServiceName, new StubIdeHistoryService(timelineEnabled: true))))
         {
             Type(chat, "message for timeline");
             Press(chat, ConsoleKey.Enter);
@@ -1216,16 +1216,16 @@ public class ChatWindowMenuTests : IDisposable
         }
     }
 
-    private sealed class StubIdeHistoryService(bool timelineEnabled) : Dsh.IdeHistory.IIdeHistoryService
+    private sealed class StubIdeHistoryService(bool timelineEnabled) : IIdeHistoryService
     {
         public bool TimelineEnabled { get; } = timelineEnabled;
 
-        public Dsh.IdeHistory.IdeWorkspaceKind WorkspaceKind(string? workspaceRoot) => Dsh.IdeHistory.IdeWorkspaceKind.VsCode;
+        public IdeWorkspaceKind WorkspaceKind(string? workspaceRoot) => IdeWorkspaceKind.VsCode;
 
-        public IReadOnlyList<Dsh.IdeHistory.IdeHistoryEntry> Query(string? workspaceRoot, long? from, long? to, string? path = null)
+        public IReadOnlyList<IdeHistoryEntry> Query(string? workspaceRoot, long? from, long? to, string? path = null)
             =>
             [
-                new Dsh.IdeHistory.IdeHistoryEntry
+                new IdeHistoryEntry
                 {
                     Provider = "vscode",
                     Path = Path.Combine(workspaceRoot ?? Environment.CurrentDirectory, "app.cs"),
@@ -1235,7 +1235,7 @@ public class ChatWindowMenuTests : IDisposable
                 },
             ];
 
-        public Dsh.IdeHistory.IdeHistoryContent? Read(Dsh.IdeHistory.IdeHistoryEntry entry)
+        public IdeHistoryContent? Read(IdeHistoryEntry entry)
             => new() { Bytes = "x"u8.ToArray(), Origin = "stub" };
     }
 
@@ -1243,7 +1243,7 @@ public class ChatWindowMenuTests : IDisposable
     [Fact]
     public void IdeTarget_Value_RoundTrips()
     {
-        var entry = new Dsh.IdeHistory.IdeHistoryEntry
+        var entry = new IdeHistoryEntry
         {
             Provider = "vscode",
             Path = @"C:\proj dir\app.cs",

@@ -4,7 +4,6 @@ using Dsh.Runtime.Events;
 using System.Globalization;
 using Dsh.Boot;
 using Dsh.Core;
-using Dsh.IdeHistory;
 using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Tui.Services;

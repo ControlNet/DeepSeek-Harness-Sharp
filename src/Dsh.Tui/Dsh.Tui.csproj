@@ -9,7 +9,6 @@
     <ProjectReference Include="..\Dsh.Runtime\Dsh.Runtime.csproj" />
     <ProjectReference Include="..\Dsh.Interaction\Dsh.Interaction.csproj" />
     <ProjectReference Include="..\Dsh.Pty\Dsh.Pty.csproj" />
-    <ProjectReference Include="..\Dsh.IdeHistory\Dsh.IdeHistory.csproj" />
   </ItemGroup>
 
   <ItemGroup>

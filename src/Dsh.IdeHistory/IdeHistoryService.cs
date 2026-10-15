@@ -1,4 +1,5 @@
 using Dsh.Runtime;
+using Dsh.Core;
 
 namespace Dsh.IdeHistory;
 
@@ -50,27 +51,6 @@ public sealed record IdeHistoryOptions
         double number => (int)number,
         _ => DefaultTimelineLimit,
     };
-}
-
-/**
- * 供 TUI/GUI 复用的 IDE 历史服务(§5): 与 checkpoints 无依赖, 关掉检查点也照常可用。
- * 查询按工作区门控(§3): 只有工作区带对应 IDE 标记时才查该 provider; 无标记返回空(不做全局扫描)。
- */
-public interface IIdeHistoryService
-{
-    public const string ServiceName = "ideHistory";
-
-    /** 当前工作区命中的 IDE 标记(无标记即 None)。 */
-    IdeWorkspaceKind WorkspaceKind(string? workspaceRoot);
-
-    /** 是否把 IDE 历史并进 `/timestamp` 时间线(插件参数 `timeline`, 默认 false)。 */
-    bool TimelineEnabled { get; }
-
-    /** 工作区内的历史条目(时间倒序, 上限见配置); 只查被工作区启用且配置允许的 provider。 */
-    IReadOnlyList<IdeHistoryEntry> Query(string? workspaceRoot, long? from, long? to, string? path = null);
-
-    /** 读某个条目的内容(供 revert 写回工作区)。 */
-    IdeHistoryContent? Read(IdeHistoryEntry entry);
 }
 
 public sealed class IdeHistoryService(Context ctx, IdeHistoryRegistry registry, IdeHistoryOptions options)
