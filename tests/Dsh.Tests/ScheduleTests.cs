@@ -347,6 +347,9 @@ public static class ScheduleTests
     /** A real agent loop with a scripted model: proves where reminders land relative to turns. */
     public sealed class AgentLoopDelivery
     {
+        /** Bounds every wait so a stuck turn fails this test instead of hanging the whole run. */
+        private static readonly TimeSpan TurnDeadline = TimeSpan.FromSeconds(30);
+
         private sealed class ScriptedAdapter : LlmAdapter
         {
             private readonly Queue<Func<Task<IReadOnlyList<StreamChunk>>>> _script = new();
@@ -453,11 +456,11 @@ public static class ScheduleTests
             var agent = await fixture.Open();
 
             agent.Followup(MessageFactory.CreateUserText("remind me in 30 seconds"));
-            await agent.WhenIdle();
+            await agent.WhenIdle().WaitAsync(TurnDeadline, TestContext.Current.CancellationToken);
             Assert.Equal(2, fixture.Adapter.Requests.Count);
 
             fixture.Time.Advance(TimeSpan.FromSeconds(30));
-            await agent.WhenIdle();
+            await agent.WhenIdle().WaitAsync(TurnDeadline, TestContext.Current.CancellationToken);
 
             Assert.Equal(3, fixture.Adapter.Requests.Count);
             Assert.Equal(2, TurnsOf(agent));
@@ -479,11 +482,11 @@ public static class ScheduleTests
             fixture.Schedules.Create(agent, "ping", "ping me", new ScheduleTiming.After(30));
 
             agent.Followup(MessageFactory.CreateUserText("long work"));
-            await fixture.Adapter.FirstRequest.Task;
+            await fixture.Adapter.FirstRequest.Task.WaitAsync(TurnDeadline, TestContext.Current.CancellationToken);
             fixture.Time.Advance(TimeSpan.FromSeconds(30));
             Assert.Single(fixture.Adapter.Requests);
             release.SetResult();
-            await agent.WhenIdle();
+            await agent.WhenIdle().WaitAsync(TurnDeadline, TestContext.Current.CancellationToken);
 
             Assert.Equal(2, fixture.Adapter.Requests.Count);
             Assert.False(CarriesReminder(fixture.Adapter.Requests[0]));
@@ -501,7 +504,7 @@ public static class ScheduleTests
             fixture.Schedules.Create(agent, "goal", "create a goal to ship it", new ScheduleTiming.After(30));
 
             fixture.Time.Advance(TimeSpan.FromSeconds(30));
-            await agent.WhenIdle();
+            await agent.WhenIdle().WaitAsync(TurnDeadline, TestContext.Current.CancellationToken);
 
             var result = agent.Session.SnapshotEvents().Select(sessionEvent => sessionEvent.Data).OfType<ToolResultPayload>().Single();
             Assert.Equal(GoalAuthority.AuthorityRequiredCode, result.Error?.Code);
@@ -540,7 +543,7 @@ public static class ScheduleTests
                     var deadline = DateTime.UtcNow + DeliveryDeadline;
                     while (!ReminderReachedModel(resumed.Session) && DateTime.UtcNow < deadline)
                         await Task.Delay(TimeSpan.FromMilliseconds(20), TestContext.Current.CancellationToken);
-                    await resumed.WhenIdle();
+                    await resumed.WhenIdle().WaitAsync(DeliveryDeadline, TestContext.Current.CancellationToken);
 
                     Assert.True(ReminderReachedModel(resumed.Session), "the overdue reminder did not start a turn after resume");
                     Assert.Contains(
