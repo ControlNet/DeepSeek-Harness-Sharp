@@ -1,7 +1,7 @@
 namespace Dsh.Llm;
 
 /**
- * models.dev 快照的推理能力源。
+ * models.dev 快照的模型能力源(推理强度与输入模态)。
  * providerKey 用于有明确协议身份的适配器(deepseek/anthropic 等 wire, 与 settings 里用户自定义的 provider 名无关);
  * 通用 openai-compatible 没有身份, 只按 baseUrl 主机名对照 models.dev 的 provider.api;
  * 两者都映射不到(中转站)返回 null, 由上层判定"不提供推理"。
@@ -20,13 +20,19 @@ public sealed class ModelsDevReasoningSource : IModelReasoningSource
     }
 
     public LlmModelReasoningInfo? ReasoningFor(string model)
+        => ProviderKey() is { } key ? ModelsDevCatalog.Embedded.ReasoningFor(key, model) : null;
+
+    /** 模型的输入模态; provider 或模型不在目录里时返回 null(未知, 而不是"仅文本")。 */
+    public IReadOnlyList<string>? InputModalitiesFor(string model)
+        => ProviderKey() is { } key ? ModelsDevCatalog.Embedded.InputModalitiesFor(key, model) : null;
+
+    private string? ProviderKey()
     {
-        var catalog = ModelsDevCatalog.Embedded;
         if (!_resolved)
         {
-            _key = _providerKey is { Length: > 0 } key ? key : catalog.ProviderKeyFor(_baseUrl);
+            _key = _providerKey is { Length: > 0 } key ? key : ModelsDevCatalog.Embedded.ProviderKeyFor(_baseUrl);
             _resolved = true;
         }
-        return _key is null ? null : catalog.ReasoningFor(_key, model);
+        return _key;
     }
 }

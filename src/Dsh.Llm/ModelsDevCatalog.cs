@@ -30,11 +30,16 @@ public sealed class ModelsDevCatalog
 
     private readonly IReadOnlyList<ModelsDevProvider> _providers;
     private readonly Dictionary<string, LlmModelReasoningInfo> _reasoning;
+    private readonly Dictionary<string, IReadOnlyList<string>> _inputModalities;
 
-    private ModelsDevCatalog(IReadOnlyList<ModelsDevProvider> providers, Dictionary<string, LlmModelReasoningInfo> reasoning)
+    private ModelsDevCatalog(
+        IReadOnlyList<ModelsDevProvider> providers,
+        Dictionary<string, LlmModelReasoningInfo> reasoning,
+        Dictionary<string, IReadOnlyList<string>> inputModalities)
     {
         _providers = providers;
         _reasoning = reasoning;
+        _inputModalities = inputModalities;
     }
 
     public IReadOnlyList<ModelsDevProvider> Providers => _providers;
@@ -42,6 +47,10 @@ public sealed class ModelsDevCatalog
     /** 推理强度: 键为 "provider/model"; provider 用 models.dev 的 provider 键(如 deepseek/anthropic)。 */
     public LlmModelReasoningInfo? ReasoningFor(string provider, string model)
         => _reasoning.TryGetValue($"{provider}/{model}", out var reasoning) ? reasoning : null;
+
+    /** 输入模态(models.dev 的 modalities.input, 如 text/image/pdf): 键同 ReasoningFor; 目录未声明返回 null。 */
+    public IReadOnlyList<string>? InputModalitiesFor(string provider, string model)
+        => _inputModalities.GetValueOrDefault($"{provider}/{model}");
 
     /**
      * 把端点的 baseUrl 映射到 models.dev 的 provider 键(models.dev 的 provider.api);
@@ -86,7 +95,7 @@ public sealed class ModelsDevCatalog
         using var stream = typeof(ModelsDevCatalog).Assembly
             .GetManifestResourceStream("Dsh.Llm.Resources.models-dev.json");
         if (stream is null)
-            return new ModelsDevCatalog([], []);
+            return new ModelsDevCatalog([], [], []);
         using var buffer = new MemoryStream(stream.CanSeek ? (int)stream.Length : 0);
         stream.CopyTo(buffer);
         return Parse(buffer.GetBuffer().AsMemory(0, (int)buffer.Length));
@@ -96,9 +105,11 @@ public sealed class ModelsDevCatalog
     {
         using var document = JsonDocument.Parse(json);
         if (document.RootElement.ValueKind != JsonValueKind.Object)
-            return new ModelsDevCatalog([], []);
+            return new ModelsDevCatalog([], [], []);
         var providers = new List<ModelsDevProvider>();
         var reasoning = new Dictionary<string, LlmModelReasoningInfo>(StringComparer.Ordinal);
+        var inputModalities = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        var modalitySets = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         foreach (var property in document.RootElement.EnumerateObject())
         {
             var entry = property.Value;
@@ -115,6 +126,8 @@ public sealed class ModelsDevCatalog
                     modelIndex.Append(model.Name);
                     if (ReasoningOf(model.Value) is { } info)
                         reasoning[$"{id}/{model.Name}"] = info;
+                    if (InputModalitiesOf(model.Value, modalitySets) is { } modalities)
+                        inputModalities[$"{id}/{model.Name}"] = modalities;
                 }
             }
             providers.Add(new ModelsDevProvider(
@@ -126,7 +139,23 @@ public sealed class ModelsDevCatalog
                 modelIndex.ToString()));
         }
         providers.Sort((left, right) => string.CompareOrdinal(left.Id, right.Id));
-        return new ModelsDevCatalog(providers, reasoning);
+        return new ModelsDevCatalog(providers, reasoning, inputModalities);
+    }
+
+    /** 同一组模态在目录里反复出现, 按内容共享同一个列表实例。 */
+    private static IReadOnlyList<string>? InputModalitiesOf(JsonElement model, Dictionary<string, IReadOnlyList<string>> shared)
+    {
+        if (model.ValueKind != JsonValueKind.Object
+            || !model.TryGetProperty("modalities", out var modalities)
+            || modalities.ValueKind != JsonValueKind.Object)
+            return null;
+        var input = Strings(modalities, "input");
+        if (input.Count == 0)
+            return null;
+        var key = string.Join(',', input);
+        if (!shared.TryGetValue(key, out var list))
+            shared[key] = list = input;
+        return list;
     }
 
     private static LlmModelReasoningInfo? ReasoningOf(JsonElement model)

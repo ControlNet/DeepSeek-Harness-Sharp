@@ -3,6 +3,9 @@ using System.Text;
 using Dsh.Runtime;
 using Dsh.Core;
 using Dsh.Llm;
+using Dsh.Tools;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 
 namespace Dsh.Tests;
 
@@ -91,7 +94,7 @@ public class AgentLoopIntegrationTests
         public AgentRegistry Agents { get; }
         public AgentLoop Loop { get; }
 
-        public HarnessFixture(string baseUrl, bool inHistory = false, ResolvedRetryPolicy? retryPolicy = null, AgentLoopConfig? loopConfig = null)
+        public HarnessFixture(string baseUrl, bool inHistory = false, ResolvedRetryPolicy? retryPolicy = null, AgentLoopConfig? loopConfig = null, IReadOnlyList<string>? inputModalities = null)
         {
             Ctx = new Context();
             Sessions = new SessionStore(Ctx);
@@ -108,6 +111,7 @@ public class AgentLoopIntegrationTests
                 Dsh.Llm.DeepSeek.DeepSeekConnectionOptions.DefaultContextWindowValue,
                 [new Dsh.Llm.DeepSeek.DeepSeekCatalogModel(
                     "test-model",
+                    InputModalities: inputModalities,
                     SystemPromptUpdate: inHistory ? SystemPromptUpdateModes.InHistory : null)],
                 Dsh.Llm.DeepSeek.DeepSeekConnectionOptions.DefaultStreamIdleTimeoutMs,
                 retryPolicy ?? ResolvedRetryPolicy.Resolve(null, "test"));
@@ -409,5 +413,81 @@ public class AgentLoopIntegrationTests
         var single = Assert.Single(messages, message => message.Role == MessageRole.System);
         Assert.Contains("persona v2", Assert.IsType<TextBlock>(single.Content[0]).Text);
         Assert.Equal(1, server.LastRequestBody!.Split("\"role\":\"system\"").Length - 1);
+    }
+
+    [Fact]
+    public async Task ReadImage_ToolResultImage_ReachesTheNextRequest()
+    {
+        var (agent, requests, png) = await RunReadImageTurn(["text", "image"]);
+
+        var toolResult = agent.Session.SnapshotEvents().Select(e => e.Data).OfType<ToolResultPayload>().Single();
+        Assert.False(toolResult.Message.Block.IsError);
+        using var body = System.Text.Json.JsonDocument.Parse(requests[1]);
+        var messages = body.RootElement.GetProperty("messages").EnumerateArray().ToList();
+        Assert.Equal(["tool", "user"], messages[^2..].Select(message => message.GetProperty("role").GetString()));
+        Assert.Contains("<type>image</type>", messages[^2].GetProperty("content").GetString());
+        var image = messages[^1].GetProperty("content").EnumerateArray().Single(part => part.GetProperty("type").GetString() == "image_url");
+        Assert.Equal($"data:image/png;base64,{Convert.ToBase64String(png)}", image.GetProperty("image_url").GetProperty("url").GetString());
+    }
+
+    [Fact]
+    public async Task ReadImage_TextOnlyModel_ReturnsAnErrorInsteadOfAnImage()
+    {
+        var (agent, requests, _) = await RunReadImageTurn(null);
+
+        var toolResult = agent.Session.SnapshotEvents().Select(e => e.Data).OfType<ToolResultPayload>().Single();
+        Assert.True(toolResult.Message.Block.IsError);
+        Assert.Contains("does not accept image input", MessageText.Flatten(toolResult.Message.Block.Content));
+        Assert.DoesNotContain("image_url", requests[1]);
+    }
+
+    private static async Task<(AgentLoopAgent Agent, List<string> Requests, byte[] Png)> RunReadImageTurn(IReadOnlyList<string>? inputModalities)
+    {
+        var requests = new List<string>();
+        using var server = new MockDeepSeekServer(body =>
+        {
+            requests.Add(body);
+            return requests.Count == 1
+                ?
+                [
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_image\",\"arguments\":\"{\\\"file_path\\\":\\\"shot.png\\\"}\"}}]}}]}",
+                    "",
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
+                    "",
+                    "data: [DONE]",
+                    "",
+                ]
+                :
+                [
+                    """data: {"choices":[{"delta":{"content":"done"}}]}""",
+                    "",
+                    """data: {"choices":[{"delta":{},"finish_reason":"stop"}]}""",
+                    "",
+                    "data: [DONE]",
+                    "",
+                ];
+        });
+        using var fixture = new HarnessFixture(server.BaseUrl, inputModalities: inputModalities);
+        var directory = Path.Combine(Path.GetTempPath(), $"dsh-read-image-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using (var image = new Image<Rgba32>(24, 16, new Rgba32(200, 40, 40)))
+                await image.SaveAsPngAsync(Path.Combine(directory, "shot.png"), TestContext.Current.CancellationToken);
+            _ = new FileAttachmentStore(fixture.Ctx, Path.Combine(directory, "attachments"));
+            ReadImageTool.Register(fixture.Ctx);
+            var handle = await fixture.Agents.Create(new CreateAgentOptions(
+                SessionId.Create($"session-read-image-{Guid.NewGuid():N}"),
+                directory,
+                new AgentOptions("test-provider", "test-model")), TestContext.Current.CancellationToken);
+            var agent = (AgentLoopAgent)handle.Agent;
+            agent.Followup(MessageFactory.CreateUserText("look at shot.png"));
+            await agent.WhenIdle();
+            return (agent, requests, await File.ReadAllBytesAsync(Path.Combine(directory, "shot.png"), TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 }
