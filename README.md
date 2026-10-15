@@ -49,6 +49,14 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 7. 看图:模型可调用 `read_image` 工具读取本地图片(PNG/JPEG/GIF/WebP/BMP/TIFF 等常见格式,无扩展名的文件按内容识别),图片本身随工具结果交给模型;路径解析与 `read` 相同(相对路径按会话工作目录)。
    - 长边超过 2000px 的图片自动降采样,结果里写明原始尺寸与坐标换算倍数;源文件上限 20 MiB,存入附件库的图片不超过 5 MiB(超出时改用 JPEG 压缩)。
    - 需要接收图片输入的模型:DeepSeek 以内置模型目录为准(如 `deepseek-v4-flash-vision-exp`),Anthropic 与 OpenAI 兼容提供方以 models.dev 标注的输入模态为准;当前模型明确不支持图片时 `read_image` 直接报错,未收录的模型交由提供方自行判定。
+8. shell 工具:模型可按需选用以下几种 shell,各工具的提示词写明了彼此差异与常见坑。
+   - `bash`:每次调用起一个新的 `bash -c`;Windows 上是 Git-Bash(不是 WSL)。
+   - `pwsh`:每次调用起一个新的 PowerShell 7 进程,跨平台。
+   - `bash_persistent` / `pwsh_persistent`:每个会话一个常驻 bash / PowerShell 7 进程,当前目录、变量、函数在多次调用间保留;`exit` 或超时会重置该进程。
+   - `powershell`:仅 Windows 提供,调用 Windows PowerShell 5.1(`powershell.exe`),用于只在 5.1 上可用的模块或 COM。
+   - `wsl`:仅 Windows 提供,在 WSL 发行版里执行 `bash -lc <命令>`;`distro` 参数选择发行版,缺省用 WSL 的默认发行版。未安装 WSL 或没有发行版时返回 wsl.exe 自身的提示与非零退出码;连 `wsl.exe` 都不存在时直接报错并给出安装方法(`wsl.exe --install`)。
+   - 每个工具都是独立插件(`@deepseek-ai/dsh-tool-bash`、`dsh-tool-pwsh`、`dsh-tool-bash-persistent`、`dsh-tool-pwsh-persistent`、`dsh-tool-powershell`、`dsh-tool-wsl`),可用 `/plugins disable <包>` 单独关闭。
+   - `safety.blacklist` 里的 shell 规则按方言生效:`bash:<命令>`(或 `bash_persistent:`、`wsl:`)同时拦截 `bash`、`bash_persistent`、`wsl`;`pwsh:<命令>`(或 `pwsh_persistent:`、`powershell:`)同时拦截 `pwsh`、`pwsh_persistent`、`powershell`。
 
 ## 图形界面
 

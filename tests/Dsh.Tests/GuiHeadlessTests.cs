@@ -285,7 +285,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
             var tools = environment.App.Ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!;
             var names = tools.Schemas(environment.Agent.ScopeKey).Select(schema => schema.Name).ToList();
             Assert.NotEmpty(names);
-            Assert.All(names, name => Assert.Contains(name, new[] { "bash", "pwsh" }));
+            Assert.All(names, name => Assert.Contains(name, ShellToolDialects.ByToolName.Keys));
         }
         finally
         {
