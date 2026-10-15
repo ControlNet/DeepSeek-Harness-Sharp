@@ -91,6 +91,36 @@ DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui --session <会话 id>
 - 关闭行为:默认「最小化到托盘」,设置页「图形与加速」可改成直接退出或每次询问。Windows 用通知区域图标;Linux 走 StatusNotifier,KDE 自带托盘宿主,GNOME 需要 AppIndicator 扩展(Ubuntu 桌面默认带)。启动时若探测不到托盘宿主(例如 GNOME 没装扩展),会按「直接退出」处理,避免窗口藏进看不见的地方。
 - 平台说明:自绘标题栏、显卡选择与托盘在 Windows 上支持最完整。在 Linux(含 WSL) 上后台验证界面可用 `bash scripts/verify-gui-linux.sh`(Xvfb 虚拟显示 + 截图,不打扰当前桌面);托盘行为可用同样方式起 plasmashell / gnome-shell 后验证(见 AGENTS.md 规则 55)。
 
+## 多机多会话
+
+一个客户端同时管理本机与多台 SSH 机器上的会话:harness 会话、外部 Agent(Codex、Claude Code、OpenCode 及任意 ACP Agent,需在目标机器上已安装对应 CLI)与终端。
+机器清单写在 `settings.yaml` 的 `fleet:` 段,GUI、命令行与浏览器共用这一份:
+
+```yaml
+fleet:
+  machines:
+    - name: build
+      kind: ssh
+      host: build.internal
+      user: dev
+      auth: key            # agent | key | password
+      keyPath: ~/.ssh/id_ed25519
+  deploy:
+    autoDeploy: true       # 连接前在远端安装/升级 dsharp
+```
+
+```bash
+dsharp machine list | add | remove | test | deploy    # 管理机器(dsharp machine add build --host build.internal --user dev --auth key --key ~/.ssh/id_ed25519)
+dsharp session list [--machine build]                 # 列出所有机器上的会话
+dsharp session attach build/<会话 id>                  # 接入终端会话,Ctrl+] 离开
+dsharp doctor [--machine build]                        # 逐项诊断连接,并给出可复制的修复命令
+dsharp host install-service                            # 在远端把 host 装成 systemd --user 常驻服务(无 systemd 时 nohup)
+```
+
+- GUI:启动后进入总览,按 机器 → 项目 → 会话 分组,等待你审批的会话会高亮;`Ctrl+K` 快速跳转,`Esc` 返回;铃铛是通知中心,所有机器的待审批与提问都能在这里直接回答,先答者生效。侧栏还有文件、Git、机器三页;「设置 → 远程」与机器页是同一份机器清单。
+- 断线后每台机器独立重连,会话事件从断点续订,终端会重新接入。
+- 浏览器:`dsharp host web` 只监听 `127.0.0.1:8780`,`dsharp host web --print-token` 打印一次性登录链接;其它设备(包括手机)先 `ssh -N -L 8780:127.0.0.1:8780 user@host` 转发,再在浏览器打开该链接。
+
 ## 发布形态
 
 - 默认 Release:JIT + 裁剪 + 自包含。
