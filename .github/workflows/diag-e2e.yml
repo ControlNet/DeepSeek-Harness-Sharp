@@ -1,0 +1,35 @@
+name: diag-e2e
+on:
+  push:
+    branches: [diag/e2e]
+jobs:
+  e2e:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: feed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then pwsh -NoProfile -File scripts/fetch-dryioc-feed.ps1 -UseGhArtifact; else bash scripts/fetch-dryioc-feed.sh --use-gh-artifact; fi
+      - run: dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
+      - run: dotnet build DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -c Debug --nologo
+      - name: e2e
+        shell: bash
+        run: |
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"; [ -x "$EXE" ] || EXE="$EXE.exe"
+          ls /usr/sbin/sshd || true
+          "$EXE" -noColor -parallel none -trait- "Category=LlmSmoke" -class Dsh.Tests.FleetLocalHostTests -class Dsh.Tests.FleetSshEndToEndTests -class Dsh.Tests.WebBridgeHubTests -class Dsh.Tests.WebBridgeSshTunnelTests -class Dsh.Tests.WebUiBrowserTests -class Dsh.Tests.WebBridgeTests -class Dsh.Tests.FleetConnectionTests
+      - name: leftovers
+        if: always()
+        shell: bash
+        run: ps -ef | grep -i dsharp | grep -v grep || true
