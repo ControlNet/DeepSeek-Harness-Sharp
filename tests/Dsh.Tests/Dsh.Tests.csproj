@@ -105,6 +105,7 @@
     <ProjectReference Include="..\..\src\Dsh.Notifications\Dsh.Notifications.csproj" />
     <ProjectReference Include="..\..\src\Dsh.AgentAdapters\Dsh.AgentAdapters.csproj" />
     <ProjectReference Include="..\..\src\Dsh.WebBridge\Dsh.WebBridge.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.Fleet\Dsh.Fleet.csproj" />
     <ProjectReference Include="..\..\Dsh.Host\Dsh.Host.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Gui\Dsh.Gui.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Plugins.Generator\Dsh.Plugins.Generator.csproj" />

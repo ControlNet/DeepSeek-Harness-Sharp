@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Client-side multi-machine connection management shared by the GUI and the CLI.
+    Shared capability library without a plugin entry: the machine list, SSH launching and remote deployment, one resilient host connection per machine, and the aggregated session and pending-request view.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dsh.Tests" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dsh.Boot\Dsh.Boot.csproj" />
+    <ProjectReference Include="..\Dsh.Transport\Dsh.Transport.csproj" />
+    <ProjectReference Include="..\Dsh.RemoteHost\Dsh.RemoteHost.csproj" />
+  </ItemGroup>
+
+</Project>

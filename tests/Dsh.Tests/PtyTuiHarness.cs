@@ -269,7 +269,7 @@ internal sealed class PtyTuiHarness : IDisposable
             CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
     }
 
-    private static string? FindTuiExecutable()
+    internal static string? FindTuiExecutable()
     {
         var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
         var name = OperatingSystem.IsWindows() ? "dsharp.exe" : "dsharp";

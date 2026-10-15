@@ -12,6 +12,9 @@ public static class HarnessEntrypoint
     {
         if (args.Contains(PtcScriptHost.HostArgument))
             return await PtcScriptHost.RunAsync(args);
+        // machine/session/doctor have their own options (--host, --machine, ...): they are parsed as a whole, not by the loop below.
+        if (FleetCli.Handles(args) && !args.Contains("--help") && !args.Contains("-h"))
+            return await FleetCli.RunAsync(HarnessStorage.ResolveDefaultHome(), args, (home, sessionId) => RunEntrypointAsync(home, "tui", sessionId));
 
         string? resumeSessionId = null;
         var dumpConfig = false;
@@ -349,6 +352,9 @@ public static class HarnessEntrypoint
                    dsharp config schema [--json | --markdown]   (列出所有可配置项: 顶层 settings + 各插件参数)
                    dsharp config schema --verify [--path <模板>]        (校验 settings.yaml 模板是否与配置面同步)
                    dsharp config schema --write-template [--path <模板>] (用配置面重写模板生成块)
+            """);
+        Console.WriteLine(FleetCli.Usage);
+        Console.WriteLine("""
 
             Options:
               --session <id>     open an existing session (gui) or resume one (tui)

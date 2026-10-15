@@ -134,27 +134,27 @@ public static class HostAutostart
         return 0;
     }
 
-    /** 以脱离会话的方式起 `dsharp host serve`(ssh 断开不把 daemon 带走)。 */
-    public static void StartDetached(string? token)
+    /**
+     * 以脱离会话的方式起 `dsharp host serve`(ssh 断开不把 daemon 带走)。
+     * harnessHome 非空时子进程用它作 DSH_HOME, 否则继承本进程的 harness 根。
+     */
+    public static void StartDetached(string? token, string? harnessHome = null)
     {
         var (executable, arguments) = ServeCommand(token);
+        ProcessStartInfo info;
         if (OperatingSystem.IsWindows())
+            info = new ProcessStartInfo(executable, arguments) { CreateNoWindow = true };
+        else
         {
-            Process.Start(new ProcessStartInfo(executable, arguments)
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Directory.GetCurrentDirectory(),
-            });
-            return;
+            var quoted = string.Join(' ', arguments.Select(argument => $"'{argument.Replace("'", "'\\''", StringComparison.Ordinal)}'"));
+            info = new ProcessStartInfo("/bin/sh", ["-c", $"nohup '{executable}' {quoted} >/dev/null 2>&1 &"]);
         }
 
-        var quoted = string.Join(' ', arguments.Select(argument => $"'{argument.Replace("'", "'\\''", StringComparison.Ordinal)}'"));
-        Process.Start(new ProcessStartInfo("/bin/sh", ["-c", $"nohup '{executable}' {quoted} >/dev/null 2>&1 &"])
-        {
-            UseShellExecute = false,
-            WorkingDirectory = Directory.GetCurrentDirectory(),
-        });
+        info.UseShellExecute = false;
+        info.WorkingDirectory = Directory.GetCurrentDirectory();
+        if (harnessHome is { Length: > 0 })
+            info.Environment[HarnessHome.HomeEnv] = harnessHome;
+        Process.Start(info);
     }
 
     private static async Task<int> StartWithoutServiceManagerAsync(HarnessHome home, TextWriter output)

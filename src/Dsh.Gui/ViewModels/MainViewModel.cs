@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
 using Dsh.Core;
+using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Interaction;
 using Dsh.Llm;
@@ -146,12 +147,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<RemoteWorkspaceChoiceViewModel> RemoteWorkspaces { get; } = [];
 
     /** 当前选定的远程工作区(打开动作经远端宿主接入后生效)。 */
-    public SshWorkspace? SelectedRemoteWorkspace { get; private set; }
+    public MachineSpec? SelectedRemoteWorkspace { get; private set; }
 
     /** 已连接的远端宿主(stdio-over-SSH); 未连接为 null。 */
     public IRemoteHost? RemoteHost => _remoteConnection?.Client;
 
-    private SshRemoteWorkspaceLauncher.Connection? _remoteConnection;
+    private SshHostLauncher.Connection? _remoteConnection;
 
     /** 远端宿主平台(windows/linux/macos), 供远端终端选择 shell。 */
     private string _remotePlatform = "linux";
@@ -201,7 +202,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private const int RemoteWorkspacePageSize = 8;
 
-    private IReadOnlyList<SshWorkspace> _allRemoteWorkspaces = [];
+    private IReadOnlyList<MachineSpec> _allRemoteWorkspaces = [];
 
     /** 远程工作区当前页(0 起)。 */
     public int RemoteWorkspacePage { get; private set; }
@@ -494,10 +495,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    /** 已保存的 SSH 远程工作区(工作区下拉“远程工作区”子菜单)。 */
+    /** 已保存的 SSH 远程工作区(工作区下拉“远程工作区”子菜单) = 机器清单里的 SSH 机器。 */
     private void RebuildRemoteWorkspaces()
     {
-        _allRemoteWorkspaces = Gui.Load().RemoteWorkspaces;
+        _allRemoteWorkspaces = [.. new MachineStore(Home).Load().Machines.Where(machine => machine.Kind == MachineKinds.Ssh)];
         RemoteWorkspacePage = 0;
         RenderRemoteWorkspacePage();
     }
@@ -539,9 +540,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /** 打开远程工作区: 经 ssh 起远端宿主并接入(stdio-over-SSH)。 */
-    private void OpenRemoteWorkspace(SshWorkspace workspace) => _ = OpenRemoteWorkspaceAsync(workspace);
+    private void OpenRemoteWorkspace(MachineSpec workspace) => _ = OpenRemoteWorkspaceAsync(workspace);
 
-    private async Task OpenRemoteWorkspaceAsync(SshWorkspace workspace)
+    private async Task OpenRemoteWorkspaceAsync(MachineSpec workspace)
     {
         // 新尝试取消旧的: 反复点击/切换工作区时不并发跑多条 ssh、不反复部署。
         _remoteConnectCts?.Cancel();
@@ -562,8 +563,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             string? hostCommand = null;
             if (Preferences.RemoteAutoDeploy)
-                hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, Preferences.BuildDeployOptions(), message => Dispatcher.UIThread.Post(() => StatusText = message), cancellationToken)).CommandPath;
-            var connection = await SshRemoteWorkspaceLauncher.ConnectAsync(workspace, hostCommand, cancellationToken);
+                hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, Preferences.BuildDeploySettings(), message => Dispatcher.UIThread.Post(() => StatusText = message), cancellationToken)).CommandPath;
+            var connection = await SshHostLauncher.ConnectAsync(workspace, hostCommand, GuiSettings.RemoteClientName, cancellationToken);
             if (!ReferenceEquals(_remoteConnectCts, connectCts))
             {
                 // 已被更新的尝试取代: 丢弃这条连接, 不覆盖界面状态。
@@ -604,7 +605,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /** 把远端会话按工作区归组显示在侧栏(组标题 user@host:路径)。 */
-    private void BuildRemoteSessionGroups(SshWorkspace workspace, IReadOnlyList<RemoteSessionInfo> sessions)
+    private void BuildRemoteSessionGroups(MachineSpec workspace, IReadOnlyList<RemoteSessionInfo> sessions)
     {
         var group = new RemoteWorkspaceGroupViewModel { Header = RemoteWorkspaceLabel(workspace) };
         foreach (var session in sessions)
@@ -628,14 +629,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    private static string RemoteWorkspaceLabel(SshWorkspace workspace)
+    private static string RemoteWorkspaceLabel(MachineSpec workspace)
     {
         var path = string.IsNullOrWhiteSpace(workspace.RemotePath) ? "~" : workspace.RemotePath;
         return $"{workspace.User}@{workspace.Host}:{path}";
     }
 
     /** 远端会话 cwd: 配置的远端目录优先; 否则用远端家目录(宿主 home 的父目录, 保证绝对路径, POSIX/Windows 通用)。 */
-    private string ResolveRemoteSessionCwd(SshWorkspace workspace)
+    private string ResolveRemoteSessionCwd(MachineSpec workspace)
     {
         if (!string.IsNullOrWhiteSpace(workspace.RemotePath))
             return workspace.RemotePath;
@@ -656,7 +657,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /** 消费远端审批/问答: 用本地决定窗口决策后经 RPC 回填(§14 C)。 */
-    private void StartRemoteDecisionPumps(SshRemoteWorkspaceLauncher.Connection connection)
+    private void StartRemoteDecisionPumps(SshHostLauncher.Connection connection)
     {
         _remoteDecisionCts?.Cancel();
         var cts = new CancellationTokenSource();
@@ -665,7 +666,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _ = PumpRemoteQuestionsAsync(connection, cts.Token);
     }
 
-    private async Task PumpRemoteApprovalsAsync(SshRemoteWorkspaceLauncher.Connection connection, CancellationToken cancellationToken)
+    private async Task PumpRemoteApprovalsAsync(SshHostLauncher.Connection connection, CancellationToken cancellationToken)
     {
         try
         {
@@ -685,7 +686,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task PumpRemoteQuestionsAsync(SshRemoteWorkspaceLauncher.Connection connection, CancellationToken cancellationToken)
+    private async Task PumpRemoteQuestionsAsync(SshHostLauncher.Connection connection, CancellationToken cancellationToken)
     {
         try
         {

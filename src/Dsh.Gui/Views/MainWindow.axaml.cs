@@ -10,6 +10,7 @@ using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
 using Dsh.Core;
+using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
 
@@ -364,15 +365,15 @@ public sealed partial class MainWindow : Window
     }
 
     /** “选择远端目录”: 需要时先自动部署 dsharp, 连上后再用对话框浏览远端目录树。 */
-    private async Task<string?> PickRemoteFolderAsync(SshWorkspace workspace, string? initial)
+    private async Task<string?> PickRemoteFolderAsync(MachineSpec workspace, string? initial)
     {
         var cancellationToken = CancellationToken.None;
         if (ViewModel is not { } model)
             return null;
         string? hostCommand = null;
         if (model.Preferences.RemoteAutoDeploy)
-            hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, model.Preferences.BuildDeployOptions(), null, cancellationToken)).CommandPath;
-        await using var connection = await SshRemoteWorkspaceLauncher.ConnectAsync(workspace, hostCommand, cancellationToken);
+            hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, model.Preferences.BuildDeploySettings(), null, cancellationToken)).CommandPath;
+        await using var connection = await SshHostLauncher.ConnectAsync(workspace, hostCommand, GuiSettings.RemoteClientName, cancellationToken);
         var dialog = new RemoteFolderPickerWindow(connection.Client, initial);
         return await dialog.ShowDialog<string?>(this);
     }

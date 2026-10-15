@@ -4,15 +4,16 @@ using System.Text;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 
-namespace Dsh.Gui.Services;
+namespace Dsh.Fleet;
 
 /**
  * 用 ssh 起远端 `dsharp host --serve --stdio`, 把它当成 stdio-over-SSH 的帧通道, 连成 IRemoteHost。
  * 远端命令叫 dsharp 而不是 dsh: Ubuntu 里 `dsh` 是 "dancer's shell / distributed shell" 包, 会重名。
  * 认证: 密钥对(-i)、ssh-agent(默认)、密码(SSH_ASKPASS 非交互); 可选代理经 ProxyCommand。
  * 另提供只在远端跑一条命令 / scp 上传的辅助, 供自动部署(RemoteDsharpInstaller)复用同一套认证。
+ * 机器配置了 HarnessHome 时, 远端宿主以 DSH_HOME=<HarnessHome> 运行(POSIX 远端)。
  */
-public static class SshRemoteWorkspaceLauncher
+public static class SshHostLauncher
 {
     public sealed record Connection(RemoteHostClient Client, Process Process) : IAsyncDisposable
     {
@@ -38,11 +39,8 @@ public static class SshRemoteWorkspaceLauncher
         public string FailureDetail => string.IsNullOrWhiteSpace(StdErr) ? "(无 stderr)" : StdErr.Trim();
     }
 
-    public static Task<Connection> ConnectAsync(SshWorkspace workspace, CancellationToken cancellationToken)
-        => ConnectAsync(workspace, hostCommandPath: null, cancellationToken);
-
-    /** hostCommandPath 非空时用它作为远端宿主可执行文件(绝对路径); 为空则按“远端目录/ PATH”推导。 */
-    public static async Task<Connection> ConnectAsync(SshWorkspace workspace, string? hostCommandPath, CancellationToken cancellationToken)
+    /** hostCommandPath 非空时用它作为远端宿主可执行文件(绝对路径); 为空则按“远端目录/ PATH”推导; clientName 是 host 用来标注由谁回答了审批的显示名。 */
+    public static async Task<Connection> ConnectAsync(MachineSpec workspace, string? hostCommandPath, string clientName, CancellationToken cancellationToken)
     {
         if (workspace.Auth == SshAuth.Password && string.IsNullOrEmpty(workspace.Password))
             throw new InvalidOperationException("认证方式为“password”但密码为空: 请在设置页填写密码（注意区分大小写、是否有尾部空格）。");
@@ -58,7 +56,7 @@ public static class SshRemoteWorkspaceLauncher
             try
             {
                 var stream = new StandardIoDuplexStream(process.StandardOutput.BaseStream, process.StandardInput.BaseStream);
-                var client = await RemoteHostClient.ConnectAsync(stream, token: null, $"gui@{Environment.MachineName}", cancellationToken).ConfigureAwait(false);
+                var client = await RemoteHostClient.ConnectAsync(stream, token: null, clientName, cancellationToken).ConfigureAwait(false);
                 return new Connection(client, process);
             }
             catch (Exception error)
@@ -103,13 +101,10 @@ public static class SshRemoteWorkspaceLauncher
         }
     }
 
-    public static Task<string> TestAsync(SshWorkspace workspace, CancellationToken cancellationToken)
-        => TestAsync(workspace, hostCommandPath: null, cancellationToken);
-
     /** 仅测试连通性: 连接后读宿主信息与会话数即断开, 返回可读摘要; 失败抛出(消息含 ssh stderr)。 */
-    public static async Task<string> TestAsync(SshWorkspace workspace, string? hostCommandPath, CancellationToken cancellationToken)
+    public static async Task<string> TestAsync(MachineSpec workspace, string? hostCommandPath, string clientName, CancellationToken cancellationToken)
     {
-        await using var connection = await ConnectAsync(workspace, hostCommandPath, cancellationToken).ConfigureAwait(false);
+        await using var connection = await ConnectAsync(workspace, hostCommandPath, clientName, cancellationToken).ConfigureAwait(false);
         var info = await connection.Client.InfoAsync(cancellationToken).ConfigureAwait(false);
         var sessions = await connection.Client.ListSessionsAsync(cancellationToken).ConfigureAwait(false);
         var directory = string.IsNullOrEmpty(workspace.RemotePath) ? "~（家目录）" : workspace.RemotePath;
@@ -117,7 +112,7 @@ public static class SshRemoteWorkspaceLauncher
     }
 
     /** 在远端执行一条命令并返回 stdout(不启动 harness); 非 0 退出抛异常(含 stderr)。 */
-    public static async Task<string> RunRemoteAsync(SshWorkspace workspace, string command, CancellationToken cancellationToken)
+    public static async Task<string> RunRemoteAsync(MachineSpec workspace, string command, CancellationToken cancellationToken)
     {
         var result = await RunRemoteCaptureAsync(workspace, command, cancellationToken).ConfigureAwait(false);
         return result.ExitCode == 0
@@ -126,7 +121,7 @@ public static class SshRemoteWorkspaceLauncher
     }
 
     /** 在远端执行一条命令, 原样返回退出码与 stdout/stderr(不抛异常), 供需要区分“ssh 失败”与“命令失败”的调用方使用。 */
-    public static async Task<RemoteCommandResult> RunRemoteCaptureAsync(SshWorkspace workspace, string command, CancellationToken cancellationToken)
+    public static async Task<RemoteCommandResult> RunRemoteCaptureAsync(MachineSpec workspace, string command, CancellationToken cancellationToken)
     {
         var startInfo = BuildSshStartInfo(workspace, out var askPass);
         startInfo.ArgumentList.Add(command);
@@ -141,8 +136,22 @@ public static class SshRemoteWorkspaceLauncher
         }
     }
 
+    /** A command line a person can paste into a POSIX shell to run remoteCommand on the machine with the same port, key, proxy and options. */
+    public static string CommandLine(MachineSpec workspace, string remoteCommand)
+    {
+        var line = new StringBuilder($"ssh -p {workspace.Port}");
+        foreach (var option in workspace.SshOptions ?? [])
+            line.Append($" -o {Quote(option)}");
+        if (workspace.Auth == SshAuth.Key && workspace.KeyPath is { Length: > 0 } key)
+            line.Append($" -i {Quote(key)}");
+        if (workspace.Proxy is { Length: > 0 } proxy)
+            line.Append($" -o {Quote($"ProxyCommand={proxy}")}");
+        line.Append($" {workspace.User}@{workspace.Host} {Quote(remoteCommand)}");
+        return line.ToString();
+    }
+
     /** 用 scp 上传本地文件到远端(认证与 ssh 一致); remotePath 支持 `~`。 */
-    public static async Task UploadAsync(SshWorkspace workspace, string localPath, string remotePath, CancellationToken cancellationToken)
+    public static async Task UploadAsync(MachineSpec workspace, string localPath, string remotePath, CancellationToken cancellationToken)
     {
         var startInfo = BuildScpStartInfo(workspace, out var askPass);
         startInfo.ArgumentList.Add(localPath);
@@ -175,21 +184,22 @@ public static class SshRemoteWorkspaceLauncher
     }
 
     /** 远端启动 harness: 指定了 hostCommandPath 就用它(路径原样, 交由远端 shell); 否则按“远端目录”用 ./dsharp, 或 PATH 里的 dsharp。 */
-    private static string HarnessCommand(SshWorkspace workspace, string? hostCommandPath)
+    private static string HarnessCommand(MachineSpec workspace, string? hostCommandPath)
     {
         // 指定了绝对路径时不做 POSIX 单引号转义, 只在含空白时加双引号(cmd 与 POSIX 都接受): 兼容 Windows 远端。
+        var environment = RemoteShell.HomeAssignment(workspace.HarnessHome);
         if (!string.IsNullOrEmpty(hostCommandPath))
-            return $"{NeutralQuote(hostCommandPath)} host --serve --stdio";
+            return $"{environment}{NeutralQuote(hostCommandPath)} host --serve --stdio";
         var launcher = string.IsNullOrEmpty(workspace.RemotePath) ? "dsharp" : "./dsharp";
         var prefix = string.IsNullOrEmpty(workspace.RemotePath) ? "" : $"cd {Quote(workspace.RemotePath)} && ";
-        return $"{prefix}{launcher} host --serve --stdio";
+        return $"{prefix}{environment}{launcher} host --serve --stdio";
     }
 
     /** 只在含空白时用双引号包裹(cmd / POSIX 都接受); 否则原样。 */
     private static string NeutralQuote(string value)
         => value.Any(char.IsWhiteSpace) ? $"\"{value}\"" : value;
 
-    private static ProcessStartInfo BuildSshStartInfo(SshWorkspace workspace, out string? askPass)
+    private static ProcessStartInfo BuildSshStartInfo(MachineSpec workspace, out string? askPass)
     {
         var startInfo = new ProcessStartInfo("ssh")
         {
@@ -209,7 +219,7 @@ public static class SshRemoteWorkspaceLauncher
         return startInfo;
     }
 
-    private static ProcessStartInfo BuildScpStartInfo(SshWorkspace workspace, out string? askPass)
+    private static ProcessStartInfo BuildScpStartInfo(MachineSpec workspace, out string? askPass)
     {
         var startInfo = new ProcessStartInfo("scp")
         {
@@ -228,8 +238,14 @@ public static class SshRemoteWorkspaceLauncher
         return startInfo;
     }
 
-    private static void AddCommonOptions(Collection<string> arguments, SshWorkspace workspace)
+    private static void AddCommonOptions(Collection<string> arguments, MachineSpec workspace)
     {
+        foreach (var option in workspace.SshOptions ?? [])
+        {
+            arguments.Add("-o");
+            arguments.Add(option);
+        }
+
         arguments.Add("-o");
         arguments.Add("BatchMode=" + (string.IsNullOrEmpty(workspace.Password) ? "yes" : "no"));
         arguments.Add("-o");
@@ -255,7 +271,7 @@ public static class SshRemoteWorkspaceLauncher
         }
     }
 
-    private static string? ApplyAskPass(ProcessStartInfo startInfo, SshWorkspace workspace)
+    private static string? ApplyAskPass(ProcessStartInfo startInfo, MachineSpec workspace)
     {
         if (workspace.Auth != SshAuth.Password || workspace.Password is not { Length: > 0 } password)
             return null;
