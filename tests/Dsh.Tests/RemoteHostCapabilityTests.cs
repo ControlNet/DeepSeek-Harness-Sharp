@@ -158,8 +158,10 @@ public sealed class RemoteHostCapabilityTests
     }
 
     /** 记录/回放式的远端后端替身; 不依赖 harness。 */
-    private sealed class FakeBackend : IRemoteHostBackend
+    internal sealed class FakeBackend : IRemoteHostBackend
     {
+        private int _openApprovalStreams;
+
         private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
         private readonly Dictionary<string, Channel<RemoteEventInfo>> _events = [];
         private readonly Dictionary<string, byte[]> _files = [];
@@ -276,10 +278,21 @@ public sealed class RemoteHostCapabilityTests
                 yield return item;
         }
 
+        /** The server reads the approval stream once per connection for as long as the connection lives, so this counts open host connections. */
+        public int OpenApprovalStreams => Volatile.Read(ref _openApprovalStreams);
+
         public async IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync([EnumeratorCancellation] CancellationToken cancellationToken)
         {
-            await foreach (var request in _approvals.Reader.ReadAllAsync(cancellationToken))
-                yield return request;
+            Interlocked.Increment(ref _openApprovalStreams);
+            try
+            {
+                await foreach (var request in _approvals.Reader.ReadAllAsync(cancellationToken))
+                    yield return request;
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _openApprovalStreams);
+            }
         }
 
         public async IAsyncEnumerable<RemotePtyOutput> PtyOutputAsync(string ptyId, [EnumeratorCancellation] CancellationToken cancellationToken)
