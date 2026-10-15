@@ -19,6 +19,9 @@ public sealed class PtySession : IDisposable, ITerminalConnection
     /** 窗格级(非独占)订阅者: 每个订阅者拿到当前屏快照与后续输出的一份拷贝。 */
     private readonly List<Channel<byte[]>> _subscribers = [];
 
+    /** The output has ended: the pump finishes before the exit is recorded, and a subscription made in between must still end. */
+    private bool _outputEnded;
+
     /** 子进程退出后留给泵读完尾巴输出再结束流的时间(见 OnConPtyExited)。 */
     private const int ExitDrainMilliseconds = 150;
 
@@ -361,7 +364,7 @@ public sealed class PtySession : IDisposable, ITerminalConnection
         {
             _subscribers.Add(channel);
             channel.Writer.TryWrite(Snapshot());
-            if (_status == PtySessionStatus.Exited)
+            if (_outputEnded || _status == PtySessionStatus.Exited)
                 channel.Writer.TryComplete();
         }
 
@@ -380,6 +383,7 @@ public sealed class PtySession : IDisposable, ITerminalConnection
     {
         lock (_gate)
         {
+            _outputEnded = true;
             foreach (var subscriber in _subscribers)
                 subscriber.Writer.TryComplete();
             _subscribers.Clear();
