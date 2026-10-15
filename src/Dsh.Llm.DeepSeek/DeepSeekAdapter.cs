@@ -277,8 +277,9 @@ public sealed class DeepSeekAdapter : LlmAdapter
                 {
                     // The HTTP status remains authoritative when a gateway returns malformed JSON.
                 }
-                var delay = ProviderRetryAfterMs(response.Headers.TryGetValues("retry-after", out var values)
-                    ? values.FirstOrDefault() : null);
+                var delay = RetryAfterHeader.ParseMs(
+                    response.Headers.TryGetValues("retry-after", out var values) ? values.FirstOrDefault() : null,
+                    DateTimeOffset.UtcNow);
                 var requestId = response.Headers.TryGetValues("x-request-id", out var ids) && ids.FirstOrDefault() is { Length: > 0 } id
                     ? ProviderRequestId.Create(id)
                     : response.Headers.TryGetValues("x-deepseek-request-id", out var dsIds) && dsIds.FirstOrDefault() is { Length: > 0 } dsId
@@ -320,23 +321,6 @@ public sealed class DeepSeekAdapter : LlmAdapter
         if (status >= 500)
             return LlmFailureCodes.Server;
         return $"HTTP_{status}";
-    }
-
-    private static long? ProviderRetryAfterMs(string? value)
-    {
-        if (value is null)
-            return null;
-        if (long.TryParse(value, out var seconds))
-        {
-            var delay = seconds * 1_000;
-            return delay > 0 ? delay : null;
-        }
-        if (DateTimeOffset.TryParse(value, out var date))
-        {
-            var delay = (long)(date - DateTimeOffset.UtcNow).TotalMilliseconds;
-            return delay > 0 ? delay : null;
-        }
-        return null;
     }
 
     private sealed class IdleWatchdog : IDisposable

@@ -21,6 +21,9 @@ public abstract record ResolvedRetryPolicy
     public const double DefaultMaxDelayMs = 10_000;
     public const double DefaultJitterRatio = 0.1;
 
+    /** 供应商 retry-after 的采信上限: 超过这个时长仍按上限等待后重试, 不让一次限流把会话挂起太久。 */
+    public const long MaxProviderRetryAfterMs = 60_000;
+
     public static readonly IReadOnlyList<string> DefaultRetryableCodes =
     [
         LlmFailureCodes.EmptyResponse,
@@ -36,9 +39,14 @@ public abstract record ResolvedRetryPolicy
     public required double MaxDelayMs { get; init; }
     public required double JitterRatio { get; init; }
 
-    /** 第 attempt(从 0 起)次重试前等待的时长: 指数退避, 封顶 MaxDelayMs, 叠加 ±JitterRatio 抖动。 */
-    public TimeSpan Delay(int attempt)
+    /**
+     * 第 attempt(从 0 起)次重试前等待的时长。
+     * 供应商给了 retry-after 时按它等待(封顶 MaxProviderRetryAfterMs); 否则指数退避, 封顶 MaxDelayMs, 叠加 ±JitterRatio 抖动。
+     */
+    public TimeSpan Delay(int attempt, long? providerRetryAfterMs)
     {
+        if (providerRetryAfterMs is > 0 and var hint)
+            return TimeSpan.FromMilliseconds(Math.Min(hint, MaxProviderRetryAfterMs));
         var raw = Math.Min(MaxDelayMs, InitialDelayMs * Math.Pow(2, Math.Max(0, attempt)));
         var jitter = raw * JitterRatio;
         var value = raw - jitter + Random.Shared.NextDouble() * 2 * jitter;

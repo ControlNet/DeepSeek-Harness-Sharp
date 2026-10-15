@@ -420,7 +420,7 @@ public sealed class AgentLoopAgent : IAgent
                     && policy.RetryableCodes.Contains(failure.Code)
                     && attempts < policy.MaxRetries)
                 {
-                    var delay = policy.Delay(attempts);
+                    var delay = policy.Delay(attempts, failure.ProviderRetryAfterMs);
                     attempts++;
                     Dispatch.Emit(new AgentStreamInterruptedNotification(
                         this,
