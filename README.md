@@ -49,7 +49,20 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 7. 看图:模型可调用 `read_image` 工具读取本地图片(PNG/JPEG/GIF/WebP/BMP/TIFF 等常见格式,无扩展名的文件按内容识别),图片本身随工具结果交给模型;路径解析与 `read` 相同(相对路径按会话工作目录)。
    - 长边超过 2000px 的图片自动降采样,结果里写明原始尺寸与坐标换算倍数;源文件上限 20 MiB,存入附件库的图片不超过 5 MiB(超出时改用 JPEG 压缩)。
    - 需要接收图片输入的模型:DeepSeek 以内置模型目录为准(如 `deepseek-v4-flash-vision-exp`),Anthropic 与 OpenAI 兼容提供方以 models.dev 标注的输入模态为准;当前模型明确不支持图片时 `read_image` 直接报错,未收录的模型交由提供方自行判定。
-8. shell 工具:模型可按需选用以下几种 shell,各工具的提示词写明了彼此差异与常见坑。
+8. TUI 快捷键:默认是 `Ctrl+X` 前缀序列(如 `Ctrl+X W` 总览、`Ctrl+X N` 新会话、`Ctrl+X +`/`Ctrl+X -` 分屏/关窗格;按下 `Ctrl+X` 后状态行会列出可用的后续键),TUI 内 `/keys` 列出全部动作与当前绑定。改键写在 `settings.yaml` 的 `plugins."@deepseek-ai/dsh-tui".keys` 下,格式为 `动作名: 按键串`,修饰键(`Ctrl`/`Alt`)用 `+` 连接,多键序列用空格分隔,未写的动作保持默认:
+
+   ```yaml
+   plugins:
+     "@deepseek-ai/dsh-tui":
+       keys:
+         overview: F5                  # 单键打开总览
+         newSession: "Ctrl+X Ctrl+N"
+         splitPane: "Ctrl+X |"
+       keySequenceTimeoutMs: 1500      # 前缀等待超时(毫秒),缺省 0 = 一直等到下一个键
+   ```
+
+   动作名:`newSession`、`sessionMenu`、`detach`、`deleteSessionMenu`、`agentList`、`overview`、`openShell`、`quit`、`splitPane`、`closePane`、`prevSession`、`nextSession`、`focusLeft`/`focusRight`/`focusUp`/`focusDown`、`focusNextPane`、`interrupt`(默认 `Ctrl+C`,连按两次退出)、`promptCommandMenu`(默认 `Ctrl+P`)。按键串的首键必须带 `Ctrl`/`Alt` 或是 F 键(否则会吞掉正常输入);同一按键串绑了多个动作、或一个按键串是另一个的前缀时,启动时记 WARN 日志并让冲突的自定义项回退默认。按下前缀后再按 `Esc` 或未绑定的键即取消。焦点在 shell 窗格时,`interrupt` 与 `promptCommandMenu` 的按键直达 shell,其余动作仍由 DSH 处理。
+9. shell 工具:模型可按需选用以下几种 shell,各工具的提示词写明了彼此差异与常见坑。
    - `bash`:每次调用起一个新的 `bash -c`;Windows 上是 Git-Bash(不是 WSL)。
    - `pwsh`:每次调用起一个新的 PowerShell 7 进程,跨平台。
    - `bash_persistent` / `pwsh_persistent`:每个会话一个常驻 bash / PowerShell 7 进程,当前目录、变量、函数在多次调用间保留;`exit` 或超时会重置该进程。
