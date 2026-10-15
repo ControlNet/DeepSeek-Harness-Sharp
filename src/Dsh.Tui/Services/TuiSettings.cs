@@ -98,11 +98,7 @@ public sealed class TuiSettings(HarnessHome home)
     {
         var settings = HarnessSettings.Load(home);
         var existing = settings.Plugins.GetValueOrDefault(Package);
-        settings.Plugins[Package] = new PluginSetting
-        {
-            Enabled = existing?.Enabled ?? true,
-            Parameters = parameters,
-        };
+        settings.Plugins[Package] = (existing ?? new PluginSetting()) with { Parameters = parameters };
         settings.SavePlugins(home);
     }
 }
