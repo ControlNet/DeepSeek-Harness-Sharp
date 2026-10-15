@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    界面验证用的最小宿主窗口: 单独加载文件/Git/机器管理视图并连到本机真实 host, 供私有 Xvfb 截图与 xdotool 操作。
+    只用于测试, 不随产品发布; 主窗口与导航不经过这里。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>14</LangVersion>
+    <AssemblyName>dsh-gui-views</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dsh.Gui\Dsh.Gui.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.Fleet\Dsh.Fleet.csproj" />
+  </ItemGroup>
+
+</Project>
