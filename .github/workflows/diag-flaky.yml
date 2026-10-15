@@ -1,0 +1,75 @@
+name: diag-flaky
+
+# Temporary diagnostic workflow for issue #41 (fork only): repeat the full quick suite and the flaky classes to compare master with the fix.
+on:
+  push:
+    branches: ['diag/flaky-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: repeat (${{ matrix.os }}, ${{ matrix.mode }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        mode: [suite, classes]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -NoProfile -File scripts/fetch-dryioc-feed.ps1 -UseGhArtifact
+          else
+            bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: build
+        run: dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
+      - name: sqlite
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install sqlite --no-progress -y
+          $dll = Get-ChildItem 'C:\ProgramData\chocolatey\lib\sqlite' -Recurse -Filter 'sqlite3.dll' | Select-Object -First 1
+          Copy-Item $dll.FullName 'tests/Dsh.Tests/bin/Debug/net10.0/' -Force
+      - name: repeat
+        shell: bash
+        run: |
+          set +e -u
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          [ -x "$EXE" ] || EXE="$EXE.exe"
+          ARGS=("$EXE" -noColor -trait- "Category=GpuStress" -trait- "Category=OnlyGpu" -trait- "Category=LlmSmoke" -trait- "Category=RenderBench")
+          if [ "${{ matrix.mode }}" = "classes" ]; then
+            ROUNDS=25
+            for c in PtyDaemonSubscribeTests PtyDaemonTests PtyDaemonAuthTests PtyDaemonKillTests PtyOutputReaderTests ChatWindowKeyBindingTests ChatWindowMenuTests ChatWindowPaneTests "JobsTests+PersistentBash" SessionAutoRenameTests Runtime.PluginLifecycleTests ProjectMemoryTests RemoteHostCapabilityTests LspTests AcpTests SdkTests GuiComponentTests; do
+              ARGS+=(-method "Dsh.Tests.$c.*")
+            done
+          else
+            ROUNDS=6
+          fi
+          [ "$RUNNER_OS" = "macOS" ] && ARGS+=(-parallel none)
+          mkdir -p diag
+          for r in $(seq 1 $ROUNDS); do
+            "${ARGS[@]}" > "diag/r$r.log" 2>&1 &
+            PID=$!
+            ( sleep 900; kill -9 "$PID" 2>/dev/null ) &
+            WATCH=$!
+            wait "$PID"; CODE=$?
+            kill "$WATCH" 2>/dev/null || true
+            echo "round $r exit=$CODE $(grep -o 'Total: [0-9]*, Errors: [0-9]*, Failed: [0-9]*, Skipped: [0-9]*' diag/r$r.log | tail -1)"
+            grep -A8 '\[FAIL\]' "diag/r$r.log" || true
+          done
+          echo "=== failure counts ==="
+          grep -h '\[FAIL\]' diag/*.log | sed 's/^ *//' | sort | uniq -c || true
