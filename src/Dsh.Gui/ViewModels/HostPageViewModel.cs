@@ -1,0 +1,139 @@
+using System.Collections.ObjectModel;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using Dsh.Fleet;
+using Dsh.Gui.Services;
+using Dsh.RemoteHost;
+
+namespace Dsh.Gui.ViewModels;
+
+/**
+ * A workspace page that works on one machine's host, such as files or Git: the user picks the machine and the path, the page builds its content on that machine's connection.
+ * The content holds the client of the link it was built on, so it is rebuilt after every reconnection and after the machine list was reloaded.
+ * A host without the page's capability gets an explanation instead of content.
+ */
+public sealed partial class HostPageViewModel : ObservableObject, IDisposable
+{
+    private readonly FleetWorkspace _fleet;
+    private readonly string _capability;
+    private readonly Func<IRemoteHost, string, string, Task<OperationViewModel>> _build;
+    private CancellationTokenSource? _run;
+    private MachineConnection? _connection;
+
+    /** build receives the link's client, the machine name and the path, and returns the loaded content. */
+    public HostPageViewModel(
+        FleetWorkspace fleet, string title, string capability, string machine, string path, Func<IRemoteHost, string, string, Task<OperationViewModel>> build)
+    {
+        (_fleet, _capability, _build, Title) = (fleet, capability, build, title);
+        _machine = machine;
+        _path = path;
+        RefreshMachineNames();
+        _fleet.Changed += OnFleetChanged;
+        Open();
+    }
+
+    public string Title { get; }
+
+    public ObservableCollection<string> MachineNames { get; } = [];
+
+    [ObservableProperty]
+    private string _machine;
+
+    [ObservableProperty]
+    private string _path;
+
+    [ObservableProperty]
+    private OperationViewModel? _content;
+
+    /** Why there is no content: waiting for the machine, a missing path, or a host without the capability. */
+    [ObservableProperty]
+    private string? _status;
+
+    /** Opens the chosen machine and path, dropping the current content. */
+    [RelayCommand]
+    private void Open()
+    {
+        _run?.Cancel();
+        _run?.Dispose();
+        _run = new CancellationTokenSource();
+        _connection = _fleet.Find(Machine);
+        _ = RunAsync(_connection, Machine, Path.Trim(), _run.Token);
+    }
+
+    public void Dispose()
+    {
+        _fleet.Changed -= OnFleetChanged;
+        _run?.Cancel();
+        _run?.Dispose();
+        _run = null;
+        Content = null;
+    }
+
+    private async Task RunAsync(MachineConnection? connection, string machine, string path, CancellationToken cancellationToken)
+    {
+        Content = null;
+        if (connection is null)
+        {
+            Status = $"没有名为 {machine} 的机器";
+            return;
+        }
+        if (path.Length == 0)
+        {
+            Status = "请输入路径后打开";
+            return;
+        }
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+                await ServeLinkAsync(connection, machine, path, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    /** One link of the machine: the content lives until that link drops. */
+    private async Task ServeLinkAsync(MachineConnection connection, string machine, string path, CancellationToken cancellationToken)
+    {
+        Content = null;
+        Status = $"等待 {machine} 连接…";
+        var lease = await connection.WaitConnectedAsync(cancellationToken);
+        if (lease.Client.Supports(_capability))
+        {
+            var content = await _build(lease.Client, machine, path);
+            cancellationToken.ThrowIfCancellationRequested();
+            (Content, Status) = (content, null);
+        }
+        else
+            Status = $"{machine} 上的 host {lease.Client.Hello.HostVersion} 不支持 {_capability}，请先升级该机器上的 dsharp";
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
+        try
+        {
+            await Task.Delay(Timeout.Infinite, linked.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    /** The machine list was reloaded: the page follows the new connection of its machine. */
+    private void OnFleetChanged()
+    {
+        RefreshMachineNames();
+        if (!ReferenceEquals(_fleet.Find(Machine), _connection))
+            Open();
+    }
+
+    private void RefreshMachineNames()
+    {
+        List<string> names = [.. _fleet.Client.Machines.Select(machine => machine.Machine.Name)];
+        if (names.SequenceEqual(MachineNames))
+            return;
+        // Clearing the list makes the machine picker push an empty selection back; the chosen machine is kept.
+        var machine = Machine;
+        MachineNames.Clear();
+        foreach (var name in names)
+            MachineNames.Add(name);
+        Machine = machine;
+    }
+}

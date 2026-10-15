@@ -132,16 +132,6 @@ public static class SshHostLauncher
         }
     }
 
-    /** 仅测试连通性: 连接后读宿主信息与会话数即断开, 返回可读摘要; 失败抛出(消息含 ssh stderr)。 */
-    public static async Task<string> TestAsync(MachineSpec workspace, string? hostCommandPath, string clientName, CancellationToken cancellationToken)
-    {
-        await using var connection = await ConnectAsync(workspace, hostCommandPath, clientName, cancellationToken).ConfigureAwait(false);
-        var info = await connection.Client.InfoAsync(cancellationToken).ConfigureAwait(false);
-        var sessions = await connection.Client.ListSessionsAsync(cancellationToken).ConfigureAwait(false);
-        var directory = string.IsNullOrEmpty(workspace.RemotePath) ? "~（家目录）" : workspace.RemotePath;
-        return $"已连接 {workspace.User}@{workspace.Host}（{info.Platform}）· 远端目录 {directory} · {sessions.Count} 个会话";
-    }
-
     /** 在远端执行一条命令并返回 stdout(不启动 harness); 非 0 退出抛异常(含 stderr)。 */
     public static async Task<string> RunRemoteAsync(MachineSpec workspace, string command, CancellationToken cancellationToken)
     {

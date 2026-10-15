@@ -11,11 +11,12 @@ using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
+using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
 
 /**
- * 远程工作区: 用 GuiHeadless 在真实渲染的 GUI 里做交互(打开工作区菜单/设置页/工作台)
+ * 远程工作区: 用 GuiHeadless 在真实渲染的 GUI 里做交互(打开工作区菜单/设置页的机器管理/工作台)
  * 并截图, 不抢占前台。
  * - UI 结构用例不需要服务器, 常规运行。
  * - 真实 SSH 连接用例需要 <repo>/artifacts020/ssh-verify.json(本地, 不进版本库), 缺失即跳过。
@@ -31,7 +32,7 @@ public sealed class GuiRemoteWorkspaceTests
         MachineSpec.Ssh("构建机", "build-box.internal", 22, "builder", SshAuth.Key) with { KeyPath = "~/.ssh/id_ed25519" },
     ];
 
-    /** 工作区菜单只管本地新会话的默认目录(最近工作区 + 打开新工作区…); 机器在工作台里统一显示; 设置页“远程”页签可编辑保存。 */
+    /** 工作区菜单只管本地新会话的默认目录(最近工作区 + 打开新工作区…); 机器在工作台里统一显示; 设置页“远程”页签是机器管理, 保存后工作台按新清单重连。 */
     [Fact]
     public async Task WorkspaceMenu_AndSettings_RemoteSurface() => await HeadlessGui.RunAsync(async () =>
     {
@@ -63,22 +64,18 @@ public sealed class GuiRemoteWorkspaceTests
         // 保存的 SSH 机器出现在工作台的机器分组里(这里不可达, 只验证分组存在)。
         Assert.All(SampleWorkspaces(), machine => Assert.Contains(viewModel.Workspace.Dashboard.Machines, group => group.Name == machine.Name));
 
-        // 设置页“远程”页签: 列出连接, 编辑后保存落盘。
+        // 设置页“远程”页签承载机器管理: 列出隐式本机与保存的机器, 编辑后保存进 settings.yaml。
         viewModel.ShowSettingsCommand.Execute(null);
         Dispatcher.UIThread.RunJobs();
         var remoteSection = viewModel.Preferences.Sections.First(section => section.Section == SettingsSection.Remote);
         remoteSection.SelectCommand!.Execute(remoteSection);
         Dispatcher.UIThread.RunJobs();
         Assert.True(viewModel.Preferences.IsRemoteSection);
-        Assert.Equal(SampleWorkspaces().Count, viewModel.Preferences.RemoteWorkspaces.Count);
-        Assert.NotNull(viewModel.Preferences.SelectedRemoteWorkspace);
+        var machines = viewModel.Workspace.Machines;
+        Assert.Equal([MachineSpec.LocalName, .. SampleWorkspaces().Select(machine => machine.Name)], machines.Machines.Select(row => row.Name));
+        var machinesView = Assert.Single(window.GetVisualDescendants().OfType<MachinesView>(), view => view.IsEffectivelyVisible);
+        Assert.Contains(machinesView.GetVisualDescendants().OfType<Button>(), button => button.Content is "测试连接");
         Capture(window, "headless-settings-remote");
-
-        // “远端目录”右侧的文件夹按钮 + “测试连接”按钮。
-        Assert.NotNull(window.GetVisualDescendants().OfType<Button>()
-            .First(button => Equals(ToolTip.GetTip(button), "选择远端机器上的目录")));
-        Assert.NotNull(window.GetVisualDescendants().OfType<Button>()
-            .First(button => button.Content is "测试连接"));
 
         // 右下角气泡: 成功与失败各一条。
         viewModel.ShowToast("连接成功", "已连接 dev@gpu-box.internal（linux）· 远端目录 ~/dsh-deploy", false);
@@ -90,10 +87,13 @@ public sealed class GuiRemoteWorkspaceTests
         Assert.Equal(2, viewModel.Toasts.Count);
         Capture(window, "headless-toast-both");
 
-        viewModel.Preferences.SelectedRemoteWorkspace!.Name = "改名后的工作区";
-        viewModel.Preferences.SaveRemoteWorkspacesCommand.Execute(null);
-        Assert.Contains(new MachineStore(environment.App.Home).Load().Machines,
-            workspace => workspace.Name == "改名后的工作区");
+        // 保存后工作台按新清单重连: 仪表盘里出现改名后的机器。
+        machines.Selected = machines.Machines.Single(row => row.Name == SampleWorkspaces()[0].Name);
+        machines.Editor!.Name = "改名后的工作区";
+        await machines.SaveCommand.ExecuteAsync(null);
+        Assert.Contains(new MachineStore(environment.App.Home).Load().Machines, workspace => workspace.Name == "改名后的工作区");
+        await GuiWorkspaceTests.UntilAsync(() => viewModel.Workspace.Fleet.Find("改名后的工作区") is not null, "the workspace reconnects to the saved list");
+        Assert.True(viewModel.Preferences.IsRemoteSection);
 
         window.Close();
         Dispatcher.UIThread.RunJobs();
@@ -139,52 +139,6 @@ public sealed class GuiRemoteWorkspaceTests
         });
     }
 
-    /** 设置页“测试连接”走完整 GUI 路径(行VM→ToModel→启动器): 密码认证应成功并弹成功气泡。 */
-    [Fact]
-    public async Task SettingsTestConnection_PasswordAuth_Succeeds()
-    {
-        var spec = LoadSpec();
-        if (spec is null)
-        {
-            Assert.Skip("未找到 artifacts020/ssh-verify.json, 跳过真实 SSH 验证");
-            return;
-        }
-
-        await HeadlessGui.RunAsync(async () =>
-        {
-            var environment = await GuiTestEnvironment.CreateAsync();
-            using var environmentScope = environment;
-            var window = new MainWindow(environment.App, environment.Agent);
-            var viewModel = window.ViewModel!;
-            window.Show();
-            Dispatcher.UIThread.RunJobs();
-
-            var row = new SshWorkspaceRowViewModel
-            {
-                Name = spec.Name,
-                Host = spec.Host,
-                Port = spec.Port.ToString(),
-                User = spec.User,
-                Auth = spec.Auth,
-                Password = spec.Password,
-                RemotePath = spec.RemotePath,
-                Owner = viewModel.Preferences,
-            };
-            viewModel.Preferences.RemoteWorkspaces.Add(row);
-            viewModel.Preferences.SelectedRemoteWorkspace = row;
-
-            await row.TestConnectionCommand.ExecuteAsync(null);
-            Dispatcher.UIThread.RunJobs();
-
-            Assert.Contains(viewModel.Toasts, toast => toast.IsSuccess && toast.Title == "连接成功");
-            Assert.DoesNotContain(viewModel.Toasts, toast => toast.IsError);
-            Capture(window, "headless-settings-test-connection");
-
-            window.Close();
-            Dispatcher.UIThread.RunJobs();
-        });
-    }
-
     /** 自动部署: 远端没有 dsharp 时把本机发布打包上传到 ~/.dsharp/ 并按绝对路径起宿主(VS Code 式, 不注册命令)。 */
     [Fact]
     public async Task AutoDeploy_Uploads_And_Hosts_On_Real_Server()
@@ -217,8 +171,8 @@ public sealed class GuiRemoteWorkspaceTests
             Assert.EndsWith("/dsharp", result.CommandPath);
             Assert.Contains("/.dsharp/", result.CommandPath.Replace('\\', '/'));
 
-            var summary = await SshHostLauncher.TestAsync(workspace, result.CommandPath, GuiSettings.RemoteClientName, TestContext.Current.CancellationToken);
-            Assert.Contains("已连接", summary);
+            await using var connection = await SshHostLauncher.ConnectAsync(workspace, result.CommandPath, GuiSettings.RemoteClientName, TestContext.Current.CancellationToken);
+            Assert.Equal(RemoteHostServer.ReleaseVersion, (await connection.Client.InfoAsync(TestContext.Current.CancellationToken)).HostVersion);
         }
         finally
         {

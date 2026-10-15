@@ -93,7 +93,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _onlyWithSessions = snapshot.ShowOnlyWithSessions;
         _isSidebarVisible = snapshot.SidebarVisible;
         Preferences = new SettingsViewModel(_ctx, app.Home, () => _agent, _bridge, Gui, _settings);
-        Preferences.Notify = ShowToast;
         Preferences.Models.CollectionChanged += (_, _) => RefreshFilteredModels();
         Preferences.ReasoningEfforts.CollectionChanged += (_, _) => HasReasoningEfforts = Preferences.ReasoningEfforts.Count > 0;
         HasReasoningEfforts = Preferences.ReasoningEfforts.Count > 0;
@@ -126,7 +125,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _ => AppPage.Dashboard,
         };
         workspace.DecisionRequested += decision => DecisionRequested?.Invoke(decision) ?? Task.FromResult<object?>(null);
-        Preferences.MachinesSaved += () => _ = workspace.ReloadMachinesAsync();
         return workspace;
     }
 

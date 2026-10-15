@@ -83,7 +83,16 @@
             </DataTemplate>
           </ContentControl.ContentTemplate>
         </ContentControl>
-        <ContentControl Grid.Row="1" Content="{Binding Workspace.PageContent}" IsVisible="{Binding IsWorkspacePage}" />
+        <ContentControl Grid.Row="1" Name="WorkspacePageHost" Content="{Binding Workspace.PageContent}" IsVisible="{Binding IsWorkspacePage}">
+          <ContentControl.DataTemplates>
+            <DataTemplate DataType="vm:HostPageViewModel">
+              <views:HostPageView />
+            </DataTemplate>
+            <DataTemplate DataType="vm:MachinesViewModel">
+              <views:MachinesView />
+            </DataTemplate>
+          </ContentControl.DataTemplates>
+        </ContentControl>
         <views:ChatView Grid.Row="1" IsVisible="{Binding IsChatPage}" />
         <views:SettingsPageView Grid.Row="1" IsVisible="{Binding IsSettingsPage}" />
         <views:MarketPageView Grid.Row="1" IsVisible="{Binding IsMarketPage}" />

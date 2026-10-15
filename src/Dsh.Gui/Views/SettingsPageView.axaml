@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Dsh.Gui.ViewModels"
+             xmlns:views="using:Dsh.Gui.Views"
              x:Class="Dsh.Gui.Views.SettingsPageView"
              x:DataType="vm:MainViewModel"
              x:CompileBindings="True"
@@ -326,93 +327,8 @@
 
           <StackPanel Spacing="12" IsVisible="{Binding Preferences.IsRemoteSection}">
             <TextBlock Text="远程" Classes="Title" />
-
-            <Grid ColumnDefinitions="260,*" ColumnSpacing="12">
-              <Border Grid.Column="0" Background="{DynamicResource Brush.Bg.Card}" CornerRadius="{DynamicResource CornerRadius.Card}" Padding="10">
-                <DockPanel>
-                  <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="6" Margin="0,8,0,0">
-                    <Button Classes="Ghost" Content="新增" Command="{Binding Preferences.AddRemoteWorkspaceCommand}" />
-                    <Button Classes="Ghost" Content="删除"
-                            Command="{Binding Preferences.RemoveRemoteWorkspaceCommand}"
-                            CommandParameter="{Binding Preferences.SelectedRemoteWorkspace}" />
-                  </StackPanel>
-                  <ListBox ItemsSource="{Binding Preferences.RemoteWorkspaces}"
-                           SelectedItem="{Binding Preferences.SelectedRemoteWorkspace, Mode=TwoWay}">
-                    <ListBox.ItemTemplate>
-                      <DataTemplate x:DataType="vm:SshWorkspaceRowViewModel">
-                        <StackPanel>
-                          <TextBlock Text="{Binding Name}" />
-                          <TextBlock Text="{Binding Summary}" Classes="Tertiary" FontSize="{DynamicResource FontSize.Status}" />
-                        </StackPanel>
-                      </DataTemplate>
-                    </ListBox.ItemTemplate>
-                  </ListBox>
-                </DockPanel>
-              </Border>
-
-              <Border Grid.Column="1" Background="{DynamicResource Brush.Bg.Card}" CornerRadius="{DynamicResource CornerRadius.Card}" Padding="14"
-                      IsVisible="{Binding Preferences.HasSelectedRemoteWorkspace}">
-                <StackPanel Spacing="8" DataContext="{Binding Preferences.SelectedRemoteWorkspace}">
-                  <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="6">
-                    <TextBlock Text="名称" Classes="Tertiary" VerticalAlignment="Center" />
-                    <TextBox Grid.Column="1" Text="{Binding Name}" />
-                    <TextBlock Grid.Row="1" Text="主机" Classes="Tertiary" VerticalAlignment="Center" />
-                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Host}" />
-                    <TextBlock Grid.Row="2" Text="端口" Classes="Tertiary" VerticalAlignment="Center" />
-                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Port}" />
-                    <TextBlock Grid.Row="3" Text="用户" Classes="Tertiary" VerticalAlignment="Center" />
-                    <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding User}" />
-                    <TextBlock Grid.Row="4" Text="认证方式" Classes="Tertiary" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{x:Static vm:SshWorkspaceRowViewModel.AuthModes}"
-                              SelectedItem="{Binding Auth, Mode=TwoWay}" HorizontalAlignment="Stretch" />
-                    <TextBlock Grid.Row="5" Text="密码" Classes="Tertiary" VerticalAlignment="Center" IsVisible="{Binding IsPassword}" />
-                    <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding Password}" PasswordChar="●" IsVisible="{Binding IsPassword}" />
-                    <TextBlock Grid.Row="6" Text="密钥路径" Classes="Tertiary" VerticalAlignment="Center" IsVisible="{Binding IsKey}" />
-                    <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding KeyPath}" IsVisible="{Binding IsKey}" />
-                    <TextBlock Grid.Row="7" Text="代理" Classes="Tertiary" VerticalAlignment="Center" />
-                    <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding Proxy}" PlaceholderText="如 socks5://127.0.0.1:1080 或 nc 命令" />
-                    <TextBlock Grid.Row="8" Text="远端目录" Classes="Tertiary" VerticalAlignment="Center" />
-                    <Grid Grid.Row="8" Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                      <TextBox Text="{Binding RemotePath}" PlaceholderText="留空 = 远端家目录 ( $HOME )" />
-                      <Button Grid.Column="1" Classes="Icon" Width="30" Height="30"
-                              Command="{Binding BrowseRemotePathCommand}"
-                              IsEnabled="{Binding Owner.RemoteIdle}"
-                              ToolTip.Tip="选择远端机器上的目录">
-                        <Path Classes="Icon" Data="{StaticResource Icon.Folder}" />
-                      </Button>
-                    </Grid>
-                  </Grid>
-                  <Button Classes="Ghost" HorizontalAlignment="Left" Content="测试连接"
-                          Command="{Binding TestConnectionCommand}"
-                          IsEnabled="{Binding Owner.RemoteIdle}" />
-                  <TextBlock Text="密码/密钥路径保存在本机 GUI 设置里，请自行评估风险；认证方式支持密码、密钥对、SSH 代理。远端目录留空时在远端用户家目录($HOME)运行，且需 dsharp 在 PATH 中。" Classes="Tertiary" TextWrapping="Wrap" />
-                </StackPanel>
-              </Border>
-            </Grid>
-
-            <Border Background="{DynamicResource Brush.Bg.Card}" CornerRadius="{DynamicResource CornerRadius.Card}" Padding="14">
-              <StackPanel Spacing="8">
-                <TextBlock Text="远端 dsharp 自动部署" FontWeight="SemiBold" />
-                <CheckBox Content="远端缺少 dsharp 时自动下载并部署（按绝对路径运行，不注册系统命令）"
-                          IsChecked="{Binding Preferences.RemoteAutoDeploy}" />
-                <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="6">
-                  <TextBlock Text="发布基址" Classes="Tertiary" VerticalAlignment="Center" />
-                  <TextBox Grid.Column="1" Text="{Binding Preferences.RemoteReleaseBaseUrl}" />
-                  <TextBlock Grid.Row="1" Text="版本" Classes="Tertiary" VerticalAlignment="Center" />
-                  <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Preferences.RemoteReleaseVersion}" PlaceholderText="latest 或 vX.Y.Z" />
-                  <TextBlock Grid.Row="2" Text="本地代理" Classes="Tertiary" VerticalAlignment="Center" />
-                  <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Preferences.RemoteDownloadProxy}" PlaceholderText="本机下载用；留空 = 直连" />
-                  <TextBlock Grid.Row="3" Text="下载位置" Classes="Tertiary" VerticalAlignment="Center" />
-                  <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding Preferences.DownloadViaOptions}"
-                            SelectedItem="{Binding Preferences.RemoteDownloadVia}" />
-                  <TextBlock Grid.Row="4" Text="远端代理" Classes="Tertiary" VerticalAlignment="Center" />
-                  <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding Preferences.RemoteServerProxy}"
-                           PlaceholderText="远端直下用，在远端机器上解析；远端本机代理填 127.0.0.1:端口；留空 = 用远端自带代理/直连" />
-                </Grid>
-              </StackPanel>
-            </Border>
-
-            <Button Classes="Primary" HorizontalAlignment="Left" Content="保存远程工作区" Command="{Binding Preferences.SaveRemoteWorkspacesCommand}" />
+            <TextBlock Text="机器清单与远端部署设置保存在 settings.yaml 的 fleet 段，与侧栏“机器”页、dsharp machine 和 dsharp host web 共用。" Classes="Tertiary" TextWrapping="Wrap" />
+            <views:MachinesView DataContext="{Binding Workspace.Machines}" Margin="-12,0" />
           </StackPanel>
 
           <StackPanel Spacing="12" IsVisible="{Binding Preferences.IsAboutSection}">

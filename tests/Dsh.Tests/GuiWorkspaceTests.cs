@@ -1,6 +1,8 @@
+using Avalonia;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Dsh.AgentAdapters;
+using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Fleet;
 using Dsh.Gui.Services;
@@ -364,6 +366,75 @@ public sealed class GuiWorkspaceTests
         Assert.Throws<ArgumentException>(() => NewSessionViewModel.ParseCommand("   "));
     }
 
+    /**
+     * Files, Git and machine management as workspace pages: files and Git open on the machine and project of the session in view and are rebuilt on the next link after the host restarts.
+     * A Git worktree opens the new-session form there; saving a machine in machine management reconnects the workspace while the page stays in view.
+     */
+    [Fact(Timeout = 120000)]
+    public async Task ContributedPages_FollowTheSessionAndTheConnection()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        SkipOnWindows();
+        using var repo = new GitTestRepository();
+        repo.Commit(("readme.md", "hello\n"));
+        await using var alpha = await HarnessHostFixture.CreateAsync("gpa", ct);
+        await using var beta = await HarnessHostFixture.CreateAsync("gpb", ct);
+        await HeadlessGui.RunAsync(async () =>
+        {
+            var store = new MachineStore(new HarnessHome(alpha.Root));
+            var fleet = new FleetWorkspace(
+                store, Options, () => new FleetClient([MachineSpec.Local(alpha.Root, "alpha"), MachineSpec.Local(beta.Root, "beta"), .. store.Load().Machines], Options));
+            var workspace = new WorkspaceViewModel(fleet, () => new HarnessModelChoice(RemoteHostMultiClientTests.Selection, RemoteHostMultiClientTests.Spec), (_, _, _) => { });
+            workspace.RegisterHostPages(Icon("Icon.Folder"), Icon("Icon.Git"), Icon("Icon.Machine"));
+            NewSessionViewModel? form = null;
+            workspace.NewSessionDialogRequested += requested => form = requested;
+            workspace.Start();
+            try
+            {
+                await ConnectedAsync(workspace);
+                Assert.Equal([WorkspacePages.Files, WorkspacePages.Git, WorkspacePages.Machines], workspace.Pages.Available.Select(page => page.Id));
+                var session = await StartTerminalAsync(workspace, "alpha", repo.Root, "repo shell", "sleep 30");
+                await UntilAsync(() => Card(workspace, "alpha", session) is not null, "the session card");
+                workspace.OpenSession("alpha", session);
+
+                workspace.OpenPage(Page(workspace, WorkspacePages.Files));
+                var files = Assert.IsType<HostPageViewModel>(workspace.PageContent);
+                Assert.Equal(("alpha", repo.Root), (files.Machine, files.Path));
+                await UntilAsync(() => files.Content is FilesViewModel { Roots: [{ Path: var root }] } && root == repo.Root, "files on the session's project");
+                var firstLink = files.Content;
+                await alpha.RestartHostAsync(ct);
+                await UntilAsync(() => files.Content is FilesViewModel { Roots.Count: 1 } rebuilt && !ReferenceEquals(rebuilt, firstLink), "files rebuilt on the new link");
+
+                workspace.OpenPage(Page(workspace, WorkspacePages.Git));
+                Assert.Null(files.Content);
+                var git = Assert.IsType<HostPageViewModel>(workspace.PageContent);
+                await UntilAsync(() => git.Content is GitViewModel { Worktrees.Count: > 0 }, "the repository's worktrees");
+                var repository = (GitViewModel)git.Content!;
+                await repository.RequestSessionCommand.ExecuteAsync(repository.Worktrees[0]);
+                Assert.Equal(("alpha", repository.Worktrees[0].Path), (form?.Machine, form?.ProjectPath));
+
+                workspace.OpenPage(Page(workspace, WorkspacePages.Machines));
+                var machines = workspace.Machines;
+                Assert.Same(machines, workspace.PageContent);
+                machines.NewLocalCommand.Execute(null);
+                (machines.Editor!.Name, machines.Editor.HarnessHome) = ("gamma", beta.Root);
+                await machines.SaveCommand.ExecuteAsync(null);
+                var connected = MachineRowViewModel.StateLabel(MachineConnectionState.Connected);
+                await UntilAsync(() => machines.Machines.FirstOrDefault(row => row.Name == "gamma")?.StateText == connected, "machine management shows the new client");
+                Assert.Equal(MachineConnectionState.Connected, workspace.Fleet.Find("gamma")!.State);
+                Assert.Same(machines, workspace.PageContent);
+            }
+            finally
+            {
+                await workspace.DisposeAsync();
+            }
+        });
+    }
+
+    private static Geometry Icon(string key) => (Geometry)Avalonia.Controls.ResourceNodeExtensions.FindResource(Application.Current!, key)!;
+
+    private static WorkspacePageEntry Page(WorkspaceViewModel workspace, string id) => workspace.Pages.Available.Single(page => page.Id == id);
+
     private static void SkipOnWindows()
     {
         if (OperatingSystem.IsWindows())
@@ -375,7 +446,8 @@ public sealed class GuiWorkspaceTests
     {
         TempTree.AssertFitsMacOsSocketLimit(Path.Combine(alpha.Root, "host.sock"));
         TempTree.AssertFitsMacOsSocketLimit(Path.Combine(beta.Root, "host.sock"));
-        var fleet = new FleetWorkspace(() => new FleetClient([MachineSpec.Local(alpha.Root, "alpha"), MachineSpec.Local(beta.Root, "beta")], Options));
+        var fleet = new FleetWorkspace(
+            new MachineStore(new HarnessHome(alpha.Root)), Options, () => new FleetClient([MachineSpec.Local(alpha.Root, "alpha"), MachineSpec.Local(beta.Root, "beta")], Options));
         var workspace = new WorkspaceViewModel(fleet, () => new HarnessModelChoice(RemoteHostMultiClientTests.Selection, RemoteHostMultiClientTests.Spec), (_, _, _) => { });
         workspace.Start();
         return workspace;
@@ -429,7 +501,7 @@ public sealed class GuiWorkspaceTests
     }
 
     /** Polls on the UI thread, running the posted UI work between checks. */
-    private static async Task UntilAsync(Func<bool> condition, string what)
+    internal static async Task UntilAsync(Func<bool> condition, string what)
     {
         var deadline = DateTime.UtcNow + Arrival;
         while (true)

@@ -39,4 +39,5 @@
   <StreamGeometry x:Key="Icon.Back">M15,6 L9,12 L15,18</StreamGeometry>
   <StreamGeometry x:Key="Icon.Check">M5,12.5 L10,17.5 L19,7</StreamGeometry>
   <StreamGeometry x:Key="Icon.Machine">M4,5 L20,5 L20,15 L4,15 Z M9,19 L15,19 M12,15 L12,19</StreamGeometry>
+  <StreamGeometry x:Key="Icon.Git">M7,4 L7,20 M17,4 A2.5,2.5 0 1 1 17,9 A2.5,2.5 0 1 1 17,4 M17,9 C17,13 7,12 7,16</StreamGeometry>
 </ResourceDictionary>

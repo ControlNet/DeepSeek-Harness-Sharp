@@ -16,12 +16,17 @@ public sealed class FleetWorkspace : IAsyncDisposable
     private readonly DispatcherBridge<bool> _changes;
     private bool _disposed;
 
-    public FleetWorkspace(Func<FleetClient> factory)
+    /** store is the machine list the client is built from (the machine management page edits it); options are the connection options before the stored deployment preferences apply. */
+    public FleetWorkspace(MachineStore store, FleetOptions options, Func<FleetClient> factory)
     {
-        _factory = factory;
+        (Store, Options, _factory) = (store, options, factory);
         _changes = new DispatcherBridge<bool>(_ => Changed?.Invoke());
         Client = Attach(factory());
     }
+
+    public MachineStore Store { get; }
+
+    public FleetOptions Options { get; }
 
     public FleetClient Client { get; private set; }
 
@@ -39,17 +44,19 @@ public sealed class FleetWorkspace : IAsyncDisposable
      * startLocalHost launches `host serve` for a local machine whose endpoint is not reachable; without it local machines are only connected when their host already runs.
      */
     public static FleetWorkspace ForHome(HarnessHome home, Func<string, CancellationToken, Task>? startLocalHost)
-        => new(() =>
+    {
+        var store = new MachineStore(home);
+        var options = new FleetOptions
         {
-            var config = new MachineStore(home).Load();
-            var options = new FleetOptions
-            {
-                ClientName = GuiSettings.RemoteClientName,
-                Deploy = config.Deploy,
-                StartLocalHost = startLocalHost is null ? null : (machine, token) => startLocalHost(machine.HarnessHome ?? home.Root, token),
-            };
-            return new FleetClient([MachineSpec.Local(home.Root), .. config.Machines], options);
+            ClientName = GuiSettings.RemoteClientName,
+            StartLocalHost = startLocalHost is null ? null : (machine, token) => startLocalHost(machine.HarnessHome ?? home.Root, token),
+        };
+        return new FleetWorkspace(store, options, () =>
+        {
+            var config = store.Load();
+            return new FleetClient([MachineSpec.Local(home.Root), .. config.Machines], options with { Deploy = config.Deploy });
         });
+    }
 
     public MachineConnection? Find(string machine) => Client.Find(machine);
 

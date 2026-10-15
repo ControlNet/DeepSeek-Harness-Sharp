@@ -1,3 +1,4 @@
+using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -34,6 +35,10 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
         Dashboard = new DashboardViewModel(fleet);
         Notifications = new NotificationCenterViewModel(fleet, (machine, session) => Dashboard.Find(machine, session)?.Title) { Toast = toast };
         Palette = new CommandPaletteViewModel(() => Dashboard.AllCards);
+        Machines = new MachinesViewModel(fleet.Store, fleet.Options);
+        Machines.Load();
+        Machines.AttachFleet(fleet.Client);
+        Machines.MachinesChanged += () => _ = ReloadMachinesAsync();
         Dashboard.OpenRequested += card => OpenSession(card.Machine, card.SessionId);
         Dashboard.OpenInWindowRequested += OpenInWindow;
         Dashboard.StopRequested += card => _ = StopAsync(card);
@@ -57,12 +62,21 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
 
     public WorkspacePages Pages { get; } = new();
 
+    /** Machine management, shared by its workspace page and the settings page's remote section. */
+    public MachinesViewModel Machines { get; }
+
     [ObservableProperty]
     private FleetSessionViewModel? _activeSession;
 
-    /** Content of the contributed page in view (see WorkspacePageEntry). */
+    /** Content of the contributed page in view (see WorkspacePageEntry); a disposable content is disposed when the page closes. */
     [ObservableProperty]
     private object? _pageContent;
+
+    partial void OnPageContentChanged(object? oldValue, object? newValue)
+    {
+        if (oldValue is IDisposable disposable)
+            disposable.Dispose();
+    }
 
     [ObservableProperty]
     private WorkspacePageEntry? _activePage;
@@ -154,6 +168,32 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
         NavigationRequested?.Invoke(WorkspaceDestination.Page);
     }
 
+    /**
+     * The pages this module contributes: files and Git on the machine and project of the session in view (this computer's home directory from the dashboard), and machine management.
+     * Files and Git need the host capabilities fs.transfer and git.inspect; a new session asked for from a Git worktree opens the new-session form in that worktree.
+     */
+    public void RegisterHostPages(Geometry filesIcon, Geometry gitIcon, Geometry machinesIcon)
+    {
+        Pages.Register(new WorkspacePageEntry(WorkspacePages.Files, "文件", filesIcon, context => new HostPageViewModel(
+            Fleet, "文件", HostCapabilities.FsTransfer, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? RemotePaths.Home,
+            async (host, _, path) =>
+            {
+                var files = new FilesViewModel(host, path);
+                await files.LoadAsync();
+                return files;
+            })));
+        Pages.Register(new WorkspacePageEntry(WorkspacePages.Git, "Git", gitIcon, context => new HostPageViewModel(
+            Fleet, "Git", HostCapabilities.GitInspect, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? "",
+            async (host, machine, path) =>
+            {
+                var git = new GitViewModel(host, path);
+                git.NewSessionRequested += worktree => NewSession(machine, worktree.Path);
+                await git.RefreshAsync();
+                return git;
+            })));
+        Pages.Register(new WorkspacePageEntry(WorkspacePages.Machines, "机器", machinesIcon, _ => Machines));
+    }
+
     /** Opens the new-session form, preset to a machine and project when started from one. */
     public void NewSession(string? machine, string? projectPath)
     {
@@ -162,19 +202,27 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
         NewSessionDialogRequested?.Invoke(form);
     }
 
-    /** Reconnects to the saved machine list; session views hold the previous connections, so they are closed first. */
+    /**
+     * Reconnects to the saved machine list; session views hold the previous connections, so they are closed first.
+     * A contributed page in view stays: host pages follow their machine's new connection, and machine management shows the new client's states.
+     */
     public async Task ReloadMachinesAsync()
     {
-        if (ActiveSession is not null)
+        if (ActivePage is not null)
+            await CloseActiveAsync();
+        else if (ActiveSession is not null)
             ShowDashboard();
         foreach (var session in _windows.Values.ToList())
             SessionWindowCloseRequested?.Invoke(session);
         await Fleet.ReloadAsync();
+        Machines.AttachFleet(Fleet.Client);
     }
 
     public async ValueTask DisposeAsync()
     {
         Fleet.Changed -= OnFleetChanged;
+        PageContent = null;
+        Machines.AttachFleet(null);
         await CloseActiveAsync();
         foreach (var session in _windows.Values.ToList())
             await session.DisposeAsync();

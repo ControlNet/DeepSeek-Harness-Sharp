@@ -35,7 +35,7 @@ public sealed partial class RemoteFolderPickerViewModel(IRemoteHost host) : Obse
         Status = null;
         try
         {
-            var listing = await host.ListDirectoryAsync(string.IsNullOrWhiteSpace(target) ? "~" : target);
+            var listing = await host.ListDirectoryAsync(string.IsNullOrWhiteSpace(target) ? RemotePaths.Home : target);
             _parent = listing.Parent;
             Path = listing.Path;
             Directories.Clear();

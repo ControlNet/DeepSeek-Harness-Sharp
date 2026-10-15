@@ -4,7 +4,6 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
 using Dsh.Core;
-using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Interaction;
 using Dsh.Llm;
@@ -59,14 +58,10 @@ public sealed partial class SettingsViewModel : ObservableObject
             section.SelectCommand = new RelayCommand<SettingsNavItemViewModel>(SelectSection);
         Sections[0].IsSelected = true;
         Reload();
-        LoadRemoteWorkspaces();
     }
 
     /** 主题/字号等外观项变化后由视图重新应用 App 资源。 */
     public event Action? Applied;
-
-    /** The machine list was saved; the workspace reconnects to the saved machines. */
-    public event Action? MachinesSaved;
 
     /** 拖动字号滑块时的实时预览: 不写盘, 由 MainWindow 用内存值重应用外观。 */
     public event Action? Preview;
@@ -581,168 +576,6 @@ public sealed partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task OpenConfigFolderAsync() => Status = await DesktopIntegration.OpenPathAsync(Path.GetDirectoryName(ConfigPath) ?? _home.Root);
 
-    public ObservableCollection<SshWorkspaceRowViewModel> RemoteWorkspaces { get; } = [];
-
-    /** 右下角气泡回调(由 MainViewModel 注入): (标题, 正文, 是否错误)。 */
-    public Action<string, string, bool>? Notify { get; set; }
-
-    /** 远端目录选择器(由视图注入): 给定工作区与初始目录, 返回选中目录; 取消返回 null。 */
-    public Func<MachineSpec, string?, Task<string?>>? RemoteFolderPicker { get; set; }
-
-    /** 远端缺少 dsharp 时自动下载并部署(仿 VS Code Server; 不注册 PATH 命令)。 */
-    [ObservableProperty]
-    private bool _remoteAutoDeploy = true;
-
-    [ObservableProperty]
-    private string _remoteReleaseBaseUrl = DeploySettings.DefaultReleaseBaseUrl;
-
-    [ObservableProperty]
-    private string _remoteReleaseVersion = DeploySettings.LatestVersion;
-
-    [ObservableProperty]
-    private string _remoteDownloadProxy = "";
-
-    /** 下载位置: auto(先远端后本地)/client(仅本地下发)/server(仅远端直下)。 */
-    [ObservableProperty]
-    private string _remoteDownloadVia = DownloadVia.Auto;
-
-    /** 远端直下时的代理(为空则用远端自带代理/直连)。 */
-    [ObservableProperty]
-    private string _remoteServerProxy = "";
-
-    internal DeploySettings BuildDeploySettings() => new()
-    {
-        AutoDeploy = RemoteAutoDeploy,
-        ReleaseBaseUrl = RemoteReleaseBaseUrl,
-        ReleaseVersion = RemoteReleaseVersion,
-        DownloadProxy = string.IsNullOrWhiteSpace(RemoteDownloadProxy) ? null : RemoteDownloadProxy,
-        Via = string.IsNullOrWhiteSpace(RemoteDownloadVia) ? DownloadVia.Auto : RemoteDownloadVia,
-        ServerProxy = string.IsNullOrWhiteSpace(RemoteServerProxy) ? null : RemoteServerProxy,
-    };
-
-    /** 下载位置可选项(auto=先远端后本地)。 */
-    public IReadOnlyList<string> DownloadViaOptions { get; } = [DownloadVia.Auto, DownloadVia.Client, DownloadVia.Server];
-
-    /** 远程连接类操作进行中(测试连接/浏览目录), 期间禁用按钮避免重入。 */
-    [ObservableProperty]
-    private bool _remoteBusy;
-
-    partial void OnRemoteBusyChanged(bool value) => OnPropertyChanged(nameof(RemoteIdle));
-
-    public bool RemoteIdle => !RemoteBusy;
-
-    [ObservableProperty]
-    private SshWorkspaceRowViewModel? _selectedRemoteWorkspace;
-
-    [ObservableProperty]
-    private bool _hasSelectedRemoteWorkspace;
-
-    partial void OnSelectedRemoteWorkspaceChanged(SshWorkspaceRowViewModel? value)
-        => HasSelectedRemoteWorkspace = value is not null;
-
-    [RelayCommand]
-    private void AddRemoteWorkspace()
-    {
-        var row = new SshWorkspaceRowViewModel { Name = "新远程工作区", Owner = this };
-        RemoteWorkspaces.Add(row);
-        SelectedRemoteWorkspace = row;
-    }
-
-    [RelayCommand]
-    private void RemoveRemoteWorkspace(SshWorkspaceRowViewModel? row)
-    {
-        if (row is null)
-            return;
-        RemoteWorkspaces.Remove(row);
-        if (ReferenceEquals(SelectedRemoteWorkspace, row))
-            SelectedRemoteWorkspace = RemoteWorkspaces.FirstOrDefault();
-    }
-
-    /** 远程工作区就是机器清单(fleet/machines.json)里的 SSH 机器, 与 CLI 的 `dsharp machine` 共用; CLI 加的本机条目原样保留。 */
-    [RelayCommand]
-    private void SaveRemoteWorkspaces()
-    {
-        var store = new MachineStore(_home);
-        var others = store.Load().Machines.Where(machine => machine.Kind != MachineKinds.Ssh);
-        try
-        {
-            store.Save(new FleetConfig([.. others, .. RemoteWorkspaces.Select(row => row.ToModel())], BuildDeploySettings()));
-            Status = $"远程工作区已保存（{RemoteWorkspaces.Count} 个）";
-            MachinesSaved?.Invoke();
-        }
-        catch (InvalidOperationException error)
-        {
-            Status = $"远程工作区未保存: {error.Message}";
-        }
-    }
-
-    private void LoadRemoteWorkspaces()
-    {
-        var config = new MachineStore(_home).Load();
-        RemoteAutoDeploy = config.Deploy.AutoDeploy;
-        RemoteReleaseBaseUrl = config.Deploy.ReleaseBaseUrl;
-        RemoteReleaseVersion = config.Deploy.ReleaseVersion;
-        RemoteDownloadProxy = config.Deploy.DownloadProxy ?? "";
-        RemoteDownloadVia = config.Deploy.Via;
-        RemoteServerProxy = config.Deploy.ServerProxy ?? "";
-        RemoteWorkspaces.Clear();
-        foreach (var workspace in config.Machines.Where(machine => machine.Kind == MachineKinds.Ssh))
-        {
-            var row = SshWorkspaceRowViewModel.From(workspace);
-            row.Owner = this;
-            RemoteWorkspaces.Add(row);
-        }
-
-        SelectedRemoteWorkspace = RemoteWorkspaces.FirstOrDefault();
-    }
-
-    /** “测试连接”: 走真实 ssh 连接(必要时先自动部署 dsharp), 成功/失败都经右下角气泡反馈。 */
-    internal async Task TestRemoteWorkspaceAsync(SshWorkspaceRowViewModel row)
-    {
-        if (RemoteBusy)
-            return;
-        RemoteBusy = true;
-        try
-        {
-            Notify?.Invoke("测试连接", $"正在连接 {row.Summary}…", false);
-            var workspace = row.ToModel();
-            string? hostCommand = null;
-            if (RemoteAutoDeploy)
-                hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, BuildDeploySettings(), message => Notify?.Invoke("远端部署", message, false), CancellationToken.None)).CommandPath;
-            Notify?.Invoke("连接成功", await SshHostLauncher.TestAsync(workspace, hostCommand, GuiSettings.RemoteClientName, CancellationToken.None), false);
-        }
-        catch (Exception error)
-        {
-            Notify?.Invoke("连接失败", error.Message, true);
-        }
-        finally
-        {
-            RemoteBusy = false;
-        }
-    }
-
-    /** “选择远端目录”: 先连上远端, 再由选择的对话框浏览远端目录树。 */
-    internal async Task BrowseRemotePathAsync(SshWorkspaceRowViewModel row)
-    {
-        if (RemoteBusy || RemoteFolderPicker is null)
-            return;
-        RemoteBusy = true;
-        try
-        {
-            var picked = await RemoteFolderPicker(row.ToModel(), row.RemotePath);
-            if (!string.IsNullOrEmpty(picked))
-                row.RemotePath = picked;
-        }
-        catch (Exception error)
-        {
-            Notify?.Invoke("选择远端目录失败", error.Message, true);
-        }
-        finally
-        {
-            RemoteBusy = false;
-        }
-    }
-
     private void SelectSection(SettingsNavItemViewModel? section)
     {
         if (section is null)
@@ -914,94 +747,4 @@ public sealed class PluginRowViewModel(string package, string description, bool 
     public string ActionLabel => Enabled ? "禁用" : "启用";
 
     public string WireAction => $"{(Enabled ? "disable" : "enable")}:{Package}";
-}
-
-/** “远程”分页的一行: 可编辑字段, 保存时转回机器清单里的 SSH 机器(界面不编辑的字段沿用原记录)。 */
-public sealed partial class SshWorkspaceRowViewModel : ObservableObject
-{
-    public static IReadOnlyList<string> AuthModes { get; } = [SshAuth.Password, SshAuth.Key, SshAuth.Agent];
-
-    [ObservableProperty]
-    private string _name = "";
-
-    [ObservableProperty]
-    private string _host = "";
-
-    [ObservableProperty]
-    private string _port = "22";
-
-    [ObservableProperty]
-    private string _user = "";
-
-    [ObservableProperty]
-    private string _auth = SshAuth.Agent;
-
-    [ObservableProperty]
-    private string? _password;
-
-    [ObservableProperty]
-    private string? _keyPath;
-
-    [ObservableProperty]
-    private string? _proxy;
-
-    [ObservableProperty]
-    private string? _remotePath;
-
-    /** 载入时的原记录: 保存时保留界面不编辑的字段(远端 harness home、额外 ssh 选项)。 */
-    private MachineSpec? _source;
-
-    public bool IsPassword => Auth == SshAuth.Password;
-
-    public bool IsKey => Auth == SshAuth.Key;
-
-    public string Summary => $"{User}@{Host}:{Port}";
-
-    /** 所属设置页: 供“测试连接/选择远端目录”回连父级(连接、通知与选择器都在父级)。 */
-    public SettingsViewModel? Owner { get; set; }
-
-    [RelayCommand]
-    private Task TestConnectionAsync() => Owner?.TestRemoteWorkspaceAsync(this) ?? Task.CompletedTask;
-
-    [RelayCommand]
-    private Task BrowseRemotePathAsync() => Owner?.BrowseRemotePathAsync(this) ?? Task.CompletedTask;
-
-    partial void OnAuthChanged(string value)
-    {
-        OnPropertyChanged(nameof(IsPassword));
-        OnPropertyChanged(nameof(IsKey));
-    }
-
-    partial void OnUserChanged(string value) => OnPropertyChanged(nameof(Summary));
-
-    partial void OnHostChanged(string value) => OnPropertyChanged(nameof(Summary));
-
-    partial void OnPortChanged(string value) => OnPropertyChanged(nameof(Summary));
-
-    public MachineSpec ToModel() => (_source ?? MachineSpec.Ssh(Name, Host, MachineSpec.DefaultSshPort, User, Auth)) with
-    {
-        Name = Name,
-        Host = Host,
-        Port = int.TryParse(Port, out var port) ? port : MachineSpec.DefaultSshPort,
-        User = User,
-        Auth = Auth,
-        KeyPath = KeyPath,
-        Proxy = Proxy,
-        RemotePath = RemotePath,
-        Password = Password,
-    };
-
-    public static SshWorkspaceRowViewModel From(MachineSpec workspace) => new()
-    {
-        _source = workspace,
-        Name = workspace.Name,
-        Host = workspace.Host,
-        Port = workspace.Port.ToString(),
-        User = workspace.User,
-        Auth = workspace.Auth,
-        Password = workspace.Password,
-        KeyPath = workspace.KeyPath,
-        Proxy = workspace.Proxy,
-        RemotePath = workspace.RemotePath,
-    };
 }

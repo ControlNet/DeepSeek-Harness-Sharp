@@ -4,6 +4,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
@@ -42,7 +43,6 @@ public sealed partial class MainWindow : Window
         ViewModel.CopyRequested += CopyToClipboard;
         ViewModel.TerminalRequested += ShowTerminal;
         ViewModel.FilePicker = PickAsync;
-        ViewModel.Preferences.RemoteFolderPicker = PickRemoteFolderAsync;
         ViewModel.Preferences.Applied += ApplyAppearance;
         ViewModel.Preferences.Preview += ApplyPreview;
         AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
@@ -66,8 +66,11 @@ public sealed partial class MainWindow : Window
         workspace.NavigationRequested += _ => BellButton.Flyout?.Hide();
         workspace.Notifications.IsForeground = () => IsActive;
         workspace.Notifications.DesktopNotify = DesktopNotifier.Create();
+        workspace.RegisterHostPages(IconGeometry("Icon.Folder"), IconGeometry("Icon.Git"), IconGeometry("Icon.Machine"));
         workspace.Start();
     }
+
+    private Geometry IconGeometry(string key) => (Geometry)this.FindResource(key)!;
 
     private void ShowSessionWindow(FleetSessionViewModel session)
     {
@@ -392,24 +395,5 @@ public sealed partial class MainWindow : Window
         }
         var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions { AllowMultiple = allowMultiple, Title = "选择文件" });
         return [.. files.Select(file => file.TryGetLocalPath()).Where(path => path is not null).Select(path => path!)];
-    }
-
-    /** “选择远端目录”: 需要时先自动部署 dsharp, 连上后再用对话框浏览远端目录树。 */
-    private async Task<string?> PickRemoteFolderAsync(MachineSpec workspace, string? initial)
-    {
-        var cancellationToken = CancellationToken.None;
-        if (ViewModel is not { } model)
-            return null;
-        if (model.Workspace.Fleet.Find(workspace.Name) is { State: MachineConnectionState.Connected, Machine: var connected } machine && connected == workspace)
-        {
-            var lease = await machine.WaitConnectedAsync(cancellationToken);
-            return await new RemoteFolderPickerWindow(lease.Client, initial).ShowDialog<string?>(this);
-        }
-        string? hostCommand = null;
-        if (model.Preferences.RemoteAutoDeploy)
-            hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, model.Preferences.BuildDeploySettings(), null, cancellationToken)).CommandPath;
-        await using var connection = await SshHostLauncher.ConnectAsync(workspace, hostCommand, GuiSettings.RemoteClientName, cancellationToken);
-        var dialog = new RemoteFolderPickerWindow(connection.Client, initial);
-        return await dialog.ShowDialog<string?>(this);
     }
 }
