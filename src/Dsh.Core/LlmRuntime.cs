@@ -64,6 +64,7 @@ public sealed class LlmRuntime : Service
             Ctx.Emit(new LlmAdaptersUpdatedNotification());
     }
 
+    [RemoteCallable]
     public IReadOnlyList<LlmProviderInfo> ListProviders()
         => _adapters.Values.Select(registration => registration.Provider).DistinctBy(provider => provider.Id).ToList();
 

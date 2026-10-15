@@ -5,7 +5,7 @@ using Message = Dsh.Llm.Message;
 
 namespace Dsh.Core;
 
-public sealed class AgentLoopAgent : IAgent
+public sealed class AgentLoopAgent : IAgent, IDisposable
 {
     private abstract class Phase
     {
@@ -68,6 +68,9 @@ public sealed class AgentLoopAgent : IAgent
     }
 
     internal static readonly object AgentContextKey = new();
+
+    /** 退订本 agent 挂在共享事件表上的投影;会话本身的释放由持有者(AgentLoop / 子代理 run)决定。 */
+    public void Dispose() => _runtimeContext.Dispose();
 
     public SessionId Id { get; }
     public AgentOptions Options { get; }
@@ -420,7 +423,7 @@ public sealed class AgentLoopAgent : IAgent
                     && policy.RetryableCodes.Contains(failure.Code)
                     && attempts < policy.MaxRetries)
                 {
-                    var delay = policy.Delay(attempts);
+                    var delay = policy.Delay(attempts, failure.ProviderRetryAfterMs);
                     attempts++;
                     Dispatch.Emit(new AgentStreamInterruptedNotification(
                         this,
@@ -694,7 +697,9 @@ public sealed class AgentLoopAgent : IAgent
         ToolExecutionModeKind mode,
         CancellationToken signal)
     {
-        const int maxParallel = 10;
+        // 子代理与测试可能不经 AgentLoop 构造 agent, 此时沿用配置默认值。
+        var maxParallel = _loopCtx.Get<AgentLoop>(AgentLoop.ServiceName)?.MaxParallelToolCalls
+            ?? AgentLoopConfig.DefaultMaxParallelToolCalls;
         var slots = new (ToolRunContext Exec, ToolExecutionResult Result, bool NeedsPost)?[group.Count];
         var callSeqs = new long?[group.Count];
         var nextToStart = 0;

@@ -20,6 +20,6 @@ public static class RemoteHostEndpoint
 
     public static string PortFile(string? root = null) => Path.Combine(RunDirectory(root), "host.port");
 
-    /** 连接 token 落盘位置(loopback 场景); stdio 场景 token 由连接参数直接传递。 */
-    public static string TokenFile(string? root = null) => Path.Combine(RunDirectory(root), "host.token");
+    /** The file that announces the endpoint on this platform (socket or port file); the daemon's LocalEndpointToken sits next to it. */
+    public static string EndpointFile(string? root = null) => OperatingSystem.IsWindows() ? PortFile(root) : SocketPath(root);
 }

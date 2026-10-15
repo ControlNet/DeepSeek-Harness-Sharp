@@ -100,8 +100,9 @@ function Write-BuildStamp([string]$StampFile, [string]$Commit) {
     Set-Content -LiteralPath $StampFile -Value $Commit -NoNewline
 }
 
-# 从 CI 产物下载; 无 gh CLI 或下载不到时返回 $false, 由调用方回退。
-function Get-FromGhArtifact([string]$TargetNupkg, [string]$StampFile) {
+# 从最新 commit 的 CI 产物下载: 只取上游默认分支 push 触发且成功、head_sha 等于该 commit 的 run。
+# 无 gh CLI、没有符合条件的 run 或下载不到时返回 $false, 由调用方回退。
+function Get-FromGhArtifact([string]$TargetNupkg, [string]$StampFile, [string]$Commit) {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         return $false
     }
@@ -110,35 +111,33 @@ function Get-FromGhArtifact([string]$TargetNupkg, [string]$StampFile) {
         return $false
     }
 
-    $runs = gh run list --repo $GhRepo --workflow $GhWorkflow --status success --limit 20 --json databaseId,headSha | ConvertFrom-Json
-    foreach ($run in $runs) {
-        $json = gh api "repos/$GhRepo/actions/runs/$($run.databaseId)/artifacts" 2>$null
-        if (-not $json) {
-            continue
-        }
-        $hasArtifact = ($json | ConvertFrom-Json).artifacts |
-            Where-Object { $_.name -eq $GhArtifact -and -not $_.expired }
-        if (-not $hasArtifact) {
-            continue
-        }
+    $branch = gh api "repos/$GhRepo" --jq '.default_branch'
+    if ($LASTEXITCODE -ne 0 -or -not $branch) {
+        return $false
+    }
+    $runs = (gh api "repos/$GhRepo/actions/workflows/$GhWorkflow/runs?branch=$branch&event=push&status=success&head_sha=$Commit" | ConvertFrom-Json).workflow_runs
+    $run = $runs | Where-Object { $_.head_sha -eq $Commit -and $_.event -eq 'push' -and $_.head_branch -eq $branch -and $_.conclusion -eq 'success' } | Select-Object -First 1
+    if (-not $run) {
+        Write-Warning "上游 $branch 分支上还没有 commit $($Commit.Substring(0, 12)) 的成功 push run。"
+        return $false
+    }
 
-        if (Test-Path -LiteralPath $WorkDir) {
-            Remove-Item -LiteralPath $WorkDir -Recurse -Force
-        }
-        New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
-        $staged = Join-Path $WorkDir ([System.IO.Path]::GetFileName($TargetNupkg))
-        gh run download $run.databaseId --repo $GhRepo --name $GhArtifact --dir $WorkDir *> $null
-        if (Test-Path -LiteralPath $staged) {
-            New-Item -ItemType Directory -Path $FeedDir -Force | Out-Null
-            Copy-Item -LiteralPath $staged -Destination $TargetNupkg -Force
-            Write-BuildStamp $StampFile $run.headSha
-            Remove-Item -LiteralPath $WorkDir -Recurse -Force
-            return $true
-        }
+    if (Test-Path -LiteralPath $WorkDir) {
+        Remove-Item -LiteralPath $WorkDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
+    $staged = Join-Path $WorkDir ([System.IO.Path]::GetFileName($TargetNupkg))
+    gh run download $run.id --repo $GhRepo --name $GhArtifact --dir $WorkDir *> $null
+    if (-not (Test-Path -LiteralPath $staged)) {
+        Write-Warning "run $($run.id) 的 $GhArtifact 产物不可用(可能已过期)。"
         Remove-Item -LiteralPath $WorkDir -Recurse -Force
         return $false
     }
-    return $false
+    New-Item -ItemType Directory -Path $FeedDir -Force | Out-Null
+    Copy-Item -LiteralPath $staged -Destination $TargetNupkg -Force
+    Write-BuildStamp $StampFile $Commit
+    Remove-Item -LiteralPath $WorkDir -Recurse -Force
+    return $true
 }
 
 # 在指定 commit 上本地构建; 与 CI 一样产出包 ID 为 DryIoc.dll 的 nupkg。
@@ -216,15 +215,16 @@ if ((Test-Path -LiteralPath $TargetNupkg) -and -not $Force) {
     }
 }
 
+$Commit = Get-LatestCommit
+
 if ($UseGhArtifact) {
-    if (Get-FromGhArtifact $TargetNupkg $StampFile) {
-        Write-Host "已从 CI 产物写入本地 feed: $TargetNupkg"
+    if (Get-FromGhArtifact $TargetNupkg $StampFile $Commit) {
+        Write-Host "已从 CI 产物写入本地 feed(commit $($Commit.Substring(0, 12))): $TargetNupkg"
         exit 0
     }
     Write-Warning 'gh CLI 不可用或 CI 产物下载失败, 回退到源码构建。'
 }
 
-$Commit = Get-LatestCommit
 Build-FromSource $Commit $StampFile
 Assert-ProducedVersion $TargetNupkg $PackageVersion
 

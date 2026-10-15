@@ -51,7 +51,7 @@ public sealed class SamplePlugin : IDshNativePlugin
 ## 生成器已经替你做掉的（不要手写）
 
 - 导出 `dsh_plugin_package` 与 `dsh_plugin_entry` 两个 C 符号与握手；
-- 句柄表、两段式缓冲协议（先问长度再写内容）、UTF-8 编解码；
+- 句柄表、两段式缓冲协议（放不下时先报长度并保留结果，宿主再取时直接交付，工具只执行一次）、NUL 结尾的 UTF-8 编解码；
 - 工具注册与调用派发，以及两侧的异常拦截（异常不会穿过 ABI 边界）；
 - 日志 sink 安装（`DshNativePluginRuntime.LogSink`）。
 你只声明 `Package` 与 `Tools`；手写导出会与生成物重复定义。

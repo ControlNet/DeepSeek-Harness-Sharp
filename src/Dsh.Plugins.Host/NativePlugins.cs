@@ -114,6 +114,7 @@ public sealed unsafe class NativePluginLibrary : INativePlugin
         nint library;
         try
         {
+            DshNativeGuard.Install();
             if (!NativeLibrary.TryLoad(fullPath, out library))
                 return NativePluginLoad.Fail(NativePluginFailureKind.NotALibrary,
                     $"不是可加载的原生共享库(非 NativeLib=Shared 产物或依赖缺失): {fullPath}");
@@ -250,6 +251,10 @@ public sealed unsafe class NativePluginLibrary : INativePlugin
                 return DshNativePluginAbi.Error;
             return plugin._host.UnregisterTool(handle) ? DshNativePluginAbi.Ok : DshNativePluginAbi.Error;
         }
+
+        /** 宿主回调抛出的异常不能穿过原生边界:记到该插件的日志后由蹦床返回错误码。 */
+        public void CallbackFailed(nint context, string callback, Exception error)
+            => FromHandle(context)?._host?.Log(DshNativePluginAbi.LogError, $"host callback {callback} failed: {error.Message}");
 
         /** 两段式缓冲回传该插件的参数 JSON(output 为 0 或容量不足时只报所需长度)。 */
         public int GetConfig(nint context, nint output, int capacity)

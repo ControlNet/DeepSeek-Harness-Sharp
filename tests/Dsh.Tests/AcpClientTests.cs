@@ -138,6 +138,137 @@ public sealed class AcpClientTests
         await serverTransport.StopAsync();
     }
 
+    [Fact]
+    public async Task SocketServer_RequiresLocalTokenBeforeSessions()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var server = new MockDeepSeekServer(_ => SseTextOnly);
+        using var fixture = new HarnessFixture(server.BaseUrl);
+        var root = TempTree.CreateSocketDirectory("a");
+        try
+        {
+            using var listener = new AcpSocketServer(fixture.Ctx, new Dsh.Boot.HarnessHome(root), "test-provider", "test-model");
+            listener.Start();
+            using var socket = await ConnectAsync(listener.Endpoint, cancellationToken);
+            await using var stream = new NetworkStream(socket, ownsSocket: false);
+            await using var transport = new JsonRpcLineTransport(new StreamReader(stream), new StreamWriter(stream) { AutoFlush = true });
+            transport.Start();
+            var client = new AcpClient(transport);
+            var cwd = Directory.GetCurrentDirectory();
+
+            var initialize = await client.InitializeAsync(cancellationToken);
+            Assert.Equal(AcpMethods.LocalTokenAuthMethod, initialize.GetProperty("authMethods")[0].GetProperty("id").GetString());
+            await Assert.ThrowsAsync<JsonRpcResponseError>(() => client.NewSessionAsync(cwd, cancellationToken));
+            await Assert.ThrowsAsync<JsonRpcResponseError>(() => client.AuthenticateAsync("not-the-token", cancellationToken));
+            await Assert.ThrowsAsync<JsonRpcResponseError>(() => client.NewSessionAsync(cwd, cancellationToken));
+
+            var token = Dsh.Transport.LocalEndpointToken.Read(Path.Combine(root, "run", "dsh-acp.sock"));
+            await client.AuthenticateAsync(token!, cancellationToken);
+            var sessionId = await client.NewSessionAsync(cwd, cancellationToken);
+
+            Assert.False(string.IsNullOrWhiteSpace(sessionId));
+            await client.CloseSessionAsync(sessionId, cancellationToken);
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task SocketServer_OversizedLine_GetsErrorAndDisconnects_AndKeepsServing()
+    {
+        const int oversizedLineChars = 2 * 1024 * 1024;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = TempTree.CreateSocketDirectory("o");
+        try
+        {
+            using var listener = new AcpSocketServer(new Context(), new Dsh.Boot.HarnessHome(root));
+            listener.Start();
+            using (var socket = await ConnectAsync(listener.Endpoint, cancellationToken))
+            {
+                await using var stream = new NetworkStream(socket, ownsSocket: false);
+                try
+                {
+                    await stream.WriteAsync(Encoding.UTF8.GetBytes($"{new string('x', oversizedLineChars)}\n"), cancellationToken);
+                }
+                catch (IOException)
+                {
+                    // The server may drop the connection before the client finished writing the line.
+                }
+                var reply = await ReadUntilDisconnectedAsync(stream, cancellationToken);
+                Assert.True(reply.Length == 0 || reply.Contains("exceeds"), reply);
+            }
+
+            using var next = await ConnectAsync(listener.Endpoint, cancellationToken);
+            await using var nextStream = new NetworkStream(next, ownsSocket: false);
+            await using var transport = new JsonRpcLineTransport(new StreamReader(nextStream), new StreamWriter(nextStream) { AutoFlush = true });
+            transport.Start();
+            var initialize = await new AcpClient(transport).InitializeAsync(cancellationToken);
+            Assert.Equal(JsonValueKind.Object, initialize.ValueKind);
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
+    [Fact]
+    public void SocketServer_RestrictsSocketAndRunDirectoryToOwner()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        var root = TempTree.CreateSocketDirectory("m");
+        try
+        {
+            using var listener = new AcpSocketServer(new Context(), new Dsh.Boot.HarnessHome(root));
+            listener.Start();
+            var runDirectory = Path.Combine(root, "run");
+
+            TempTree.AssertFitsMacOsSocketLimit(Path.Combine(runDirectory, "dsh-acp.sock"));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(runDirectory));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(Path.Combine(runDirectory, "dsh-acp.sock")));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(Path.Combine(runDirectory, "dsh-acp.token")));
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
+    /**
+     * Returns everything the server sent until it dropped the connection.
+     * The server stops reading at the limit, so closing with the rest of the line unread makes the kernel reset the connection, which may discard the error reply.
+     */
+    private static async Task<string> ReadUntilDisconnectedAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        using var reader = new StreamReader(stream);
+        try
+        {
+            return await reader.ReadToEndAsync(cancellationToken);
+        }
+        catch (IOException)
+        {
+            return "";
+        }
+    }
+
+    private static async Task<Socket> ConnectAsync(string endpoint, CancellationToken cancellationToken)
+    {
+        var uri = new Uri(endpoint);
+        if (uri.Scheme == "unix")
+        {
+            var socketPath = endpoint["unix://".Length..];
+            TempTree.AssertFitsMacOsSocketLimit(socketPath);
+            var unix = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await unix.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), cancellationToken);
+            return unix;
+        }
+        var tcp = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        await tcp.ConnectAsync(IPAddress.Loopback, uri.Port, cancellationToken);
+        return tcp;
+    }
+
     private sealed class MockDeepSeekServer : IDisposable
     {
         private readonly HttpListener _listener = new();
@@ -251,26 +382,6 @@ public sealed class AcpClientTests
             Client = new JsonRpcLineTransport(
                 new ChannelTextReader(_serverToClient),
                 new ChannelTextWriter(_clientToServer));
-        }
-    }
-
-    private sealed class ChannelTextReader(Channel<string> channel) : TextReader
-    {
-        public override async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                return await channel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (ChannelClosedException)
-            {
-                return null;
-            }
-        }
-
-        public override string? ReadLine()
-        {
-            return channel.Reader.TryRead(out var line) ? line : null;
         }
     }
 

@@ -10,6 +10,7 @@ public sealed class SessionStore(Context ctx) : Service(ctx, ServiceName)
     private sealed class Entry
     {
         public required Session Session { get; init; }
+        public required IDisposable Detach { get; init; }
         public bool Announced;
     }
 
@@ -30,19 +31,36 @@ public sealed class SessionStore(Context ctx) : Service(ctx, ServiceName)
     {
         if (_sessions.ContainsKey(session.Id))
             throw new InvalidOperationException($"session \"{session.Id}\" is already live in the store");
-        var entry = new Entry { Session = session };
-        _sessions[session.Id] = entry;
         Action<Session, SessionEvent> forward = (source, sessionEvent) => PublishEvent(source, sessionEvent);
-        session.Appended += forward;
         Action<Session, long> truncated = (source, eventCount) =>
             Ctx.Events.Emit(Ctx, new SessionTruncateNotification(source, eventCount));
-        session.Truncated += truncated;
-        return new SessionDetach(() =>
+        var detach = new SessionDetach(() =>
         {
             session.Appended -= forward;
             session.Truncated -= truncated;
             Detach(session);
         });
+        _sessions[session.Id] = new Entry { Session = session, Detach = detach };
+        session.Appended += forward;
+        session.Truncated += truncated;
+        return detach;
+    }
+
+    /**
+     * 会话的持有者(agent)结束时释放:连同 ParentSession 指向它的子孙会话一起解绑并发出 SessionDisposedNotification,
+     * 持久化据此关闭写句柄。子会话在父会话存续期间留在 store,供子代理树查询。
+     */
+    public void Release(SessionId id)
+    {
+        if (!_sessions.TryGetValue(id, out var entry))
+            return;
+        var children = _sessions.Values
+            .Where(child => child.Session.Header.ParentSession == id)
+            .Select(child => child.Session.Id)
+            .ToList();
+        entry.Detach.Dispose();
+        foreach (var child in children)
+            Release(child);
     }
 
     public void Announce(Session session)

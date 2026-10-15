@@ -120,37 +120,37 @@ write_build_stamp() {
     printf '%s' "$2" > "$1"
 }
 
-# 从 CI 产物下载; 无 gh CLI 或下载不到时返回非零, 由调用方回退。
+# 从最新 commit 的 CI 产物下载: 只取上游默认分支 push 触发且成功、head_sha 等于该 commit 的 run。
+# 无 gh CLI、没有符合条件的 run 或下载不到时返回非零, 由调用方回退。
 fetch_from_gh_artifact() {
     local target_nupkg="$1"
     local stamp_file="$2"
+    local commit="$3"
 
     command -v gh >/dev/null 2>&1 || return 1
     gh auth status >/dev/null 2>&1 || return 1
 
-    local runs
-    runs="$(gh run list --repo "$GH_REPO" --workflow "$GH_WORKFLOW" --status success --limit 20 --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha)"')"
-
-    local run_id head_sha
-    while read -r run_id head_sha; do
-        [ -n "$run_id" ] || continue
-        local artifact_names
-        artifact_names="$(gh api "repos/$GH_REPO/actions/runs/$run_id/artifacts" --jq '.artifacts[] | select(.expired == false) | .name' 2>/dev/null || true)"
-        printf '%s\n' "$artifact_names" | grep -qx "$GH_ARTIFACT" || continue
-
-        rm -rf "$WORK_DIR"
-        mkdir -p "$WORK_DIR"
-        if gh run download "$run_id" --repo "$GH_REPO" --name "$GH_ARTIFACT" --dir "$WORK_DIR" >/dev/null 2>&1 \
-            && [ -f "$WORK_DIR/$(basename -- "$target_nupkg")" ]; then
-            mkdir -p "$FEED_DIR"
-            cp "$WORK_DIR/$(basename -- "$target_nupkg")" "$target_nupkg"
-            write_build_stamp "$stamp_file" "$head_sha"
-            rm -rf "$WORK_DIR"
-            return 0
-        fi
-        rm -rf "$WORK_DIR"
+    local branch run_id
+    branch="$(gh api "repos/$GH_REPO" --jq '.default_branch')" || return 1
+    run_id="$(gh api "repos/$GH_REPO/actions/workflows/$GH_WORKFLOW/runs?branch=$branch&event=push&status=success&head_sha=$commit" \
+        --jq ".workflow_runs[] | select(.head_sha == \"$commit\" and .event == \"push\" and .head_branch == \"$branch\" and .conclusion == \"success\") | .id" | head -n1)" || return 1
+    if [ -z "$run_id" ]; then
+        echo "上游 $branch 分支上还没有 commit ${commit:0:12} 的成功 push run。" >&2
         return 1
-    done <<< "$runs"
+    fi
+
+    rm -rf "$WORK_DIR"
+    mkdir -p "$WORK_DIR"
+    if gh run download "$run_id" --repo "$GH_REPO" --name "$GH_ARTIFACT" --dir "$WORK_DIR" >/dev/null 2>&1 \
+        && [ -f "$WORK_DIR/$(basename -- "$target_nupkg")" ]; then
+        mkdir -p "$FEED_DIR"
+        cp "$WORK_DIR/$(basename -- "$target_nupkg")" "$target_nupkg"
+        write_build_stamp "$stamp_file" "$commit"
+        rm -rf "$WORK_DIR"
+        return 0
+    fi
+    echo "run $run_id 的 $GH_ARTIFACT 产物不可用(可能已过期)。" >&2
+    rm -rf "$WORK_DIR"
     return 1
 }
 
@@ -233,15 +233,16 @@ if [ -f "$TARGET_NUPKG" ] && [ "$FORCE" != "1" ]; then
     fi
 fi
 
+COMMIT="$(get_latest_commit)"
+
 if [ "$USE_GH_ARTIFACT" = "1" ]; then
-    if fetch_from_gh_artifact "$TARGET_NUPKG" "$STAMP_FILE"; then
-        echo "已从 CI 产物写入本地 feed: $TARGET_NUPKG"
+    if fetch_from_gh_artifact "$TARGET_NUPKG" "$STAMP_FILE" "$COMMIT"; then
+        echo "已从 CI 产物写入本地 feed(commit ${COMMIT:0:12}): $TARGET_NUPKG"
         exit 0
     fi
     echo "gh CLI 不可用或 CI 产物下载失败, 回退到源码构建。" >&2
 fi
 
-COMMIT="$(get_latest_commit)"
 build_from_source "$COMMIT" "$STAMP_FILE"
 assert_produced_version "$TARGET_NUPKG" "$PACKAGE_VERSION"
 

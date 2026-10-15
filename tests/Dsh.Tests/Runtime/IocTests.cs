@@ -120,16 +120,19 @@ public class IocTests
         using var logging = Dsh.Runtime.Logging.LoggingSetup.Create();
         var ctx = new Context(logging, registry);
         var probe = new Probe("p");
+        (object? Strict, object? Loose) duringApply = default;
         var activation = ctx.Plugin(PluginDefinition.From((pluginCtx, _) =>
         {
             pluginCtx.Provide("late", probe);
+            duringApply = (ctx.Get("late"), ctx.Get("late", strict: false));
             throw new InvalidOperationException("activation failed");
         }, "failing"));
         await activation.WaitAsync();
 
+        Assert.Null(duringApply.Strict);
+        Assert.Same(probe, duringApply.Loose);
         Assert.Equal(ActivationState.Failed, activation.State);
-        Assert.Null(ctx.Get("late"));
-        Assert.Same(probe, ctx.Get("late", strict: false));
+        Assert.Null(ctx.Get("late", strict: false));
     }
 
     private sealed class Probe(string name)

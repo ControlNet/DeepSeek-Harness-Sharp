@@ -322,6 +322,8 @@ public sealed class PluginActivation
         {
             Error = DeepestMessage(error);
             Ctx.Logger.Error("%s", error);
+            // 失败前已登记的效应(服务、订阅、注册)当场撤销, 否则重试会撞上自己上一次留下的注册。
+            Effects.DisposeAllAsync(disposeError => Ctx.Logger.Error("%s", disposeError)).GetAwaiter().GetResult();
             return new ApplyOutcome(Error);
         }
         finally

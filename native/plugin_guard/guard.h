@@ -3,7 +3,7 @@
 
 /*
  * dsh_plugin_guard: 在进程内、按调用遏制原生插件引发的段错误/访问违例。
- * Windows 用 SEH(__try/__except) 捕获同线程 AV/ILL; POSIX 用 sigaction + sigsetjmp/siglongjmp。
+ * Windows 用 SEH(__try/__except) 捕获同线程 AV/ILL; POSIX 用 sigaction + sigsetjmp/siglongjmp, 非受护故障回链到之前的处理器。
  * 只包住"一次插件调用", 一旦故障即返回 FAULTED, 调用方据此把插件标记 Faulted 并卸载。
  */
 
@@ -38,6 +38,21 @@ typedef void(DSH_GUARD_CALL* dsh_void_fn)(void* context);
 
 /* 调用插件反激活等 void(void*) 函数; 故障被捕获时返回 DSH_GUARD_FAULTED。 */
 DSH_GUARD_EXPORT int dsh_guard_call_void(dsh_void_fn fn, void* context);
+
+/*
+ * 安装故障信号处理器(幂等;受护调用也会按需安装)。宿主在装载插件库之前调用:
+ * 插件自带的运行时(如 NativeAOT)随后把处理器叠在其上,先认领插件托管代码里的故障(空引用等)变成异常,认领不了的再回链到 guard。
+ * Windows 上为空操作。
+ */
+DSH_GUARD_EXPORT void dsh_guard_install(void);
+
+/*
+ * 插件在受护调用中回调宿主托管代码时, 宿主先 suspend 再 resume(传回 suspend 的返回值)。
+ * POSIX 上 siglongjmp 只能越过插件原生帧, 回调期间的故障交还运行时处理; Windows 上两者为空操作。
+ */
+DSH_GUARD_EXPORT void* dsh_guard_suspend(void);
+
+DSH_GUARD_EXPORT void dsh_guard_resume(void* saved);
 
 #ifdef __cplusplus
 }

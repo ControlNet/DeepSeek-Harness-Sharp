@@ -219,6 +219,19 @@ public static class GpuCatalog
     }
 
     /**
+     * 按设置里的选卡准备本进程的图形栈, 返回 GBM/KMS 要优先打开的卡节点(无则 null, 交给宿主扫描)。
+     * Linux 写 PRIME 变量, 必须在任何 GL/Vulkan 初始化之前调用; Windows 的 WGL 无进程内选卡 API, 不做处理。
+     */
+    public static string? ApplyProcessSelection(HarnessHome home)
+    {
+        if (!OperatingSystem.IsLinux())
+            return null;
+        var selected = LoadSelectedAdapter(home);
+        ApplyPrimeSelection(selected);
+        return ResolveDrmCardPath(selected);
+    }
+
+    /**
      * Linux 没有"进程内选卡"的公开 API: 用 PRIME 选择器表达偏好, 供 Mesa/NVIDIA 在创建 GL/Vulkan 设备时使用。
      * 这些变量必须在图形栈初始化前设置, 调用方要放在任何 GL 上下文创建之前。
      */

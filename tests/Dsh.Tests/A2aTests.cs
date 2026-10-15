@@ -105,7 +105,7 @@ public sealed class A2aTests
         private readonly DshAgentHandler _handler;
         private readonly A2aHost _host;
 
-        public A2aFixture(string llmBaseUrl)
+        public A2aFixture(string llmBaseUrl, string? authToken = null)
         {
             Ctx = new Context();
             _ = new SessionStore(Ctx);
@@ -131,7 +131,7 @@ public sealed class A2aTests
             });
             llm.RegisterAdapter(["test-provider"], adapter);
             _handler = new DshAgentHandler(Ctx, "test-provider", "test-model");
-            _host = new A2aHost(_handler, new A2aHostOptions());
+            _host = new A2aHost(_handler, new A2aHostOptions(AuthToken: authToken));
             _host.Start();
         }
 
@@ -252,6 +252,75 @@ public sealed class A2aTests
         var list = await client.ListAsync(fixture.Endpoint, null, 50, cancellationToken);
         Assert.Contains(list.Tasks, task => task.Id == sent.Task.Id);
     }
+
+    [Fact]
+    public async Task Host_WithAuthToken_RejectsMissingOrWrongBearer()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var server = new MockDeepSeekServer(SseTextOnly);
+        using var fixture = new A2aFixture(server.BaseUrl, AuthToken);
+        using var http = new HttpClient();
+
+        using var anonymousCard = await http.GetAsync($"{fixture.Endpoint}/.well-known/agent-card.json", cancellationToken);
+        using var anonymousRpc = await http.PostAsync(fixture.Endpoint, new StringContent(ListTasksRpc, Encoding.UTF8, "application/json"), cancellationToken);
+        using var wrongRequest = new HttpRequestMessage(HttpMethod.Post, fixture.Endpoint)
+        {
+            Content = new StringContent(ListTasksRpc, Encoding.UTF8, "application/json"),
+        };
+        wrongRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", $"{AuthToken}x");
+        using var wrongRpc = await http.SendAsync(wrongRequest, cancellationToken);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousCard.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousRpc.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, wrongRpc.StatusCode);
+    }
+
+    [Fact]
+    public async Task Host_WithAuthToken_AcceptsMatchingBearer()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var server = new MockDeepSeekServer(SseTextOnly);
+        using var fixture = new A2aFixture(server.BaseUrl, AuthToken);
+        var client = new A2aRemoteClient(new Dictionary<string, A2aRemoteSettings>());
+        var target = $"{fixture.Endpoint}?token={AuthToken}";
+
+        var card = await client.CardAsync(target, cancellationToken);
+        var sent = await client.SendAsync(target, "hi", wait: true, timeoutSeconds: 20, cancellationToken);
+
+        Assert.Equal("deepseek-harness", card.Name);
+        Assert.Equal("Hello world", sent.Task!.Answer);
+    }
+
+    [Theory]
+    [InlineData("0.0.0.0")]
+    [InlineData("+")]
+    [InlineData("*")]
+    [InlineData("192.168.1.10")]
+    public void Host_WithoutAuthToken_RefusesNonLoopbackBind(string host)
+    {
+        var ctx = new Context();
+        using var handler = new DshAgentHandler(ctx, "test-provider", "test-model");
+
+        Assert.Throws<InvalidOperationException>(() => new A2aHost(handler, new A2aHostOptions(host)));
+    }
+
+    [Theory]
+    [InlineData("localhost")]
+    [InlineData("127.0.0.2")]
+    [InlineData("[::1]")]
+    public void Host_WithoutAuthToken_AllowsLoopbackBind(string host)
+    {
+        var ctx = new Context();
+        using var handler = new DshAgentHandler(ctx, "test-provider", "test-model");
+
+        using var a2aHost = new A2aHost(handler, new A2aHostOptions(host));
+
+        Assert.Contains(host, a2aHost.Endpoint);
+    }
+
+    private const string AuthToken = "a2a-test-token";
+
+    private const string ListTasksRpc = """{"jsonrpc":"2.0","id":1,"method":"ListTasks","params":{}}""";
 
     [Fact]
     public async Task RemoteClient_Cancel()

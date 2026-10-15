@@ -93,4 +93,24 @@ public sealed class ToolConflictTests
             && message.Text.Contains("my-tool")
             && message.Text.Contains("tools.call"));
     }
+
+    [Fact]
+    public void NonPositiveTimeout_ErrorNamesTheTool()
+    {
+        var (_, tools) = CreateRuntime();
+
+        var definition = new ToolDefinition
+        {
+            Name = "slow_tool",
+            Description = "marker",
+            Parameters = new JsonObject { ["type"] = "object" },
+            Output = new ToolOutputDefinition(new JsonObject(), (_, _) => [new TextBlock("marker")]),
+            TimeoutMs = 0,
+            Execute = (_, _) => Task.FromResult<object?>(null),
+        };
+
+        var error = Assert.Throws<ArgumentException>(() => tools.Register(definition));
+
+        Assert.Contains("\"slow_tool\"", error.Message);
+    }
 }

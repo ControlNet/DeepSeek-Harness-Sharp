@@ -30,7 +30,7 @@
     <Warning Condition="$([MSBuild]::IsOSPlatform('Windows')) And '$(DshVsDevCmd)' == ''"
              Text="dsh_plugin_guard: 未找到 VsDevCmd.bat(需 VS 的 C++ 工具集), 跳过原生故障遏制库构建" />
     <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))"
-          Command="cc -O2 -fPIC -shared -o &quot;$(DshGuardOutput)&quot; &quot;$(DshGuardSource)&quot;"
+          Command="cc -O2 -fPIC -shared -pthread -o &quot;$(DshGuardOutput)&quot; &quot;$(DshGuardSource)&quot;"
           StandardOutputImportance="low" />
   </Target>
 

@@ -1,3 +1,4 @@
+using Dsh.Boot;
 using Dsh.Runtime;
 using Dsh.Core;
 using Dsh.Interaction;
@@ -139,5 +140,43 @@ public class PlanModeTests
 
         Assert.True(result.IsError);
         Assert.Contains(PlanModeController.ExitPlanMode, ((ToolExecutionResult.Failure)result).Error.Message);
+    }
+
+    /** 运行期禁用插件后 /plan 命令和 exit_plan_mode 工具都要消失, 重新启用后能再次注册。 */
+    [Fact]
+    public async Task Disabling_Plugin_Removes_Command_And_Tool()
+    {
+        const string package = "@deepseek-ai/dsh-plan-mode";
+        var dir = Path.Combine(Path.GetTempPath(), $"dsh-planmode-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var home = HarnessHome.Resolve(Path.Combine(dir, "home"));
+            using var app = await ConfigBoot.Compose(new HarnessOptions(home, Cwd: dir, PluginsDirectory: Path.Combine(dir, "plugins")));
+            var manager = app.Ctx.Get<HarnessPluginManager>("pluginManager")!;
+            var tools = app.Ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!;
+            var commands = app.Ctx.Get<CommandsService>(CommandsService.ServiceName)!;
+            var agent = new FakeAgent(app.Ctx);
+            Assert.NotNull(tools.Get(PlanModeController.ExitPlanMode));
+            Assert.NotNull(commands.Find(agent, "plan"));
+
+            Assert.Contains("disabled", await manager.DisableAsync(package));
+            Assert.Null(tools.Get(PlanModeController.ExitPlanMode));
+            Assert.Null(commands.Find(agent, "plan"));
+
+            Assert.Contains("activated", await manager.EnableAsync(package));
+            Assert.NotNull(tools.Get(PlanModeController.ExitPlanMode));
+            Assert.NotNull(commands.Find(agent, "plan"));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(dir, true);
+            }
+            catch (IOException)
+            {
+            }
+        }
     }
 }
