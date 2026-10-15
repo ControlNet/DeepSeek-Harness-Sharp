@@ -182,14 +182,12 @@ public sealed class PtyDaemonSubscribeTests
             var (socketPath, portFile) = Paths(root);
             await using var daemon = new PtyDaemon(new PtyHost(), socketPath, portFile);
             await daemon.StartAsync(cancellationToken);
-            var started = await PtyDaemonRetry.StartAsync(
-                StartParams(Shell("echo BYE & ping -n 3 127.0.0.1 > nul", "echo BYE; sleep 2")),
-                socketPath,
-                portFile,
-                cancellationToken);
+            var started = await PtyDaemonRetry.StartAsync(StartParams(InteractiveShell()), socketPath, portFile, cancellationToken);
 
+            // The shell exits on the subscriber's own command, so the exit always happens after the subscription exists.
             await using var session = await PtyDaemonRetry.SubscribeAsync(started.Id, socketPath, portFile, cancellationToken);
-            await session.Completion.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            session.Send(Encoding.UTF8.GetBytes(OperatingSystem.IsWindows() ? "exit\r" : "exit\n"));
+            await session.Completion.WaitAsync(MarkerTimeout, cancellationToken);
 
             var buffer = new byte[256];
             var read = await session.ReadAsync(buffer, cancellationToken);
