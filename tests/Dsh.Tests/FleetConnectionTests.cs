@@ -33,6 +33,9 @@ public sealed class FleetConnectionTests
         await using var fleet = new FleetClient([MachineSpec.Local(alpha.Root, "alpha"), MachineSpec.Local(beta.Root, "beta")], TestOptions);
         fleet.Start();
         await fleet.WaitSettledAsync(Ct);
+        // A first attempt can fail on a loaded machine; the connection retries on its own.
+        foreach (var machine in fleet.Machines)
+            await machine.WaitConnectedAsync(Ct);
         Assert.All(fleet.Statuses(), status => Assert.Equal(MachineConnectionState.Connected, status.State));
 
         var alphaProject = Directory.CreateDirectory(Path.Combine(alpha.Root, "project-a")).FullName;
@@ -73,7 +76,7 @@ public sealed class FleetConnectionTests
         await using var host = await HarnessHostFixture.CreateAsync("fs", TestContext.Current.CancellationToken);
         await using var connection = new MachineConnection(MachineSpec.Local(host.Root, "solo"), TestOptions);
         connection.Start();
-        await connection.WaitSettledAsync(Ct);
+        await connection.WaitConnectedAsync(Ct);
         var session = host.Environment.Agent.Session;
         var delivered = new List<long>();
         using var subscription = CancellationTokenSource.CreateLinkedTokenSource(Ct);

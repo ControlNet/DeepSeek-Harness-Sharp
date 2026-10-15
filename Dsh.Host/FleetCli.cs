@@ -16,6 +16,9 @@ internal static class FleetCli
     private const string SessionCommand = "session";
     private const string DoctorCommand = "doctor";
 
+    /** The shell convention for a command stopped by Ctrl+C (128 + SIGINT). */
+    private const int InterruptedExitCode = 130;
+
     private static readonly HashSet<string> Flags = ["--local", "--force", "--password-stdin"];
 
     private static readonly HashSet<string> ValueOptions =
@@ -45,7 +48,11 @@ internal static class FleetCli
                 _ => await RunDoctorAsync(context),
             };
         }
-        catch (Exception failure) when (failure is InvalidOperationException or IOException or NotSupportedException or JsonRpcException)
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            return InterruptedExitCode;
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or IOException or NotSupportedException or JsonRpcException or HttpRequestException)
         {
             return await FailAsync(failure.Message);
         }
