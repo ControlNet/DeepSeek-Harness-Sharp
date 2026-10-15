@@ -73,7 +73,9 @@ public class AnthropicMessagesTests
             assembler.Push(chunk);
 
         Assert.IsType<FinishReason.ToolCalls>(assembler.Finish);
-        var assistant = MessageFactory.CreateAssistantMessage(assembler.Blocks(), "anthropic", Model, assembler.ReplayState?.Response);
+        var produced = MessageFactory.CreateAssistantMessage(assembler.Blocks(), "anthropic", Model, assembler.ReplayState?.Response);
+        // 恢复会话走的是持久化后的消息: 回放状态必须经得起 JSON 往返。
+        var assistant = DshJson.Deserialize<Message>(DshJson.Serialize<Message>(produced))!;
         var result = MessageFactory.CreateToolResultMessage(ToolCallId.Create("toolu_1"), [new TextBlock("a")], false);
         await Drain(adapter, Options([user, assistant, result]));
 
