@@ -800,7 +800,7 @@ public sealed class ChatPane : ITuiPane
         [
             $"session: {Agent.Id}",
             $"title: {Agent.Session.Header.Title ?? "-"}",
-            $"cwd: {Agent.Session.Header.Cwd ?? "-"}",
+            $"cwd: {Agent.Session.WorkingDirectory ?? "-"}",
             $"model: {provider}/{model}",
         ]);
         AddPanelSection(lines, "MCP", _window.McpLines());

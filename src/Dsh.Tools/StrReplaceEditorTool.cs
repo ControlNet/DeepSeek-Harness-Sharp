@@ -93,6 +93,7 @@ public static class StrReplaceEditorTool
                 (_, value) => [new TextBlock(value.GetString() ?? "")],
                 (args, _) => PresentCall(args)),
             Execute = (args, exec) => Execute(args, exec, resolved),
+            WriteTargets = (args, exec) => IsView(args) ? [] : WorkspacePath.WriteTarget(args, exec, "path"),
         });
     }
 
@@ -115,6 +116,12 @@ public static class StrReplaceEditorTool
         };
         return Task.FromResult<object?>(result);
     }
+
+    private static bool IsView(JsonElement args)
+        => args.ValueKind == JsonValueKind.Object
+           && args.TryGetProperty("command", out var command)
+           && command.ValueKind == JsonValueKind.String
+           && command.GetString() == "view";
 
     private static string? OptionalString(JsonElement args, string name)
     {

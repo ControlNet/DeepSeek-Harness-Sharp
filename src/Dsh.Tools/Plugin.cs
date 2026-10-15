@@ -10,6 +10,8 @@ using Dsh.Plugins;
 [assembly: DshPlugin(Dsh.Tools.Plugin.ToolTodo)]
 [assembly: DshPlugin(Dsh.Tools.Plugin.ToolStrReplaceEditor)]
 [assembly: DshPlugin(Dsh.Tools.Plugin.FsLocal)]
+[assembly: DshPlugin(Dsh.Tools.Plugin.ToolWorkingDirectory)]
+[assembly: DshPlugin(Dsh.Tools.Plugin.ToolWorktree)]
 
 namespace Dsh.Tools;
 
@@ -23,6 +25,8 @@ public sealed class Plugin(string packageName) : IDshPlugin
     internal const string ToolTodo = "@deepseek-ai/dsh-tool-todo";
     internal const string ToolStrReplaceEditor = "@deepseek-ai/dsh-tool-str-replace-editor";
     internal const string FsLocal = "@deepseek-ai/dsh-fs-local";
+    internal const string ToolWorkingDirectory = "@deepseek-ai/dsh-tool-working-directory";
+    internal const string ToolWorktree = "@deepseek-ai/dsh-tool-worktree";
 
     public string[] Inject => packageName switch
     {
@@ -34,6 +38,8 @@ public sealed class Plugin(string packageName) : IDshPlugin
         ToolTodo => [ToolRuntime.ServiceName],
         ToolStrReplaceEditor => [ToolRuntime.ServiceName],
         FsLocal => [],
+        ToolWorkingDirectory => [ToolRuntime.ServiceName, SystemPrompt.ServiceName],
+        ToolWorktree => [ToolRuntime.ServiceName, SystemPrompt.ServiceName, SubprocessService.ServiceName],
         _ => throw new InvalidOperationException($"Unknown DSH package '{packageName}'."),
     };
 
@@ -47,6 +53,8 @@ public sealed class Plugin(string packageName) : IDshPlugin
         ToolTodo => TodoWriteTool.Register(ctx, ConfigOf(config)?.GetValueOrDefault("allowParallelInProgress") as bool? ?? true),
         ToolStrReplaceEditor => StrReplaceEditorTool.Register(ctx, StrReplaceEditorConfigFrom(config)),
         FsLocal => LocalFsService.Register(ctx, ConfigOf(config)?.GetValueOrDefault("cwd") as string),
+        ToolWorkingDirectory => WorkingDirectoryTool.Register(ctx),
+        ToolWorktree => WorktreeTool.Register(ctx),
         _ => throw new InvalidOperationException($"Unknown DSH package '{packageName}'."),
     };
 

@@ -21,6 +21,8 @@ namespace Dsh.Tools;
 [JsonSerializable(typeof(GlobResultValue))]
 [JsonSerializable(typeof(GrepMatchValue))]
 [JsonSerializable(typeof(GrepResultValue))]
+[JsonSerializable(typeof(WorkingDirectoryValue))]
+[JsonSerializable(typeof(CreatedWorktreeValue))]
 [JsonSerializable(typeof(JsonElement))]
 internal sealed partial class DshToolsJsonContext : JsonSerializerContext
 {
