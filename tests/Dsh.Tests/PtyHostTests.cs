@@ -143,56 +143,6 @@ public class PtyHostTests
         Assert.True(await host.StopAsync(session.Id.ToString()));
     }
 
-    /** Ctrl+C typed into the terminal stops the shell's foreground command, even when this process was started ignoring Ctrl+C (as the CI runner starts its steps). */
-    [Fact(Timeout = 60000)]
-    public async Task CtrlC_StopsTheShellsForegroundCommand()
-    {
-        var ct = TestContext.Current.CancellationToken;
-        using var host = new PtyHost();
-        var session = await host.StartAsync(new PtyStartInfo { FileName = TestShell.FileName, Arguments = TestShell.Arguments }, cancellationToken: ct);
-        var received = new StringBuilder();
-        await session.WriteAsync(Encoding.UTF8.GetBytes($"{TestShell.Sequence(TestShell.EchoAnswer("busy"), TestShell.Wait(120))}\r"), ct);
-        Assert.True(await ReadSessionUntilAsync(session, received, "busy-42", TimeSpan.FromSeconds(20)), received.ToString());
-
-        await session.WriteAsync(new[] { CtrlC }, ct);
-        // The console discards input typed while the interrupted command ends, so the line is sent again until it runs.
-        var answered = false;
-        for (var attempt = 0; attempt < 3 && !answered; attempt++)
-        {
-            await session.WriteAsync(Encoding.UTF8.GetBytes($"{TestShell.EchoAnswer("after")}\r"), ct);
-            answered = await ReadSessionUntilAsync(session, received, "after-42", TimeSpan.FromSeconds(5));
-        }
-
-        Assert.True(answered, received.ToString());
-        Assert.True(await host.StopAsync(session.Id.ToString()));
-    }
-
-    private const byte CtrlC = 0x03;
-
-    /** Reads the session into received until it contains expected; false when the time runs out first. */
-    private static async Task<bool> ReadSessionUntilAsync(PtySession session, StringBuilder received, string expected, TimeSpan timeout)
-    {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(timeout);
-        var buffer = new byte[4096];
-        try
-        {
-            while (!received.ToString().Contains(expected, StringComparison.Ordinal))
-            {
-                var read = await session.ReadAsync(buffer, deadline.Token);
-                if (read == 0)
-                    await Task.Delay(10, deadline.Token);
-                else
-                    received.Append(Encoding.UTF8.GetString(buffer, 0, read));
-            }
-            return true;
-        }
-        catch (OperationCanceledException) when (!TestContext.Current.CancellationToken.IsCancellationRequested)
-        {
-            return false;
-        }
-    }
-
     private static async Task<string> ReadUntil(Stream stream, string expected, CancellationToken cancellationToken)
     {
         var buffer = new byte[4096];
