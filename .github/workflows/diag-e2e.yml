@@ -42,7 +42,7 @@ jobs:
         run: |
           EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"; [ -x "$EXE" ] || EXE="$EXE.exe"
           ls /usr/sbin/sshd || true
-          "$EXE" -noColor -parallel none -trait- "Category=LlmSmoke" -class Dsh.Tests.FleetLocalHostTests -class Dsh.Tests.FleetSshEndToEndTests -class Dsh.Tests.WebBridgeHubTests -class Dsh.Tests.WebBridgeSshTunnelTests -class Dsh.Tests.WebUiBrowserTests -class Dsh.Tests.WebBridgeTests -class Dsh.Tests.FleetConnectionTests
+          "$EXE" -noColor -parallel none -trait- "Category=LlmSmoke" -class Dsh.Tests.FleetLocalHostTests -class Dsh.Tests.FleetSshEndToEndTests -class Dsh.Tests.WebBridgeHubTests -class Dsh.Tests.WebBridgeSshTunnelTests -class Dsh.Tests.WebUiBrowserTests -class Dsh.Tests.WebBridgeTests -class Dsh.Tests.FleetConnectionTests -class Dsh.Tests.PtyHostTests
       - uses: actions/upload-artifact@v4
         if: always()
         with:
