@@ -92,10 +92,10 @@ internal sealed class ConPtySession : IDisposable
             if (info.Environment is not null)
             {
                 flags |= CreateUnicodeEnvironment;
-                environment = BuildEnvironmentBlock(info.Environment);
+                environment = WindowsProcessLaunch.EnvironmentBlock(info.Environment);
             }
 
-            var commandLine = BuildCommandLine(info);
+            var commandLine = WindowsProcessLaunch.CommandLine(info.FileName, info.Arguments);
             var (savedInput, savedOutput, savedError) = ParkStdHandles();
             ProcessInformation processInfo;
             try
@@ -173,48 +173,6 @@ internal sealed class ConPtySession : IDisposable
         if (GetExitCodeProcess(_processHandle, out var code))
             exitCode = (int)code;
         Exited?.Invoke(exitCode);
-    }
-
-    private static string BuildCommandLine(PtyStartInfo info)
-    {
-        var builder = new StringBuilder();
-        AppendQuoted(builder, info.FileName);
-        foreach (var argument in info.Arguments)
-        {
-            builder.Append(' ');
-            AppendQuoted(builder, argument);
-        }
-        return builder.ToString();
-    }
-
-    private static void AppendQuoted(StringBuilder builder, string value)
-    {
-        if (value.Length > 0 && !value.Any(char.IsWhiteSpace) && !value.Contains('"'))
-        {
-            builder.Append(value);
-            return;
-        }
-        builder.Append('"');
-        builder.Append(value.Replace("\\\"", "\\\\\"", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal));
-        builder.Append('"');
-    }
-
-    private static IntPtr BuildEnvironmentBlock(IReadOnlyDictionary<string, string?> environment)
-    {
-        var merged = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
-            merged[(string)entry.Key] = (string?)entry.Value;
-        foreach (var (key, value) in environment)
-            merged[key] = value;
-        var builder = new StringBuilder();
-        foreach (var (key, value) in merged)
-        {
-            if (value is null)
-                continue;
-            builder.Append(key).Append('=').Append(value).Append('\0');
-        }
-        builder.Append('\0');
-        return Marshal.StringToHGlobalUni(builder.ToString());
     }
 
     [StructLayout(LayoutKind.Sequential)]

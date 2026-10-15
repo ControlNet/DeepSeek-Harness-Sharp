@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using Dsh.Boot;
+using Dsh.Pty;
 using Dsh.RemoteHost;
 
 namespace Dsh.Host;
@@ -141,17 +142,20 @@ public static class HostAutostart
     public static void StartDetached(string? token, string? harnessHome = null)
     {
         var (executable, arguments) = ServeCommand(token);
-        ProcessStartInfo info;
         if (OperatingSystem.IsWindows())
-            info = new ProcessStartInfo(executable, arguments) { CreateNoWindow = true };
-        else
         {
-            var quoted = string.Join(' ', arguments.Select(argument => $"'{argument.Replace("'", "'\\''", StringComparison.Ordinal)}'"));
-            info = new ProcessStartInfo("/bin/sh", ["-c", $"nohup '{executable}' {quoted} >/dev/null 2>&1 &"]);
+            // Without inherited handles: a host holding the CLI's output pipe kept `dsharp session list | ...` waiting for as long as the host ran.
+            Dictionary<string, string?> environment = harnessHome is { Length: > 0 } ? new() { [HarnessHome.HomeEnv] = harnessHome } : [];
+            WindowsProcessLaunch.StartWithoutInheritedHandles(executable, arguments, Directory.GetCurrentDirectory(), environment);
+            return;
         }
 
-        info.UseShellExecute = false;
-        info.WorkingDirectory = Directory.GetCurrentDirectory();
+        var quoted = string.Join(' ', arguments.Select(argument => $"'{argument.Replace("'", "'\\''", StringComparison.Ordinal)}'"));
+        var info = new ProcessStartInfo("/bin/sh", ["-c", $"nohup '{executable}' {quoted} >/dev/null 2>&1 &"])
+        {
+            UseShellExecute = false,
+            WorkingDirectory = Directory.GetCurrentDirectory(),
+        };
         if (harnessHome is { Length: > 0 })
             info.Environment[HarnessHome.HomeEnv] = harnessHome;
         Process.Start(info);
