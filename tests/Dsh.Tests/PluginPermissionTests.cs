@@ -12,6 +12,8 @@ public sealed class PluginPermissionTests
     private const string Todo = "@deepseek-ai/dsh-tool-todo";
     private const string OuterComment = "# keep: comment above the plugins block";
     private const string TrailingComment = "# keep: comment after the plugins block";
+    private static readonly TimeSpan SubmitTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
 
     private static readonly string SettingsWithComments = $"""
         {OuterComment}
@@ -144,13 +146,15 @@ public sealed class PluginPermissionTests
         Assert.Equal(new PluginPermissions { Write = false }, permissions);
     }
 
+    /** The overlay submits the command asynchronously; CI runners under load need a generous bound. */
     private static async Task<PluginPermissions?> WaitForPermissionsAsync(HarnessHome home)
     {
-        for (var attempt = 0; attempt < 200; attempt++)
+        var deadline = DateTime.UtcNow + SubmitTimeout;
+        while (DateTime.UtcNow < deadline)
         {
             if (HarnessSettings.Load(home).Plugins.GetValueOrDefault(Todo)?.Permissions is { } permissions)
                 return permissions;
-            await Task.Delay(25, TestContext.Current.CancellationToken);
+            await Task.Delay(PollInterval, TestContext.Current.CancellationToken);
         }
         return null;
     }
