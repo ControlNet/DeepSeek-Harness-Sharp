@@ -10,6 +10,7 @@ internal sealed class UnixPtySession : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
     private static readonly TimeSpan TerminateGrace = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ReapPollInterval = TimeSpan.FromMilliseconds(50);
     private Task? _monitorTask;
     private bool _stopping;
     private bool _disposed;
@@ -61,7 +62,7 @@ internal sealed class UnixPtySession : IDisposable
         if (monitor is not null && await Task.WhenAny(monitor, Task.Delay(TerminateGrace)).ConfigureAwait(false) != monitor)
         {
             UnixPtyNative.Kill(_pid);
-            // 有界等待: 某些平台/状态下 reap 迟迟不到, 不能无限等(否则调用方挂死); Dispose 会取消 _cts 收尾。
+            // 有界等待: 某些平台/状态下 reap 迟迟不到, 不能无限等(否则调用方挂死); Dispose 关掉主端后监视继续回收子进程。
             await Task.WhenAny(monitor, Task.Delay(TerminateGrace)).ConfigureAwait(false);
         }
 
@@ -84,23 +85,22 @@ internal sealed class UnixPtySession : IDisposable
         _monitorTask = null;
     }
 
+    /**
+     * Polls until the child is reaped, also after Dispose.
+     * On macOS a killed child whose tty output nobody reads finishes exiting only when the master closes, and the monitor is its only reaper; stopping at Dispose left a zombie.
+     */
     private async Task MonitorAsync()
     {
-        try
+        while (true)
         {
-            while (!_cts.IsCancellationRequested)
+            if (UnixPtyNative.TryWait(_pid, out var exitCode))
             {
-                if (UnixPtyNative.TryWait(_pid, out var exitCode))
-                {
+                if (!_cts.IsCancellationRequested)
                     Exited?.Invoke(exitCode);
-                    return;
-                }
-
-                await Task.Delay(50, _cts.Token).ConfigureAwait(false);
+                return;
             }
-        }
-        catch (OperationCanceledException)
-        {
+
+            await Task.Delay(ReapPollInterval).ConfigureAwait(false);
         }
     }
 

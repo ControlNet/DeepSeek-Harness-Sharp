@@ -34,6 +34,8 @@ internal static class UnixPtyNative
         return IntPtr.Zero;
     }
     private const int Wnohang = 1;
+    /** ECHILD is 10 on Linux and Darwin. */
+    private const int Echild = 10;
     private const int ORdwr = 2;
     /** 让子进程成为新会话首进程, 从而能在 open 从端时取得控制终端(job control 前提)。值随平台不同: glibc 0x80, Darwin 0x0400(其 0x80 是 START_SUSPENDED, 用错会挂起子进程)。 */
     private static readonly short PosixSpawnSetsid = OperatingSystem.IsMacOS() ? (short)0x0400 : (short)0x80;
@@ -196,7 +198,8 @@ internal static class UnixPtyNative
             throw new Win32Exception(Marshal.GetLastWin32Error(), "kill(SIGKILL) failed");
     }
 
-    public static bool TryWait(int pid, out int exitCode)
+    /** Whether the child has ended; its exit code is null when it was reaped elsewhere (ECHILD, e.g. SIGCHLD is ignored) and the status is lost. */
+    public static bool TryWait(int pid, out int? exitCode)
     {
         var result = waitpid(pid, out var status, Wnohang);
         if (result == pid)
@@ -205,8 +208,8 @@ internal static class UnixPtyNative
             return true;
         }
 
-        exitCode = 0;
-        return false;
+        exitCode = null;
+        return result == -1 && Marshal.GetLastPInvokeError() == Echild;
     }
 
     private static int DecodeExitStatus(int status)
