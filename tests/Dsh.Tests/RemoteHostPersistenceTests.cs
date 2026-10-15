@@ -14,6 +14,7 @@ public sealed class RemoteHostPersistenceTests
     {
         // 套接字路径有 108 字符上限: 用仓库内浅目录, 否则 <root>/run/host.sock 超长, daemon 绑不上。
         var root = TempTree.CreateSocketDirectory("rh");
+        TempTree.AssertFitsMacOsSocketLimit(RemoteHostEndpoint.SocketPath(root));
         var server = new RemoteHostServer(new RemoteHostServerOptions(null), new SessionBackend());
         using var daemonCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var daemon = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(server, root, daemonCts.Token), Ct);
@@ -51,6 +52,7 @@ public sealed class RemoteHostPersistenceTests
     {
         // 套接字路径有 108 字符上限: 用仓库内浅目录, 否则 <root>/run/host.sock 超长, daemon 绑不上。
         var root = TempTree.CreateSocketDirectory("rh");
+        TempTree.AssertFitsMacOsSocketLimit(RemoteHostEndpoint.SocketPath(root));
         var server = new RemoteHostServer(new RemoteHostServerOptions(null), new SessionBackend());
         using var daemonCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var daemon = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(server, root, daemonCts.Token), Ct);

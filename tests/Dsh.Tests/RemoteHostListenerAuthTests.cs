@@ -55,8 +55,9 @@ public sealed class RemoteHostListenerAuthTests
 
     private static async Task WithDaemonAsync(string prefix, CancellationToken cancellationToken, Func<string, Task> body)
     {
-        // Socket paths are capped at 108 characters, so the daemon root is a shallow directory inside the repository.
+        // Socket paths are capped at 104 characters on macOS, so the daemon root is a shallow directory inside the repository.
         var root = TempTree.CreateSocketDirectory(prefix);
+        TempTree.AssertFitsMacOsSocketLimit(RemoteHostEndpoint.SocketPath(root));
         using var daemonCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var server = new RemoteHostServer(new RemoteHostServerOptions());
         var daemon = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(server, root, daemonCts.Token), cancellationToken);

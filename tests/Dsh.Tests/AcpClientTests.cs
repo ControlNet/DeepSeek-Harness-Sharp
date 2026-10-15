@@ -144,7 +144,7 @@ public sealed class AcpClientTests
         var cancellationToken = TestContext.Current.CancellationToken;
         using var server = new MockDeepSeekServer(_ => SseTextOnly);
         using var fixture = new HarnessFixture(server.BaseUrl);
-        var root = TempTree.CreateSocketDirectory("acp");
+        var root = TempTree.CreateSocketDirectory("a");
         try
         {
             using var listener = new AcpSocketServer(fixture.Ctx, new Dsh.Boot.HarnessHome(root), "test-provider", "test-model");
@@ -180,7 +180,7 @@ public sealed class AcpClientTests
     {
         const int oversizedLineChars = 2 * 1024 * 1024;
         var cancellationToken = TestContext.Current.CancellationToken;
-        var root = TempTree.CreateSocketDirectory("acpo");
+        var root = TempTree.CreateSocketDirectory("o");
         try
         {
             using var listener = new AcpSocketServer(new Context(), new Dsh.Boot.HarnessHome(root));
@@ -218,13 +218,14 @@ public sealed class AcpClientTests
     {
         if (OperatingSystem.IsWindows())
             return;
-        var root = TempTree.CreateSocketDirectory("acpm");
+        var root = TempTree.CreateSocketDirectory("m");
         try
         {
             using var listener = new AcpSocketServer(new Context(), new Dsh.Boot.HarnessHome(root));
             listener.Start();
             var runDirectory = Path.Combine(root, "run");
 
+            TempTree.AssertFitsMacOsSocketLimit(Path.Combine(runDirectory, "dsh-acp.sock"));
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(runDirectory));
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(Path.Combine(runDirectory, "dsh-acp.sock")));
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(Path.Combine(runDirectory, "dsh-acp.token")));
@@ -257,8 +258,10 @@ public sealed class AcpClientTests
         var uri = new Uri(endpoint);
         if (uri.Scheme == "unix")
         {
+            var socketPath = endpoint["unix://".Length..];
+            TempTree.AssertFitsMacOsSocketLimit(socketPath);
             var unix = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            await unix.ConnectAsync(new UnixDomainSocketEndPoint(endpoint["unix://".Length..]), cancellationToken);
+            await unix.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), cancellationToken);
             return unix;
         }
         var tcp = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
