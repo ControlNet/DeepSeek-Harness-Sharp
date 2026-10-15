@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Project git inspection for any directory: status, per-file diff, log and worktree management.
+    Shared capability library without a plugin entry; it runs the real git executable and parses machine-readable output only.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dsh.Tests" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
