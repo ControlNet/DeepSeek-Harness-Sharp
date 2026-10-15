@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using Dsh.Boot;
 
 namespace Dsh.Tests;
 
@@ -9,7 +10,7 @@ namespace Dsh.Tests;
  */
 internal static class RealHostProcesses
 {
-    private const string HomeVariable = "DSH_HOME";
+    private const string HomeVariable = HarnessHome.HomeEnv;
 
     /** Settings for a throwaway home: no file logging, so the directory can be deleted while handles are still closing. */
     private const string Settings = """
@@ -81,4 +82,38 @@ internal static class RealHostProcesses
         {
         }
     }
+}
+
+/** Runs the fleet CLI (`dsharp machine|session|doctor`) of this build as a separate process under a given harness home. */
+internal static class FleetCliProcess
+{
+    /** Remote commands may deploy or start a host first. */
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(120);
+
+    public sealed record Result(int ExitCode, string Output, string Error);
+
+    public static async Task<Result> RunAsync(string executable, string home, params string[] arguments)
+    {
+        var info = new ProcessStartInfo(executable, arguments)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            UseShellExecute = false,
+            WorkingDirectory = home,
+        };
+        info.Environment[HarnessHome.HomeEnv] = home;
+        using var process = Process.Start(info) ?? throw new InvalidOperationException("failed to start dsharp");
+        process.StandardInput.Close();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(Timeout);
+        var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
+        var error = process.StandardError.ReadToEndAsync(timeout.Token);
+        await process.WaitForExitAsync(timeout.Token);
+        return new Result(process.ExitCode, await output, await error);
+    }
+
+    /** The cells of each table line the CLI prints (cells never contain spaces in these tests). */
+    public static List<string[]> Rows(string output)
+        => [.. output.Split('\n').Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))];
 }

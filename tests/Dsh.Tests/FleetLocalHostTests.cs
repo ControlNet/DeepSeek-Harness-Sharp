@@ -12,8 +12,6 @@ namespace Dsh.Tests;
  */
 public sealed class FleetLocalHostTests
 {
-    private static readonly TimeSpan CliTimeout = TimeSpan.FromSeconds(60);
-
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact(Timeout = 120000)]
@@ -65,39 +63,39 @@ public sealed class FleetLocalHostTests
         try
         {
             TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
-            var added = await RunCliAsync(executable, home, "machine", "add", "second", "--local", "--home", second);
+            var added = await FleetCliProcess.RunAsync(executable, home, "machine", "add", "second", "--local", "--home", second);
             Assert.Equal(0, added.ExitCode);
-            var machines = await RunCliAsync(executable, home, "machine", "list");
-            Assert.Contains(Rows(machines.Output), row => row is ["second", MachineKinds.Local, var target, ..] && target == second);
+            var machines = await FleetCliProcess.RunAsync(executable, home, "machine", "list");
+            Assert.Contains(FleetCliProcess.Rows(machines.Output), row => row is ["second", MachineKinds.Local, var target, ..] && target == second);
 
-            var empty = await RunCliAsync(executable, home, "session", "list");
+            var empty = await FleetCliProcess.RunAsync(executable, home, "session", "list");
             Assert.True(empty.ExitCode == 0, empty.Error);
             var localShell = await StartShellAsync(home);
             var secondShell = await StartShellAsync(second);
 
-            var listed = await RunCliAsync(executable, home, "session", "list");
+            var listed = await FleetCliProcess.RunAsync(executable, home, "session", "list");
             Assert.Equal(0, listed.ExitCode);
-            Assert.Contains(Rows(listed.Output), row => row is ["local", var id, HostSessionKinds.Terminal, ..] && id == localShell);
-            Assert.Contains(Rows(listed.Output), row => row is ["second", var id, HostSessionKinds.Terminal, ..] && id == secondShell);
-            var narrowed = await RunCliAsync(executable, home, "session", "list", "--machine", "second");
+            Assert.Contains(FleetCliProcess.Rows(listed.Output), row => row is ["local", var id, HostSessionKinds.Terminal, ..] && id == localShell);
+            Assert.Contains(FleetCliProcess.Rows(listed.Output), row => row is ["second", var id, HostSessionKinds.Terminal, ..] && id == secondShell);
+            var narrowed = await FleetCliProcess.RunAsync(executable, home, "session", "list", "--machine", "second");
             Assert.DoesNotContain(localShell, narrowed.Output, StringComparison.Ordinal);
 
-            var doctor = await RunCliAsync(executable, home, "doctor", "--machine", "second");
+            var doctor = await FleetCliProcess.RunAsync(executable, home, "doctor", "--machine", "second");
             Assert.True(doctor.ExitCode == 0, doctor.Output);
             Assert.Contains("[ok] host:", doctor.Output, StringComparison.Ordinal);
             Assert.Contains("[ok] permissions:", doctor.Output, StringComparison.Ordinal);
             Assert.Contains("[ok] pty daemon:", doctor.Output, StringComparison.Ordinal);
             Assert.Contains("[ok] connection:", doctor.Output, StringComparison.Ordinal);
 
-            var stopped = await RunCliAsync(executable, home, "session", "stop", $"second/{secondShell}");
+            var stopped = await FleetCliProcess.RunAsync(executable, home, "session", "stop", $"second/{secondShell}");
             Assert.True(stopped.ExitCode == 0, stopped.Error);
             await WaitForSessionStatusAsync(second, secondShell, HostSessionStatuses.Exited);
-            var missing = await RunCliAsync(executable, home, "session", "stop", "second/no-such-session");
+            var missing = await FleetCliProcess.RunAsync(executable, home, "session", "stop", "second/no-such-session");
             Assert.Equal(1, missing.ExitCode);
             Assert.True(missing.Error.Contains("no session", StringComparison.Ordinal), missing.Error);
 
-            Assert.Equal(0, (await RunCliAsync(executable, home, "machine", "remove", "second")).ExitCode);
-            Assert.DoesNotContain(secondShell, (await RunCliAsync(executable, home, "session", "list")).Output, StringComparison.Ordinal);
+            Assert.Equal(0, (await FleetCliProcess.RunAsync(executable, home, "machine", "remove", "second")).ExitCode);
+            Assert.DoesNotContain(secondShell, (await FleetCliProcess.RunAsync(executable, home, "session", "list")).Output, StringComparison.Ordinal);
         }
         finally
         {
@@ -172,33 +170,6 @@ public sealed class FleetLocalHostTests
         connection.Start();
         await connection.WaitSettledAsync(Ct);
         await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session.SessionId == sessionId && session.Status == status));
-    }
-
-    /** The cells of each table line printed by the CLI (cells never contain spaces in these tests). */
-    private static List<string[]> Rows(string output)
-        => [.. output.Split('\n').Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))];
-
-    private sealed record CliResult(int ExitCode, string Output, string Error);
-
-    private static async Task<CliResult> RunCliAsync(string executable, string home, params string[] arguments)
-    {
-        var info = new ProcessStartInfo(executable, arguments)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            UseShellExecute = false,
-            WorkingDirectory = home,
-        };
-        info.Environment[RemoteShell.HomeVariable] = home;
-        using var process = Process.Start(info) ?? throw new InvalidOperationException("failed to start dsharp");
-        process.StandardInput.Close();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        timeout.CancelAfter(CliTimeout);
-        var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
-        var error = process.StandardError.ReadToEndAsync(timeout.Token);
-        await process.WaitForExitAsync(timeout.Token);
-        return new CliResult(process.ExitCode, await output, await error);
     }
 
     private static async Task PumpAsync(PtySession session, StringBuilder transcript)
