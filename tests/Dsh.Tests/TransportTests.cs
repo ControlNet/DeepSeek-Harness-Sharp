@@ -166,6 +166,34 @@ public sealed class JsonRpcPeerTests
         await Assert.ThrowsAnyAsync<Exception>(async () => await pending);
     }
 
+    /** Larger than what loopback socket buffers absorb, below the frame limit: the write blocks while the server is not reading. */
+    private const int BlockingPayloadChars = 15 * 1024 * 1024;
+
+    [Fact]
+    public async Task CancellingARequestWhileItsFrameIsBeingWritten_KeepsTheConnectionUsable()
+    {
+        await using var fixture = await DuplexFixture.CreateAsync(Ct);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Server.RequestHandler = async (message, _) =>
+        {
+            if (message.Method == "hold")
+                await release.Task;
+            return Parse("""{"ok":true}""");
+        };
+        var held = fixture.Client.RequestAsync("hold", cancellationToken: Ct);
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+
+        var large = fixture.Client.RequestAsync("large", Parse($"\"{new string('x', BlockingPayloadChars)}\""), cancel.Token);
+        await Task.Delay(TimeSpan.FromMilliseconds(200), Ct);
+        await cancel.CancelAsync();
+        release.SetResult();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => large);
+        await held;
+        var after = await fixture.Client.RequestAsync("ping", cancellationToken: Ct).WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        Assert.True(after!.Value.GetProperty("ok").GetBoolean());
+    }
+
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
 
     /** 一对经 TCP loopback 相连的 peer, 保证真实双工流(非同进程回调)。 */
