@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Dsh.Boot;
 using Dsh.Plugins;
 using Dsh.ScriptHost;
@@ -162,9 +161,13 @@ public static class HarnessEntrypoint
             case "host":
                 {
                     var subcommand = positional.Skip(1).FirstOrDefault();
+                    if (subcommand == "install-service")
+                        return await HostAutostart.InstallAsync(harnessHome, Console.Out);
+                    if (subcommand == "uninstall-service")
+                        return await HostAutostart.UninstallAsync(Console.Out);
                     if (subcommand is "serve" || hostServe)
                         return await RunHostServeAsync(harnessHome, hostStdio, hostToken);
-                    await Console.Error.WriteLineAsync("dsharp: host requires a subcommand (serve)");
+                    await Console.Error.WriteLineAsync("dsharp: host requires a subcommand (serve | install-service | uninstall-service)");
                     return 1;
                 }
             case "headless":
@@ -188,8 +191,7 @@ public static class HarnessEntrypoint
         if (useStdio)
         {
             // stdio-over-SSH: 桥接到常驻 daemon; 没有就 detached 起一个。断开只断这条桥, 会话留在远端(脱钩/重连)。
-            if (!await Dsh.RemoteHost.RemoteHostListener.IsReachableAsync(home.Root, CancellationToken.None))
-                StartHostDaemon(home, token);
+            await HostAutostart.EnsureRunningAsync(home, token);
             using var duplex = Dsh.Transport.TransportConnection.FromStandardIo();
             await Dsh.RemoteHost.RemoteHostListener.BridgeAsync(duplex, home.Root, CancellationToken.None);
             return 0;
@@ -205,6 +207,12 @@ public static class HarnessEntrypoint
             eventArgs.Cancel = true;
             cancellation.Cancel();
         };
+        // systemctl stop 与部署脚本的 pkill 发 SIGTERM: 同样走正常收尾(登记表落盘、删 socket), 而不是被运行时直接终止。
+        using var termination = System.Runtime.InteropServices.PosixSignalRegistration.Create(System.Runtime.InteropServices.PosixSignal.SIGTERM, context =>
+        {
+            context.Cancel = true;
+            cancellation.Cancel();
+        });
         await Dsh.RemoteHost.RemoteHostListener.ServeLoopbackAsync(server, home.Root, cancellation.Token);
         return 0;
     }
@@ -296,42 +304,6 @@ public static class HarnessEntrypoint
         return 0;
     }
 
-    /** 以脱离会话的方式起 `dsharp host serve`(ssh 断开不把 daemon 带走)。 */
-    private static void StartHostDaemon(HarnessHome home, string? token)
-    {
-        var executable = Environment.ProcessPath
-            ?? throw new InvalidOperationException("failed to resolve the current executable to start the host daemon");
-        var hostArguments = new List<string>();
-        if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
-            hostArguments.Add(Environment.GetCommandLineArgs()[0]);
-        if (token is { Length: > 0 })
-        {
-            hostArguments.Add("--token");
-            hostArguments.Add(token);
-        }
-
-        hostArguments.Add("host");
-        hostArguments.Add("serve");
-
-        if (OperatingSystem.IsWindows())
-        {
-            Process.Start(new ProcessStartInfo(executable, hostArguments)
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Directory.GetCurrentDirectory(),
-            });
-            return;
-        }
-
-        var quoted = string.Join(' ', hostArguments.Select(argument => $"'{argument.Replace("'", "'\\''", StringComparison.Ordinal)}'"));
-        Process.Start(new ProcessStartInfo("/bin/sh", ["-c", $"nohup '{executable}' {quoted} >/dev/null 2>&1 &"])
-        {
-            UseShellExecute = false,
-            WorkingDirectory = Directory.GetCurrentDirectory(),
-        });
-    }
-
     /**
      * 接管 daemon 里的 PTY 会话: `--gpu` 时优先用独立窗口接回(与 `--gpu` 启动同一条渲染路径),
      * 窗口宿主不可用(无显示服务器/无 DRM/终端不支持图像协议)再回退到本终端接管。
@@ -353,6 +325,8 @@ public static class HarnessEntrypoint
                    dsharp gui [--session <id>]
                    dsharp headless "task"
                    dsharp host --serve [--stdio] [--token <t>]   (远端工作区宿主: 默认 loopback socket, --stdio 走 ssh)
+                   dsharp host install-service   (常驻远端宿主: systemd --user 服务并尽量启用 linger; 无 systemd 时 nohup 启动)
+                   dsharp host uninstall-service (停用并删除 systemd --user 服务)
                    dsharp register-terminal    (Linux: 注册为桌面环境的默认终端)
                    dsharp storage paths        (打印 storage.root 与各分区解析结果)
                    dsharp storage migrate <old> <new>   (手动搬运旧根数据)
