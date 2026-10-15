@@ -13,6 +13,9 @@ public sealed class LocalEndpointToken : IDisposable
     private const int TokenBytes = 32;
     private const string TokenExtension = ".token";
 
+    /** Length of Value: the random bytes in hexadecimal, so it is also the token's size in UTF-8 bytes. */
+    public const int ValueLength = TokenBytes * 2;
+
     private readonly string _path;
     private readonly byte[] _value;
 

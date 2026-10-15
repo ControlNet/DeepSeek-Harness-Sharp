@@ -198,7 +198,6 @@ public static class HarnessEntrypoint
         using var app = await ConfigBoot.Compose(new HarnessOptions(home, Directory.GetCurrentDirectory(), IsTui: false));
         using var backend = new HarnessRemoteHostBackend(app);
         var server = new Dsh.RemoteHost.RemoteHostServer(new Dsh.RemoteHost.RemoteHostServerOptions(token), backend);
-        Directory.CreateDirectory(Dsh.RemoteHost.RemoteHostEndpoint.RunDirectory(home.Root));
         await Console.Out.WriteLineAsync($"dsharp host serving on {Dsh.RemoteHost.RemoteHostEndpoint.SocketPath(home.Root)}");
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>

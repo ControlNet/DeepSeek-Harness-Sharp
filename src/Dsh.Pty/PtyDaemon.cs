@@ -24,9 +24,6 @@ public sealed class PtyDaemon : IAsyncDisposable
 
     private static readonly TimeSpan ControlReadTimeout = TimeSpan.FromSeconds(30);
 
-    /** Upper bound of one request line; publish-panes carries at most PaneBridge.MaxPublishedBytes of text, which JSON escaping can inflate several times. */
-    private const int MaxRequestLineBytes = 1024 * 1024;
-
     /** 每个 pty 的跨进程归属与输入通道: agent 会话 id、窗格快照、控制消息队列。 */
     private readonly ConcurrentDictionary<string, PtyRemoteState> _remote = new(StringComparer.Ordinal);
 
@@ -181,7 +178,7 @@ public sealed class PtyDaemon : IAsyncDisposable
             using var stream = new NetworkStream(socket, ownsSocket: true);
             while (!cancellationToken.IsCancellationRequested)
             {
-                var line = await ReadLineAsync(stream, MaxRequestLineBytes, cancellationToken);
+                var line = await ReadLineAsync(stream, LineProtocolLimits.MaxLineBytes, cancellationToken);
                 if (line is null)
                     return;
 
@@ -199,7 +196,7 @@ public sealed class PtyDaemon : IAsyncDisposable
         }
         catch (InvalidDataException)
         {
-            // Request line over MaxRequestLineBytes: drop the connection without buffering the rest.
+            // Request line over LineProtocolLimits.MaxLineBytes: drop the connection without buffering the rest.
         }
         catch (OperationCanceledException)
         {

@@ -51,6 +51,33 @@ public sealed class SdkTests
         await transport.StopAsync();
     }
 
+    [Fact(Timeout = 30000)]
+    public async Task Transport_OversizedLine_GetsErrorAndClosesWithoutReadingFurther()
+    {
+        const int oversizedLineChars = 2 * 1024 * 1024;
+        var input = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(
+            $"{EchoRequest("1")}\r\n{EchoRequest("2")}\n{new string('x', oversizedLineChars)}\n{EchoRequest("3")}\n")));
+        var output = new StringWriter();
+        var handled = new List<string>();
+        await using var transport = new JsonRpcLineTransport(input, output);
+        transport.RequestHandler = (_, parameters) =>
+        {
+            handled.Add(parameters!.Value.GetProperty("value").GetString()!);
+            return Task.FromResult<object?>(null);
+        };
+
+        transport.Start();
+        await transport.WhenClosedAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        Assert.Equal(["1", "2"], handled);
+        using var error = JsonDocument.Parse(output.ToString().TrimEnd().Split('\n')[^1]);
+        Assert.Equal(JsonValueKind.Null, error.RootElement.GetProperty("id").ValueKind);
+        Assert.Contains("exceeds", error.RootElement.GetProperty("error").GetProperty("message").GetString());
+    }
+
+    private static string EchoRequest(string value)
+        => $$$"""{"jsonrpc":"2.0","id":"{{{value}}}","method":"echo","params":{"value":"{{{value}}}"}}""";
+
     [Fact]
     public async Task Transport_ClientRequestAndNotificationFlow()
     {
@@ -319,26 +346,6 @@ public sealed class SdkTests
             Client = new JsonRpcLineTransport(
                 new ChannelTextReader(_serverToClient),
                 ClientWriter);
-        }
-    }
-
-    private sealed class ChannelTextReader(Channel<string> channel) : TextReader
-    {
-        public override async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                return await channel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (ChannelClosedException)
-            {
-                return null;
-            }
-        }
-
-        public override string? ReadLine()
-        {
-            return channel.Reader.TryRead(out var line) ? line : null;
         }
     }
 

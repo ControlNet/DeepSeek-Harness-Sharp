@@ -175,6 +175,44 @@ public sealed class AcpClientTests
         }
     }
 
+    [Fact(Timeout = 30000)]
+    public async Task SocketServer_OversizedLine_GetsErrorAndDisconnects_AndKeepsServing()
+    {
+        const int oversizedLineChars = 2 * 1024 * 1024;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = TempTree.CreateSocketDirectory("acpo");
+        try
+        {
+            using var listener = new AcpSocketServer(new Context(), new Dsh.Boot.HarnessHome(root));
+            listener.Start();
+            using (var socket = await ConnectAsync(listener.Endpoint, cancellationToken))
+            {
+                await using var stream = new NetworkStream(socket, ownsSocket: false);
+                try
+                {
+                    await stream.WriteAsync(Encoding.UTF8.GetBytes($"{new string('x', oversizedLineChars)}\n"), cancellationToken);
+                }
+                catch (IOException)
+                {
+                    // The server may drop the connection before the client finished writing the line.
+                }
+                var reply = await ReadUntilDisconnectedAsync(stream, cancellationToken);
+                Assert.True(reply.Length == 0 || reply.Contains("exceeds"), reply);
+            }
+
+            using var next = await ConnectAsync(listener.Endpoint, cancellationToken);
+            await using var nextStream = new NetworkStream(next, ownsSocket: false);
+            await using var transport = new JsonRpcLineTransport(new StreamReader(nextStream), new StreamWriter(nextStream) { AutoFlush = true });
+            transport.Start();
+            var initialize = await new AcpClient(transport).InitializeAsync(cancellationToken);
+            Assert.Equal(JsonValueKind.Object, initialize.ValueKind);
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
     [Fact]
     public void SocketServer_RestrictsSocketAndRunDirectoryToOwner()
     {
@@ -194,6 +232,23 @@ public sealed class AcpClientTests
         finally
         {
             TempTree.Delete(root);
+        }
+    }
+
+    /**
+     * Returns everything the server sent until it dropped the connection.
+     * The server stops reading at the limit, so closing with the rest of the line unread makes the kernel reset the connection, which may discard the error reply.
+     */
+    private static async Task<string> ReadUntilDisconnectedAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        using var reader = new StreamReader(stream);
+        try
+        {
+            return await reader.ReadToEndAsync(cancellationToken);
+        }
+        catch (IOException)
+        {
+            return "";
         }
     }
 
@@ -324,26 +379,6 @@ public sealed class AcpClientTests
             Client = new JsonRpcLineTransport(
                 new ChannelTextReader(_serverToClient),
                 new ChannelTextWriter(_clientToServer));
-        }
-    }
-
-    private sealed class ChannelTextReader(Channel<string> channel) : TextReader
-    {
-        public override async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                return await channel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (ChannelClosedException)
-            {
-                return null;
-            }
-        }
-
-        public override string? ReadLine()
-        {
-            return channel.Reader.TryRead(out var line) ? line : null;
         }
     }
 

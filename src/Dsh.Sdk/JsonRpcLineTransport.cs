@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using Dsh.Llm;
+using Dsh.Transport;
 
 namespace Dsh.Sdk;
 
@@ -15,8 +17,15 @@ public interface IJsonRpcPeer
 
 public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
 {
+    /** JSON-RPC standard error code: the received line is not a valid request object. */
+    private const int InvalidRequest = -32600;
+
+    /** Characters requested from the input per read; lines are cut out of these chunks so that no line is buffered beyond the limit. */
+    private const int ReadChunkChars = 4096;
+
     private readonly TextReader _input;
     private readonly TextWriter _output;
+    private readonly int _maxLineBytes;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<object?>> _pending = new();
     private readonly Lock _writeLock = new();
     private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -24,10 +33,12 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
     private Task? _readLoop;
     private bool _started;
 
-    public JsonRpcLineTransport(TextReader input, TextWriter output)
+    /** maxLineBytes bounds one incoming line in UTF-8 bytes; a longer line gets an error reply and closes the transport. */
+    public JsonRpcLineTransport(TextReader input, TextWriter output, int maxLineBytes = LineProtocolLimits.MaxLineBytes)
     {
         _input = input;
         _output = output;
+        _maxLineBytes = maxLineBytes;
     }
 
     public JsonRpcRequestHandler? RequestHandler { get; set; }
@@ -103,17 +114,23 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
 
     private async Task ReadLoopAsync(CancellationToken cancellationToken)
     {
+        var chunk = new char[ReadChunkChars];
+        var pending = new StringBuilder();
+        var pendingBytes = 0;
         try
         {
-            while (!cancellationToken.IsCancellationRequested)
+            int read;
+            while ((read = await _input.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
             {
-                var line = await _input.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-                if (line is null)
-                    break;
-                if (line.Length == 0)
-                    continue;
-                HandleLine(line);
+                pendingBytes = DispatchLines(chunk.AsSpan(0, read), pending, pendingBytes);
+                if (pendingBytes > _maxLineBytes)
+                {
+                    WriteError(null, InvalidRequest, $"request line exceeds {_maxLineBytes} bytes");
+                    return;
+                }
             }
+            if (pending.Length > 0)
+                HandleLine(pending.ToString());
         }
         catch (OperationCanceledException)
         {
@@ -129,8 +146,33 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
         }
     }
 
+    /**
+     * Hands every complete line of the chunk to HandleLine and keeps the unterminated tail in pending.
+     * Returns the tail's UTF-8 size, which exceeds the limit as soon as the line being read does; the tail is then left incomplete.
+     */
+    private int DispatchLines(ReadOnlySpan<char> chunk, StringBuilder pending, int pendingBytes)
+    {
+        while (true)
+        {
+            var newline = chunk.IndexOf('\n');
+            var part = newline < 0 ? chunk : chunk[..newline];
+            pendingBytes += Encoding.UTF8.GetByteCount(part);
+            if (pendingBytes > _maxLineBytes)
+                return pendingBytes;
+            pending.Append(part);
+            if (newline < 0)
+                return pendingBytes;
+            HandleLine(pending.ToString().TrimEnd('\r'));
+            pending.Clear();
+            pendingBytes = 0;
+            chunk = chunk[(newline + 1)..];
+        }
+    }
+
     private void HandleLine(string line)
     {
+        if (line.Length == 0)
+            return;
         JsonDocument document;
         try
         {
@@ -220,12 +262,13 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
         }
     }
 
-    private void WriteError(JsonElement id, int code, string message)
+    /** A null id answers a line whose request id could not be read. */
+    private void WriteError(JsonElement? id, int code, string message)
     {
         WriteFrame(new Dictionary<string, object?>
         {
             ["jsonrpc"] = "2.0",
-            ["id"] = id.Clone(),
+            ["id"] = id?.Clone(),
             ["error"] = new Dictionary<string, object?>
             {
                 ["code"] = code,
