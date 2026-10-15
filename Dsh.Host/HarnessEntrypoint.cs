@@ -62,10 +62,10 @@ public static class HarnessEntrypoint
                     gpuCard = args[++index];
                     break;
                 // 子命令自己的选项(config schema / storage 等): 原样透传给子命令解析, 不当未知选项报错。
-                case "--write-template" or "--verify" or "--json" or "--markdown" or "--md":
+                case "--write-template" or "--verify" or "--json" or "--markdown" or "--md" or Dsh.WebBridge.WebBridgeCommand.PrintTokenOption:
                     positional.Add(args[index]);
                     break;
-                case "--path" when index + 1 < args.Length:
+                case "--path" or Dsh.WebBridge.WebBridgeCommand.PortOption when index + 1 < args.Length:
                     positional.Add(args[index]);
                     positional.Add(args[++index]);
                     break;
@@ -164,7 +164,9 @@ public static class HarnessEntrypoint
                     var subcommand = positional.Skip(1).FirstOrDefault();
                     if (subcommand is "serve" || hostServe)
                         return await RunHostServeAsync(harnessHome, hostStdio, hostToken);
-                    await Console.Error.WriteLineAsync("dsharp: host requires a subcommand (serve)");
+                    if (subcommand is "web")
+                        return await RunHostWebAsync(harnessHome, positional.Skip(2).ToList());
+                    await Console.Error.WriteLineAsync("dsharp: host requires a subcommand (serve | web)");
                     return 1;
                 }
             case "headless":
@@ -207,6 +209,22 @@ public static class HarnessEntrypoint
         };
         await Dsh.RemoteHost.RemoteHostListener.ServeLoopbackAsync(server, home.Root, cancellation.Token);
         return 0;
+    }
+
+    /** `dsharp host web`: the browser bridge relays to the resident host daemon, so the daemon is started first when it is not running. */
+    private static async Task<int> RunHostWebAsync(HarnessHome home, List<string> arguments)
+    {
+        using var cancellation = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            cancellation.Cancel();
+        };
+        return await Dsh.WebBridge.WebBridgeCommand.RunAsync(home.Root, arguments, Console.Out, Console.Error, async () =>
+        {
+            if (!await Dsh.RemoteHost.RemoteHostListener.IsReachableAsync(home.Root, cancellation.Token))
+                StartHostDaemon(home, token: null);
+        }, cancellation.Token);
     }
 
     /**
@@ -353,6 +371,7 @@ public static class HarnessEntrypoint
                    dsharp gui [--session <id>]
                    dsharp headless "task"
                    dsharp host --serve [--stdio] [--token <t>]   (远端工作区宿主: 默认 loopback socket, --stdio 走 ssh)
+                   dsharp host web [--port N] [--print-token]   (浏览器桥: 只监听 127.0.0.1, 跨设备用 ssh -L 转发)
                    dsharp register-terminal    (Linux: 注册为桌面环境的默认终端)
                    dsharp storage paths        (打印 storage.root 与各分区解析结果)
                    dsharp storage migrate <old> <new>   (手动搬运旧根数据)
