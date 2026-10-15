@@ -69,6 +69,36 @@ public class GpuCatalogSelectionTests
         Assert.True(File.Exists(cardPath), $"解析出的卡节点不存在: {cardPath}");
     }
 
+    /** 代理窗口与进程内 GPU 共用的选卡入口: 设置里的选卡要变成 PRIME 变量和 GBM/KMS 卡节点, auto 不强制任何卡。 */
+    [Fact]
+    public void Process_Selection_Applies_Saved_Adapter()
+    {
+        string[] primeVariables = ["DRI_PRIME", "__NV_PRIME_RENDER_OFFLOAD", "__GLX_VENDOR_LIBRARY_NAME"];
+        var saved = primeVariables.ToDictionary(name => name, Environment.GetEnvironmentVariable);
+        using var home = new TempHome();
+        try
+        {
+            Assert.Null(GpuCatalog.ApplyProcessSelection(home.Home));
+            if (!OperatingSystem.IsLinux())
+                return;
+            Assert.All(primeVariables, name => Assert.Null(Environment.GetEnvironmentVariable(name)));
+
+            var adapter = GpuCatalog.ListAdapters().FirstOrDefault(candidate => GpuCatalog.LooksLikePciSlot(candidate.Id));
+            if (adapter is null)
+                return;
+            var selection = GpuCatalog.SelectionIdOf(adapter);
+            GpuCatalog.SaveSelectedAdapter(home.Home, selection);
+
+            Assert.Equal(GpuCatalog.ResolveDrmCardPath(selection), GpuCatalog.ApplyProcessSelection(home.Home));
+            Assert.Equal($"pci-{adapter.Id}", Environment.GetEnvironmentVariable("DRI_PRIME"));
+        }
+        finally
+        {
+            foreach (var (name, value) in saved)
+                Environment.SetEnvironmentVariable(name, value);
+        }
+    }
+
     private sealed class TempHome : IDisposable
     {
         public HarnessHome Home { get; } = new(Path.Combine(

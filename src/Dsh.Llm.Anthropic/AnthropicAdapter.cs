@@ -129,9 +129,9 @@ public sealed class AnthropicAdapter : LlmAdapter
         {
         }
 
-        var delay = RetryAfterMs(response.Headers.TryGetValues("retry-after", out var values)
-            ? values.FirstOrDefault()
-            : null);
+        var delay = RetryAfterHeader.ParseMs(
+            response.Headers.TryGetValues("retry-after", out var values) ? values.FirstOrDefault() : null,
+            DateTimeOffset.UtcNow);
         var requestId = response.Headers.TryGetValues("request-id", out var ids)
                         && ids.FirstOrDefault() is { Length: > 0 } id
             ? ProviderRequestId.Create(id)
@@ -165,22 +165,5 @@ public sealed class AnthropicAdapter : LlmAdapter
         if (status >= 500)
             return LlmFailureCodes.Server;
         return $"HTTP_{status}";
-    }
-
-    private static long? RetryAfterMs(string? value)
-    {
-        if (value is null)
-            return null;
-        if (long.TryParse(value, out var seconds))
-        {
-            var delay = seconds * 1_000;
-            return delay > 0 ? delay : null;
-        }
-        if (DateTimeOffset.TryParse(value, out var date))
-        {
-            var delay = (long)(date - DateTimeOffset.UtcNow).TotalMilliseconds;
-            return delay > 0 ? delay : null;
-        }
-        return null;
     }
 }

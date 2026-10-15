@@ -52,12 +52,8 @@ public static class PluginCommand
                 {
                     case "add" when tokens.Length > 1:
                         return RunAsync(manager.AddAsync(string.Join(' ', tokens.Skip(1)).Trim()));
-                    case "remove" when tokens.Length > 1:
-                        {
-                            var force = tokens.Contains("--force", StringComparer.Ordinal);
-                            var package = tokens.Skip(1).First(token => token != "--force");
-                            return RunAsync(manager.RemoveAsync(package, force));
-                        }
+                    case "remove" when tokens.Skip(1).FirstOrDefault(token => token != "--force") is { } package:
+                        return RunAsync(manager.RemoveAsync(package, tokens.Contains("--force", StringComparer.Ordinal)));
                     case "disable" when tokens.Length > 1:
                         return RunAsync(manager.DisableAsync(tokens[1]));
                     case "enable" when tokens.Length > 1:

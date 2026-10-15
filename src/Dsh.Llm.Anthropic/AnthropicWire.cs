@@ -16,7 +16,8 @@ internal static class AnthropicWire
             ["stream"] = true,
         };
 
-        if (options.System is { } system)
+        var system = SerializeSystem(options);
+        if (system.Count > 0)
             body["system"] = system;
 
         body["messages"] = SerializeMessages(options);
@@ -30,31 +31,43 @@ internal static class AnthropicWire
         return body.ToJsonString();
     }
 
-    private static JsonArray SerializeMessages(GenerateOptions options)
+    /** Anthropic 只在顶层 system 字段接收系统提示: options.System 在前, 消息里的 system 角色按出现顺序合并。 */
+    private static JsonArray SerializeSystem(GenerateOptions options)
     {
-        var array = new JsonArray();
-        foreach (var message in options.Messages)
-            array.Add(SerializeMessage(options, message));
-        return array;
+        var texts = new List<string>();
+        if (options.System is { } system)
+            texts.Add(system);
+        foreach (var block in options.Messages.Where(message => message.Role == MessageRole.System).SelectMany(message => message.Content))
+        {
+            texts.Add(block is TextBlock text
+                ? text.Text
+                : throw new LlmException(new LlmFailure(
+                    $"Anthropic system prompt does not support content block \"{block.Type}\"",
+                    "UNSUPPORTED_CONTENT")));
+        }
+        // 空文本块会被 API 拒绝。
+        return new JsonArray([.. texts
+            .Where(text => !string.IsNullOrWhiteSpace(text))
+            .Select(text => (JsonNode)new JsonObject { ["type"] = "text", ["text"] = text })]);
     }
+
+    private static JsonArray SerializeMessages(GenerateOptions options)
+        => new([.. options.Messages
+            .Where(message => message.Role != MessageRole.System)
+            .Select(message => (JsonNode)SerializeMessage(options, message))]);
 
     private static JsonObject SerializeMessage(GenerateOptions options, Message message)
     {
-        var role = message.Role switch
-        {
-            MessageRole.User => "user",
-            MessageRole.Assistant => "assistant",
-            _ => throw new LlmException(new LlmFailure(
-                "Anthropic only accepts user and assistant messages in the messages array",
-                "INVALID_REQUEST")),
-        };
-
+        var role = message.Role == MessageRole.Assistant ? "assistant" : "user";
+        var thinking = ThinkingReplayFor(message);
+        var reasoningSeen = 0;
         var content = new JsonArray();
         foreach (var block in message.Content)
         {
-            if (block is ReasoningBlock)
-                continue;
-            content.Add(SerializeBlock(options, block));
+            if (block is not ReasoningBlock)
+                content.Add(SerializeBlock(options, block));
+            else if (thinking is not null)
+                content.Add(thinking[reasoningSeen++].DeepClone());
         }
 
         return new JsonObject
@@ -62,6 +75,16 @@ internal static class AnthropicWire
             ["role"] = role,
             ["content"] = content,
         };
+    }
+
+    /**
+     * 带签名的原始 thinking 块, 与消息里的 ReasoningBlock 一一对应。
+     * 工具调用轮次必须原样回放上一条 assistant 的 thinking 块; 没有本适配器的回放状态(旧消息、其他供应商)或数量对不上时只能丢弃推理。
+     */
+    private static IReadOnlyList<JsonNode>? ThinkingReplayFor(Message message)
+    {
+        var replay = AnthropicThinkingReplay.Decode(message);
+        return replay?.Count == message.Content.Count(block => block is ReasoningBlock) ? replay : null;
     }
 
     private static JsonObject SerializeBlock(GenerateOptions options, ContentBlock block) => block switch
