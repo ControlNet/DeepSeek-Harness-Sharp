@@ -156,7 +156,7 @@ public sealed class RemoteHostCapabilityTests
     }
 
     /** 记录/回放式的远端后端替身; 不依赖 harness。待决策队列与会话登记表用真实实现。 */
-    private sealed class FakeBackend : IRemoteHostBackend, IAsyncDisposable
+    internal sealed class FakeBackend : IRemoteHostBackend, IAsyncDisposable
     {
         private readonly string _directory;
         private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
@@ -281,6 +281,9 @@ public sealed class RemoteHostCapabilityTests
             => _pty.TryGetValue(ptyId, out var channel)
                 ? Task.FromResult(channel.Reader.ReadAllAsync(cancellationToken))
                 : throw new InvalidOperationException($"PTY session not found: {ptyId}");
+
+        /** Every live host connection holds one pending-decision subscription, so this counts open host connections. */
+        public int OpenConnections => Pending.SubscriberCount;
 
         public async ValueTask DisposeAsync()
         {

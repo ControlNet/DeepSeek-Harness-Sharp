@@ -17,6 +17,9 @@ public sealed class HostPendingDecisions : IDisposable
     private readonly HostBroadcast _broadcast = new();
     private readonly OrderedDictionary<string, PendingEntry> _entries = new(StringComparer.Ordinal);
 
+    /** 订阅了未决请求推送的连接数。 */
+    public int SubscriberCount => _broadcast.SubscriberCount;
+
     /** 某会话的未决数量变化(参数为会话 id); 在锁外触发。 */
     public event Action<string>? CountChanged;
 

@@ -20,6 +20,16 @@ public sealed class HostBroadcast
     private readonly Lock _gate = new();
     private readonly List<Channel<HostNotification>> _subscribers = [];
 
+    /** 当前订阅数: 每个存活的 host 连接各持有一份订阅。 */
+    public int SubscriberCount
+    {
+        get
+        {
+            lock (_gate)
+                return _subscribers.Count;
+        }
+    }
+
     public void Publish(HostNotification notification)
     {
         lock (_gate)
