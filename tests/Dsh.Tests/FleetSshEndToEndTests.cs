@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.RemoteHost;
@@ -15,7 +16,9 @@ namespace Dsh.Tests;
 public sealed class FleetSshEndToEndTests
 {
     private const string Sshd = "/usr/sbin/sshd";
-    private const string Rid = "linux-x64";
+
+    /** The sshd serves this machine, so deployment picks this machine's runtime identifier. */
+    private static readonly string Rid = RuntimeInformation.RuntimeIdentifier;
 
     private static readonly TimeSpan SettleTimeout = TimeSpan.FromMinutes(3);
 
@@ -112,8 +115,8 @@ public sealed class FleetSshEndToEndTests
 
     internal static string RequireEnvironment()
     {
-        if (!OperatingSystem.IsLinux() || !File.Exists(Sshd))
-            Assert.Skip($"needs Linux with {Sshd}");
+        if (!File.Exists(Sshd))
+            Assert.Skip($"needs an OpenSSH server at {Sshd} to stand in for a POSIX remote machine");
         return RealHostProcesses.Executable;
     }
 

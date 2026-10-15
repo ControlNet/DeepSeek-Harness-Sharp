@@ -6,7 +6,7 @@ namespace Dsh.Tests;
 
 /**
  * The web UI in real headless Chrome against the hub bridge of two real `dsharp host serve` processes (plus an offline SSH machine).
- * Sessions are real: terminal sessions run /bin/sh; the ACP approval test runs the installed `opencode acp` with its configured model (LlmSmoke).
+ * Sessions are real: terminal sessions run the machine's shell (TestShell); the ACP approval test runs the installed `opencode acp` with its configured model (LlmSmoke).
  * Screenshots land in artifacts020/webui; every page must finish without CSP violations or uncaught errors.
  */
 [Collection(SerialProcessCollection.Name)]
@@ -41,8 +41,6 @@ public sealed class WebUiBrowserTests
     public async Task Desktop_TwoBrowsersShareSessionsNotificationsFilesAndGit()
     {
         var ct = TestContext.Current.CancellationToken;
-        if (OperatingSystem.IsWindows())
-            Assert.Skip("terminal sessions run /bin/sh");
         await using var hub = await WebBridgeHubTests.HubFixture.StartAsync();
         using var repository = new GitTestRepository();
         repository.Commit(("README.md", "hello web\n"));
@@ -52,7 +50,7 @@ public sealed class WebUiBrowserTests
 
         await DashboardShowsEveryMachineAsync(first);
         await TerminalRunsARealCommandAsync(first, hub.SecondHome);
-        var exited = await TerminalExitsAsync(first, hub.LocalHome);
+        var exited = await TerminalExitsAsync(first, repository.Root);
         await DashboardFiltersAsync(first, exited);
         await NotificationReadStateIsSharedAsync(first, second, exited);
         await FilesAndGitAsync(first, repository.Root);
@@ -102,13 +100,13 @@ public sealed class WebUiBrowserTests
         Assert.Equal("true", await phone.EvaluateAsync("String([...document.querySelectorAll('#nav a')].every((item) => item.getBoundingClientRect().height >= 44))", Ct));
         await phone.ScreenshotAsync(Path.Combine(Artifacts, "phone-menu.png"), Ct);
 
-        await StartSessionThroughFormAsync(phone, LocalMachine, AgentKinds.Terminal, "/bin/sh", hub.LocalHome, prompt: null);
+        await StartSessionThroughFormAsync(phone, LocalMachine, AgentKinds.Terminal, TestShell.CommandLine, hub.LocalHome, prompt: null);
         await phone.WaitForAsync("document.querySelector('.xterm-rows')", Ct, SessionWait);
         Assert.Equal("flex", await phone.EvaluateAsync("getComputedStyle(document.querySelector('.key-bar')).display", Ct));
         Assert.Equal("true", await phone.EvaluateAsync("String([...document.querySelectorAll('.key-bar .key')].every((key) => key.getBoundingClientRect().height >= 44))", Ct));
-        await TypeInTerminalAsync(phone, "sleep 120", tap: true);
+        await TypeInTerminalAsync(phone, TestShell.Wait(120), tap: true);
         await phone.TapAsync(".key-bar .key[aria-label='Ctrl+C']", Ct);
-        await TypeInTerminalAsync(phone, "echo phone-$((6*7))", tap: true);
+        await TypeInTerminalAsync(phone, TestShell.EchoAnswer("phone"), tap: true);
         await WaitForTerminalTextAsync(phone, "phone-42");
         await AssertNoHorizontalScrollAsync(phone);
         await phone.ScreenshotAsync(Path.Combine(Artifacts, "phone-terminal-keybar.png"), Ct);
@@ -142,20 +140,23 @@ public sealed class WebUiBrowserTests
         await chrome.ScreenshotAsync(Path.Combine(Artifacts, "dashboard-machines.png"), Ct);
     }
 
-    /** Starts /bin/sh as a terminal session on the second machine from the New session form and types a command into xterm. */
+    /** Starts the shell as a terminal session on the second machine from the New session form and types a command into xterm. */
     private static async Task TerminalRunsARealCommandAsync(HeadlessChrome chrome, string project)
     {
-        await StartSessionThroughFormAsync(chrome, SecondMachine, AgentKinds.Terminal, "/bin/sh", project, prompt: null);
+        await StartSessionThroughFormAsync(chrome, SecondMachine, AgentKinds.Terminal, TestShell.CommandLine, project, prompt: null);
         await chrome.WaitForAsync("document.querySelector('.xterm-rows')", Ct, SessionWait);
-        await TypeInTerminalAsync(chrome, "echo web-$((6*7))", tap: false);
+        await TypeInTerminalAsync(chrome, TestShell.EchoAnswer("web"), tap: false);
         await WaitForTerminalTextAsync(chrome, "web-42");
         await chrome.ScreenshotAsync(Path.Combine(Artifacts, "terminal-session.png"), Ct);
     }
 
-    /** Starts a titled shell on the bridge's machine and exits it with code 3; the host records the exit as a notification. Returns the session id. */
+    /**
+     * Starts a titled shell in the repository on the bridge's machine and exits it with code 3; the host records the exit as a notification. Returns the session id.
+     * The session's project is also what lets the files and Git views reach a repository outside the user's home (the checkout drive on Windows CI).
+     */
     private static async Task<string> TerminalExitsAsync(HeadlessChrome chrome, string project)
     {
-        var sessionId = await StartSessionThroughFormAsync(chrome, LocalMachine, AgentKinds.Terminal, "/bin/sh", project, prompt: null, ShortShellTitle);
+        var sessionId = await StartSessionThroughFormAsync(chrome, LocalMachine, AgentKinds.Terminal, TestShell.CommandLine, project, prompt: null, ShortShellTitle);
         await chrome.WaitForAsync("document.querySelector('.xterm-rows')", Ct, SessionWait);
         await TypeInTerminalAsync(chrome, "exit 3", tap: false);
         await chrome.NavigateAsync(new Uri($"{await chrome.EvaluateAsync("location.origin", Ct)}/#/"), Ct);

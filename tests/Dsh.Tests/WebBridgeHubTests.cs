@@ -61,7 +61,8 @@ public sealed class WebBridgeHubTests
         Assert.Equal(hub.LocalHome, (await WebSocketRpc.RequestAsync(local, 2, HostProtocol.MethodInfo, null)).GetProperty("HomeRoot").GetString());
         Assert.Equal(hub.SecondHome, (await WebSocketRpc.RequestAsync(second, 2, HostProtocol.MethodInfo, null)).GetProperty("HomeRoot").GetString());
 
-        var started = await WebSocketRpc.RequestAsync(second, 3, HostProtocol.MethodPtyStart, $$"""{"FileName":"/bin/sh","Arguments":["-c","echo hub-$((6*7)); sleep 30"],"Cwd":{{JsonSerializer.Serialize(hub.SecondHome)}},"Title":"hub-shell"}""");
+        var arguments = TestShell.RunThenWait(TestShell.EchoAnswer("hub"), 30);
+        var started = await WebSocketRpc.RequestAsync(second, 3, HostProtocol.MethodPtyStart, $$"""{"FileName":{{JsonSerializer.Serialize(TestShell.FileName)}},"Arguments":{{JsonSerializer.Serialize(arguments)}},"Cwd":{{JsonSerializer.Serialize(hub.SecondHome)}},"Title":"hub-shell"}""");
         var ptyId = started.GetProperty("PtyId").GetString()!;
         // The snapshot push can overtake attach's own response, so the reply is not awaited before reading output.
         await WebSocketRpc.SendAsync(second, 4, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}"}""");
@@ -165,13 +166,20 @@ public sealed class WebBridgeHubTests
         public Task<string> WaitForMachinesAsync(Func<Dictionary<string, string>, bool> condition)
             => Access.WaitForMachinesAsync(condition, TimeSpan.FromSeconds(30), Ct);
 
+        /** The hosts are killed even when the bridge fails to shut down, so a failing test does not leave them running. */
         public async ValueTask DisposeAsync()
         {
-            await _bridge.DisposeAsync();
-            foreach (var home in new[] { LocalHome, SecondHome })
+            try
             {
-                RealHostProcesses.KillAll(home);
-                TempTree.Delete(home);
+                await _bridge.DisposeAsync();
+            }
+            finally
+            {
+                foreach (var home in new[] { LocalHome, SecondHome })
+                {
+                    RealHostProcesses.KillAll(home);
+                    TempTree.Delete(home);
+                }
             }
         }
 

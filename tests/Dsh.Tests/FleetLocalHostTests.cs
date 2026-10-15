@@ -17,7 +17,7 @@ public sealed class FleetLocalHostTests
     [Fact(Timeout = 120000)]
     public async Task LocalHost_IsStartedOnDemand_AndTheConnectionRecoversAfterTheHostIsKilled()
     {
-        var executable = RequireExecutable();
+        var executable = RealHostProcesses.Executable;
         var home = RealHostProcesses.CreateHome("fl");
         try
         {
@@ -57,7 +57,7 @@ public sealed class FleetLocalHostTests
     [Fact(Timeout = 180000)]
     public async Task Cli_ManagesMachines_ListsStopsAndDiagnosesSessions()
     {
-        var executable = RequireExecutable();
+        var executable = RealHostProcesses.Executable;
         var home = RealHostProcesses.CreateHome("fc");
         var second = RealHostProcesses.CreateHome("fd");
         try
@@ -82,10 +82,14 @@ public sealed class FleetLocalHostTests
 
             var doctor = await FleetCliProcess.RunAsync(executable, home, "doctor", "--machine", "second");
             Assert.True(doctor.ExitCode == 0, doctor.Output);
-            Assert.Contains("[ok] host:", doctor.Output, StringComparison.Ordinal);
-            Assert.Contains("[ok] permissions:", doctor.Output, StringComparison.Ordinal);
-            Assert.Contains("[ok] pty daemon:", doctor.Output, StringComparison.Ordinal);
             Assert.Contains("[ok] connection:", doctor.Output, StringComparison.Ordinal);
+            // The endpoint checks read the POSIX status script's output, which FleetDoctor does not run for a local Windows machine.
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.Contains("[ok] host:", doctor.Output, StringComparison.Ordinal);
+                Assert.Contains("[ok] permissions:", doctor.Output, StringComparison.Ordinal);
+                Assert.Contains("[ok] pty daemon:", doctor.Output, StringComparison.Ordinal);
+            }
 
             var stopped = await FleetCliProcess.RunAsync(executable, home, "session", "stop", $"second/{secondShell}");
             Assert.True(stopped.ExitCode == 0, stopped.Error);
@@ -110,7 +114,7 @@ public sealed class FleetLocalHostTests
     [Fact(Timeout = 120000)]
     public async Task Cli_AttachesToATerminalSession_AndDetachesWithTheEscapeKey()
     {
-        var executable = RequireExecutable();
+        var executable = RealHostProcesses.Executable;
         var home = RealHostProcesses.CreateHome("fa");
         try
         {
@@ -128,7 +132,7 @@ public sealed class FleetLocalHostTests
             var pump = PumpAsync(session, transcript);
 
             await WaitForTextAsync(transcript, "attaching to");
-            await session.WriteAsync("echo fleet-$((6*7))\r"u8.ToArray(), Ct);
+            await session.WriteAsync(Encoding.UTF8.GetBytes($"{TestShell.EchoAnswer("fleet")}\r"), Ct);
             await WaitForTextAsync(transcript, "fleet-42");
             await session.WriteAsync(new[] { ConsoleTunnel.DetachKey }, Ct);
             await WaitForTextAsync(transcript, "detached from");
@@ -142,17 +146,10 @@ public sealed class FleetLocalHostTests
         }
     }
 
-    private static string RequireExecutable()
-    {
-        if (!OperatingSystem.IsLinux())
-            Assert.Skip("real host processes are cleaned up through /proc (Linux only)");
-        return RealHostProcesses.Executable;
-    }
-
     private static async Task<string> StartShellAsync(MachineConnection connection, string cwd)
     {
         var lease = await connection.WaitConnectedAsync(Ct);
-        return await lease.Client.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", [], cwd, Title: "fleet-shell"), Ct);
+        return await lease.Client.StartPtyAsync(new RemotePtyStartRequest(TestShell.FileName, TestShell.Arguments, cwd, Title: "fleet-shell"), Ct);
     }
 
     /** Starts a shell on the host of a home whose host is already running. */

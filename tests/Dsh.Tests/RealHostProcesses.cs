@@ -6,11 +6,13 @@ namespace Dsh.Tests;
 
 /**
  * Real `dsharp host serve` processes of this worktree's build, each under its own harness home (DSH_HOME), so that tests never touch ~/.dsh or another worktree's daemons.
- * The host starts a PTY daemon on demand with the same DSH_HOME; cleanup therefore kills every process whose environment carries that home (Linux /proc).
+ * The host starts a PTY daemon on demand with the same DSH_HOME; cleanup therefore finds every process that serves that home (see KillAll).
  */
 internal static class RealHostProcesses
 {
     private const string HomeVariable = HarnessHome.HomeEnv;
+
+    private const string ProcRoot = "/proc";
 
     /** Settings for a throwaway home: no file logging, so the directory can be deleted while handles are still closing. */
     private const string Settings = """
@@ -18,7 +20,7 @@ internal static class RealHostProcesses
           file: false
         """;
 
-    /** This worktree's dsharp; CI builds only the test project, so without it the test is skipped (as PtyTuiHarness and the template plugin tests do). */
+    /** This worktree's dsharp (DeepSeek-Harness-Sharp/bin/Debug/net10.0); a test that needs it is skipped while it has not been built. */
     public static string Executable
     {
         get
@@ -56,16 +58,82 @@ internal static class RealHostProcesses
         return process;
     }
 
-    /** Kills every process of this user whose environment has DSH_HOME=root (hosts, PTY daemons, the shells they run). */
+    /**
+     * Kills every process of this user that serves the harness home root: hosts, PTY daemons and the shells they run.
+     * Where process environments can be read (Linux /proc, BSD ps -E) those are the processes whose environment has DSH_HOME=root.
+     * Windows has no supported API that reads another process's environment, so there they are the dsharp processes listening on the loopback ports the home's endpoint files announce, killed with their process trees.
+     */
     public static void KillAll(string root)
     {
-        if (!OperatingSystem.IsLinux())
-            return;
-        var marker = Encoding.UTF8.GetBytes($"{HomeVariable}={root}\0");
-        foreach (var directory in Directory.EnumerateDirectories("/proc"))
+        var marker = $"{HomeVariable}={root}";
+        if (Directory.Exists(ProcRoot))
+            KillByProcEnvironment(Encoding.UTF8.GetBytes($"{marker}\0"));
+        else if (OperatingSystem.IsWindows())
+            KillEndpointOwners(root);
+        else
+            KillByPsEnvironment(marker);
+    }
+
+    private static void KillByProcEnvironment(byte[] marker)
+    {
+        foreach (var directory in Directory.EnumerateDirectories(ProcRoot))
         {
             if (int.TryParse(Path.GetFileName(directory), out var pid) && pid != Environment.ProcessId && EnvironmentContains(directory, marker))
-                TryKill(pid);
+                TryKill(pid, entireProcessTree: false);
+        }
+    }
+
+    /** `ps -E` appends each process's environment to its command line; the marker must end at a space or the end of the line. */
+    private static void KillByPsEnvironment(string marker)
+    {
+        foreach (var line in ProcessListing("ps", "-axwwE", "-o", "pid=", "-o", "command="))
+        {
+            var fields = line.Trim().Split(' ', 2);
+            if (fields is [var id, var command] && int.TryParse(id, out var pid) && pid != Environment.ProcessId
+                && (command.Contains($"{marker} ", StringComparison.Ordinal) || command.EndsWith(marker, StringComparison.Ordinal)))
+                TryKill(pid, entireProcessTree: false);
+        }
+    }
+
+    /** `netstat -ano` lines are "TCP local-address foreign-address state pid"; only dsharp processes are killed, so a stale port file cannot hit another program. */
+    private static void KillEndpointOwners(string root)
+    {
+        var runDirectory = Path.Combine(root, "run");
+        if (!Directory.Exists(runDirectory))
+            return;
+        var ports = Directory.EnumerateFiles(runDirectory, "*.port")
+            .Select(file => int.TryParse(File.ReadAllText(file).Trim(), out var port) ? $":{port}" : null)
+            .OfType<string>()
+            .ToHashSet(StringComparer.Ordinal);
+        var name = Path.GetFileNameWithoutExtension(PtyTuiHarness.FindTuiExecutable());
+        foreach (var line in ProcessListing("netstat", "-ano", "-p", "TCP"))
+        {
+            if (line.Split(' ', StringSplitOptions.RemoveEmptyEntries) is [_, var local, _, "LISTENING", var id]
+                && ports.Any(port => local.EndsWith(port, StringComparison.Ordinal)) && int.TryParse(id, out var pid) && IsNamed(pid, name))
+                TryKill(pid, entireProcessTree: true);
+        }
+    }
+
+    /** The output lines of a process listing command such as ps or netstat. */
+    internal static List<string> ProcessListing(string fileName, params string[] arguments)
+    {
+        using var process = Process.Start(new ProcessStartInfo(fileName, arguments) { UseShellExecute = false, RedirectStandardOutput = true })
+            ?? throw new InvalidOperationException($"failed to start {fileName}");
+        var lines = process.StandardOutput.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
+        process.WaitForExit();
+        return lines;
+    }
+
+    private static bool IsNamed(int pid, string? name)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return string.Equals(process.ProcessName, name, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
     }
 
@@ -81,12 +149,12 @@ internal static class RealHostProcesses
         }
     }
 
-    private static void TryKill(int pid)
+    private static void TryKill(int pid, bool entireProcessTree)
     {
         try
         {
             using var process = Process.GetProcessById(pid);
-            process.Kill();
+            process.Kill(entireProcessTree);
         }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {

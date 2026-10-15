@@ -1,5 +1,5 @@
+using System.Globalization;
 using System.Net.WebSockets;
-using System.Text;
 using System.Text.Json;
 using Dsh.Fleet;
 using Dsh.RemoteHost;
@@ -74,38 +74,12 @@ public sealed class WebBridgeSshTunnelTests
     /** Live ssh processes this test process started for the sshd on port: the bridge's status connection plus one tunnel per open WebSocket. */
     private static int SshChildren(int port)
     {
-        var portArgument = Encoding.UTF8.GetBytes($"\0-p\0{port}\0");
-        var count = 0;
-        foreach (var directory in Directory.EnumerateDirectories("/proc"))
-        {
-            if (!int.TryParse(Path.GetFileName(directory), out _) || !IsChildOfThisProcess(directory))
-                continue;
-            var command = ReadOrEmpty(Path.Combine(directory, "cmdline"));
-            var program = Encoding.UTF8.GetString(command.AsSpan(0, Math.Max(0, command.AsSpan().IndexOf((byte)0))));
-            if (Path.GetFileName(program) == "ssh" && command.AsSpan().IndexOf(portArgument) >= 0)
-                count++;
-        }
-
-        return count;
-    }
-
-    /** /proc/<pid>/stat is "pid (comm) state ppid ..."; comm may contain spaces, so the fields are read after the last ')'. */
-    private static bool IsChildOfThisProcess(string processDirectory)
-    {
-        var stat = Encoding.UTF8.GetString(ReadOrEmpty(Path.Combine(processDirectory, "stat")));
-        var fields = stat[(stat.LastIndexOf(')') + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return fields.Length > 1 && fields[0] != "Z" && int.TryParse(fields[1], out var parent) && parent == Environment.ProcessId;
-    }
-
-    private static byte[] ReadOrEmpty(string path)
-    {
-        try
-        {
-            return File.ReadAllBytes(path);
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-        {
-            return [];
-        }
+        var parent = Environment.ProcessId.ToString(CultureInfo.InvariantCulture);
+        var portText = port.ToString(CultureInfo.InvariantCulture);
+        return RealHostProcesses.ProcessListing("ps", "-A", "-o", "ppid=", "-o", "stat=", "-o", "args=")
+            .Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .Count(fields => fields is [var ppid, var state, var program, .. var arguments]
+                && ppid == parent && !state.StartsWith('Z') && Path.GetFileName(program) == "ssh"
+                && arguments.Zip(arguments.Skip(1)).Any(pair => pair is ("-p", var value) && value == portText));
     }
 }

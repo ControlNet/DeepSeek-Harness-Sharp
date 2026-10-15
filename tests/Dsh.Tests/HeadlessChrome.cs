@@ -1,13 +1,13 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using Dsh.AgentAdapters;
 
 namespace Dsh.Tests;
 
 /**
- * The machine's google-chrome, headless with a throwaway profile inside artifacts020, driven over the DevTools protocol; skips the test when Chrome is not installed.
+ * The machine's Google Chrome (or Chromium), headless with a throwaway profile inside artifacts020, driven over the DevTools protocol; skips the test when neither is installed.
  * Every instance has its own profile, so two instances are two independent browsers with their own cookies.
  * Pages record Content-Security-Policy violations and uncaught errors from the first script on, so tests can assert that the UI runs under the bridge's CSP.
  */
@@ -49,10 +49,14 @@ internal sealed class HeadlessChrome : IAsyncDisposable
     public static async Task<HeadlessChrome> StartAsync(string artifacts, CancellationToken cancellationToken, int width = 1280, int height = 900)
     {
         var profile = Path.Combine(artifacts, $"chrome-profile-{Guid.NewGuid():N}");
-        var start = new ProcessStartInfo("google-chrome") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        foreach (var argument in (string[])["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", $"--user-data-dir={profile}", "--remote-debugging-port=0", $"--window-size={width},{height}", "about:blank"])
+        var executable = ChromeCandidates.Select(AgentExecutableLocator.Resolve).FirstOrDefault(path => path is not null);
+        if (executable is null)
+            Assert.Skip($"Chrome is not installed on this machine (looked for {string.Join(", ", ChromeCandidates)})");
+        var start = new ProcessStartInfo(executable) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        // The mock keychain and basic password store keep macOS Chrome from waiting on a keychain prompt.
+        foreach (var argument in (string[])["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--use-mock-keychain", "--password-store=basic", $"--user-data-dir={profile}", "--remote-debugging-port=0", $"--window-size={width},{height}", "about:blank"])
             start.ArgumentList.Add(argument);
-        var chrome = new HeadlessChrome(StartOrSkip(start), profile);
+        var chrome = new HeadlessChrome(Process.Start(start) ?? throw new InvalidOperationException($"{executable} did not start"), profile);
         var browserEndpoint = await chrome.ReadDevToolsEndpointAsync(cancellationToken);
         await chrome.AttachToPageAsync(browserEndpoint, cancellationToken);
         await chrome.SendAsync("Page.enable", "{}", cancellationToken);
@@ -181,18 +185,19 @@ internal sealed class HeadlessChrome : IAsyncDisposable
         await _page.ConnectAsync(new Uri(page.GetProperty("webSocketDebuggerUrl").GetString()!), cancellationToken);
     }
 
-    private static Process StartOrSkip(ProcessStartInfo start)
-    {
-        try
-        {
-            return Process.Start(start) ?? throw new InvalidOperationException("google-chrome did not start");
-        }
-        catch (Win32Exception)
-        {
-            Assert.Skip("google-chrome is not installed on this machine");
-            throw;
-        }
-    }
+    /** Command names on PATH (Linux packages), then the macOS application bundle and the Windows per-machine and per-user installs. */
+    private static readonly string[] ChromeCandidates =
+    [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        .. new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86, Environment.SpecialFolder.LocalApplicationData }
+            .Select(Environment.GetFolderPath)
+            .Where(root => root.Length > 0)
+            .Select(root => Path.Combine(root, "Google", "Chrome", "Application", "chrome.exe")),
+    ];
 
     public async ValueTask DisposeAsync()
     {

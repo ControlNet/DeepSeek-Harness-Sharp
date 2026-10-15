@@ -62,6 +62,9 @@ jobs:
       - name: 编译测试工程（Debug，含插件夹具）
         run: dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
 
+      - name: 编译 dsharp（Debug，端到端用例启动真实的 dsharp 进程）
+        run: dotnet build DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -c Debug --nologo
+
       - name: 安装 sqlite3（Windows；SQLitePCLRaw.provider.sqlite3 需要系统 sqlite3.dll）
         if: runner.os == 'Windows'
         shell: pwsh
