@@ -1,5 +1,0 @@
-# DryIoc.dll build used by the local NuGet feed (packages/); read by scripts/fetch-dryioc-feed.sh and scripts/fetch-dryioc-feed.ps1.
-# commit: dadhi/DryIoc commit on the upstream default branch that the package is built from.
-# sha256: SHA256 of DryIoc.dll.<version>.nupkg inside the "packages" artifact of that commit's successful ci.yml push run.
-commit=63bb4f03f0a733a474d0c29d16e253baa18f93a0
-sha256=386282a82849b83cee8633a43c0e15b7337f6dc1f63ccd2653e33c9619623fce
