@@ -229,6 +229,7 @@ public sealed class GuiWorkspaceTests
             {
                 await ConnectedAsync(workspace);
                 var echo = await StartTerminalAsync(workspace, "alpha", project, "回显", "echo ready; read line; echo \"got:$line\"; sleep 30");
+                await UntilAsync(() => Card(workspace, "alpha", echo) is not null, "the session card");
                 workspace.OpenSession("alpha", echo);
                 var session = workspace.ActiveSession!;
                 var terminal = Assert.Single(session.Tabs).Terminal!;
