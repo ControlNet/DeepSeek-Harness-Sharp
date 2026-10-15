@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Dsh.Llm.Anthropic;
 
@@ -13,7 +14,7 @@ internal static class AnthropicSse
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
         var eventName = "";
         var data = new StringBuilder();
-        var openBlocks = new Dictionary<int, OpenBlock>();
+        var state = new StreamState();
 
         while (true)
         {
@@ -34,14 +35,17 @@ internal static class AnthropicSse
                 data.Clear();
                 var root = ParseFrame(payload);
 
-                foreach (var chunk in ProcessFrame(eventName, root, openBlocks))
+                foreach (var chunk in ProcessFrame(eventName, root, state))
                     yield return chunk;
 
                 var isStop = root.TryGetProperty("type", out var type)
                              && type.GetString() == "message_stop";
                 eventName = "";
                 if (isStop)
+                {
+                    yield return Finish(state);
                     yield break;
+                }
                 continue;
             }
 
@@ -82,8 +86,9 @@ internal static class AnthropicSse
     private static IEnumerable<StreamChunk> ProcessFrame(
         string eventName,
         JsonElement frame,
-        Dictionary<int, OpenBlock> openBlocks)
+        StreamState state)
     {
+        var openBlocks = state.OpenBlocks;
         var type = frame.TryGetProperty("type", out var typeProperty)
             ? typeProperty.GetString()
             : eventName;
@@ -103,6 +108,14 @@ internal static class AnthropicSse
                             break;
                         case "thinking":
                             openBlocks[index] = new OpenBlock { Type = "thinking" };
+                            yield return new StreamChunk.BlockStart(index, "reasoning");
+                            break;
+                        case "redacted_thinking":
+                            openBlocks[index] = new OpenBlock
+                            {
+                                Type = "redacted_thinking",
+                                Data = contentBlock.TryGetProperty("data", out var data) ? data.GetString() : null,
+                            };
                             yield return new StreamChunk.BlockStart(index, "reasoning");
                             break;
                         case "tool_use":
@@ -139,6 +152,9 @@ internal static class AnthropicSse
                                 yield return new StreamChunk.ReasoningDelta(index, text);
                                 break;
                             }
+                        case "signature_delta":
+                            EnsureOpen(openBlocks, index, "thinking").Signature += delta.GetProperty("signature").GetString() ?? "";
+                            break;
                         case "input_json_delta":
                             {
                                 var partial = delta.GetProperty("partial_json").GetString() ?? "";
@@ -161,11 +177,17 @@ internal static class AnthropicSse
                     if (!openBlocks.TryGetValue(index, out var open))
                         break;
                     openBlocks.Remove(index);
+                    if (ReplayBlock(open) is { } replay)
+                        state.Thinking.Add(replay);
                     yield return new StreamChunk.BlockEnd(index, CloseBlock(open, index));
                     break;
                 }
             case "message_delta":
                 {
+                    if (frame.TryGetProperty("delta", out var messageDelta)
+                        && messageDelta.TryGetProperty("stop_reason", out var stopReason)
+                        && stopReason.ValueKind == JsonValueKind.String)
+                        state.StopReason = stopReason.GetString();
                     if (frame.TryGetProperty("usage", out var usage))
                         yield return new StreamChunk.Usage(MapUsage(usage));
                     break;
@@ -196,6 +218,7 @@ internal static class AnthropicSse
     {
         "text" => new TextBlock(open.Text),
         "thinking" => new ReasoningBlock(open.Text),
+        "redacted_thinking" => new ReasoningBlock(""),
         "tool-call" => new ToolCallBlock(
             ToolCallId.Create(open.Id ?? $"call-{index}"),
             open.Name ?? "",
@@ -217,10 +240,43 @@ internal static class AnthropicSse
         return new TokenUsage(input, output, total, cacheRead, cacheWrite);
     }
 
+    /** 回放用的原始块: thinking 原文与签名必须原样送回, redacted_thinking 只有加密数据。 */
+    private static JsonObject? ReplayBlock(OpenBlock open) => open.Type switch
+    {
+        "thinking" => new JsonObject { ["type"] = "thinking", ["thinking"] = open.Text, ["signature"] = open.Signature },
+        "redacted_thinking" => new JsonObject { ["type"] = "redacted_thinking", ["data"] = open.Data },
+        _ => null,
+    };
+
+    private static StreamChunk.Finish Finish(StreamState state)
+        => new(
+            MapStopReason(state.StopReason),
+            state.Thinking.Count > 0 ? new ReplayEnvelope(AnthropicThinkingReplay.Encode(state.Thinking)) : null);
+
+    private static FinishReason MapStopReason(string? reason) => reason switch
+    {
+        null => new FinishReason.Incomplete("Anthropic message_stop arrived without a stop_reason"),
+        "end_turn" or "stop_sequence" => new FinishReason.Stop(),
+        "tool_use" => new FinishReason.ToolCalls(),
+        "max_tokens" => new FinishReason.MaxTokens(),
+        "model_context_window_exceeded" => new FinishReason.Error(new LlmFailure(
+            "model stopped: model_context_window_exceeded", LlmFailureCodes.ContextWindowExceeded)),
+        _ => new FinishReason.Error(new LlmFailure($"model stopped: {reason}", reason.ToUpperInvariant())),
+    };
+
+    private sealed class StreamState
+    {
+        public readonly Dictionary<int, OpenBlock> OpenBlocks = [];
+        public readonly List<JsonObject> Thinking = [];
+        public string? StopReason;
+    }
+
     private sealed class OpenBlock
     {
         public required string Type;
         public string Text = "";
+        public string Signature = "";
+        public string? Data;
         public string? Id;
         public string? Name;
         public string Arguments = "";

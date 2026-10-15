@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Dsh.Plugins.Native;
 
@@ -12,9 +13,7 @@ public sealed unsafe class NativeGuardTests
     [Fact]
     public void Guard_TrapsNativeAccessViolation_AndProcessSurvives()
     {
-        if (!NativeLibrary.TryLoad("dsh_fault_probe", out var probe))
-            Assert.Skip("dsh_fault_probe 未构建(缺 C 工具链), 跳过原生遏制回归");
-
+        var probe = LoadProbe();
         var ok = NativeLibrary.GetExport(probe, "dsh_fault_probe_ok");
         var boom = NativeLibrary.GetExport(probe, "dsh_fault_probe_boom");
         try
@@ -32,5 +31,65 @@ public sealed unsafe class NativeGuardTests
         {
             NativeLibrary.Free(probe);
         }
+    }
+
+    /** guard 接管故障信号后, 受护调用之外的托管空引用仍要交回运行时变成 NullReferenceException, 而不是让进程退出。 */
+    [Fact]
+    public void Guard_LeavesManagedNullReferenceToRuntime_AfterGuardedCalls()
+    {
+        var probe = LoadProbe();
+        try
+        {
+            Assert.True(DshNativeGuard.TryInvokeTool(NativeLibrary.GetExport(probe, "dsh_fault_probe_ok"), 0, 0, null, null, 0, out _));
+            Assert.False(DshNativeGuard.TryInvokeTool(NativeLibrary.GetExport(probe, "dsh_fault_probe_boom"), 0, 0, null, null, 0, out _));
+
+            Assert.Throws<NullReferenceException>(() => LengthOf(null));
+            Assert.Throws<NullReferenceException>(() => LengthOf(null));
+        }
+        finally
+        {
+            NativeLibrary.Free(probe);
+        }
+    }
+
+    /** 受护调用里回调进宿主托管代码时, 托管故障仍由运行时转成异常, guard 不会跨托管帧跳走。 */
+    [Fact]
+    public void Guard_HostCallbackInsideGuardedCall_KeepsManagedExceptions()
+    {
+        var probe = LoadProbe();
+        try
+        {
+            var callback = (nint)(delegate* unmanaged[Cdecl]<int, int>)&CatchNullReference;
+            Assert.True(DshNativeGuard.TryInvokeTool(NativeLibrary.GetExport(probe, "dsh_fault_probe_callback"), callback, 7, null, null, 0, out var value));
+            Assert.Equal(7, value);
+        }
+        finally
+        {
+            NativeLibrary.Free(probe);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static int CatchNullReference(int handle)
+    {
+        using var scope = DshNativeGuard.EnterHostCallback();
+        try
+        {
+            return LengthOf(null) + handle;
+        }
+        catch (NullReferenceException)
+        {
+            return handle;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int LengthOf(string? text) => text!.Length;
+
+    private static nint LoadProbe()
+    {
+        if (!NativeLibrary.TryLoad("dsh_fault_probe", typeof(NativeGuardTests).Assembly, DllImportSearchPath.AssemblyDirectory, out var probe))
+            Assert.Skip("dsh_fault_probe 未构建(缺 C 工具链), 跳过原生遏制回归");
+        return probe;
     }
 }

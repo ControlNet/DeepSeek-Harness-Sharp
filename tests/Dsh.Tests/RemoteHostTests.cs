@@ -33,6 +33,21 @@ public sealed class RemoteHostTests
     }
 
     [Fact]
+    public async Task MethodsBeforeHelloAreRejectedWhenTokenIsRequired()
+    {
+        await using var fixture = await HostFixture.CreateAsync(token: "secret", Ct, connect: false);
+        await using var peer = new JsonRpcPeer(fixture.ClientStream);
+        peer.Start();
+
+        await Assert.ThrowsAsync<JsonRpcException>(() => peer.RequestAsync(HostProtocol.MethodInfo, null, Ct));
+
+        var hello = JsonSerializer.SerializeToElement(
+            new HostHelloRequest("secret", HostProtocol.Version), HostProtocolJsonContext.Default.HostHelloRequest);
+        await peer.RequestAsync(HostProtocol.MethodHello, hello, Ct);
+        Assert.NotNull(await peer.RequestAsync(HostProtocol.MethodInfo, null, Ct));
+    }
+
+    [Fact]
     public async Task VersionMismatchIsRejected()
     {
         await using var fixture = await HostFixture.CreateAsync(token: null, Ct, connect: false);

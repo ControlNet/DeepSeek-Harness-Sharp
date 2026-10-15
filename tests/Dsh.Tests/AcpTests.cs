@@ -136,26 +136,6 @@ public sealed class AcpTests
         }
     }
 
-    private sealed class ChannelTextReader(Channel<string> channel) : TextReader
-    {
-        public override async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                return await channel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (ChannelClosedException)
-            {
-                return null;
-            }
-        }
-
-        public override string? ReadLine()
-        {
-            return channel.Reader.TryRead(out var line) ? line : null;
-        }
-    }
-
     private sealed class ChannelTextWriter(Channel<string> channel) : TextWriter
     {
         public override Encoding Encoding => Encoding.UTF8;

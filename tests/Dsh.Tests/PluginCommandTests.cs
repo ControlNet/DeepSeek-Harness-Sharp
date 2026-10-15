@@ -45,6 +45,33 @@ public sealed class PluginCommandTests
         }
     }
 
+    /** 只有 `--force` 没有包名时给出用法, 而不是让取首个包名的查询抛异常。 */
+    [Fact]
+    public async Task PluginsRemove_WithOnlyForceFlag_ReturnsUsage()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"dsh-plugins-cmd-{Guid.NewGuid():N}");
+        try
+        {
+            using var app = await HarnessComposer.Compose(new HarnessOptions(
+                new HarnessHome(Path.Combine(root, "home")), root, PluginsDirectory: Path.Combine(root, "plugins")));
+            var commands = app.Ctx.Get<CommandsService>(CommandsService.ServiceName)!;
+
+            var removed = await commands.Execute(new FakeAgent(app.Ctx), "/plugins remove --force", TestContext.Current.CancellationToken);
+
+            Assert.Contains("usage:", Assert.IsType<CommandResult.Error>(removed!.Result).Text);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, true);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
     private sealed class FakeAgent : IAgent
     {
         public FakeAgent(Context ctx)

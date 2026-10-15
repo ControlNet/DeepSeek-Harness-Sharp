@@ -6,6 +6,9 @@ public static class AcpMethods
 
     public const string Initialize = "initialize";
     public const string Authenticate = "authenticate";
+
+    /** Auth method advertised by the local socket server: the client proves it runs as the same user by sending the token file's content in _meta.token. */
+    public const string LocalTokenAuthMethod = "dsh-local-token";
     public const string NewSession = "session/new";
     public const string ListSessions = "session/list";
     public const string ResumeSession = "session/resume";

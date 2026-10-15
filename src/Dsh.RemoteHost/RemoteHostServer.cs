@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Dsh.Transport;
@@ -18,6 +20,9 @@ public sealed class RemoteHostServer(
     /** InformationalVersion 里构建追加的提交号分隔符(见 Directory.Build.props 的 Version)。 */
     private const char CommitSeparator = '+';
 
+    /** JSON-RPC server-defined error code: a method other than hello was called before a successful hello. */
+    private const int NotAuthenticated = -32001;
+
     /**
      * 发布版本: 远端部署是否过期的判据与 host.info 上报的版本都用它, 取自 InformationalVersion 去掉构建追加的 "+提交号"。
      * 程序集版本(AssemblyVersion)是插件 ABI 基线, 不随发版走, 见 Directory.Build.props。
@@ -34,6 +39,8 @@ public sealed class RemoteHostServer(
 
     private readonly IRemoteHostBackend? _backend = backend;
 
+    private bool RequiresToken => options.Token is not null;
+
     public async Task ServeAsync(Stream duplex, CancellationToken cancellationToken = default)
     {
         await using var peer = new JsonRpcPeer(duplex);
@@ -49,21 +56,21 @@ public sealed class RemoteHostServer(
         await pumps.CancelAsync().ConfigureAwait(false);
     }
 
-    private JsonElement Hello(JsonRpcMessage message)
+    private HostHelloResponse Hello(JsonRpcMessage message)
     {
         var request = message.Params is { } parameters
             ? JsonSerializer.Deserialize(parameters, HostProtocolJsonContext.Default.HostHelloRequest)
             : null;
         var tokenOk = options.Token is null
-            || string.Equals(request?.Token, options.Token, StringComparison.Ordinal);
+            || (request?.Token is { } presented
+                && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(presented), Encoding.UTF8.GetBytes(options.Token)));
         var versionOk = request?.ProtocolVersion == HostProtocol.Version;
         var mismatch = !tokenOk
             ? "invalid token"
             : (!versionOk
                 ? $"protocol version mismatch: client {request?.ProtocolVersion}, host {HostProtocol.Version}"
                 : null);
-        return Serialize(new HostHelloResponse(mismatch is null, HostProtocol.Version, ReleaseVersion, mismatch),
-            HostProtocolJsonContext.Default.HostHelloResponse);
+        return new HostHelloResponse(mismatch is null, HostProtocol.Version, ReleaseVersion, mismatch);
     }
 
     private static JsonElement Serialize<T>(T value, JsonTypeInfo<T> info)
@@ -82,6 +89,9 @@ public sealed class RemoteHostServer(
     private sealed class Connection(RemoteHostServer server, JsonRpcPeer peer)
     {
         private readonly Dictionary<string, CancellationTokenSource> _eventPumps = new(StringComparer.Ordinal);
+
+        /** With a host token every method but hello waits for a successful hello; without one the connection is trusted from the start. */
+        private volatile bool _authenticated = !server.RequiresToken;
 
         public void StartPumps(CancellationToken cancellationToken)
         {
@@ -131,10 +141,17 @@ public sealed class RemoteHostServer(
         {
             var name = message.Method;
             var backend = server._backend;
+            if (!_authenticated && name != HostProtocol.MethodHello)
+                throw new JsonRpcException(NotAuthenticated, $"call {HostProtocol.MethodHello} with the host token before {name}");
             switch (name)
             {
                 case HostProtocol.MethodHello:
-                    return server.Hello(message);
+                {
+                    var hello = server.Hello(message);
+                    if (hello.Ok)
+                        _authenticated = true;
+                    return Serialize(hello, HostProtocolJsonContext.Default.HostHelloResponse);
+                }
                 case HostProtocol.MethodPing:
                     return Serialize(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), HostProtocolJsonContext.Default.Int64);
                 case HostProtocol.MethodInfo:

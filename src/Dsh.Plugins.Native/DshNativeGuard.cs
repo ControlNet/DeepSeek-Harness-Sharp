@@ -19,6 +19,21 @@ public static unsafe class DshNativeGuard
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     private static extern int dsh_guard_call_void(nint fn, nint context);
 
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void dsh_guard_install();
+
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern nint dsh_guard_suspend();
+
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void dsh_guard_resume(nint saved);
+
+    /**
+     * 装载插件库之前调用:让插件自带运行时的信号处理器叠在 guard 之上,先把插件托管代码里的故障变成异常。
+     * guard 若后装,会抢先接走这些故障并越过插件运行时的托管帧跳回,下一次调用该插件即触发其运行时的致命错误。
+     */
+    public static void Install() => dsh_guard_install();
+
     /** 受护地调用工具函数; 返回 false 表示插件内发生故障(未写 result), 调用方应标记 Faulted 并卸载。 */
     public static bool TryInvokeTool(nint fn, nint context, int handle, byte* input, byte* output, int capacity, out int result)
         => dsh_guard_invoke_tool(fn, context, handle, input, output, capacity, out result) == 0;
@@ -30,4 +45,16 @@ public static unsafe class DshNativeGuard
     /** 受护地调用 void(void*) 函数(如 Deactivate); 返回 false 表示故障。 */
     public static bool TryCallVoid(nint fn, nint context)
         => dsh_guard_call_void(fn, context) == 0;
+
+    /**
+     * 插件在受护调用中回调宿主时进入: 暂停本线程的故障跳回点, 让托管代码里的故障交还运行时变成异常。
+     * 不暂停的话 siglongjmp 会越过托管帧跳回 guard, 破坏运行时状态。
+     */
+    public static HostCallbackScope EnterHostCallback() => new(dsh_guard_suspend());
+
+    /** 宿主回调作用域: 释放时恢复进入前的跳回点。 */
+    public readonly struct HostCallbackScope(nint saved) : IDisposable
+    {
+        public void Dispose() => dsh_guard_resume(saved);
+    }
 }

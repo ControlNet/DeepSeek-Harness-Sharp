@@ -34,7 +34,7 @@ public static class TuiRunner
         if (gpu && backend == TuiGpuBackend.Cpu)
             gpu = false;
         if (gpu && gpuScreenshot is null && gpuCapturePlan is null && ShouldRunAsProxy())
-            return await TuiProxy.RunAsync(app, shell, gpu: true);
+            return await TuiProxy.RunAsync(app, shell, gpu: true, gpuCard: gpuCard);
         if (gpu)
             return RunGpuSync(app, cwd, shell, gpuScreenshot, gpuCard, gpuCapturePlan, backend);
 
@@ -322,15 +322,7 @@ public static class TuiRunner
 
         try
         {
-            // Linux 进程内选卡靠 PRIME 变量, 必须在 GLFW/Mesa 初始化之前设置; Windows 的 WGL 无进程内选卡 API, 不做处理。
-            string? preferredCard = null;
-            if (OperatingSystem.IsLinux())
-            {
-                var selected = GpuCatalog.LoadSelectedAdapter(app.Home);
-                GpuCatalog.ApplyPrimeSelection(selected);
-                // GBM/KMS 不看 PRIME 变量, 得把同一个选卡偏好落到具体卡节点上(不可用时宿主会回退扫描)
-                preferredCard = GpuCatalog.ResolveDrmCardPath(selected);
-            }
+            var preferredCard = GpuCatalog.ApplyProcessSelection(app.Home);
             var atlas = CreateAtlasForTerminal();
             var prewarm = Task.Run(() => atlas.Prewarm());
             using var chat = new ChatWindow(app.Ctx, agent, app.Home, settings: new TuiSettings(app.Home));

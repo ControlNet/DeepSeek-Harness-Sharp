@@ -85,6 +85,37 @@ public sealed class SessionCommandTests
         }
     }
 
+    /** 删除一个仍在 store 里的会话: 先释放会话(持久化正常收尾写句柄)再删记录, 不留错误日志, 也不会把日志写回已删除的位置。 */
+    [Fact]
+    public async Task SessionDelete_OfLiveSession_ReleasesItBeforeDeletingRecord()
+    {
+        var dir = TempTree.CreateDirectory("session-delete-live");
+        try
+        {
+            var home = HarnessHome.Resolve(Path.Combine(dir, "home"));
+            using var app = await ConfigBoot.Compose(new HarnessOptions(home, Cwd: dir, PluginsDirectory: Path.Combine(dir, "plugins")));
+            var registry = app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
+            var sessions = app.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
+            var persistence = app.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)!;
+            var commands = app.Ctx.Get<CommandsService>(CommandsService.ServiceName)!;
+            var current = (await registry.Create(new CreateAgentOptions(Cwd: dir), TestContext.Current.CancellationToken)).Agent;
+            var target = (await registry.Create(new CreateAgentOptions(Cwd: dir), TestContext.Current.CancellationToken)).Agent;
+            await sessions.Flush(target.Session);
+            var errorsBefore = app.Ctx.Root.Logger.Buffer.Count(message => message.Type == LoggerType.Error);
+
+            var result = await commands.Execute(current, $"/session delete {target.Id}", TestContext.Current.CancellationToken);
+
+            Assert.IsType<CommandResult.Success>(result!.Result);
+            Assert.Null(sessions.Get(target.Id));
+            Assert.Null(persistence.Stat(target.Id));
+            Assert.Equal(errorsBefore, app.Ctx.Root.Logger.Buffer.Count(message => message.Type == LoggerType.Error));
+        }
+        finally
+        {
+            TempTree.Delete(dir);
+        }
+    }
+
     private sealed class FakeAgent : IAgent
     {
         public FakeAgent(Context ctx)

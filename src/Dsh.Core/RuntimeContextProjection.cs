@@ -4,13 +4,14 @@ using Dsh.Runtime.Events;
 
 namespace Dsh.Core;
 
-public sealed class RuntimeContextProjection
+public sealed class RuntimeContextProjection : IDisposable
 {
     private const string Source = "@deepseek-ai/dsh-system-prompt";
     private const string Cleared = "Current runtime context: none. Earlier runtime-context snapshots no longer apply.";
 
     private (long Seq, string? Text)? _retained;
     private bool _neverExisted = true;
+    private readonly Func<bool> _unsubscribe;
 
     public RuntimeContextProjection(Context ctx, Session session)
     {
@@ -27,7 +28,7 @@ public sealed class RuntimeContextProjection
                 break;
             }
         }
-        ctx.On<SessionEventNotification>(notification =>
+        _unsubscribe = ctx.On<SessionEventNotification>(notification =>
         {
             if (!ReferenceEquals(notification.Session, session))
                 return;
@@ -45,6 +46,8 @@ public sealed class RuntimeContextProjection
             }
         });
     }
+
+    public void Dispose() => _unsubscribe();
 
     private static bool IsOwned(UserMessage message)
         => message.Source is PluginMessageSource { Plugin: Source };

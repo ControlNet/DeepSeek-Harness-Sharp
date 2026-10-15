@@ -69,24 +69,34 @@ public sealed class HarnessSettings
         if (!File.Exists(path))
             SettingsFilePermissions.Write(path, LoadTemplate());
         var text = File.ReadAllText(path);
-        var deserializer = new StaticDeserializerBuilder(new DshYamlStaticContext())
-            .WithAttemptingUnquotedStringTypeDeserialization()
-            .IgnoreUnmatchedProperties()
-            .Build();
-        var settings = deserializer.Deserialize<HarnessSettings>(text);
+        var settings = Parse(text);
         settings.Plugins = PluginSettingsSection.ParseDocument(text);
         return settings;
     }
 
+    private static HarnessSettings Parse(string text)
+        => new StaticDeserializerBuilder(new DshYamlStaticContext())
+            .WithAttemptingUnquotedStringTypeDeserialization()
+            .IgnoreUnmatchedProperties()
+            .Build()
+            .Deserialize<HarnessSettings>(text);
+
+    /** 只改写与文件现状不同的顶层段:注释、生成块、未知键与 plugins 段保持原文。 */
     public void Save(HarnessHome home)
     {
         var path = Path.Combine(home.Root, "settings.yaml");
         Directory.CreateDirectory(home.Root);
-        var serializer = new StaticSerializerBuilder(new DshYamlStaticContext()).Build();
+        var serializer = new StaticSerializerBuilder(new DshYamlStaticContext())
+            .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
+            .Build();
         var text = serializer.Serialize(this);
-        var existing = File.Exists(path) ? File.ReadAllText(path) : null;
-        var plugins = existing is null ? null : SettingsDocument.ExtractPluginsBlock(existing);
-        WriteAtomic(path, SettingsDocument.ReplacePluginsBlock(text, plugins));
+        if (!File.Exists(path))
+        {
+            WriteAtomic(path, text);
+            return;
+        }
+        var existing = File.ReadAllText(path);
+        WriteAtomic(path, SettingsDocument.MergeTopLevel(existing, serializer.Serialize(Parse(existing)), text));
     }
 
     public void SavePlugins(HarnessHome home)

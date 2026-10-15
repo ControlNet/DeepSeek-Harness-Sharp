@@ -1094,6 +1094,34 @@ public class ChatWindowMenuTests : IDisposable
 
 
 
+    /** 本地斜杠命令抛异常时只在窗格里报错, 不能沿 async void 链让进程退出(`/new` 带相对路径曾直接崩溃)。 */
+    [Fact]
+    public async Task Failing_Local_Command_Reports_Error_Instead_Of_Crashing()
+    {
+        using var chat = await CreateChat();
+
+        chat.RunSlashCommand(chat.InputPane, "/new relative-dir");
+        await SettleAsync(chat, () => WideFrame(chat).Contains("command failed", StringComparison.Ordinal));
+
+        Assert.Contains("command failed", WideFrame(chat), StringComparison.Ordinal);
+    }
+
+    /** `/detach <cmd>` 不带参数时按命令本身起会话, 带参数时其余部分是参数, 空命令行交接当前 TUI 会话。 */
+    [Fact]
+    public void Detach_Target_Splits_Command_And_Arguments()
+    {
+        var (bareFile, bareArguments) = ChatWindow.DetachTarget("htop", "session-1");
+        Assert.Equal("htop", bareFile);
+        Assert.Empty(bareArguments);
+
+        var (file, arguments) = ChatWindow.DetachTarget("sh  -c true", "session-1");
+        Assert.Equal("sh", file);
+        Assert.Equal(["-c", "true"], arguments);
+
+        var (_, handoff) = ChatWindow.DetachTarget("", "session-1");
+        Assert.Equal(["tui", "--session", "session-1"], handoff[^3..]);
+    }
+
     /** fork 出来的会话带上"[0, 被选中那条消息]": resume 后必须能看到 fork 点之前的内容(用户报的缺陷)。 */
     [Fact]
     public async Task Forked_Session_Shows_Previous_Content_After_Resume()

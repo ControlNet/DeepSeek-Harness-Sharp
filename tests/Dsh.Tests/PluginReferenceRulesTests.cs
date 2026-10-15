@@ -40,7 +40,7 @@ public sealed class PluginReferenceRulesTests
     private static readonly Dictionary<string, HashSet<string>> LayerAllowed = new()
     {
         ["Dsh.Runtime"] = [],
-        ["Dsh.Pty"] = [],
+        ["Dsh.Pty"] = ["Dsh.Transport"],
         ["Dsh.Transport"] = [],
         ["Dsh.Plugins.Native"] = [],
         ["Dsh.Plugins.Abstractions"] = ["Dsh.Runtime"],

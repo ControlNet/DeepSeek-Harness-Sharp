@@ -18,7 +18,7 @@ public sealed record PlanModeConfig
     public string Section { get; init; } = DefaultSection;
 }
 
-public sealed class PlanModeController : Service
+public sealed class PlanModeController : Service, IDisposable
 {
     public const string ServiceName = "planMode";
     public const string ExitPlanMode = "exit_plan_mode";
@@ -43,6 +43,7 @@ public sealed class PlanModeController : Service
     }
 
     private readonly ConditionalWeakTable<Session, PendingIntent> _pendingIntents = new();
+    private readonly List<IDisposable> _registrations = [];
     private volatile bool _disposed;
 
     static PlanModeController() => PlanModePayload.RegisterCodec();
@@ -57,32 +58,35 @@ public sealed class PlanModeController : Service
 
         var systemPrompt = ctx.Get<SystemPrompt>(SystemPrompt.ServiceName)
             ?? throw new InvalidOperationException("plan-mode requires the systemPrompt service");
-        systemPrompt.Section(new PromptSection("plan:policy", context =>
+        _registrations.Add(systemPrompt.Section(new PromptSection("plan:policy", context =>
         {
             if (context.Agent is null)
                 return "";
             var session = context.Agent.Session;
             var pending = _pendingIntents.TryGetValue(session, out var intent) ? intent.Active : LoggedActive(session);
             return pending ? section : "";
-        }, Dynamic: true));
+        }, Dynamic: true)));
 
         var projections = ctx.Get<SessionProjectionRegistry>(SessionProjectionRegistry.ServiceName)
             ?? throw new InvalidOperationException("plan-mode requires the sessionProjections service");
-        projections.Register(PlanProjectionDefinition.Instance);
+        _registrations.Add(projections.Register(PlanProjectionDefinition.Instance));
 
         var commands = ctx.Get<CommandsService>(CommandsService.ServiceName, false);
-        commands?.Register(new CommandDefinition
+        if (commands is not null)
         {
-            Name = "plan",
-            Description = "Enter or leave plan mode; a trailing message becomes the task to plan",
-            Input = new CommandInputDescriptor("[off|message]", Images: true),
-            AcceptsPrompt = true,
-            Handler = invocation => Task.FromResult(HandleCommand(invocation)),
-        });
+            _registrations.Add(commands.Register(new CommandDefinition
+            {
+                Name = "plan",
+                Description = "Enter or leave plan mode; a trailing message becomes the task to plan",
+                Input = new CommandInputDescriptor("[off|message]", Images: true),
+                AcceptsPrompt = true,
+                Handler = invocation => Task.FromResult(HandleCommand(invocation)),
+            }));
+        }
 
         var tools = ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)
             ?? throw new InvalidOperationException("plan-mode requires the tools service");
-        tools.Register(new ToolDefinition
+        _registrations.Add(tools.Register(new ToolDefinition
         {
             Name = ExitPlanMode,
             Description = ExitDescription,
@@ -109,7 +113,15 @@ public sealed class PlanModeController : Service
                     """)!.AsObject(),
                 (_, _) => [new TextBlock("Plan approved — plan mode exited; carry out the plan starting with your next step.")]),
             Execute = (args, exec) => ExecuteExitTool(args, exec),
-        });
+        }));
+    }
+
+    /** 撤销本服务注册的命令、工具、提示段与会话投影, 运行期禁用插件后它们不再可见。 */
+    public void Dispose()
+    {
+        for (var index = _registrations.Count - 1; index >= 0; index--)
+            _registrations[index].Dispose();
+        _registrations.Clear();
     }
 
     public static PlanModeController Register(Context ctx, PlanModeConfig? config = null) => new(ctx, config);

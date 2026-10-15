@@ -21,6 +21,8 @@ internal sealed class JsonlSessionHandle(
     StorageHandleState state) : ISessionHandle
 {
     private readonly object _gate = new();
+    private readonly List<SessionEvent> _buffered = [];
+    private Timer? _drainTimer;
     private bool _closed;
     private long _observedLength;
     private SessionHeader _header = header;
@@ -52,6 +54,7 @@ internal sealed class JsonlSessionHandle(
                 _observedLength = Math.Max(_observedLength, primed.Count);
                 return Slice(primed, offset, limit);
             }
+            DrainLocked();
             if (Access == SessionAccess.Write && !state.Materialized) return [];
             var path = storage.ResolveLog(Id);
             if (path is null)
@@ -81,22 +84,72 @@ internal sealed class JsonlSessionHandle(
                     throw new SessionPersistenceCorruptionException(
                         $"append seq mismatch for \"{Id}\": expected {state.Cursor + index} at index {index}, got {events[index].Seq}");
             }
-            if (state.TornTruncateTo is { } truncateTo)
-            {
-                storage.TruncateTornTail(Header, truncateTo);
-                state.TornTruncateTo = null;
-            }
-            if (state.RecoveredTail is { } recovered)
-            {
-                if (recovered.Count > 0)
-                    storage.PersistBatch(Header, recovered, state.Materialized, state.InheritedEventCount);
-                state.RecoveredTail = null;
-            }
-            storage.PersistBatch(Header, events, state.Materialized, state.InheritedEventCount);
-            state.Materialized = true;
+            var wasEmpty = _buffered.Count == 0;
+            _buffered.AddRange(events);
             state.Cursor += events.Count;
             state.Primed = null;
             _observedLength = state.Cursor;
+            if (_buffered.Count >= storage.WriteBatch.MaxEvents || events.Any(sessionEvent => sessionEvent.Data is not AssistantChunkPayload))
+                DrainLocked();
+            else if (wasEmpty)
+                ScheduleDrain();
+        }
+    }
+
+    /** 先把缓冲写盘再在句柄锁内执行 action, 供需要独占日志文件的操作(重写头部)使用。 */
+    internal void WhileDrained(Action action)
+    {
+        lock (_gate)
+        {
+            if (!_closed)
+                DrainLocked();
+            action();
+        }
+    }
+
+    /** 缓冲的事件写成一个批次; 写盘失败时保留缓冲, 下次落盘重试整批。 */
+    private void DrainLocked()
+    {
+        if (_buffered.Count == 0)
+            return;
+        if (state.TornTruncateTo is { } truncateTo)
+        {
+            storage.TruncateTornTail(Header, truncateTo);
+            state.TornTruncateTo = null;
+        }
+        if (state.RecoveredTail is { } recovered)
+        {
+            if (recovered.Count > 0)
+                storage.PersistBatch(Header, recovered, state.Materialized, state.InheritedEventCount);
+            state.Materialized = true;
+            state.RecoveredTail = null;
+        }
+        storage.PersistBatch(Header, _buffered, state.Materialized, state.InheritedEventCount);
+        state.Materialized = true;
+        _buffered.Clear();
+    }
+
+    private void ScheduleDrain()
+    {
+        _drainTimer ??= new Timer(_ => DrainFromTimer());
+        _drainTimer.Change(storage.WriteBatch.Interval, Timeout.InfiniteTimeSpan);
+    }
+
+    /** 最早一条缓冲的 chunk 等满 Interval 后落盘。 */
+    private void DrainFromTimer()
+    {
+        lock (_gate)
+        {
+            if (_closed)
+                return;
+            try
+            {
+                DrainLocked();
+            }
+            catch (Exception)
+            {
+                // 定时器线程上抛出会终止进程; 缓冲仍在, 下一次同步落盘会重试并抛给调用方。
+            }
         }
     }
 
@@ -107,6 +160,7 @@ internal sealed class JsonlSessionHandle(
             AssertOpen("truncate");
             if (Access != SessionAccess.Write) throw new SessionReadOnlyException(Id, "truncate");
             if (eventCount < 0) throw new ArgumentOutOfRangeException(nameof(eventCount), "truncate target must be non-negative");
+            DrainLocked();
             if (state.Materialized && eventCount >= state.Cursor)
                 return;
             if (state.Materialized)
@@ -126,6 +180,7 @@ internal sealed class JsonlSessionHandle(
         {
             AssertOpen("flush");
             if (Access != SessionAccess.Write) throw new SessionReadOnlyException(Id, "flush");
+            DrainLocked();
             if (state.Materialized) return;
             storage.PersistHeader(Header, state.InheritedEventCount);
             state.Materialized = true;
@@ -138,7 +193,15 @@ internal sealed class JsonlSessionHandle(
         {
             if (_closed) return;
             _closed = true;
-            storage.ReleaseHandle(this, state.Materialized);
+            _drainTimer?.Dispose();
+            try
+            {
+                DrainLocked();
+            }
+            finally
+            {
+                storage.ReleaseHandle(this, state.Materialized);
+            }
         }
     }
 

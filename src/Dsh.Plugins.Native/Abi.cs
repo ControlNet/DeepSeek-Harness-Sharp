@@ -3,7 +3,10 @@ using System.Text;
 
 namespace Dsh.Plugins.Native;
 
-/** 原生插件 ABI v1:宿主与插件用 C 调用约定交换函数表;字符串统一为 UTF-8,无终止符,长度由协议决定。 */
+/**
+ * 原生插件 ABI v1:宿主与插件用 C 调用约定交换函数表;字符串统一为 UTF-8。
+ * 以指针传入的字符串(工具输入、日志、工具登记)以 NUL 结尾;两段式缓冲输出不带终止符,长度由返回值给出。
+ */
 public static class DshNativePluginAbi
 {
     public const int Version = 1;
@@ -15,6 +18,8 @@ public static class DshNativePluginAbi
     public const string SettingsSchemaExport = "dsh_plugin_settings_schema";
     /** 配置回传缓冲上限:超出即视为插件不认这份配置,宿主只记 WARN(避免无界重试)。 */
     public const int ConfigCapacityHint = 64 * 1024;
+    /** 宿主首次调用工具时提供的输出缓冲:多数结果一次放下,超出时按插件报的长度再取一次。 */
+    public const int InvokeCapacityHint = 64 * 1024;
 
     public const int Ok = 0;
     public const int Error = -1;
@@ -107,10 +112,12 @@ public sealed unsafe class NativePluginContext(DshHostApi* host, void* context) 
     private readonly Dictionary<int, Func<string, string?>> _handlers = [];
     private int _nextHandle;
 
+    [ThreadStatic]
+    private static RetainedResult? _retained;
+
     public void Log(int level, string message)
     {
-        var bytes = Encoding.UTF8.GetBytes(message);
-        fixed (byte* pointer = bytes)
+        fixed (byte* pointer = NativeUtf8.Terminated(message))
             host->Log(context, level, pointer);
     }
 
@@ -119,9 +126,9 @@ public sealed unsafe class NativePluginContext(DshHostApi* host, void* context) 
         var handle = Interlocked.Increment(ref _nextHandle);
         _handlers[handle] = invoke;
         int result;
-        fixed (byte* namePointer = Encoding.UTF8.GetBytes(name))
-        fixed (byte* descriptionPointer = Encoding.UTF8.GetBytes(description))
-        fixed (byte* parametersPointer = Encoding.UTF8.GetBytes(parametersJson))
+        fixed (byte* namePointer = NativeUtf8.Terminated(name))
+        fixed (byte* descriptionPointer = NativeUtf8.Terminated(description))
+        fixed (byte* parametersPointer = NativeUtf8.Terminated(parametersJson))
             result = host->RegisterTool(context, namePointer, descriptionPointer, parametersPointer, handle);
         if (result != DshNativePluginAbi.Ok)
         {
@@ -143,6 +150,29 @@ public sealed unsafe class NativePluginContext(DshHostApi* host, void* context) 
 
     public string? Dispatch(int handle, string inputJson)
         => _handlers.TryGetValue(handle, out var invoke) ? invoke(inputJson) : null;
+
+    /**
+     * 两段式工具调用:结果放不下时只返回所需字节数,并在本线程保留结果。
+     * 宿主随即带同样的 handle/input 与够大的缓冲再调一次时直接交付保留结果,工具不重复执行。
+     */
+    public int InvokeTool(int handle, byte* input, byte* output, int capacity)
+    {
+        var inputJson = NativeUtf8.Read(input);
+        var retained = _retained;
+        _retained = null;
+        var bytes = retained is { } kept && kept.Handle == handle && kept.Input == inputJson
+            ? kept.Bytes
+            : Encoding.UTF8.GetBytes(Dispatch(handle, inputJson) ?? "");
+        if (output is not null && capacity >= bytes.Length)
+        {
+            bytes.CopyTo(new Span<byte>(output, capacity));
+            return bytes.Length;
+        }
+        _retained = new RetainedResult(handle, inputJson, bytes);
+        return bytes.Length;
+    }
+
+    private readonly record struct RetainedResult(int Handle, string Input, byte[] Bytes);
 
     /** 该插件在 settings.yaml 里的参数(JSON 文本);宿主不支持或没有配置时返回空串。 */
     public string ConfigJson()
@@ -172,6 +202,14 @@ public static unsafe class NativeUtf8
         while (pointer[length] != 0)
             length++;
         return Encoding.UTF8.GetString(pointer, length);
+    }
+
+    /** 以指针传给对端的字符串:UTF-8 并补 NUL 终止符,对端按终止符读取。 */
+    public static byte[] Terminated(string value)
+    {
+        var bytes = new byte[Encoding.UTF8.GetByteCount(value) + 1];
+        Encoding.UTF8.GetBytes(value, bytes);
+        return bytes;
     }
 
     /** 常驻字符串(如包名):分配一次并固定,供导出函数返回稳定指针。 */

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
@@ -127,18 +128,35 @@ public sealed class HarnessSdkServer
 
     public async Task<object?> ServiceCallAsync(ServiceCallParams parameters)
     {
-        var service = _ctx.Get(parameters.Service, strict: false)
-            ?? throw new InvalidOperationException($"no service named \"{parameters.Service}\"");
-        var method = service.GetType()
-            .GetMethods()
-            .Where(candidate => string.Equals(candidate.Name, parameters.Method, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(candidate => candidate.GetParameters().Length)
-            .FirstOrDefault()
-            ?? throw new InvalidOperationException($"service \"{parameters.Service}\" has no method \"{parameters.Method}\"");
+        var service = _ctx.Get(parameters.Service)
+            ?? throw new InvalidOperationException($"no active service named \"{parameters.Service}\"");
+        var method = ResolveRemoteCallable(service.GetType(), parameters);
         var arguments = ConvertArguments(method.GetParameters(), parameters.Args);
         var result = method.Invoke(service, arguments);
-        result = await AwaitIfNeeded(result);
+        result = await AwaitIfNeeded(result, method.ReturnType);
         return result is null ? null : DshJson.ToElementRuntime(result);
+    }
+
+    /** Only methods marked [RemoteCallable], directly or through a marked interface, are reachable from the SDK bridge. */
+    private static MethodInfo ResolveRemoteCallable(Type serviceType, ServiceCallParams parameters)
+    {
+        var interfaceMethods = serviceType.GetInterfaces()
+            .Where(contract => contract.IsDefined(typeof(RemoteCallableAttribute), inherit: false))
+            .SelectMany(contract => serviceType.GetInterfaceMap(contract).TargetMethods);
+        var candidates = serviceType.GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Where(candidate => candidate.IsDefined(typeof(RemoteCallableAttribute), inherit: false))
+            .Concat(interfaceMethods)
+            .Where(candidate => string.Equals(candidate.Name, parameters.Method, StringComparison.OrdinalIgnoreCase))
+            .Distinct()
+            .ToList();
+        return candidates switch
+        {
+            [var single] => single,
+            [] => throw new InvalidOperationException(
+                $"service \"{parameters.Service}\" has no remote-callable method \"{parameters.Method}\""),
+            _ => throw new InvalidOperationException(
+                $"service \"{parameters.Service}\" has several remote-callable methods named \"{parameters.Method}\""),
+        };
     }
 
     private static object?[] ConvertArguments(System.Reflection.ParameterInfo[] parameters, JsonElement[]? args)
@@ -162,31 +180,27 @@ public sealed class HarnessSdkServer
         return values;
     }
 
-    private static async Task<object?> AwaitIfNeeded(object? result)
+    private static async Task<object?> AwaitIfNeeded(object? result, Type declaredType)
     {
-        switch (result)
+        var pending = result switch
         {
-            case null:
-                return null;
-            case Task task:
-                {
-                    await task;
-                    var resultType = task.GetType();
-                    return resultType.IsGenericType ? resultType.GetProperty("Result")?.GetValue(task) : null;
-                }
-            default:
-                {
-                    var type = result.GetType();
-                    if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                    {
-                        return await (Task<object?>)type.GetMethod("AsTask")!.Invoke(result, null)!;
-                    }
-                    if (result is ValueTask valueTask)
-                        await valueTask;
-                    return result is ValueTask ? null : result;
-                }
-        }
+            Task task => task,
+            ValueTask valueTask => valueTask.AsTask(),
+            not null when IsConstructedFrom(declaredType, typeof(ValueTask<>))
+                => (Task)declaredType.GetMethod(nameof(ValueTask.AsTask))!.Invoke(result, null)!,
+            _ => null,
+        };
+        if (pending is null)
+            return result;
+        await pending;
+        // The declared type decides whether there is a result: a plain async Task runs as Task<VoidTaskResult> at runtime.
+        return IsConstructedFrom(declaredType, typeof(Task<>)) || IsConstructedFrom(declaredType, typeof(ValueTask<>))
+            ? pending.GetType().GetProperty(nameof(Task<object>.Result))!.GetValue(pending)
+            : null;
     }
+
+    private static bool IsConstructedFrom(Type type, Type genericDefinition)
+        => type.IsGenericType && type.GetGenericTypeDefinition() == genericDefinition;
 
     private static T Deserialize<T>(JsonElement? element) where T : class
         => element is { } value

@@ -206,11 +206,17 @@ public sealed partial class SubagentRuntime : Service, ISubagentService
             _liveRuns.Remove(id);
     }
 
-    // 驱动器在子 agent 构造后、首个 prompt 装配前调用；scope 一旦属于子会话即永久成立（该会话始终是 subagent）。
+    // 驱动器在子 agent 构造后、首个 prompt 装配前调用；子 agent 存续期间 scope 一直属于子会话，run 处置时移除。
     internal void NoteChildScope(ScopeKey scope)
     {
         lock (_sync)
             _childScopes.Add(scope);
+    }
+
+    private void ForgetChildScope(ScopeKey scope)
+    {
+        lock (_sync)
+            _childScopes.Remove(scope);
     }
 
     private bool IsChildScope(ScopeKey scope)
@@ -236,7 +242,10 @@ public sealed partial class SubagentRuntime : Service, ISubagentService
             finally
             {
                 if (inner.LocalAgent is { } agent)
+                {
                     owner.Untrack(agent.Id);
+                    owner.ForgetChildScope(agent.ScopeKey);
+                }
             }
         }
     }

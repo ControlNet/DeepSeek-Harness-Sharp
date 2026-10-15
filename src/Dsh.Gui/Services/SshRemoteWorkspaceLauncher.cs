@@ -47,9 +47,9 @@ public static class SshRemoteWorkspaceLauncher
         if (workspace.Auth == SshAuth.Password && string.IsNullOrEmpty(workspace.Password))
             throw new InvalidOperationException("认证方式为“password”但密码为空: 请在设置页填写密码（注意区分大小写、是否有尾部空格）。");
 
-        var startInfo = BuildSshStartInfo(workspace, out var askPass);
+        var (startInfo, askPass) = BuildSshStartInfo(workspace);
         startInfo.ArgumentList.Add(HarnessCommand(workspace, hostCommandPath));
-        try
+        using (askPass)
         {
             var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start ssh");
             // 必须持续排空 stderr: 远端宿主/ssh 往 stderr 写日志, 管道填满后 ssh 会阻塞, 表现为握手卡死。
@@ -66,11 +66,6 @@ public static class SshRemoteWorkspaceLauncher
                 Kill(process);
                 throw new IOException($"ssh {workspace.User}@{workspace.Host} 失败（认证方式 {workspace.Auth}）: {Describe(stderr)}", error);
             }
-        }
-        finally
-        {
-            if (askPass is not null)
-                TryDelete(askPass);
         }
     }
 
@@ -128,35 +123,23 @@ public static class SshRemoteWorkspaceLauncher
     /** 在远端执行一条命令, 原样返回退出码与 stdout/stderr(不抛异常), 供需要区分“ssh 失败”与“命令失败”的调用方使用。 */
     public static async Task<RemoteCommandResult> RunRemoteCaptureAsync(SshWorkspace workspace, string command, CancellationToken cancellationToken)
     {
-        var startInfo = BuildSshStartInfo(workspace, out var askPass);
+        var (startInfo, askPass) = BuildSshStartInfo(workspace);
         startInfo.ArgumentList.Add(command);
-        try
-        {
+        using (askPass)
             return await CaptureAsync(startInfo, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (askPass is not null)
-                TryDelete(askPass);
-        }
     }
 
     /** 用 scp 上传本地文件到远端(认证与 ssh 一致); remotePath 支持 `~`。 */
     public static async Task UploadAsync(SshWorkspace workspace, string localPath, string remotePath, CancellationToken cancellationToken)
     {
-        var startInfo = BuildScpStartInfo(workspace, out var askPass);
+        var (startInfo, askPass) = BuildScpStartInfo(workspace);
         startInfo.ArgumentList.Add(localPath);
         startInfo.ArgumentList.Add($"{workspace.User}@{workspace.Host}:{remotePath}");
-        try
+        using (askPass)
         {
             var result = await CaptureAsync(startInfo, cancellationToken).ConfigureAwait(false);
             if (result.ExitCode != 0)
                 throw new IOException($"{workspace.User}@{workspace.Host} scp 上传失败: {result.FailureDetail}");
-        }
-        finally
-        {
-            if (askPass is not null)
-                TryDelete(askPass);
         }
     }
 
@@ -189,7 +172,7 @@ public static class SshRemoteWorkspaceLauncher
     private static string NeutralQuote(string value)
         => value.Any(char.IsWhiteSpace) ? $"\"{value}\"" : value;
 
-    private static ProcessStartInfo BuildSshStartInfo(SshWorkspace workspace, out string? askPass)
+    private static (ProcessStartInfo StartInfo, SshAskPass? AskPass) BuildSshStartInfo(SshWorkspace workspace)
     {
         var startInfo = new ProcessStartInfo("ssh")
         {
@@ -204,12 +187,12 @@ public static class SshRemoteWorkspaceLauncher
         arguments.Add("-p");
         arguments.Add(workspace.Port.ToString());
         AddCommonOptions(arguments, workspace);
-        askPass = ApplyAskPass(startInfo, workspace);
+        var askPass = ApplyAskPass(startInfo, workspace);
         arguments.Add($"{workspace.User}@{workspace.Host}");
-        return startInfo;
+        return (startInfo, askPass);
     }
 
-    private static ProcessStartInfo BuildScpStartInfo(SshWorkspace workspace, out string? askPass)
+    private static (ProcessStartInfo StartInfo, SshAskPass? AskPass) BuildScpStartInfo(SshWorkspace workspace)
     {
         var startInfo = new ProcessStartInfo("scp")
         {
@@ -224,8 +207,7 @@ public static class SshRemoteWorkspaceLauncher
         arguments.Add("-P");
         arguments.Add(workspace.Port.ToString());
         AddCommonOptions(arguments, workspace);
-        askPass = ApplyAskPass(startInfo, workspace);
-        return startInfo;
+        return (startInfo, ApplyAskPass(startInfo, workspace));
     }
 
     private static void AddCommonOptions(Collection<string> arguments, SshWorkspace workspace)
@@ -255,14 +237,12 @@ public static class SshRemoteWorkspaceLauncher
         }
     }
 
-    private static string? ApplyAskPass(ProcessStartInfo startInfo, SshWorkspace workspace)
+    private static SshAskPass? ApplyAskPass(ProcessStartInfo startInfo, SshWorkspace workspace)
     {
         if (workspace.Auth != SshAuth.Password || workspace.Password is not { Length: > 0 } password)
             return null;
-        var askPass = WriteAskPass(password);
-        startInfo.Environment["SSH_ASKPASS"] = askPass;
-        startInfo.Environment["SSH_ASKPASS_REQUIRE"] = "force";
-        startInfo.Environment["DISPLAY"] = "dsh:0";
+        var askPass = SshAskPass.Create(password);
+        askPass.Apply(startInfo);
         return askPass;
     }
 
@@ -280,33 +260,6 @@ public static class SshRemoteWorkspaceLauncher
         process.Dispose();
     }
 
-    private static string WriteAskPass(string password)
-    {
-        // SSH_ASKPASS 必须是宿主平台可执行文件: Windows 用 .cmd, Unix 用 .sh(否则 ssh 无法执行, 密码认证失效)。
-        if (OperatingSystem.IsWindows())
-        {
-            var command = Path.Combine(Path.GetTempPath(), $"dsh-askpass-{Guid.NewGuid():N}.cmd");
-            File.WriteAllText(command, $"@echo off\r\necho {password}\r\n", Encoding.ASCII);
-            return command;
-        }
-
-        var path = Path.Combine(Path.GetTempPath(), $"dsh-askpass-{Guid.NewGuid():N}.sh");
-        File.WriteAllText(path, $"#!/bin/sh\nprintf '%s\\n' {Quote(password)}\n", new UTF8Encoding(false));
-        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        return path;
-    }
-
-    /** POSIX 单引号转义, 避免密码里的引号/空白破坏脚本。 */
+    /** POSIX 单引号转义, 避免远端目录里的引号/空白破坏远端命令。 */
     private static string Quote(string value) => "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-        }
-    }
 }

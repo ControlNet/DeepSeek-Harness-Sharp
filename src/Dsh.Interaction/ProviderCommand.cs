@@ -158,19 +158,8 @@ public static class ProviderCommand
         if (!settings.Providers.ContainsKey(name))
             return Task.FromResult<CommandResult>(new CommandResult.Error($"provider \"{name}\" is not configured"));
         ctx.Get<LlmRuntime>(LlmRuntime.ServiceName)?.UnregisterAdapter(name);
-        var updated = new HarnessSettings
-        {
-            GlobalDefaultModel = settings.GlobalDefaultModel,
-            CompactionModel = settings.CompactionModel,
-            Subagent = settings.Subagent,
-            Providers = settings.Providers.Where(entry => entry.Key != name).ToDictionary(entry => entry.Key, entry => entry.Value),
-            Skills = settings.Skills,
-            Rules = settings.Rules,
-            McpServers = settings.McpServers,
-            Compaction = settings.Compaction,
-            Safety = settings.Safety,
-        };
-        updated.Save(home);
+        settings.Providers.Remove(name);
+        settings.Save(home);
         return Task.FromResult<CommandResult>(new CommandResult.Success($"removed provider \"{name}\""));
     }
 
@@ -202,22 +191,9 @@ public static class ProviderCommand
             },
             Models = models,
         };
-        var updated = new HarnessSettings
-        {
-            GlobalDefaultModel = settings.GlobalDefaultModel ?? (effective.Count > 0 ? $"{name}/{effective[0]}" : null),
-            CompactionModel = settings.CompactionModel,
-            Subagent = settings.Subagent,
-            Providers = new Dictionary<string, ProviderSettings>(settings.Providers)
-            {
-                [name] = provider,
-            },
-            Skills = settings.Skills,
-            Rules = settings.Rules,
-            McpServers = settings.McpServers,
-            Compaction = settings.Compaction,
-            Safety = settings.Safety,
-        };
-        updated.Save(home);
+        settings.GlobalDefaultModel ??= effective.Count > 0 ? $"{name}/{effective[0]}" : null;
+        settings.Providers[name] = provider;
+        settings.Save(home);
         var options = new HarnessOptions(home, Environment.CurrentDirectory);
         var result = ProviderRegistrar.RegisterProvider(ctx, options, name, provider, isDefault: true);
         if (result.Handle is null)
