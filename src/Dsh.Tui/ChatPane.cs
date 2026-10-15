@@ -16,7 +16,6 @@ namespace Dsh.Tui;
 public sealed class ChatPane : ITuiPane
 {
     private const string InputPrompt = "> ";
-    private const string ReadyStatus = "ready - Enter to send, ^ history, Esc cancels a running turn, Ctrl+C×2 quits";
 
     private readonly ChatWindow _window;
     private readonly Dictionary<ToolCallId, (int Start, string Arguments)> _pendingSubagentCalls = [];
@@ -59,6 +58,7 @@ public sealed class ChatPane : ITuiPane
     public ChatPane(ChatWindow window, int id, AgentLoopAgent agent)
     {
         _window = window;
+        StatusText = ReadyStatus;
         Id = id;
         Agent = agent;
         SubscribeSessionRenamed();
@@ -150,7 +150,7 @@ public sealed class ChatPane : ITuiPane
 
     public bool Busy { get; private set; }
 
-    public string StatusText { get; set; } = ReadyStatus;
+    public string StatusText { get; set; }
 
     public string? DeleteConfirmSessionId { get; set; }
 
@@ -795,6 +795,7 @@ public sealed class ChatPane : ITuiPane
     private List<RightPanelLine> RightPanelLines()
     {
         var lines = new List<RightPanelLine>();
+        var keys = _window.KeyBindings;
         var (provider, model) = CurrentModel(Agent);
         AddPanelSection(lines, "上下文",
         [
@@ -811,11 +812,11 @@ public sealed class ChatPane : ITuiPane
             "Enter 发送 - / 命令 - @ 引用",
             "Tab 下一个参数/折叠 - Esc 取消",
             "^/v 历史 - PgUp/PgDn 滚动",
-            "Ctrl+C×2 退出",
-            "Ctrl+X N 新会话 - S 会话",
-            "Ctrl+X D detach - K 删会话",
-            "Ctrl+X W 总览 - + 分屏 - - 关闭",
-            "Ctrl+X 方向键/O 切窗格",
+            $"{keys.Keys(TuiAction.Interrupt)}×2 退出",
+            keys.Line(new("新会话", TuiAction.NewSession), new("会话", TuiAction.SessionMenu)),
+            keys.Line(new("detach", TuiAction.Detach), new("删会话", TuiAction.DeleteSessionMenu)),
+            keys.Line(new("总览", TuiAction.Overview), new("分屏", TuiAction.SplitPane), new("关闭", TuiAction.ClosePane)),
+            keys.Line(new KeyHint("切窗格", ChatWindow.FocusActions)),
         ]);
         return lines;
     }
@@ -871,7 +872,7 @@ public sealed class ChatPane : ITuiPane
         var infoY = inputRow + 1;
         if (infoY >= grid.Height)
             return;
-        var hint = "Enter 发送 - / 命令 - @ 引用 - Tab 下一个参数 - Ctrl+X 会话";
+        var hint = $"Enter 发送 - / 命令 - @ 引用 - Tab 下一个参数 - {_window.KeyBindings.Leader(TuiAction.SessionMenu)} 会话";
         CellText.Draw(grid, rect.X, infoY, hint, AnsiColor.Default, AnsiColor.Default, CellStyle.Dim);
         var (currentProvider, currentModel) = CurrentModel(Agent);
         var preset = CurrentPreset(Agent);
@@ -1434,6 +1435,9 @@ public sealed class ChatPane : ITuiPane
 
         SetStatusReady();
     }
+
+    private string ReadyStatus
+        => $"ready - Enter to send, ^ history, Esc cancels a running turn, {_window.KeyBindings.Keys(TuiAction.Interrupt)}×2 quits";
 
     public void SetStatusReady()
         => StatusText = Busy

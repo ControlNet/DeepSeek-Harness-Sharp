@@ -1,5 +1,6 @@
 using Dsh.Boot;
 using Dsh.Pty;
+using Dsh.Tui;
 using Dsh.Tui.Services;
 
 namespace Dsh.Tests;
@@ -53,6 +54,27 @@ public sealed class TuiSettingsTests : IDisposable
         var reloaded = HarnessSettings.Load(home);
         Assert.Equal("light", reloaded.Plugins["@deepseek-ai/dsh-gui"].Parameters["theme"]);
         Assert.False(reloaded.Plugins["@deepseek-ai/dsh-gui"].Enabled);
+    }
+
+    /** 拖动侧栏会整段回写插件参数: keys 映射(含 `,`/`-`/`+` 这类标点键)必须原样保留。 */
+    [Fact]
+    public void Write_Keeps_Key_Bindings_Intact()
+    {
+        Directory.CreateDirectory(_homeDir);
+        File.WriteAllText(
+            Path.Combine(_homeDir, "settings.yaml"),
+            $"plugins:\n  \"{TuiSettings.Package}\":\n    keys:\n      prevSession: \"Ctrl+X ,\"\n      closePane: \"Ctrl+X -\"\n      splitPane: \"Ctrl+X +\"\n");
+        var home = HarnessHome.Resolve(_homeDir);
+
+        new TuiSettings(home).SidebarWidth = 30;
+
+        var reloaded = new TuiSettings(home);
+        var (table, warnings) = KeyBindingTable.Load(reloaded.Keys);
+        Assert.Equal(30, reloaded.SidebarWidth);
+        Assert.Empty(warnings);
+        Assert.Equal("Ctrl+X ,", KeyBindingTable.Format(table.Sequence(TuiAction.PrevSession)));
+        Assert.Equal("Ctrl+X -", KeyBindingTable.Format(table.Sequence(TuiAction.ClosePane)));
+        Assert.Equal("Ctrl+X +", KeyBindingTable.Format(table.Sequence(TuiAction.SplitPane)));
     }
 
     [Fact]

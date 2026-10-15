@@ -42,7 +42,7 @@ internal sealed class ShellPane : ITuiPane
         _screen = new VtScreen(Math.Max(1, width), Math.Max(1, height));
         Id = id;
         StatusText = layerPtyId is { Length: > 0 }
-            ? $"[pty {layerPtyId}] 层 - Ctrl+X W 总览 - Ctrl+X ,/. 切该 pty 的会话 - Ctrl+X D 离开 DSH"
+            ? $"[pty {layerPtyId}] 层 - {window.KeyBindings.Keys(TuiAction.Overview)} 总览 - {window.KeyBindings.Keys(TuiAction.PrevSession, TuiAction.NextSession)} 切该 pty 的会话 - {window.KeyBindings.Keys(TuiAction.Detach)} 离开 DSH"
             : _backing?.ProcessId is { } pid
                 ? $"终端已启动: {_backing.Command} (pid {pid})"
                 : $"终端已连接: {_backing?.Command ?? "(无 shell)"}";
