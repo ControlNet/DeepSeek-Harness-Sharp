@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Core;
@@ -10,6 +12,9 @@ namespace Dsh.Tests;
 
 public sealed class AttachmentTests : IDisposable
 {
+    private const string VisionModel = "vision-model";
+    private const string TextOnlyModel = "text-model";
+
     private readonly Context _ctx = new();
     private readonly string _home = Path.Combine(Path.GetTempPath(), $"dsh-attachments-{Guid.NewGuid():N}");
     private readonly FileAttachmentStore _store;
@@ -114,6 +119,121 @@ public sealed class AttachmentTests : IDisposable
         Assert.Equal("text", content[0]!["type"]!.GetValue<string>());
         Assert.Equal("image_url", content[1]!["type"]!.GetValue<string>());
         Assert.StartsWith("data:image/png;base64,", content[1]!["image_url"]!["url"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void DeepSeek_RelaysToolResultImagesAfterTheToolMessage()
+    {
+        var bytes = PngBytes();
+        var reference = _store.Put(bytes, "image/png", 1, 1);
+        var options = ToolResultImageOptions("deepseek-v4-flash-vision-exp", reference, bytes);
+
+        var wire = WireSerialize.SerializeMessages(options)
+            .Select(message => JsonNode.Parse(JsonSerializer.Serialize(message, DeepSeekWireJsonContext.Default.WireMessage))!)
+            .ToList();
+
+        Assert.Equal(["user", "assistant", "tool", "tool", "user"], wire.Select(message => message["role"]!.GetValue<string>()));
+        Assert.Equal("envelope", wire[2]["content"]!.GetValue<string>());
+        var relayed = wire[4]["content"]!.AsArray();
+        Assert.Contains("call_1", relayed[0]!["text"]!.GetValue<string>());
+        Assert.Equal(AttachmentResolution.DataUrl(options, reference), relayed[1]!["image_url"]!["url"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task DeepSeek_VisionModelSendsToolResultImages()
+    {
+        var bytes = PngBytes();
+        var reference = _store.Put(bytes, "image/png", 1, 1);
+        var handler = new DeepSeekCapture();
+
+        await foreach (var _ in DeepSeekAdapterFor(handler).Stream(ToolResultImageOptions(VisionModel, reference, bytes), CancellationToken.None))
+        {
+        }
+
+        Assert.Contains("image_url", handler.Body);
+    }
+
+    [Fact]
+    public async Task DeepSeek_TextOnlyModelRejectsImagesNestedInToolResults()
+    {
+        var bytes = PngBytes();
+        var reference = _store.Put(bytes, "image/png", 1, 1);
+        var handler = new DeepSeekCapture();
+
+        var error = await Assert.ThrowsAsync<LlmException>(async () =>
+        {
+            await foreach (var _ in DeepSeekAdapterFor(handler).Stream(ToolResultImageOptions(TextOnlyModel, reference, bytes), CancellationToken.None))
+            {
+            }
+        });
+
+        Assert.Equal("UNSUPPORTED_CONTENT", error.Failure.Code);
+        Assert.Null(handler.Body);
+    }
+
+    private static GenerateOptions ToolResultImageOptions(string model, ImageAttachmentRef reference, byte[] bytes)
+    {
+        var callId = ToolCallId.Create("call_1");
+        var parallelId = ToolCallId.Create("call_2");
+        return new GenerateOptions
+        {
+            Provider = "deepseek-official",
+            Model = model,
+            Messages =
+            [
+                MessageFactory.CreateUserText("look"),
+                MessageFactory.CreateAssistantMessage(
+                    [new ToolCallBlock(callId, "read_image", """{"file_path":"a.png"}"""), new ToolCallBlock(parallelId, "bash", """{"command":"ls"}""")],
+                    "deepseek-official",
+                    model),
+                MessageFactory.CreateToolResultMessage(callId, [new TextBlock("envelope"), new ImageBlock(reference)], false),
+                MessageFactory.CreateToolResultMessage(parallelId, [new TextBlock("a.png")], false),
+            ],
+            Attachments = new Dictionary<string, byte[]> { [reference.AttachmentId] = bytes },
+        };
+    }
+
+    private static DeepSeekAdapter DeepSeekAdapterFor(HttpMessageHandler handler)
+    {
+        var connection = new DeepSeekConnectionOptions(
+            "https://example.invalid",
+            "TEST_KEY",
+            new RequestDefaults(),
+            DeepSeekConnectionOptions.DefaultMaxTokens,
+            DeepSeekConnectionOptions.DefaultContextWindowValue,
+            [new DeepSeekCatalogModel(VisionModel, InputModalities: ["text", "image"]), new DeepSeekCatalogModel(TextOnlyModel)],
+            DeepSeekConnectionOptions.DefaultStreamIdleTimeoutMs,
+            ResolvedRetryPolicy.Resolve(null, "test"));
+        return new DeepSeekAdapter("deepseek-official", new DeepSeekAdapterOptions
+        {
+            Options = () => connection,
+            ResolveApiKey = (_, _) => Task.FromResult("sk-test"),
+            ResolveUserId = () => "test-user",
+            HttpClient = new HttpClient(handler),
+        });
+    }
+
+    private sealed class DeepSeekCapture : HttpMessageHandler
+    {
+        private const string Sse = """
+            data: {"choices":[{"delta":{"content":"ok"}}]}
+
+            data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+            """;
+
+        public string? Body { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent($"{Sse}\n", Encoding.UTF8, "text/event-stream"),
+            };
+        }
     }
 
     [Fact]

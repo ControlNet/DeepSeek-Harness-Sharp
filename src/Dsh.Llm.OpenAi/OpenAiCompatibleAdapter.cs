@@ -15,7 +15,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
 
     private readonly string _providerId;
     private readonly IReadOnlyList<ProviderModelSpec> _models;
-    private readonly IModelReasoningSource _modelsDev;
+    private readonly ModelsDevReasoningSource _modelsDev;
     private readonly IModelReasoningSource _metadata;
     private readonly OpenAIClient _openAi;
     private readonly bool _useResponses;
@@ -64,10 +64,10 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
 
     public override IReadOnlyList<LlmModelInfo> ListModels()
         => _models
-            .Select(model => new LlmModelInfo(_providerId, model.Id, model.Name ?? model.Id, null, ["text"]))
+            .Select(model => new LlmModelInfo(_providerId, model.Id, model.Name ?? model.Id, null, _modelsDev.InputModalitiesFor(model.Id)))
             .ToList();
 
-    /** 解析顺序: 端点 /models 的实时元数据 → 内置 models.dev 快照(baseUrl 主机名命中 provider)。 */
+    /** 推理强度解析顺序: 端点 /models 的实时元数据 → 内置 models.dev 快照(baseUrl 主机名命中 provider); 输入模态取自 models.dev 快照。 */
     public override LlmResolvedModelInfo ResolveModel(string model)
     {
         var reasoning = _metadata.ReasoningFor(model) ?? _modelsDev.ReasoningFor(model);
@@ -76,7 +76,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
             model,
             model,
             null,
-            ["text"],
+            _modelsDev.InputModalitiesFor(model),
             null,
             null,
             reasoning);
@@ -253,7 +253,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     private IReadOnlyList<ChatMessage> ToChatMessages(GenerateOptions options)
     {
         var messages = new List<ChatMessage>();
-        foreach (var message in options.Messages)
+        foreach (var message in ToolResultImages.Relay(options.Messages))
         {
             switch (message.Role)
             {

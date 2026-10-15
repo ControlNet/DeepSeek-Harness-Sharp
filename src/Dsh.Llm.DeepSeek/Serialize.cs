@@ -75,7 +75,7 @@ public static class WireSerialize
     public static IReadOnlyList<WireMessage> SerializeMessages(GenerateOptions options)
     {
         var wire = new List<WireMessage>();
-        foreach (var message in options.Messages)
+        foreach (var message in ToolResultImages.Relay(options.Messages))
         {
             switch (message.Role)
             {

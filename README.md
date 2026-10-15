@@ -46,6 +46,9 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 4. 日志:`<home>/logs/dsh-YYYYMMDD.log`(默认开启);`logging:` 段可配置级别、内存缓冲、是否输出到控制台(TUI 下强制关闭)。
 5. 后台会话:TUI 内 `/detach [命令]`(Ctrl+X D)把命令交给 PTY 守护进程托管;`tui list`/`tui attach` 会自动拉起守护进程。
 6. 插件目录:把插件放进 `<安装目录>/plugins/`,启动时自动加载并启用(可用 `/plugins disable <包>` 关闭)。托管插件是构建时引入 `Dsh.Plugins.Generator` 的 dll(生成清单提供入口),仅在默认 JIT 发布档可用;原生插件是 `.so`/`.dylib`/`.dll` 共享库(实现 `IDshNativePlugin` 声明包名与工具,导出握手与 ABI 胶水由生成器产出),JIT 与 AOT 发布档均可用,示例见 `tests/Dsh.NativePluginSample`。
+7. 看图:模型可调用 `read_image` 工具读取本地图片(PNG/JPEG/GIF/WebP/BMP/TIFF 等常见格式,无扩展名的文件按内容识别),图片本身随工具结果交给模型;路径解析与 `read` 相同(相对路径按会话工作目录)。
+   - 长边超过 2000px 的图片自动降采样,结果里写明原始尺寸与坐标换算倍数;源文件上限 20 MiB,存入附件库的图片不超过 5 MiB(超出时改用 JPEG 压缩)。
+   - 需要接收图片输入的模型:DeepSeek 以内置模型目录为准(如 `deepseek-v4-flash-vision-exp`),Anthropic 与 OpenAI 兼容提供方以 models.dev 标注的输入模态为准;当前模型明确不支持图片时 `read_image` 直接报错,未收录的模型交由提供方自行判定。
 
 ## 图形界面
 
