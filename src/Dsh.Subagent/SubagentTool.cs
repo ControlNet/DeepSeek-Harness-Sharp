@@ -44,6 +44,15 @@ public static class SubagentTool
         "Set to `true` to run this subagent in the background. `true` returns a background job id immediately; "
         + "`false` waits and returns the subagent's final reply.";
 
+    private const string ModelSelectionSuffix =
+        " Child LLM selection is optional: omit `provider`, `model` and `reasoning_effort` to use the configured child defaults "
+        + "and inherit the rest from this conversation. To run the child on another route, call `list_subagent_models` and pass "
+        + "one listed `provider` and `model` together; changing the route without `reasoning_effort` uses that model's default effort.";
+
+    private const string ProviderParameter = "provider";
+    private const string ModelParameter = "model";
+    private const string ReasoningEffortParameter = "reasoning_effort";
+
     private const string BackgroundJobsUnavailable =
         "background jobs unavailable: load @deepseek-ai/dsh-jobs and @deepseek-ai/dsh-tool-jobs";
 
@@ -112,7 +121,8 @@ public static class SubagentTool
     private static ToolDefinition BuildDefinition(Context ctx, SubagentToolConfig config, ISubagentProvider provider)
     {
         var description = (provider.InheritsParentContext ? ForkDescription : SpawnDescription)
-            + (config.EnableRunInBackground ? BackgroundSuffix : "");
+            + (config.EnableRunInBackground ? BackgroundSuffix : "")
+            + (provider.Capabilities.AgentOptions ? ModelSelectionSuffix : "");
         var properties = new JsonObject
         {
             ["description"] = new JsonObject
@@ -133,6 +143,26 @@ public static class SubagentTool
             {
                 ["type"] = "boolean",
                 ["description"] = RunInBackgroundDescription,
+            };
+        }
+        if (provider.Capabilities.AgentOptions)
+        {
+            properties[ProviderParameter] = new JsonObject
+            {
+                ["type"] = "string",
+                ["description"] = "LLM provider id for the child, as listed by `list_subagent_models`. "
+                    + "Supply together with `model`; omit both to keep the default route.",
+            };
+            properties[ModelParameter] = new JsonObject
+            {
+                ["type"] = "string",
+                ["description"] = "Model id for the child, as listed by `list_subagent_models` for that provider. Supply together with `provider`.",
+            };
+            properties[ReasoningEffortParameter] = new JsonObject
+            {
+                ["type"] = "string",
+                ["description"] = "Reasoning effort for the child's route, one of the efforts `list_subagent_models` lists for it. "
+                    + "Omit to inherit a compatible effort or use a newly selected model's default.",
             };
         }
         return new ToolDefinition
@@ -199,8 +229,11 @@ public static class SubagentTool
         var parent = exec.Agent
             ?? throw new InvalidOperationException("subagent tool requires a calling agent (exec.agent was undefined)");
         var parentOptions = ChildCompositionSupport.ParentAgentOptionsForDelegation(parent);
-        if (HasConfiguredLlmSelection(config.AgentOptions))
-            await PreflightChildLlmRoute(ctx, parentOptions, config.AgentOptions, exec.Signal);
+        var agentOptions = RequestedAgentOptions(parentOptions, config.AgentOptions, args);
+        if (!ReferenceEquals(agentOptions, config.AgentOptions) && !provider.Capabilities.AgentOptions)
+            throw new InvalidOperationException($"subagent provider \"{config.Provider}\" does not support child model selection");
+        if (HasConfiguredLlmSelection(agentOptions))
+            await PreflightChildLlmRoute(ctx, parentOptions, agentOptions, exec.Signal);
         var subagents = ctx.Get<SubagentRuntime>(SubagentRuntime.ServiceName)!;
         if (!ReferenceEquals(subagents.GetProvider(config.Provider), provider))
         {
@@ -214,7 +247,7 @@ public static class SubagentTool
             Prompt = [new TextBlock(args.GetProperty("prompt").GetString() ?? "")],
             Parent = parent,
             Signal = exec.Signal,
-            AgentOptions = config.AgentOptions,
+            AgentOptions = agentOptions,
             Persona = config.Persona,
             ToolFilter = config.ToolFilter,
             MaxDepth = config.MaxDepth,
@@ -236,6 +269,43 @@ public static class SubagentTool
                 "run_in_background is disabled for this tool instance (enableRunInBackground: false)");
         }
         return requested ?? false;
+    }
+
+    /**
+     * Overlay the model-facing route fields on the configured child defaults.
+     * Provider and model form one route and must come together.
+     * Changing the route without an effort drops the configured effort so the selected model's default applies.
+     */
+    private static AgentOptions? RequestedAgentOptions(AgentOptions parentOptions, AgentOptions? configured, JsonElement args)
+    {
+        var provider = OptionalRouteField(args, ProviderParameter);
+        var model = OptionalRouteField(args, ModelParameter);
+        var effort = OptionalRouteField(args, ReasoningEffortParameter);
+        if (provider is null && model is null && effort is null)
+            return configured;
+        if ((provider is null) != (model is null))
+            throw new InvalidOperationException("child LLM `provider` and `model` must be supplied together");
+        var baseline = configured ?? new AgentOptions();
+        var routeChanged = provider is not null
+            && (provider != (baseline.Provider ?? parentOptions.Provider) || model != (baseline.Model ?? parentOptions.Model));
+        return baseline with
+        {
+            Provider = provider ?? baseline.Provider,
+            Model = model ?? baseline.Model,
+            ReasoningEffort = effort is not null
+                ? ReasoningEffortId.Create(effort)
+                : routeChanged ? null : baseline.ReasoningEffort,
+        };
+    }
+
+    private static string? OptionalRouteField(JsonElement args, string name)
+    {
+        if (!args.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String)
+            return null;
+        var text = value.GetString();
+        return string.IsNullOrEmpty(text)
+            ? throw new InvalidOperationException($"child LLM `{name}` must be non-empty")
+            : text;
     }
 
     private static bool HasConfiguredLlmSelection(AgentOptions? options)

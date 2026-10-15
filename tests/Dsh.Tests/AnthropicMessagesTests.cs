@@ -91,6 +91,48 @@ public class AnthropicMessagesTests
         Assert.Equal("a", content[2].GetProperty("input").GetProperty("text").GetString());
     }
 
+    [Fact]
+    public async Task Tool_Result_Image_Maps_To_Native_Image_Block()
+    {
+        var handler = new ScriptedHandler(ToolTurnSse);
+        byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        var image = new ImageAttachmentRef("img-1", "image/png", png.Length, 1, 1, "shot.png");
+        var callId = ToolCallId.Create("toolu_1");
+        var options = new GenerateOptions
+        {
+            Provider = "anthropic",
+            Model = Model,
+            Messages =
+            [
+                MessageFactory.CreateUserText("look"),
+                MessageFactory.CreateAssistantMessage([new ToolCallBlock(callId, "read_image", """{"file_path":"shot.png"}""")], "anthropic", Model),
+                MessageFactory.CreateToolResultMessage(callId, [new TextBlock("envelope"), new ImageBlock(image)], false),
+            ],
+            Attachments = new Dictionary<string, byte[]> { [image.AttachmentId] = png },
+        };
+
+        await Drain(Adapter(handler), options);
+
+        using var body = JsonDocument.Parse(handler.Bodies[0]);
+        var result = body.RootElement.GetProperty("messages")[2].GetProperty("content")[0];
+        Assert.Equal("tool_result", result.GetProperty("type").GetString());
+        var content = result.GetProperty("content");
+        Assert.Equal("envelope", content[0].GetProperty("text").GetString());
+        Assert.Equal("image", content[1].GetProperty("type").GetString());
+        var source = content[1].GetProperty("source");
+        Assert.Equal(("base64", "image/png", Convert.ToBase64String(png)),
+            (source.GetProperty("type").GetString(), source.GetProperty("media_type").GetString(), source.GetProperty("data").GetString()));
+    }
+
+    [Fact]
+    public void ResolveModel_Reports_ModelsDev_Input_Modalities()
+    {
+        var adapter = Adapter(new ScriptedHandler(ToolTurnSse));
+
+        Assert.Contains("image", adapter.ResolveModel("claude-haiku-4-5").InputModalities!);
+        Assert.Null(adapter.ResolveModel("not-in-models-dev").InputModalities);
+    }
+
     private static AnthropicAdapter Adapter(HttpMessageHandler handler)
         => new("anthropic", "https://example.invalid", "sk-test", [Model], new HttpClient(handler));
 
