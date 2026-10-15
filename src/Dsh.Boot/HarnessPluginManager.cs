@@ -107,7 +107,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
     private async Task<string> DetachAsync(string package, bool force)
     {
         var (weak, leaked) = await UnloadAsync(package, force, reclaim: IsManaged(package), removeRegistration: true);
-        Persist(package, enabled: false);
+        Persist(package, new PluginSetting { Enabled = false });
         if (leaked)
             _leaked.Add(package);
         if (weak is null)
@@ -160,7 +160,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
                 return $"plugin {trimmed} disabled with timeout; effects may still be running (leaked)";
             }
         }
-        Persist(trimmed, enabled: false);
+        Persist(trimmed, new PluginSetting { Enabled = false });
         return $"plugin {trimmed} disabled (removed from settings.yaml)";
     }
 
@@ -171,7 +171,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
             return "usage: /plugins enable <package>";
         if (!IsKnown(trimmed))
             return $"plugin package not found: {trimmed}";
-        Persist(trimmed, enabled: true);
+        Persist(trimmed, new PluginSetting { Enabled = true });
         if (_composition.Root.Scheduler.Find(trimmed) is not null)
             return $"plugin {trimmed} enabled (already active)";
         return await ActivateAsync(trimmed);
@@ -280,7 +280,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
         var activation = await _composition.AddAsync(definition!);
         if (activation.State == ActivationState.Active)
         {
-            Persist(package, enabled: true);
+            Persist(package, new PluginSetting { Enabled = true });
             return $"plugin {package} activated";
         }
         return $"plugin {package} failed to activate: {activation.Error}";
@@ -358,14 +358,10 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
             + "可用 `dotnet-dump analyze <pid>` 执行 `!dumpheap -type LoaderAllocator` 与 `!gcroot <addr>` 排查");
     }
 
-    /** 只改该插件的 enabled:以磁盘上最新的 plugins 段为准(其它写入方可能已存了参数),参数原样保留。 */
-    private void Persist(string package, bool enabled)
+    private void Persist(string package, PluginSetting setting)
     {
-        var latest = HarnessSettings.Load(_home);
-        var setting = (latest.Plugins.GetValueOrDefault(package) ?? new PluginSetting()) with { Enabled = enabled };
-        latest.Plugins[package] = setting;
-        latest.SavePlugins(_home);
         _settings.Plugins[package] = setting;
+        _settings.SavePlugins(_home);
     }
 
     public void Dispose()

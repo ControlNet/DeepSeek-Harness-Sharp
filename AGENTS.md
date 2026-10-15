@@ -256,7 +256,7 @@
 51. 选取第三方开源库时，应优先选择使用量大、活跃维护的库。
 52. 不要替我计算工作量需要几天/几人天/几人月，你是AI，速度足够快。
 53. README是用户说明，不是开发者手册，不准将开发进度写进去。
-54. 首次在新环境构建前先填充本地 NuGet feed（`packages/`）：Windows 用 `pwsh -File scripts/fetch-dryioc-feed.ps1`，Linux/macOS 用 `bash scripts/fetch-dryioc-feed.sh`。Dsh.Runtime 依赖的 DryIoc 6.0.0 只存在于 `dadhi/DryIoc` 的构建产物中，包 ID 为 `DryIoc.dll`（nuget.org 上的 `DryIoc.dll` 最高只到 6.0.0-preview-09，且与上游构建不同）。
+54. 首次在新环境构建前先填充本地 NuGet feed（`packages/`）：Windows 用 `pwsh -File scripts/fetch-dryioc-feed.ps1`，Linux/macOS 用 `bash scripts/fetch-dryioc-feed.sh`。Dsh.Runtime 依赖的 DryIoc 版本以 `src/Dsh.Runtime/Dsh.Runtime.csproj` 中 `DryIoc.dll` 的 PackageReference 为准，脚本从中读取；nuget.org 上的 `DryIoc.dll` 最高只到 6.0.0-preview-09（更旧的 commit），正式的 6.0.x 尚未发布，包只能来自 `dadhi/DryIoc` 的构建，包 ID 为 `DryIoc.dll`。脚本跟随上游默认分支的最新 commit：本地包的戳记落后时重新构建（或用 `--use-gh-artifact` 下载该 commit 的 CI 产物），上游产出的版本与 csproj 不一致时报错，需同步更新 csproj。
 55. GUI 的构建/验证必须后台完成，**禁止抢前台焦点或注入键鼠**（用户在用机器时会直接被打断）。
 56. /src路径下的模块是“作者提供给用户的预置插件包”，和“用户自己编制的IDshPlugin”只可能存在依赖关系，没有地位上的区别，开发时应遵循同一套标准。
 57. 若需要快速测试，需要用`trait`参数过滤掉渲染压测、GPU/桌面用例和LLM联网测试，例如： `Dsh.Tests.exe -trait- "Category=GpuStress" -trait- "Category=OnlyGpu" -trait- "Category=RenderBench" -trait- "Category=LlmSmoke"`，全量测试则不加`trait`参数。
