@@ -8,7 +8,7 @@ namespace Dsh.Transport;
 
 /**
  * Files and directories that only the current OS user can open.
- * They carry local secrets such as endpoint tokens and SSH askpass passwords, so a file is restricted from the moment it exists instead of being tightened afterwards.
+ * They carry local secrets such as endpoint tokens, so a file is restricted from the moment it exists instead of being tightened afterwards.
  */
 public static class OwnerOnlyFiles
 {
