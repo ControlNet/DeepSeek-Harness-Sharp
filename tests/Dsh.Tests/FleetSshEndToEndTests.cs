@@ -115,8 +115,8 @@ public sealed class FleetSshEndToEndTests
 
     internal static string RequireEnvironment()
     {
-        if (!File.Exists(Sshd))
-            Assert.Skip($"needs an OpenSSH server at {Sshd} to stand in for a POSIX remote machine");
+        if (!File.Exists(Sshd) || TestSshServer.SftpServer is null)
+            Assert.Skip($"needs an OpenSSH server ({Sshd} and sftp-server) to stand in for a POSIX remote machine");
         return RealHostProcesses.Executable;
     }
 
@@ -161,6 +161,13 @@ public sealed class FleetSshEndToEndTests
 internal sealed class TestSshServer : IAsyncDisposable
 {
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(20);
+
+    /**
+     * scp speaks SFTP since OpenSSH 9.0, and ForceCommand wraps subsystem requests too, so the sftp subsystem must be a program the forced shell can run (internal-sftp cannot).
+     * Paths of the OpenSSH packages of Debian/Ubuntu, Fedora, macOS and Arch.
+     */
+    internal static readonly string? SftpServer = ((string[])["/usr/lib/openssh/sftp-server", "/usr/libexec/openssh/sftp-server", "/usr/libexec/sftp-server", "/usr/lib/ssh/sftp-server"])
+        .FirstOrDefault(File.Exists);
 
     private readonly Process _process;
     private readonly int _port;
@@ -239,7 +246,7 @@ internal sealed class TestSshServer : IAsyncDisposable
         PasswordAuthentication no
         KbdInteractiveAuthentication no
         PubkeyAuthentication yes
-        Subsystem sftp internal-sftp
+        Subsystem sftp {SftpServer}
         SetEnv HOME={Path.Combine(root, "home")} DOTNET_ROOT={DotnetRoot} XDG_RUNTIME_DIR={Path.Combine(root, "no-runtime")}
         ForceCommand cd "$HOME" && exec "$SHELL" -c "$SSH_ORIGINAL_COMMAND"
         LogLevel ERROR
