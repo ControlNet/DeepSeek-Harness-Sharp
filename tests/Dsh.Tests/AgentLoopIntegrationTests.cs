@@ -91,7 +91,7 @@ public class AgentLoopIntegrationTests
         public AgentRegistry Agents { get; }
         public AgentLoop Loop { get; }
 
-        public HarnessFixture(string baseUrl, bool inHistory = false, ResolvedRetryPolicy? retryPolicy = null)
+        public HarnessFixture(string baseUrl, bool inHistory = false, ResolvedRetryPolicy? retryPolicy = null, AgentLoopConfig? loopConfig = null)
         {
             Ctx = new Context();
             Sessions = new SessionStore(Ctx);
@@ -99,7 +99,7 @@ public class AgentLoopIntegrationTests
             Tools = new ToolRuntime(Ctx);
             var llm = new LlmRuntime(Ctx);
             Agents = new AgentRegistry(Ctx);
-            Loop = new AgentLoop(Ctx);
+            Loop = new AgentLoop(Ctx, loopConfig);
             var connection = new Dsh.Llm.DeepSeek.DeepSeekConnectionOptions(
                 baseUrl,
                 "TEST_KEY",
@@ -235,6 +235,81 @@ public class AgentLoopIntegrationTests
         Assert.Equal("abc", Assert.IsType<TextBlock>(toolResult.Message.Block.Content[0]).Text);
         var turnEnd = agent.Session.SnapshotEvents().Select(e => e.Data).OfType<TurnEndPayload>().Single();
         Assert.IsType<TurnEndReason.Completed>(turnEnd.Reason);
+    }
+
+    [Fact]
+    public async Task ParallelToolCalls_RespectConfiguredLimit()
+    {
+        var scriptCalls = 0;
+        using var server = new MockDeepSeekServer(_ =>
+        {
+            scriptCalls++;
+            if (scriptCalls > 1)
+            {
+                return
+                [
+                    """data: {"choices":[{"delta":{"content":"done"}}]}""",
+                    "",
+                    """data: {"choices":[{"delta":{},"finish_reason":"stop"}]}""",
+                    "",
+                    "data: [DONE]",
+                    "",
+                ];
+            }
+            var calls = Enumerable.Range(0, 3).Select(index =>
+                $$$"""{"index":{{{index}}},"id":"call_{{{index}}}","type":"function","function":{"name":"probe","arguments":"{}"}}""");
+            return
+            [
+                $$$"""data: {"choices":[{"delta":{"role":"assistant","content":null,"tool_calls":[{{{string.Join(",", calls)}}}]}}]}""",
+                "",
+                """data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}""",
+                "",
+                "data: [DONE]",
+                "",
+            ];
+        });
+        using var fixture = new HarnessFixture(server.BaseUrl, loopConfig: new AgentLoopConfig { MaxParallelToolCalls = 1 });
+        var running = 0;
+        var peak = 0;
+        fixture.Tools.Register(new ToolDefinition
+        {
+            Name = "probe",
+            Description = "records how many probe calls overlap",
+            Parameters = new System.Text.Json.Nodes.JsonObject(),
+            Output = new ToolOutputDefinition(new System.Text.Json.Nodes.JsonObject(), (_, _) => [new TextBlock("ok")]),
+            Execute = async (_, _) =>
+            {
+                var now = Interlocked.Increment(ref running);
+                InterlockedMax(ref peak, now);
+                await Task.Delay(100);
+                Interlocked.Decrement(ref running);
+                return new { };
+            },
+            IsConcurrencySafe = _ => true,
+        });
+        var handle = await fixture.Agents.Create(new CreateAgentOptions(
+            SessionId.Create("session-parallel-limit"),
+            null,
+            new AgentOptions("test-provider", "test-model")), TestContext.Current.CancellationToken);
+        var agent = (AgentLoopAgent)handle.Agent;
+
+        agent.Followup(MessageFactory.CreateUserText("probe three times"));
+        await agent.WhenIdle();
+
+        Assert.Equal(3, agent.Session.SnapshotEvents().Select(e => e.Data).OfType<ToolResultPayload>().Count());
+        Assert.Equal(1, peak);
+    }
+
+    private static void InterlockedMax(ref int target, int value)
+    {
+        var current = Volatile.Read(ref target);
+        while (value > current)
+        {
+            var observed = Interlocked.CompareExchange(ref target, value, current);
+            if (observed == current)
+                return;
+            current = observed;
+        }
     }
 
     [Fact]

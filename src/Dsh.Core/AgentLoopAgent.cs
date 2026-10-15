@@ -694,7 +694,9 @@ public sealed class AgentLoopAgent : IAgent
         ToolExecutionModeKind mode,
         CancellationToken signal)
     {
-        const int maxParallel = 10;
+        // 子代理与测试可能不经 AgentLoop 构造 agent, 此时沿用配置默认值。
+        var maxParallel = _loopCtx.Get<AgentLoop>(AgentLoop.ServiceName)?.MaxParallelToolCalls
+            ?? AgentLoopConfig.DefaultMaxParallelToolCalls;
         var slots = new (ToolRunContext Exec, ToolExecutionResult Result, bool NeedsPost)?[group.Count];
         var callSeqs = new long?[group.Count];
         var nextToStart = 0;
