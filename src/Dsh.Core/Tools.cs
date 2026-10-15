@@ -84,7 +84,7 @@ public sealed class ToolRuntime : Service
                 $"tool name \"{definition.Name}\" is reserved for the presentation transport and cannot be registered or shadowed");
         }
         if (definition.TimeoutMs is <= 0)
-            throw new ArgumentException("tool \"definition.Name\" timeoutMs must be a positive finite number");
+            throw new ArgumentException($"tool \"{definition.Name}\" timeoutMs must be a positive finite number");
         if (!IsSimpleIdentifier(definition.Name))
         {
             Ctx.LoggerFor("tools").Warn(
