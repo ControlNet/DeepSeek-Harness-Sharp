@@ -95,6 +95,7 @@
     <ProjectReference Include="..\..\src\Dsh.Lsp\Dsh.Lsp.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Telemetry\Dsh.Telemetry.csproj" />
     <ProjectReference Include="..\..\src\Dsh.E2b\Dsh.E2b.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.SessionGraph\Dsh.SessionGraph.csproj" />
     <ProjectReference Include="..\..\src\Dsh.SessionQuery\Dsh.SessionQuery.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Inspection\Dsh.Inspection.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Memory\Dsh.Memory.csproj" />

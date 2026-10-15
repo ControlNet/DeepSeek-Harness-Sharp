@@ -241,5 +241,13 @@ internal static class ApprovalCodecRegistration
         SessionEventCodec.Register<ApprovalDecidedPayload>(ApprovalEvents.Decided);
         SessionEventCodec.Register<ApprovalPolicyPayload>(ApprovalEvents.Policy);
         SessionEventCodec.Register<ApprovalGrantedPayload>(ApprovalEvents.Granted);
+        SessionEventRelations.Register<ApprovalAskedPayload>(ApprovalEvents.Asked, payload => payload.CallId is { } callId
+            ? [new SessionEventRelation.Opens(Asked(payload.Id)), new SessionEventRelation.RefersTo(SessionEventRelations.ToolCall(callId), SessionEventEdgeKind.Approves)]
+            : [new SessionEventRelation.Opens(Asked(payload.Id))]);
+        SessionEventRelations.Register<ApprovalDecidedPayload>(
+            ApprovalEvents.Decided,
+            payload => [new SessionEventRelation.RefersTo(Asked(payload.Id), SessionEventEdgeKind.Completes)]);
     }
+
+    private static SessionEventCorrelation Asked(string id) => new(ApprovalEvents.Asked, id);
 }

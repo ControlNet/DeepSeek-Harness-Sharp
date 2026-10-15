@@ -47,6 +47,7 @@
     <Project Path="src/Dsh.Runtime/Dsh.Runtime.csproj" />
     <Project Path="src/Dsh.ScriptHost/Dsh.ScriptHost.csproj" />
     <Project Path="src/Dsh.Sdk/Dsh.Sdk.csproj" />
+    <Project Path="src/Dsh.SessionGraph/Dsh.SessionGraph.csproj" />
     <Project Path="src/Dsh.SessionQuery/Dsh.SessionQuery.csproj" />
     <Project Path="src/Dsh.Skills/Dsh.Skills.csproj" />
     <Project Path="src/Dsh.Subagent/Dsh.Subagent.csproj" />
