@@ -21,14 +21,23 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
     private int _pendingCounter;
     private readonly Lazy<bool> _rootEncodingCheck;
 
+    internal JsonlWriteBatch WriteBatch { get; }
+
     private sealed record PendingSession(SessionHeader Header, string Revision, long InheritedEventCount);
 
     private sealed record ParsedLog(SessionHeader Meta, List<SessionEvent> Events, long? TornTruncateTo, List<SessionEvent> RecoveredTail, long InheritedEventCount);
 
     internal sealed record StoredLog(SessionHeader Meta, List<SessionEvent> Events, long? TornTruncateTo, List<SessionEvent> RecoveredTail, long InheritedEventCount, string Revision);
 
-    public JsonlSessionPersistence(string root, bool packChunks = true, JsonlCompression compression = JsonlCompression.Zstd)
+    public JsonlSessionPersistence(
+        string root,
+        bool packChunks = true,
+        JsonlCompression compression = JsonlCompression.Zstd,
+        JsonlWriteBatch? writeBatch = null)
     {
+        WriteBatch = writeBatch ?? JsonlWriteBatch.Default;
+        if (WriteBatch.MaxEvents < 1 || WriteBatch.Interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(writeBatch), "write batch needs a positive event limit and interval");
         _root = Path.GetFullPath(root);
         _packChunks = packChunks;
         _compression = compression;
@@ -188,17 +197,25 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
         var renamed = snapshot.Header with { Title = title };
         var path = FindLog(id);
         if (path is not null)
-            RewriteHeader(path, renamed, snapshot.InheritedEventCount);
+        {
+            // 写句柄的定时落盘会并发追加, 重写头部期间必须持有它的锁。
+            JsonlSessionHandle? writer;
+            lock (_trackerGate) writer = _writers.GetValueOrDefault(id);
+            if (writer is null)
+                RewriteHeader(path, renamed, snapshot.InheritedEventCount);
+            else
+                writer.WhileDrained(() => RewriteHeader(path, renamed, snapshot.InheritedEventCount));
+        }
+        List<JsonlSessionHandle> handles;
         lock (_trackerGate)
         {
             if (_pending.TryGetValue(id, out var pending))
                 _pending[id] = pending with { Header = renamed };
-            foreach (var handle in _openHandles)
-            {
-                if (handle.Id == id)
-                    handle.UpdateHeader(renamed);
-            }
+            handles = [.. _openHandles.Where(handle => handle.Id == id)];
         }
+        // 句柄锁在持有期间可能要进 _trackerGate(首次落盘), 这里在 _trackerGate 之外更新, 保持同一加锁顺序。
+        foreach (var handle in handles)
+            handle.UpdateHeader(renamed);
     }
 
     public void Delete(SessionId id)

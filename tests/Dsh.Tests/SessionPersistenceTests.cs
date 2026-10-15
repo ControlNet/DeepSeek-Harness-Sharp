@@ -179,6 +179,76 @@ public class SessionPersistenceTests : IDisposable
         AssertEventsEqual([.. events, extra], reopened.Read().ToArray());
     }
 
+    private static int FrameCount(string logPath) => ZstdFrames.Scan(File.ReadAllBytes(logPath)).Frames.Count;
+
+    /** 流式 chunk 先缓冲, 遇到非 chunk 事件才连同之前的 chunk 写成一个帧; 最后一批写坏时之前的批次完好。 */
+    [Fact]
+    public void StreamChunks_AreBatchedUntilBoundaryEvent()
+    {
+        var root = NewRoot();
+        using var persistence = new JsonlSessionPersistence(root, writeBatch: new JsonlWriteBatch(MaxEvents: 1000, Interval: TimeSpan.FromHours(1)));
+        var session = BuildSourceSession(TestCwd);
+        var events = session.SnapshotEvents();
+        var logPath = LogPathOf(root, session.Header, JsonlCompression.Zstd);
+        var handle = persistence.Create(session.Header);
+
+        handle.Append(events.Take(2).ToArray());
+        var framesAfterBoundary = FrameCount(logPath);
+        foreach (var chunk in events.Skip(2).Take(5))
+            handle.Append([chunk]);
+        Assert.Equal(framesAfterBoundary, FrameCount(logPath));
+
+        handle.Append([events[7]]);
+        Assert.Equal(framesAfterBoundary + 1, FrameCount(logPath));
+
+        var bytes = File.ReadAllBytes(logPath);
+        var lastFrame = ZstdFrames.Scan(bytes).Frames[^1];
+        File.WriteAllBytes(logPath, bytes[..(lastFrame.Start + (lastFrame.End - lastFrame.Start) / 2)]);
+        var reader = persistence.Open(session.Header.Id, SessionAccess.Read);
+        var recovered = reader.Read();
+        Assert.True(recovered.Count >= 2);
+        AssertEventsEqual(events.Take(recovered.Count).ToArray(), recovered.ToArray());
+        reader.Close();
+        handle.Close();
+    }
+
+    /** 缓冲的 chunk 在数量上限、定时器到点、Flush 与 Close 时都会落盘。 */
+    [Fact]
+    public async Task StreamChunks_DrainOnLimitTimerFlushAndClose()
+    {
+        var root = NewRoot();
+        var session = BuildSourceSession(TestCwd);
+        var events = session.SnapshotEvents();
+        var chunks = events.Skip(2).Take(5).ToArray();
+        var logPath = LogPathOf(root, session.Header, JsonlCompression.Zstd);
+        using (var limited = new JsonlSessionPersistence(root, writeBatch: new JsonlWriteBatch(MaxEvents: 3, Interval: TimeSpan.FromHours(1))))
+        {
+            var handle = limited.Create(session.Header);
+            handle.Append(events.Take(2).ToArray());
+            var baseline = FrameCount(logPath);
+            handle.Append(chunks[..3]);
+            Assert.Equal(baseline + 1, FrameCount(logPath));
+            handle.Append(chunks[3..4]);
+            handle.Flush();
+            Assert.Equal(baseline + 2, FrameCount(logPath));
+            handle.Append(chunks[4..]);
+            handle.Close();
+            Assert.Equal(baseline + 3, FrameCount(logPath));
+        }
+
+        var timedRoot = NewRoot();
+        var timedLog = LogPathOf(timedRoot, session.Header, JsonlCompression.Zstd);
+        using var timed = new JsonlSessionPersistence(timedRoot, writeBatch: new JsonlWriteBatch(MaxEvents: 1000, Interval: TimeSpan.FromMilliseconds(20)));
+        var timedHandle = timed.Create(session.Header);
+        timedHandle.Append(events.Take(2).ToArray());
+        var timedBaseline = FrameCount(timedLog);
+        timedHandle.Append(chunks);
+        for (var attempt = 0; attempt < 200 && FrameCount(timedLog) == timedBaseline; attempt++)
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        Assert.Equal(timedBaseline + 1, FrameCount(timedLog));
+        timedHandle.Close();
+    }
+
     [Fact]
     public void Open_ForeignFormatVersion_ThrowsFormatUnsupported()
     {
