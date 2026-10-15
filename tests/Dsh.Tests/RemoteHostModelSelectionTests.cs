@@ -16,7 +16,7 @@ public sealed class RemoteHostModelSelectionTests
     public async Task CreateSession_AppliesClientSelectionAndRegistersProvider()
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var backend = new HarnessRemoteHostBackend(environment.App);
+        await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, TestContext.Current.CancellationToken);
         var llm = environment.App.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName)!;
 
         var created = await backend.CreateSessionAsync("/work", Selection, Spec, TestContext.Current.CancellationToken);
@@ -48,8 +48,8 @@ public sealed class RemoteHostModelSelectionTests
         environment = await environment.RestartAsync();
 
         using (environment)
-        using (var backend = new HarnessRemoteHostBackend(environment.App))
         {
+            await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, TestContext.Current.CancellationToken);
             await backend.ResumeSessionAsync(sessionId.Value, Selection, Spec, TestContext.Current.CancellationToken);
 
             var llm = environment.App.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName)!;

@@ -59,7 +59,7 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
         var (fileName, arguments) = platform == "windows"
             ? ("cmd.exe", (string[])[])
             : ("/bin/sh", (string[])["-l"]);
-        _remote = await RemotePtyConnection.StartAsync(host, fileName, arguments, CancellationToken.None);
+        _remote = await RemotePtyConnection.StartAsync(host, fileName, arguments, InitialSize, CancellationToken.None);
         Attach(_remote, $"远端 · {fileName}");
     }
 

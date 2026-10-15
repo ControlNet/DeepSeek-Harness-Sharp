@@ -8,7 +8,10 @@ namespace Dsh.RemoteHost;
  */
 public static class HostProtocol
 {
-    /** 协议版本: 不匹配时握手显式拒绝, 避免跨版本静默半功能/解析错位。 */
+    /**
+     * 线协议版本: 只在帧格式/握手/既有方法的语义发生不兼容变化时递增, 不匹配时握手显式拒绝。
+     * 新增的方法、推送与可选字段不改版本, 由握手响应与 host.info 里的 capabilities 声明(见 HostCapabilities)。
+     */
     public const int Version = 1;
 
     public const string MethodHello = "host.hello";
@@ -35,22 +38,53 @@ public static class HostProtocol
     public const string MethodPtyWrite = "host.pty.write";
     public const string MethodPtyStop = "host.pty.stop";
     public const string MethodPtyAttach = "host.pty.attach";
+    public const string MethodPtyDetach = "host.pty.detach";
+    public const string MethodPtyResize = "host.pty.resize";
+
+    public const string MethodPendingList = "host.pending.list";
+    public const string MethodSessionsList = "host.sessions.list";
 
     /** 服务端 -> 客户端 推送。 */
     public const string NotificationEvent = "host.event";
     public const string NotificationApproval = "host.approval";
     public const string NotificationQuestion = "host.question";
     public const string NotificationPtyOutput = "host.pty.output";
+    public const string NotificationPendingResolved = "host.pending.resolved";
+    public const string NotificationSessionsChanged = "host.sessions.changed";
 }
 
-/** 握手请求: 客户端声明的协议版本与 token。 */
-public sealed record HostHelloRequest(string? Token, int ProtocolVersion);
+/** 能力标记: 客户端据此判断对端是否支持某项新增功能, 旧宿主不发 capabilities 即视为都不支持。 */
+public static class HostCapabilities
+{
+    /** 审批/问答广播到所有连接, 先答者生效, host.pending.resolved 推送, host.pending.list 查询, 新连接先补发未决请求。 */
+    public const string PendingBroadcast = "pending.broadcast";
 
-/** 握手响应: 服务端版本; Mismatch 非空即拒绝(附原因)。 */
-public sealed record HostHelloResponse(bool Ok, int ProtocolVersion, string HostVersion, string? Mismatch);
+    /** 统一会话登记表: host.sessions.list 与 host.sessions.changed。 */
+    public const string SessionRegistry = "sessions.registry";
+
+    /** host.pty.* 由 PTY daemon 托管: 多端同时 attach、attach 首帧整屏快照、host.pty.detach、PTY 不随 host 进程或连接结束。 */
+    public const string PtyDaemon = "pty.daemon";
+
+    /** host.pty.resize。 */
+    public const string PtyResize = "pty.resize";
+
+    public static readonly IReadOnlyList<string> All = [PendingBroadcast, SessionRegistry, PtyDaemon, PtyResize];
+}
+
+/** 握手请求: 客户端声明的协议版本与 token; ClientName 是客户端自报的显示名(如 "gui@laptop"), 用于标注由谁回答了审批。 */
+public sealed record HostHelloRequest(string? Token, int ProtocolVersion, string? ClientName = null);
+
+/** 握手响应: 服务端版本; Mismatch 非空即拒绝(附原因); ConnectionId 是本连接在 host 内的唯一标识。 */
+public sealed record HostHelloResponse(
+    bool Ok,
+    int ProtocolVersion,
+    string HostVersion,
+    string? Mismatch,
+    IReadOnlyList<string>? Capabilities = null,
+    string? ConnectionId = null);
 
 /** 服务端信息。 */
-public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Platform, string HomeRoot);
+public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Platform, string HomeRoot, IReadOnlyList<string>? Capabilities = null);
 
 /** 源生成的 JSON 上下文(AOT/裁剪安全)。 */
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
@@ -90,4 +124,11 @@ public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Pl
 [JsonSerializable(typeof(IReadOnlyList<RemoteSessionInfo>))]
 [JsonSerializable(typeof(IReadOnlyList<RemoteDirectoryEntry>))]
 [JsonSerializable(typeof(IReadOnlyList<string>))]
+[JsonSerializable(typeof(RemotePtyResize))]
+[JsonSerializable(typeof(RemotePendingList))]
+[JsonSerializable(typeof(RemotePendingResolved))]
+[JsonSerializable(typeof(RemoteHostSession))]
+[JsonSerializable(typeof(IReadOnlyList<RemoteHostSession>))]
+[JsonSerializable(typeof(IReadOnlyList<RemoteApprovalRequest>))]
+[JsonSerializable(typeof(IReadOnlyList<RemoteQuestionRequest>))]
 public partial class HostProtocolJsonContext : JsonSerializerContext;

@@ -1,6 +1,7 @@
 using System.IO.Pipelines;
 using Dsh.Pty;
 using Dsh.RemoteHost;
+using Dsh.Transport;
 
 namespace Dsh.Gui.Terminal;
 
@@ -24,9 +25,9 @@ public sealed class RemotePtyConnection : ITerminalConnection, IAsyncDisposable
         _ = AttachAsync();
     }
 
-    public static async Task<RemotePtyConnection> StartAsync(IRemoteHost host, string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    public static async Task<RemotePtyConnection> StartAsync(IRemoteHost host, string fileName, IReadOnlyList<string> arguments, TerminalSize size, CancellationToken cancellationToken)
     {
-        var ptyId = await host.StartPtyAsync(fileName, arguments, cancellationToken);
+        var ptyId = await host.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments, Columns: size.Columns, Rows: size.Rows), cancellationToken);
         return new RemotePtyConnection(host, ptyId);
     }
 
@@ -39,8 +40,18 @@ public sealed class RemotePtyConnection : ITerminalConnection, IAsyncDisposable
         await _inputStream.FlushAsync(cancellationToken);
     }
 
-    /** host.pty 协议还没有 resize 方法: 远端 PTY 保持启动时的尺寸, 本地屏幕模型照常按控件尺寸调整。 */
-    public ValueTask ResizeAsync(TerminalSize size, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    /** 远端 PTY 跟随控件的格子数; 旧宿主不支持 resize 时保持启动尺寸。 */
+    public async ValueTask ResizeAsync(TerminalSize size, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _host.ResizePtyAsync(_ptyId, size.Columns, size.Rows, cancellationToken);
+        }
+        catch (JsonRpcException)
+        {
+            // 远端 PTY 已退出: 屏幕模型已按新尺寸调整, 没有对端需要通知。
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -52,7 +63,7 @@ public sealed class RemotePtyConnection : ITerminalConnection, IAsyncDisposable
         }
         catch (Exception error) when (error is IOException or InvalidOperationException)
         {
-            // 连接已断开时远端 PTY 随 host 进程一并结束, 无需再停。
+            // 连接已断开: 远端 PTY 留在 PTY daemon 里, 可从别的客户端 attach 或 stop。
         }
         _cts.Dispose();
     }

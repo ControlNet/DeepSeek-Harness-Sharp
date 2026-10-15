@@ -58,7 +58,7 @@ public static class SshRemoteWorkspaceLauncher
             try
             {
                 var stream = new StandardIoDuplexStream(process.StandardOutput.BaseStream, process.StandardInput.BaseStream);
-                var client = await RemoteHostClient.ConnectAsync(stream, token: null, cancellationToken).ConfigureAwait(false);
+                var client = await RemoteHostClient.ConnectAsync(stream, token: null, $"gui@{Environment.MachineName}", cancellationToken).ConfigureAwait(false);
                 return new Connection(client, process);
             }
             catch (Exception error)

@@ -14,7 +14,8 @@ public sealed class RemoteHostPersistenceTests
     {
         // 套接字路径有 108 字符上限: 用仓库内浅目录, 否则 <root>/run/host.sock 超长, daemon 绑不上。
         var root = TempTree.CreateSocketDirectory("rh");
-        var server = new RemoteHostServer(new RemoteHostServerOptions(null), new SessionBackend());
+        await using var backend = await SessionBackend.CreateAsync(root, Ct);
+        var server = new RemoteHostServer(new RemoteHostServerOptions(null), backend);
         using var daemonCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var daemon = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(server, root, daemonCts.Token), Ct);
         try
@@ -51,7 +52,8 @@ public sealed class RemoteHostPersistenceTests
     {
         // 套接字路径有 108 字符上限: 用仓库内浅目录, 否则 <root>/run/host.sock 超长, daemon 绑不上。
         var root = TempTree.CreateSocketDirectory("rh");
-        var server = new RemoteHostServer(new RemoteHostServerOptions(null), new SessionBackend());
+        await using var backend = await SessionBackend.CreateAsync(root, Ct);
+        var server = new RemoteHostServer(new RemoteHostServerOptions(null), backend);
         using var daemonCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var daemon = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(server, root, daemonCts.Token), Ct);
         try
@@ -126,9 +128,25 @@ public sealed class RemoteHostPersistenceTests
     }
 
     /** 只实现本用例用到的会话能力; 其余为只读/空实现。 */
-    private sealed class SessionBackend : IRemoteHostBackend
+    private sealed class SessionBackend : IRemoteHostBackend, IAsyncDisposable
     {
         private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
+
+        private SessionBackend(HostPendingDecisions pending, HostSessionRegistry sessions)
+        {
+            Pending = pending;
+            Sessions = sessions;
+        }
+
+        public static async Task<SessionBackend> CreateAsync(string root, CancellationToken cancellationToken)
+        {
+            var pending = new HostPendingDecisions();
+            return new SessionBackend(pending, await HostSessionRegistry.OpenAsync(Path.Combine(root, "sessions.json"), pending, cancellationToken));
+        }
+
+        public HostPendingDecisions Pending { get; }
+
+        public HostSessionRegistry Sessions { get; }
 
         public Task<HostInfo> InfoAsync(CancellationToken cancellationToken)
             => Task.FromResult(new HostInfo(HostProtocol.Version, "test", "test", "/home"));
@@ -153,43 +171,31 @@ public sealed class RemoteHostPersistenceTests
         public Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<string>>([]);
 
-        public Task RespondApprovalAsync(string requestId, bool allow, string? reason, CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public Task RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public async IAsyncEnumerable<RemoteQuestionRequest> QuestionsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            await Task.CompletedTask;
-            yield break;
-        }
-
         public Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken) => Task.FromResult(Array.Empty<byte>());
+
         public Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken)
             => Task.FromResult(new RemoteDirectoryListing(path, null, []));
+
         public Task WriteFileAsync(string path, byte[] content, CancellationToken cancellationToken) => Task.CompletedTask;
 
-        public Task<string> StartPtyAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken) => Task.FromResult("");
+        public Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken) => Task.FromResult("");
 
         public Task WritePtyAsync(string ptyId, byte[] data, CancellationToken cancellationToken) => Task.CompletedTask;
 
+        public Task ResizePtyAsync(string ptyId, int columns, int rows, CancellationToken cancellationToken) => Task.CompletedTask;
+
         public Task StopPtyAsync(string ptyId, CancellationToken cancellationToken) => Task.CompletedTask;
 
-        public async IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            await Task.CompletedTask;
-            yield break;
-        }
+        public Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+            => Task.FromResult(AsyncEnumerable.Empty<RemoteEventInfo>());
 
-        public async IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            await Task.CompletedTask;
-            yield break;
-        }
+        public Task<IAsyncEnumerable<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken)
+            => Task.FromResult(AsyncEnumerable.Empty<RemotePtyOutput>());
 
-        public async IAsyncEnumerable<RemotePtyOutput> PtyOutputAsync(string ptyId, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        public async ValueTask DisposeAsync()
         {
-            await Task.CompletedTask;
-            yield break;
+            Pending.Dispose();
+            await Sessions.DisposeAsync();
         }
     }
 }

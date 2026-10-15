@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dsh.Transport\Dsh.Transport.csproj" />
+    <ProjectReference Include="..\Dsh.Pty\Dsh.Pty.csproj" />
   </ItemGroup>
 
 </Project>

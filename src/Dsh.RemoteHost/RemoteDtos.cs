@@ -57,10 +57,87 @@ public sealed record RemoteDirectoryListing(string Path, string? Parent, IReadOn
 
 public sealed record RemoteFileContent(string Path, string Base64);
 
-public sealed record RemotePtyStartRequest(string FileName, IReadOnlyList<string> Arguments);
+/** 起 PTY: Cwd/Title 为空时取远端家目录与命令行; 尺寸为空时用 daemon 默认值。 */
+public sealed record RemotePtyStartRequest(
+    string FileName,
+    IReadOnlyList<string> Arguments,
+    string? Cwd = null,
+    int? Columns = null,
+    int? Rows = null,
+    string? Title = null);
+
+public sealed record RemotePtyResize(string PtyId, int Columns, int Rows);
 
 public sealed record RemotePtyRef(string PtyId);
 
 public sealed record RemotePtyInput(string PtyId, string Base64);
 
 public sealed record RemotePtyOutput(string PtyId, string Base64, bool Eof);
+
+/** 全部未决的审批与问答(host.pending.list), 也是新连接补发的内容。 */
+public sealed record RemotePendingList(IReadOnlyList<RemoteApprovalRequest> Approvals, IReadOnlyList<RemoteQuestionRequest> Questions);
+
+/** 未决请求的结局: Kind 见 PendingKinds, Resolution 见 PendingResolutions; 由 host 取消时 ResolvedBy 为 "host"、ResolvedByConnection 为空。 */
+public sealed record RemotePendingResolved(
+    string RequestId,
+    string Kind,
+    string SessionId,
+    string Resolution,
+    string ResolvedBy,
+    string? ResolvedByConnection);
+
+public static class PendingKinds
+{
+    public const string Approval = "approval";
+    public const string Question = "question";
+}
+
+public static class PendingResolutions
+{
+    public const string Allowed = "allowed";
+    public const string Rejected = "rejected";
+    public const string Answered = "answered";
+
+    /** 会话被中断、结束或 host 退出, 请求不再有人等待。 */
+    public const string Cancelled = "cancelled";
+}
+
+/**
+ * 统一会话模型的一条(host.sessions.list / host.sessions.changed): 只登记由本 host 创建或恢复的会话, 不扫描外部进程。
+ * Kind 见 HostSessionKinds, Status 见 HostSessionStatuses; 时间为 Unix 毫秒; ExitCode 只对已退出的进程型会话有值。
+ */
+public sealed record RemoteHostSession(
+    string SessionId,
+    string Kind,
+    string? AgentKind,
+    string? ProjectPath,
+    string? Title,
+    string Status,
+    long CreatedAt,
+    long LastActivityAt,
+    int PendingCount,
+    int? ExitCode);
+
+public static class HostSessionKinds
+{
+    public const string Harness = "harness";
+    public const string External = "external";
+    public const string Acp = "acp";
+    public const string Terminal = "terminal";
+}
+
+/** agentKind 取值: 会话里跑的是哪种 Agent; 外部 Agent 的取值由各自的适配器登记。 */
+public static class HostAgentKinds
+{
+    /** 本项目自己的 Agent(harness 会话)。 */
+    public const string Dsharp = "dsharp";
+}
+
+/** 只反映进程与交互状态, 不判断任务是否完成。 */
+public static class HostSessionStatuses
+{
+    public const string Running = "Running";
+    public const string WaitingForUser = "WaitingForUser";
+    public const string Idle = "Idle";
+    public const string Exited = "Exited";
+}

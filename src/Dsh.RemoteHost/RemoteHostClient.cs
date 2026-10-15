@@ -12,31 +12,48 @@ namespace Dsh.RemoteHost;
  */
 public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
 {
+    /** 只用于观察的推送流(会话变化/请求结局)没人消费时最多积压的条数, 超出丢最旧的; 审批/问答流不丢。 */
+    private const int ObservationBacklog = 1024;
+
     private readonly JsonRpcPeer _peer;
     private readonly ConcurrentDictionary<string, Channel<RemoteEventInfo>> _eventStreams = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Channel<RemotePtyOutput>> _ptyStreams = new(StringComparer.Ordinal);
-    private Channel<RemoteApprovalRequest>? _approvals;
-    private Channel<RemoteQuestionRequest>? _questions;
+    private readonly Channel<RemoteApprovalRequest> _approvals = Channel.CreateUnbounded<RemoteApprovalRequest>();
+    private readonly Channel<RemoteQuestionRequest> _questions = Channel.CreateUnbounded<RemoteQuestionRequest>();
+    private readonly Channel<RemotePendingResolved> _resolutions = ObservationChannel<RemotePendingResolved>();
+    private readonly Channel<RemoteHostSession> _sessionChanges = ObservationChannel<RemoteHostSession>();
 
-    private RemoteHostClient(JsonRpcPeer peer, HostHelloResponse hello)
+    /** 推送处理在握手之前挂好: host 在 hello 应答之后立即补发未决请求, 晚挂会漏掉它们。 */
+    private RemoteHostClient(JsonRpcPeer peer)
     {
         _peer = peer;
-        Hello = hello;
         peer.NotificationReceived += OnNotification;
     }
 
-    public HostHelloResponse Hello { get; }
+    public HostHelloResponse Hello { get; private set; } = new(false, HostProtocol.Version, "", null);
 
-    public static async Task<RemoteHostClient> ConnectAsync(
+    /** 对端是否声明了某项能力(见 HostCapabilities); 旧宿主不声明任何能力。 */
+    public bool Supports(string capability) => Hello.Capabilities?.Contains(capability) == true;
+
+    public static Task<RemoteHostClient> ConnectAsync(
         Stream duplex,
         string? token = null,
         CancellationToken cancellationToken = default)
+        => ConnectAsync(duplex, token, clientName: null, cancellationToken);
+
+    /** ClientName 是本客户端的显示名(如 "gui@laptop"), host 用它标注由谁回答了审批/问答。 */
+    public static async Task<RemoteHostClient> ConnectAsync(
+        Stream duplex,
+        string? token,
+        string? clientName,
+        CancellationToken cancellationToken)
     {
         var peer = new JsonRpcPeer(duplex);
+        var client = new RemoteHostClient(peer);
         peer.Start();
         try
         {
-            var request = new HostHelloRequest(token, HostProtocol.Version);
+            var request = new HostHelloRequest(token, HostProtocol.Version, clientName);
             var parameters = JsonSerializer.SerializeToElement(request, HostProtocolJsonContext.Default.HostHelloRequest);
             var result = await peer.RequestAsync(HostProtocol.MethodHello, parameters, cancellationToken).ConfigureAwait(false);
             var hello = result is { } value
@@ -46,7 +63,8 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
                 throw new IOException("host returned an invalid hello");
             if (!hello.Ok)
                 throw new IOException($"host handshake rejected: {hello.Mismatch}");
-            return new RemoteHostClient(peer, hello);
+            client.Hello = hello;
+            return client;
         }
         catch
         {
@@ -54,6 +72,9 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
             throw;
         }
     }
+
+    private static Channel<T> ObservationChannel<T>()
+        => Channel.CreateBounded<T>(new BoundedChannelOptions(ObservationBacklog) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
 
     public Task<long> PingAsync(CancellationToken cancellationToken = default)
         => SendAsync(HostProtocol.MethodPing, null, HostProtocolJsonContext.Default.Int64, cancellationToken);
@@ -112,25 +133,29 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     public Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken = default)
         => SendAsync(HostProtocol.MethodToolsList, Serialize(new RemoteSessionRef(sessionId), HostProtocolJsonContext.Default.RemoteSessionRef), HostProtocolJsonContext.Default.IReadOnlyListString, cancellationToken);
 
-    public async IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        var channel = _approvals ??= Channel.CreateUnbounded<RemoteApprovalRequest>();
-        await foreach (var item in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-            yield return item;
-    }
+    public IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync(CancellationToken cancellationToken = default)
+        => _approvals.Reader.ReadAllAsync(cancellationToken);
 
-    public Task RespondApprovalAsync(string requestId, bool allow, string? reason = null, CancellationToken cancellationToken = default)
+    public Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason = null, CancellationToken cancellationToken = default)
         => SendAsync(HostProtocol.MethodApprovalRespond, Serialize(new RemoteApprovalResponse(requestId, allow, reason), HostProtocolJsonContext.Default.RemoteApprovalResponse), HostProtocolJsonContext.Default.Boolean, cancellationToken);
 
-    public async IAsyncEnumerable<RemoteQuestionRequest> QuestionsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        var channel = _questions ??= Channel.CreateUnbounded<RemoteQuestionRequest>();
-        await foreach (var item in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-            yield return item;
-    }
+    public IAsyncEnumerable<RemoteQuestionRequest> QuestionsAsync(CancellationToken cancellationToken = default)
+        => _questions.Reader.ReadAllAsync(cancellationToken);
 
-    public Task RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken = default)
+    public Task<bool> RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken = default)
         => SendAsync(HostProtocol.MethodQuestionRespond, Serialize(new RemoteQuestionResponse(requestId, answers), HostProtocolJsonContext.Default.RemoteQuestionResponse), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public IAsyncEnumerable<RemotePendingResolved> ResolutionsAsync(CancellationToken cancellationToken = default)
+        => _resolutions.Reader.ReadAllAsync(cancellationToken);
+
+    public Task<RemotePendingList> ListPendingAsync(CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodPendingList, null, HostProtocolJsonContext.Default.RemotePendingList, cancellationToken);
+
+    public Task<IReadOnlyList<RemoteHostSession>> ListHostSessionsAsync(CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodSessionsList, null, HostProtocolJsonContext.Default.IReadOnlyListRemoteHostSession, cancellationToken);
+
+    public IAsyncEnumerable<RemoteHostSession> HostSessionChangesAsync(CancellationToken cancellationToken = default)
+        => _sessionChanges.Reader.ReadAllAsync(cancellationToken);
 
     public async Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken = default)
     {
@@ -144,29 +169,21 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     public Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken = default)
         => SendAsync(HostProtocol.MethodFileList, Serialize(new RemoteFilePath(path), HostProtocolJsonContext.Default.RemoteFilePath), HostProtocolJsonContext.Default.RemoteDirectoryListing, cancellationToken);
 
-    public async Task<string> StartPtyAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken = default)
+    public async Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken = default)
     {
-        var reference = await SendAsync(HostProtocol.MethodPtyStart, Serialize(new RemotePtyStartRequest(fileName, arguments), HostProtocolJsonContext.Default.RemotePtyStartRequest), HostProtocolJsonContext.Default.RemotePtyRef, cancellationToken).ConfigureAwait(false);
+        var reference = await SendAsync(HostProtocol.MethodPtyStart, Serialize(request, HostProtocolJsonContext.Default.RemotePtyStartRequest), HostProtocolJsonContext.Default.RemotePtyRef, cancellationToken).ConfigureAwait(false);
         return reference.PtyId;
     }
 
+    /** 每次 attach 换一条新通道: host 会从整屏快照重新开始推送, 旧通道里残留的字节不能混进来。 */
     public async Task AttachPtyAsync(string ptyId, Stream input, Stream output, CancellationToken cancellationToken = default)
     {
-        var channel = _ptyStreams.GetOrAdd(ptyId, _ => Channel.CreateUnbounded<RemotePtyOutput>());
+        var channel = Channel.CreateUnbounded<RemotePtyOutput>();
+        _ptyStreams[ptyId] = channel;
         await SendAsync(HostProtocol.MethodPtyAttach, Serialize(new RemotePtyRef(ptyId), HostProtocolJsonContext.Default.RemotePtyRef), HostProtocolJsonContext.Default.Boolean, cancellationToken).ConfigureAwait(false);
-        var pumpInput = Task.Run(async () =>
-        {
-            var buffer = new byte[4096];
-            try
-            {
-                int read;
-                while ((read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
-                    await SendAsync(HostProtocol.MethodPtyWrite, Serialize(new RemotePtyInput(ptyId, Convert.ToBase64String(buffer.AsSpan(0, read))), HostProtocolJsonContext.Default.RemotePtyInput), HostProtocolJsonContext.Default.Boolean, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception error) when (error is OperationCanceledException or IOException)
-            {
-            }
-        }, cancellationToken);
+        // 远端 PTY 退出(Eof)时 attach 就该返回: 输入泵跟着停, 不等调用方关闭输入流。
+        using var inputLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var pumpInput = Task.Run(() => PumpPtyInputAsync(ptyId, input, inputLifetime.Token), cancellationToken);
         try
         {
             await foreach (var item in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
@@ -180,13 +197,50 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
         }
         finally
         {
+            // 同一 PTY 已被本客户端重新 attach 时通道已换新, 不能 detach 掉新的那条推送。
+            if (_ptyStreams.TryRemove(new KeyValuePair<string, Channel<RemotePtyOutput>>(ptyId, channel)))
+                await DetachPtyAsync(ptyId).ConfigureAwait(false);
+            await inputLifetime.CancelAsync().ConfigureAwait(false);
             await output.FlushAsync(cancellationToken).ConfigureAwait(false);
             await pumpInput.ConfigureAwait(false);
         }
     }
 
+    public Task ResizePtyAsync(string ptyId, int columns, int rows, CancellationToken cancellationToken = default)
+        => Supports(HostCapabilities.PtyResize)
+            ? SendAsync(HostProtocol.MethodPtyResize, Serialize(new RemotePtyResize(ptyId, columns, rows), HostProtocolJsonContext.Default.RemotePtyResize), HostProtocolJsonContext.Default.Boolean, cancellationToken)
+            : Task.CompletedTask;
+
     public Task StopPtyAsync(string ptyId, CancellationToken cancellationToken = default)
         => SendAsync(HostProtocol.MethodPtyStop, Serialize(new RemotePtyRef(ptyId), HostProtocolJsonContext.Default.RemotePtyRef), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    private async Task PumpPtyInputAsync(string ptyId, Stream input, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[4096];
+        try
+        {
+            int read;
+            while ((read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+                await SendAsync(HostProtocol.MethodPtyWrite, Serialize(new RemotePtyInput(ptyId, Convert.ToBase64String(buffer.AsSpan(0, read))), HostProtocolJsonContext.Default.RemotePtyInput), HostProtocolJsonContext.Default.Boolean, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is OperationCanceledException or IOException)
+        {
+        }
+    }
+
+    /** attach 结束时让 host 停掉本连接的推送(PTY 本身继续运行); 旧宿主没有 detach, 连接断开不可用时同样忽略。 */
+    private async Task DetachPtyAsync(string ptyId)
+    {
+        if (!Supports(HostCapabilities.PtyDaemon) || _peer.IsClosed)
+            return;
+        try
+        {
+            await SendAsync(HostProtocol.MethodPtyDetach, Serialize(new RemotePtyRef(ptyId), HostProtocolJsonContext.Default.RemotePtyRef), HostProtocolJsonContext.Default.Boolean, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is IOException or JsonRpcException or ObjectDisposedException)
+        {
+        }
+    }
 
     private void OnNotification(JsonRpcMessage message)
     {
@@ -197,10 +251,16 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
                 events.Writer.TryWrite(item);
                 break;
             case HostProtocol.NotificationApproval when Parse(message, HostProtocolJsonContext.Default.RemoteApprovalRequest) is { } request:
-                (_approvals ??= Channel.CreateUnbounded<RemoteApprovalRequest>()).Writer.TryWrite(request);
+                _approvals.Writer.TryWrite(request);
                 break;
             case HostProtocol.NotificationQuestion when Parse(message, HostProtocolJsonContext.Default.RemoteQuestionRequest) is { } question:
-                (_questions ??= Channel.CreateUnbounded<RemoteQuestionRequest>()).Writer.TryWrite(question);
+                _questions.Writer.TryWrite(question);
+                break;
+            case HostProtocol.NotificationPendingResolved when Parse(message, HostProtocolJsonContext.Default.RemotePendingResolved) is { } resolved:
+                _resolutions.Writer.TryWrite(resolved);
+                break;
+            case HostProtocol.NotificationSessionsChanged when Parse(message, HostProtocolJsonContext.Default.RemoteHostSession) is { } session:
+                _sessionChanges.Writer.TryWrite(session);
                 break;
             case HostProtocol.NotificationPtyOutput when Parse(message, HostProtocolJsonContext.Default.RemotePtyOutput) is { } output
                 && _ptyStreams.TryGetValue(output.PtyId, out var pty):

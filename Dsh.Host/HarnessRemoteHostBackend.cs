@@ -5,7 +5,6 @@ using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Interaction;
 using Dsh.Llm;
-using Dsh.Pty;
 using Dsh.RemoteHost;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
@@ -13,65 +12,45 @@ using Dsh.Runtime.Events;
 namespace Dsh.Host;
 
 /**
- * 远端宿主能力后端: 直连进程内 harness 服务(会话 / 事件 / 工具 / 审批 / 文件 / PTY)。
- * 事件与审批是「远端发起」: 事件经 ctx 通知转成推送流; 审批经 ctx 的 waterfall 桥接成"远端问、本地答"。
+ * 远端宿主能力后端: 直连进程内 harness 服务(会话 / 事件 / 工具 / 文件), PTY 交给 PTY daemon 托管。
+ * 事件经 ctx 通知转成推送流; 审批/问答经 HarnessDecisionBridge 进入待决策队列; 会话状态经 HarnessSessionTracker 进入登记表。
  */
-public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IDisposable
+public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposable
 {
+    /** 会话登记表在 harness 根下的位置(不放 run/: 那里是可随时清掉的运行时端点)。 */
+    private const string RegistryFileName = "sessions.json";
+
     private readonly HarnessApp _app;
-    private readonly Channel<RemoteApprovalRequest> _approvals = Channel.CreateUnbounded<RemoteApprovalRequest>();
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<object?>> _pendingApprovals = new(StringComparer.Ordinal);
-    private readonly Channel<RemoteQuestionRequest> _questions = Channel.CreateUnbounded<RemoteQuestionRequest>();
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<object?>> _pendingQuestions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, AgentHandle> _handles = new(StringComparer.Ordinal);
     private readonly Lock _providerGate = new();
     private readonly HashSet<string> _registeredProviders = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Func<bool> _approvalBridge;
-    private readonly Func<bool> _questionBridge;
-    private long _approvalSequence;
-    private long _questionSequence;
+    private readonly HostPtySessions _ptys;
+    private readonly HarnessDecisionBridge _decisions;
+    private readonly HarnessSessionTracker _tracker;
 
-    public HarnessRemoteHostBackend(HarnessApp app)
+    private HarnessRemoteHostBackend(HarnessApp app, HostPendingDecisions pending, HostSessionRegistry sessions, HostPtySessions ptys)
     {
         _app = app;
-        _approvalBridge = app.Ctx.OnWaterfall<ApprovalRequestNotification>(BridgeApprovalAsync, new EventOptions { Global = true });
-        _questionBridge = app.Ctx.OnWaterfall<UserQuestionsRequestNotification>(BridgeQuestionAsync, new EventOptions { Global = true });
+        Pending = pending;
+        Sessions = sessions;
+        _ptys = ptys;
+        _decisions = new HarnessDecisionBridge(app.Ctx, pending);
+        _tracker = new HarnessSessionTracker(app.Ctx, sessions, pending);
     }
 
-    private async ValueTask<object?> BridgeApprovalAsync(ApprovalRequestNotification notification, Func<ValueTask<object?>> next)
+    /** 读回会话登记表并与 PTY daemon 对账; ptyDaemon 为空时用与 `dsharp tui list` 相同的默认 daemon。 */
+    public static async Task<HarnessRemoteHostBackend> CreateAsync(HarnessApp app, HostPtyDaemon? ptyDaemon = null, CancellationToken cancellationToken = default)
     {
-        var requestId = Interlocked.Increment(ref _approvalSequence).ToString();
-        var completion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingApprovals[requestId] = completion;
-        var request = notification.Request;
-        await _approvals.Writer.WriteAsync(new RemoteApprovalRequest(
-            requestId,
-            request.Agent.Id.Value,
-            request.ToolName,
-            request.Arguments,
-            request.Reason));
-        return await completion.Task.ConfigureAwait(false);
+        var pending = new HostPendingDecisions();
+        var sessions = await HostSessionRegistry.OpenAsync(Path.Combine(app.Home.HostPath, RegistryFileName), pending, cancellationToken).ConfigureAwait(false);
+        var ptys = new HostPtySessions(sessions, ptyDaemon ?? HostPtyDaemon.Default(), app.Home.Root);
+        await ptys.RestoreAsync(cancellationToken).ConfigureAwait(false);
+        return new HarnessRemoteHostBackend(app, pending, sessions, ptys);
     }
 
-    private async ValueTask<object?> BridgeQuestionAsync(UserQuestionsRequestNotification notification, Func<ValueTask<object?>> next)
-    {
-        var requestId = Interlocked.Increment(ref _questionSequence).ToString();
-        var completion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingQuestions[requestId] = completion;
-        var request = notification.Request;
-        var items = request.Questions
-            .Select(question => new RemoteQuestionItem(
-                question.Id,
-                question.Question,
-                question.Detail,
-                question.Header,
-                [.. (question.Options ?? []).Select(option => new RemoteQuestionOption(option.Label, option.Description))],
-                question.MultiSelect,
-                question.Intent?.Approve))
-            .ToList();
-        await _questions.Writer.WriteAsync(new RemoteQuestionRequest(requestId, request.Agent?.Id.Value ?? "", items));
-        return await completion.Task.ConfigureAwait(false);
-    }
+    public HostPendingDecisions Pending { get; }
+
+    public HostSessionRegistry Sessions { get; }
 
     private AgentRegistry Registry => _app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)
         ?? throw new InvalidOperationException("AgentRegistry 未注册");
@@ -79,7 +58,7 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IDisposable
     private ISessionPersistence? Persistence => _app.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName, strict: false);
 
     public Task<HostInfo> InfoAsync(CancellationToken cancellationToken)
-        => Task.FromResult(new HostInfo(HostProtocol.Version, "host", Platform(), _app.Home.Root));
+        => Task.FromResult(new HostInfo(HostProtocol.Version, RemoteHostServer.ReleaseVersion, Platform(), _app.Home.Root));
 
     public Task<IReadOnlyList<RemoteSessionInfo>> ListSessionsAsync(CancellationToken cancellationToken)
     {
@@ -106,6 +85,7 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IDisposable
         var options = ResolveAgentOptions(selection, provider);
         var handle = await Registry.Create(new CreateAgentOptions(Cwd: resolved, AgentOptions: options), cancellationToken).ConfigureAwait(false);
         _handles[handle.Agent.Id.Value] = handle;
+        _tracker.Track(handle.Agent);
         return Describe(handle.Agent);
     }
 
@@ -113,11 +93,15 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IDisposable
     {
         var id = SessionId.Create(sessionId);
         if (Registry.Get(id) is { } live)
+        {
+            _tracker.Track(live);
             return Describe(live);
+        }
         var options = ResolveAgentOptions(selection, provider);
         var handle = await Registry.Resume(new ResumeAgentOptions(id, options), cancellationToken).ConfigureAwait(false);
         _handles[handle.Agent.Id.Value] = handle;
         ApplySelectionOnResume(handle.Agent, selection);
+        _tracker.Track(handle.Agent);
         return Describe(handle.Agent);
     }
 
@@ -200,9 +184,11 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IDisposable
         return Task.CompletedTask;
     }
 
+    /** 中断即放弃这一轮: 该会话还在等回答的审批/问答一并取消。 */
     public Task InterruptAsync(string sessionId, CancellationToken cancellationToken)
     {
         Require(sessionId).Cancel(new AgentCancelCause.User());
+        Pending.CancelSession(sessionId);
         return Task.CompletedTask;
     }
 
@@ -214,21 +200,6 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IDisposable
         var scope = Registry.Get(SessionId.Create(sessionId))?.ScopeKey;
         IReadOnlyList<string> names = [.. runtime.Schemas(scope).Select(schema => schema.Name)];
         return Task.FromResult(names);
-    }
-
-    public Task RespondApprovalAsync(string requestId, bool allow, string? reason, CancellationToken cancellationToken)
-    {
-        if (_pendingApprovals.TryRemove(requestId, out var completion))
-            completion.TrySetResult(allow ? ApprovalOutcome.AllowedOnce : ApprovalOutcome.Rejected);
-        return Task.CompletedTask;
-    }
-
-    public Task RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken)
-    {
-        if (_pendingQuestions.TryRemove(requestId, out var completion))
-            completion.TrySetResult(new AskUserQuestionAnswer(
-                [.. answers.Select(answer => new AskUserQuestionAnswerItem(answer.Id, answer.Selected, answer.Custom))]));
-        return Task.CompletedTask;
     }
 
     public Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken)
@@ -263,92 +234,55 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IDisposable
         return Path.GetFullPath(trimmed);
     }
 
-    public async Task<string> StartPtyAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
-    {
-        var session = await PtyHost.Default
-            .StartAsync(new PtyStartInfo { FileName = fileName, Arguments = arguments, Home = _app.Home.Root }, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-        return session.Id.Value;
-    }
+    public Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken)
+        => _ptys.StartAsync(request, ExpandHome(request.Cwd ?? ""), cancellationToken);
 
-    public async Task WritePtyAsync(string ptyId, byte[] data, CancellationToken cancellationToken)
-    {
-        if (PtyHost.Default.Get(ptyId) is { } session)
-            await session.WriteAsync(data, cancellationToken).ConfigureAwait(false);
-    }
+    public Task WritePtyAsync(string ptyId, byte[] data, CancellationToken cancellationToken)
+        => _ptys.WriteAsync(ptyId, data, cancellationToken);
+
+    public Task ResizePtyAsync(string ptyId, int columns, int rows, CancellationToken cancellationToken)
+        => _ptys.ResizeAsync(ptyId, columns, rows, cancellationToken);
 
     public Task StopPtyAsync(string ptyId, CancellationToken cancellationToken)
-        => PtyHost.Default.StopAsync(ptyId);
+        => _ptys.StopAsync(ptyId, cancellationToken);
 
-    public async IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, [EnumeratorCancellation] CancellationToken cancellationToken)
+    public Task<IAsyncEnumerable<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken)
+        => _ptys.AttachAsync(ptyId, cancellationToken);
+
+    /** 活会话先挂监听、再记下补发截止点, 两者之间新追加的事件不会漏; 非活会话只补发持久化的历史。 */
+    public Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
     {
         var id = SessionId.Create(sessionId);
-        var live = Registry.Get(id);
+        if (Registry.Get(id) is not { } live)
+            return Task.FromResult(ReadPersisted(id, fromSeq).Select(sessionEvent => ToInfo(sessionId, sessionEvent)).ToAsyncEnumerable());
         var buffer = Channel.CreateUnbounded<RemoteEventInfo>();
-        Func<bool>? unsubscribe = null;
-        long liveFrom = -1;
-        if (live is not null)
+        var unsubscribe = _app.Ctx.On<SessionEventNotification>(notification =>
         {
-            // 先订阅再补历史, 避免两者之间新追加的事件被漏掉; 历史只发到订阅时刻为止。
-            unsubscribe = _app.Ctx.On<SessionEventNotification>(notification =>
-            {
-                if (string.Equals(notification.Session.Id.Value, sessionId, StringComparison.Ordinal))
-                    buffer.Writer.TryWrite(ToInfo(sessionId, notification.Event));
-            });
-            liveFrom = live.Session.Seq;
-        }
+            if (string.Equals(notification.Session.Id.Value, sessionId, StringComparison.Ordinal))
+                buffer.Writer.TryWrite(ToInfo(sessionId, notification.Event));
+        });
+        var history = live.Session.SnapshotEvents(fromSeq, live.Session.Seq);
+        return Task.FromResult(LiveEventsAsync(sessionId, history, buffer, unsubscribe, cancellationToken));
+    }
+
+    private static async IAsyncEnumerable<RemoteEventInfo> LiveEventsAsync(
+        string sessionId,
+        IReadOnlyList<SessionEvent> history,
+        Channel<RemoteEventInfo> buffer,
+        Func<bool> unsubscribe,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         try
         {
-            if (live is not null)
-            {
-                foreach (var sessionEvent in live.Session.SnapshotEvents(fromSeq, liveFrom))
-                    yield return ToInfo(sessionId, sessionEvent);
-            }
-            else
-            {
-                foreach (var sessionEvent in ReadPersisted(id, fromSeq))
-                    yield return ToInfo(sessionId, sessionEvent);
-                yield break;
-            }
-
+            foreach (var sessionEvent in history)
+                yield return ToInfo(sessionId, sessionEvent);
             await foreach (var item in buffer.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
                 yield return item;
         }
         finally
         {
-            unsubscribe?.Invoke();
+            unsubscribe();
             buffer.Writer.TryComplete();
-        }
-    }
-
-    public async IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync([EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        await foreach (var item in _approvals.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-            yield return item;
-    }
-
-    public async IAsyncEnumerable<RemoteQuestionRequest> QuestionsAsync([EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        await foreach (var item in _questions.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-            yield return item;
-    }
-
-    public async IAsyncEnumerable<RemotePtyOutput> PtyOutputAsync(string ptyId, [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        var session = PtyHost.Default.Get(ptyId);
-        if (session is null)
-            yield break;
-        var buffer = new byte[8192];
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            var read = await session.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (read == 0)
-            {
-                yield return new RemotePtyOutput(ptyId, "", true);
-                yield break;
-            }
-
-            yield return new RemotePtyOutput(ptyId, Convert.ToBase64String(buffer, 0, read), false);
         }
     }
 
@@ -404,14 +338,16 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IDisposable
     private static string Platform()
         => OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
 
-    public void Dispose()
+    /** 先解开瀑布并取消全部未决请求(放开还在等回答的工具), 再结束会话; PTY 留在 daemon 里, 登记表最后落盘。 */
+    public async ValueTask DisposeAsync()
     {
-        _approvalBridge();
-        _questionBridge();
+        _decisions.Dispose();
+        Pending.Dispose();
+        _tracker.Dispose();
         foreach (var handle in _handles.Values)
             handle.Dispose.Dispose();
         _handles.Clear();
-        _approvals.Writer.TryComplete();
-        _questions.Writer.TryComplete();
+        await _ptys.DisposeAsync().ConfigureAwait(false);
+        await Sessions.DisposeAsync().ConfigureAwait(false);
     }
 }
