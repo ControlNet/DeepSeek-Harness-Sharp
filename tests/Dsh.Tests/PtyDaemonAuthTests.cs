@@ -23,6 +23,7 @@ public sealed class PtyDaemonAuthTests
         try
         {
             var socketPath = Path.Combine(root, "run", "dsh.sock");
+            TempTree.AssertFitsMacOsSocketLimit(socketPath);
             await using var daemon = new PtyDaemon(new PtyHost(), socketPath);
             await daemon.StartAsync(TestContext.Current.CancellationToken);
 
@@ -97,6 +98,7 @@ public sealed class PtyDaemonAuthTests
         try
         {
             var socketPath = Path.Combine(root, "dsh.sock");
+            TempTree.AssertFitsMacOsSocketLimit(socketPath);
             var portFile = OperatingSystem.IsWindows() ? Path.Combine(root, "dsh.port") : null;
             await using var daemon = new PtyDaemon(new PtyHost(), socketPath, portFile);
             await daemon.StartAsync(TestContext.Current.CancellationToken);

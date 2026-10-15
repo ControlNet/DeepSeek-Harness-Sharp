@@ -18,12 +18,13 @@ internal static partial class SettingsDocument
 
     public static string ReplacePluginsBlock(string text, string block)
     {
+        var newline = NewLineOf(text);
         var lines = SplitLines(text);
         var start = FindPluginsStart(lines);
         if (start < 0)
-            return text.TrimEnd() + "\n" + block + "\n";
+            return $"{text.TrimEnd()}{newline}{block.ReplaceLineEndings(newline)}{newline}";
         var end = BlockEnd(lines, start);
-        return string.Join('\n', lines[..start].Concat(SplitLines(block)).Concat(lines[end..])).TrimEnd() + "\n";
+        return $"{string.Join(newline, lines[..start].Concat(SplitLines(block)).Concat(lines[end..])).TrimEnd()}{newline}";
     }
 
     /**
@@ -34,6 +35,7 @@ internal static partial class SettingsDocument
     {
         var before = TopLevelBlocks(SplitLines(previous));
         var after = TopLevelBlocks(SplitLines(next));
+        var newline = NewLineOf(text);
         var lines = SplitLines(text).ToList();
         foreach (var (key, block) in after)
         {
@@ -42,7 +44,7 @@ internal static partial class SettingsDocument
         }
         foreach (var key in before.Keys.Where(key => !after.ContainsKey(key)).ToList())
             ReplaceTopLevelBlock(lines, key, []);
-        return string.Join('\n', lines).TrimEnd() + "\n";
+        return $"{string.Join(newline, lines).TrimEnd()}{newline}";
     }
 
     private static Dictionary<string, string> TopLevelBlocks(string[] lines)
@@ -187,6 +189,10 @@ internal static partial class SettingsDocument
 
     private static string[] SplitLines(string text)
         => text.Replace("\r\n", "\n").Split('\n');
+
+    /** 回写沿用原文件的换行风格: Windows 上编辑过的 settings.yaml 是 CRLF, 只改一段时其余行不能被改成 LF。 */
+    private static string NewLineOf(string text)
+        => text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
 
     private static string Bool(bool value) => value ? "true" : "false";
 
