@@ -984,8 +984,7 @@ public sealed class ChatWindowPaneTests : IDisposable
     private sealed class FakeRemoteBacking(string ptyId) : ITerminalBacking
     {
         private readonly Channel<byte[]> _output = Channel.CreateUnbounded<byte[]>();
-        private byte[]? _pending;
-        private int _offset;
+        private PtyOutputReader? _reader;
 
         public List<string> Written { get; } = [];
 
@@ -1001,29 +1000,8 @@ public sealed class ChatWindowPaneTests : IDisposable
 
         public void Push(string text) => _output.Writer.TryWrite(Encoding.UTF8.GetBytes(text));
 
-        public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            while (await _output.Reader.WaitToReadAsync(cancellationToken))
-            {
-                if (_pending is null && _output.Reader.TryRead(out var chunk))
-                {
-                    _pending = chunk;
-                    _offset = 0;
-                }
-
-                if (_pending is { } current)
-                {
-                    var take = Math.Min(current.Length - _offset, buffer.Length);
-                    current.AsSpan(_offset, take).CopyTo(buffer.Span);
-                    _offset += take;
-                    if (_offset >= current.Length)
-                        _pending = null;
-                    return take;
-                }
-            }
-
-            return 0;
-        }
+        public ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => (_reader ??= new PtyOutputReader(_output.Reader)).ReadAsync(buffer, cancellationToken);
 
         public ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
         {
