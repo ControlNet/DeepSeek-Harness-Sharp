@@ -24,9 +24,10 @@ public sealed class WebBridgeSshTunnelTests
     [Fact(Timeout = 360000)]
     public async Task EveryWebSocket_GetsItsOwnSshTunnel_ToTheDeployedRemoteHost()
     {
+        var ct = TestContext.Current.CancellationToken;
         var executable = FleetSshEndToEndTests.RequireEnvironment();
         var guard = FleetSshEndToEndTests.RealHomeGuard.Capture();
-        await using var server = await TestSshServer.StartAsync(Ct);
+        await using var server = await TestSshServer.StartAsync(ct);
         var bridgeHome = RealHostProcesses.CreateHome("wt");
         var remoteHome = TempTree.CreateSocketDirectory("wr");
         try
@@ -39,12 +40,12 @@ public sealed class WebBridgeSshTunnelTests
             };
             await using var bridge = WebBridgeServer.Start(new WebBridgeOptions(bridgeHome, 0, [MachineSpec.Local(bridgeHome), machine], options));
             var access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(bridgeHome))!);
-            await access.WaitForMachinesAsync(states => states[RemoteMachine] == "Connected", DeployTimeout, Ct);
+            await access.WaitForMachinesAsync(states => states[RemoteMachine] == "Connected", DeployTimeout, ct);
             Assert.Equal(1, SshChildren(machine.Port));
 
-            var cookies = await access.LoginAsync(Ct);
-            using var first = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct, RemoteMachine);
-            using var second = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct, RemoteMachine);
+            var cookies = await access.LoginAsync(ct);
+            using var first = await access.ConnectWebSocketAsync(cookies, access.Origin, ct, RemoteMachine);
+            using var second = await access.ConnectWebSocketAsync(cookies, access.Origin, ct, RemoteMachine);
             foreach (var socket in new[] { first, second })
             {
                 await WebBridgeHubTests.HelloAsync(socket);
@@ -57,7 +58,7 @@ public sealed class WebBridgeSshTunnelTests
             await WebSocketRpc.SendAsync(second, 4, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}"}""");
             await WebBridgeHubTests.ReadTerminalUntilAsync(second, ptyId, "tunnel-42");
 
-            await first.CloseAsync(WebSocketCloseStatus.NormalClosure, "", Ct);
+            await first.CloseAsync(WebSocketCloseStatus.NormalClosure, "", ct);
             await WebSocketRpc.WaitForAsync(() => SshChildren(machine.Port) == 2);
         }
         finally

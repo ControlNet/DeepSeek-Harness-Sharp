@@ -31,9 +31,10 @@ public sealed class WebBridgeHubTests
     [Fact(Timeout = 120000)]
     public async Task Machines_RequireLogin_AndListEveryMachineWithoutSecrets()
     {
+        var ct = TestContext.Current.CancellationToken;
         await using var hub = await HubFixture.StartAsync();
         using var anonymous = BridgeAccess.CreateHttpClient(new CookieContainer());
-        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(hub.Access.Url(WebBridgeServer.MachinesPath), Ct)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(hub.Access.Url(WebBridgeServer.MachinesPath), ct)).StatusCode);
 
         var body = await hub.WaitForMachinesAsync(machines => machines[MachineSpec.LocalName] == "Connected" && machines[SecondMachine] == "Connected" && machines[OfflineMachine] == "Offline");
         var listed = JsonDocument.Parse(body).RootElement.EnumerateArray().ToList();
@@ -49,10 +50,11 @@ public sealed class WebBridgeHubTests
     [Fact(Timeout = 120000)]
     public async Task WebSocket_ReachesTheNamedMachine_AndRunsATerminalThere()
     {
+        var ct = TestContext.Current.CancellationToken;
         await using var hub = await HubFixture.StartAsync();
-        var cookies = await hub.Access.LoginAsync(Ct);
-        using var local = await hub.Access.ConnectWebSocketAsync(cookies, hub.Access.Origin, Ct);
-        using var second = await hub.Access.ConnectWebSocketAsync(cookies, hub.Access.Origin, Ct, SecondMachine);
+        var cookies = await hub.Access.LoginAsync(ct);
+        using var local = await hub.Access.ConnectWebSocketAsync(cookies, hub.Access.Origin, ct);
+        using var second = await hub.Access.ConnectWebSocketAsync(cookies, hub.Access.Origin, ct, SecondMachine);
         await HelloAsync(local);
         await HelloAsync(second);
 
@@ -74,15 +76,16 @@ public sealed class WebBridgeHubTests
     [Fact(Timeout = 120000)]
     public async Task WebSocket_ToUnknownOrOfflineMachine_IsRefused()
     {
+        var ct = TestContext.Current.CancellationToken;
         await using var hub = await HubFixture.StartAsync();
-        var cookies = await hub.Access.LoginAsync(Ct);
+        var cookies = await hub.Access.LoginAsync(ct);
         using var unknown = BridgeAccess.CreateWebSocket(cookies, hub.Access.Origin);
-        await Assert.ThrowsAsync<WebSocketException>(() => unknown.ConnectAsync(hub.Access.MachineWebSocketUri("../local"), Ct));
+        await Assert.ThrowsAsync<WebSocketException>(() => unknown.ConnectAsync(hub.Access.MachineWebSocketUri("../local"), ct));
         Assert.Equal(HttpStatusCode.NotFound, unknown.HttpStatusCode);
 
         await hub.WaitForMachinesAsync(machines => machines[OfflineMachine] == "Offline");
-        using var offline = await hub.Access.ConnectWebSocketAsync(cookies, hub.Access.Origin, Ct, OfflineMachine);
-        var received = await offline.ReceiveAsync(new byte[1024], Ct);
+        using var offline = await hub.Access.ConnectWebSocketAsync(cookies, hub.Access.Origin, ct, OfflineMachine);
+        var received = await offline.ReceiveAsync(new byte[1024], ct);
 
         Assert.Equal(WebSocketMessageType.Close, received.MessageType);
         Assert.Equal(WebSocketCloseStatus.InternalServerError, offline.CloseStatus);
