@@ -6,7 +6,9 @@ namespace Dsh.Tests;
 /**
  * Smoke tests against the real `opencode acp` agent installed on this machine (skipped when it is missing).
  * The handshake test makes no model call; the LlmSmoke tests send real prompts through OpenCode's configured model.
+ * Starting OpenCode is CPU heavy for several seconds, so these run serially instead of skewing timing-sensitive tests in parallel.
  */
+[Collection(SerialProcessCollection.Name)]
 public sealed class AcpAgentProcessSmokeTests : IDisposable
 {
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(90);
