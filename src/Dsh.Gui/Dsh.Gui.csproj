@@ -12,7 +12,6 @@
     <ProjectReference Include="..\Dsh.RemoteHost\Dsh.RemoteHost.csproj" />
     <ProjectReference Include="..\Dsh.Runtime\Dsh.Runtime.csproj" />
     <ProjectReference Include="..\Dsh.SessionQuery\Dsh.SessionQuery.csproj" />
-    <ProjectReference Include="..\Dsh.Subagent\Dsh.Subagent.csproj" />
   </ItemGroup>
 
   <ItemGroup>

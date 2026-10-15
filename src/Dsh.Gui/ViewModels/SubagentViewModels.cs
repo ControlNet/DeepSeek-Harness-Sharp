@@ -7,7 +7,6 @@ using Dsh.Gui.Services;
 using Dsh.Llm;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
-using Dsh.Subagent;
 
 namespace Dsh.Gui.ViewModels;
 

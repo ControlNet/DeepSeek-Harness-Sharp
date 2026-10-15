@@ -11,13 +11,3 @@ public sealed record SubagentProviderRemovedNotification(string Name) : INotific
 {
     public static string EventName => "subagent/provider-removed";
 }
-
-public sealed record SubagentStartNotification(SubagentRunInfo Info) : INotification
-{
-    public static string EventName => "subagent/start";
-}
-
-public sealed record SubagentEndNotification(SubagentRunEndInfo Info) : INotification
-{
-    public static string EventName => "subagent/end";
-}

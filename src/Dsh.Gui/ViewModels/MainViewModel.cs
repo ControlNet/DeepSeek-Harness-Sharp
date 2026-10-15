@@ -15,7 +15,6 @@ using Dsh.RemoteHost;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
 using Dsh.SessionQuery;
-using Dsh.Subagent;
 
 namespace Dsh.Gui.ViewModels;
 
@@ -2177,7 +2176,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _openAssistant = null;
         _openReasoning = null;
-        var isSubagent = string.Equals(call.Name, SubagentTool.DefaultToolName, StringComparison.Ordinal);
+        var isSubagent = string.Equals(call.Name, ISubagentService.DefaultToolName, StringComparison.Ordinal);
         var label = isSubagent ? ReadDescription(call.Arguments) : null;
         var message = AppendMessage(new MessageViewModel(
             "工具",

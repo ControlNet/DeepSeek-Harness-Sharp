@@ -3,25 +3,6 @@ using Dsh.Llm;
 
 namespace Dsh.Subagent;
 
-public abstract record SubagentListEntry
-{
-    public required SessionId Id { get; init; }
-    public SessionId? Parent { get; init; }
-    public int? Depth { get; init; }
-
-    public sealed record Child : SubagentListEntry
-    {
-        public required string Mode { get; init; }
-        public string? Label { get; init; }
-        public bool HasChildren { get; init; }
-    }
-
-    public sealed record Diagnostic : SubagentListEntry
-    {
-        public required string Reason { get; init; }
-    }
-}
-
 public sealed partial class SubagentRuntime
 {
     public Task<IReadOnlyList<SubagentListEntry>> ListChildrenAsync(SessionId parentSessionId, CancellationToken signal = default)

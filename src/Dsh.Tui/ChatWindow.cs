@@ -7,7 +7,6 @@ using Dsh.Core;
 using Dsh.IdeHistory;
 using Dsh.Interaction;
 using Dsh.Llm;
-using Dsh.Subagent;
 using Dsh.Tui.Services;
 
 namespace Dsh.Tui;
