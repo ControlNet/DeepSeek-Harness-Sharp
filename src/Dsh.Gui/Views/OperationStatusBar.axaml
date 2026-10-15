@@ -1,0 +1,35 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Dsh.Gui.ViewModels"
+             x:Class="Dsh.Gui.Views.OperationStatusBar"
+             x:DataType="vm:OperationViewModel"
+             x:CompileBindings="True">
+  <UserControl.Styles>
+    <Style Selector="SelectableTextBlock.status">
+      <Setter Property="Foreground" Value="{DynamicResource Brush.Text.Secondary}" />
+    </Style>
+    <Style Selector="SelectableTextBlock.status.error">
+      <Setter Property="Foreground" Value="{DynamicResource Brush.Status.Error}" />
+    </Style>
+  </UserControl.Styles>
+
+  <StackPanel Spacing="6">
+    <Border IsVisible="{Binding Confirmation, Converter={x:Static ObjectConverters.IsNotNull}}"
+            Background="{DynamicResource Brush.Accent.Soft}"
+            BorderBrush="{DynamicResource Brush.Status.Warning}" BorderThickness="1"
+            CornerRadius="{DynamicResource CornerRadius.Control}" Padding="10,8">
+      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+        <TextBlock Text="{Binding Confirmation.Message, FallbackValue=''}" TextWrapping="Wrap" VerticalAlignment="Center" />
+        <Button Grid.Column="1" Classes="Primary" Content="{Binding Confirmation.AcceptLabel, FallbackValue=''}"
+                Command="{Binding Confirmation.AcceptCommand, FallbackValue={x:Null}}" />
+        <Button Grid.Column="2" Classes="Ghost" Content="取消"
+                Command="{Binding Confirmation.CancelCommand, FallbackValue={x:Null}}" />
+      </Grid>
+    </Border>
+    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+      <ProgressBar IsIndeterminate="True" IsVisible="{Binding Busy}" Width="60" MinWidth="60" VerticalAlignment="Center" />
+      <SelectableTextBlock Grid.Column="1" Classes="status" Classes.error="{Binding StatusIsError}"
+                           Text="{Binding Status}" TextWrapping="Wrap" VerticalAlignment="Center" />
+    </Grid>
+  </StackPanel>
+</UserControl>

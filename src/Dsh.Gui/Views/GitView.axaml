@@ -1,0 +1,142 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Dsh.Gui.ViewModels"
+             xmlns:views="using:Dsh.Gui.Views"
+             xmlns:git="using:Dsh.GitInspect"
+             xmlns:ia="using:Dsh.Interaction"
+             x:Class="Dsh.Gui.Views.GitView"
+             x:DataType="vm:GitViewModel"
+             x:CompileBindings="True"
+             FontFamily="{DynamicResource Font.Ui}"
+             FontSize="{DynamicResource FontSize.Body}">
+  <UserControl.Styles>
+    <Style Selector="TabItem">
+      <Setter Property="FontSize" Value="{DynamicResource FontSize.Title}" />
+    </Style>
+    <Style Selector="Button.Change">
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid ColumnDefinitions="420,6,*" Margin="12">
+    <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="2">
+          <TextBlock Classes="Title" Text="{Binding BranchSummary}" TextTrimming="CharacterEllipsis" />
+          <TextBlock Classes="Tertiary Mono" Text="{Binding ProjectPath}" TextTrimming="CharacterEllipsis" />
+        </StackPanel>
+        <Button Grid.Column="1" Classes="Ghost" Content="刷新" Command="{Binding RefreshCommand}" VerticalAlignment="Top" />
+      </Grid>
+
+      <TabControl Grid.Row="1">
+        <TabItem Header="变更">
+          <ScrollViewer>
+            <ItemsControl ItemsSource="{Binding Groups}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:GitChangeGroupViewModel">
+                  <StackPanel Spacing="2" Margin="0,4">
+                    <TextBlock Classes="Secondary" FontWeight="SemiBold" Text="{Binding Header}" />
+                    <ItemsControl ItemsSource="{Binding Items}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:GitChangeItemViewModel">
+                          <Button Classes="Ghost Change" Classes.selected="{Binding IsSelected}"
+                                  Command="{Binding $parent[UserControl].((vm:GitViewModel)DataContext).SelectChangeCommand}"
+                                  CommandParameter="{Binding}">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                              <TextBlock Classes="Mono" Text="{Binding Code}" Width="14" />
+                              <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                          </Button>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+        </TabItem>
+
+        <TabItem Header="提交">
+          <ListBox ItemsSource="{Binding Commits}" SelectedItem="{Binding SelectedCommit, Mode=TwoWay}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="git:GitCommitSummary">
+                <StackPanel Spacing="1">
+                  <TextBlock Text="{Binding Subject}" TextTrimming="CharacterEllipsis" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Classes="Tertiary Mono" Text="{Binding ShortSha}" />
+                    <TextBlock Classes="Tertiary" Text="{Binding AuthorName}" />
+                    <TextBlock Classes="Tertiary" Text="{Binding AuthorDate, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" />
+                  </StackPanel>
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </TabItem>
+
+        <TabItem Header="Worktree">
+          <Grid RowDefinitions="*,Auto" RowSpacing="8">
+            <ScrollViewer>
+              <ItemsControl ItemsSource="{Binding Worktrees}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="git:GitWorktree">
+                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="6" Margin="0,3">
+                      <StackPanel Spacing="1">
+                        <TextBlock Classes="Mono" Text="{Binding Path}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Path}" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                          <TextBlock Classes="Tertiary" Text="{Binding Branch, FallbackValue='分离 HEAD', TargetNullValue='分离 HEAD'}" />
+                          <TextBlock Classes="Tertiary" Text="主 worktree" IsVisible="{Binding IsMain}" />
+                          <TextBlock Classes="Tertiary" Text="已锁定" IsVisible="{Binding IsLocked}" />
+                        </StackPanel>
+                      </StackPanel>
+                      <Button Grid.Column="1" Classes="Ghost" Content="新建会话" VerticalAlignment="Center"
+                              Command="{Binding $parent[UserControl].((vm:GitViewModel)DataContext).RequestSessionCommand}"
+                              CommandParameter="{Binding}" />
+                      <Button Grid.Column="2" Classes="Ghost" Content="移除" VerticalAlignment="Center"
+                              IsVisible="{Binding !IsMain}"
+                              Command="{Binding $parent[UserControl].((vm:GitViewModel)DataContext).RemoveWorktreeCommand}"
+                              CommandParameter="{Binding}" />
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+            <StackPanel Grid.Row="1" Spacing="6">
+              <TextBox Text="{Binding NewWorktreePath, Mode=TwoWay}" PlaceholderText="新 worktree 路径（相对路径以仓库根目录为基准，如 ../feature）" />
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                <TextBox Text="{Binding NewWorktreeBranch, Mode=TwoWay}" PlaceholderText="新分支名（留空 = 以目录名新建分支）" />
+                <Button Grid.Column="1" Classes="Primary" Content="新建" Command="{Binding AddWorktreeCommand}" />
+              </Grid>
+              <CheckBox Content="移除时丢弃其中未提交的修改（--force）" IsChecked="{Binding ForceRemove, Mode=TwoWay}" />
+            </StackPanel>
+          </Grid>
+        </TabItem>
+      </TabControl>
+
+      <views:OperationStatusBar Grid.Row="2" />
+    </Grid>
+
+    <GridSplitter Grid.Column="1" ResizeDirection="Columns" Background="Transparent" />
+
+    <Grid Grid.Column="2" RowDefinitions="Auto,Auto,*" RowSpacing="6" Margin="6,0,0,0">
+      <TextBlock Classes="Title" Text="{Binding DiffTitle, TargetNullValue='选中一个文件或提交查看 diff'}" TextTrimming="CharacterEllipsis" />
+      <SelectableTextBlock Grid.Row="1" Foreground="{DynamicResource Brush.Status.Warning}" Text="{Binding DiffNotice}" TextWrapping="Wrap"
+                           IsVisible="{Binding DiffNotice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled">
+        <ItemsControl ItemsSource="{Binding DiffCards}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <StackPanel Spacing="8" />
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="ia:DiffCard">
+              <views:DiffView Card="{Binding}" />
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Grid>
+  </Grid>
+</UserControl>

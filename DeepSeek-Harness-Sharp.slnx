@@ -66,6 +66,7 @@
     <Project Path="src/Dsh.Workflow/Dsh.Workflow.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Dsh.GuiViewsHarness/Dsh.GuiViewsHarness.csproj" />
     <Project Path="tests/Dsh.IocAotSmoke/Dsh.IocAotSmoke.csproj" />
     <Project Path="tests/Dsh.ManagedPluginSample/Dsh.ManagedPluginSample.csproj" />
     <Project Path="tests/Dsh.Tests/Dsh.Tests.csproj" />
