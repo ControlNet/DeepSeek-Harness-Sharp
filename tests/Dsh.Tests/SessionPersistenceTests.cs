@@ -179,7 +179,14 @@ public class SessionPersistenceTests : IDisposable
         AssertEventsEqual([.. events, extra], reopened.Read().ToArray());
     }
 
-    private static int FrameCount(string logPath) => ZstdFrames.Scan(File.ReadAllBytes(logPath)).Frames.Count;
+    /** 定时落盘会在读取期间从另一线程追加, 读取必须放行写入(Windows 上 File.ReadAllBytes 只共享读, 会和追加流冲突)。 */
+    private static int FrameCount(string logPath)
+    {
+        using var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var buffer = new MemoryStream();
+        stream.CopyTo(buffer);
+        return ZstdFrames.Scan(buffer.ToArray()).Frames.Count;
+    }
 
     /** 流式 chunk 先缓冲, 遇到非 chunk 事件才连同之前的 chunk 写成一个帧; 最后一批写坏时之前的批次完好。 */
     [Fact]
@@ -247,6 +254,26 @@ public class SessionPersistenceTests : IDisposable
             await Task.Delay(10, TestContext.Current.CancellationToken);
         Assert.Equal(timedBaseline + 1, FrameCount(timedLog));
         timedHandle.Close();
+    }
+
+    /** 会话活着时日志可能正被追加流持有(追加流只共享读), 这时读取会话不能失败。 */
+    [Fact]
+    public void Read_WhileAnAppendStreamHoldsTheLog_Succeeds()
+    {
+        var root = NewRoot();
+        using var persistence = new JsonlSessionPersistence(root, compression: JsonlCompression.Zstd);
+        var session = BuildSourceSession(TestCwd);
+        var events = session.SnapshotEvents();
+        var handle = persistence.Create(session.Header);
+        handle.Append(events);
+        handle.Close();
+
+        using (new FileStream(LogPathOf(root, session.Header, JsonlCompression.Zstd), FileMode.Append, FileAccess.Write, FileShare.Read))
+        {
+            var reader = persistence.Open(session.Header.Id, SessionAccess.Read);
+            AssertEventsEqual(events, reader.Read().ToArray());
+            reader.Close();
+        }
     }
 
     [Fact]

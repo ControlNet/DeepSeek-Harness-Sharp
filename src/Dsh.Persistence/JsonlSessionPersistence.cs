@@ -11,6 +11,12 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
     private const string BackendName = "session-persistence-jsonl";
     private const string ArtifactKind = "jsonl";
 
+    /**
+     * 读日志一律放行写入与删除: 会话活着时定时落盘会从另一线程追加, Windows 上只共享读的读取会和追加流互相拒绝(CI 上 IOException)。
+     * 带上 Delete, 截断与改标题用临时文件 File.Move 覆盖日志时也不会被正在读的句柄挡住。
+     */
+    private const FileShare LiveLogReadShare = FileShare.ReadWrite | FileShare.Delete;
+
     private readonly string _root;
     private readonly bool _packChunks;
     private readonly JsonlCompression _compression;
@@ -263,7 +269,7 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
         byte[] replacement;
         if (_compression == JsonlCompression.None)
         {
-            var original = File.ReadAllBytes(path);
+            var original = ReadLiveLog(path);
             var newline = Array.IndexOf(original, (byte)'\n');
             if (newline < 0)
                 throw new SessionPersistenceCorruptionException($"session \"{header.Id}\": log has no header line: {path}");
@@ -271,7 +277,7 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
         }
         else
         {
-            var original = File.ReadAllBytes(path);
+            var original = ReadLiveLog(path);
             var (frames, _) = ZstdFrames.Scan(original);
             if (frames.Count == 0)
                 throw new SessionPersistenceCorruptionException($"session \"{header.Id}\": log has no header frame: {path}");
@@ -491,7 +497,7 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
         var content = EncodeEventBatch(events);
         var path = JsonlLayout.LogPath(_root, meta.Cwd, meta.Id, _compression);
         long before;
-        using (var probe = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        using (var probe = new FileStream(path, FileMode.Open, FileAccess.Read, LiveLogReadShare))
         {
             before = probe.Length;
         }
@@ -522,13 +528,21 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
         {
             info.Refresh();
             var before = FileRevision(info);
-            var buffer = File.ReadAllBytes(path);
+            var buffer = ReadLiveLog(path);
             var afterInfo = new FileInfo(path);
             afterInfo.Refresh();
             if (before == FileRevision(afterInfo)) return (buffer, before);
             if (attempt == 1) return (buffer[..(int)Math.Min(buffer.Length, info.Length)], before);
             info = afterInfo;
         }
+    }
+
+    private static byte[] ReadLiveLog(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, LiveLogReadShare);
+        using var buffer = new MemoryStream();
+        stream.CopyTo(buffer);
+        return buffer.ToArray();
     }
 
     private static string FileRevision(FileInfo info)
@@ -542,7 +556,7 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
 
     private static string? ReadFirstLine(string path)
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, LiveLogReadShare);
         using var accumulated = new MemoryStream();
         var buffer = new byte[FirstLineChunkSize];
         int read;
@@ -561,7 +575,7 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
 
     private static string? ReadFirstZstdLine(string path)
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, LiveLogReadShare);
         using var accumulated = new MemoryStream();
         var chunk = new byte[FirstLineChunkSize];
         int read;
