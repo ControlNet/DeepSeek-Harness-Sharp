@@ -189,6 +189,7 @@ public static class TuiRunner
             while (!chat.ExitRequested)
             {
                 chat.DrainUi();
+                chat.ExpireKeySequence();
                 var size = GetConsoleSize();
                 if (grid.Width != size.Width || grid.Height != size.Height)
                 {

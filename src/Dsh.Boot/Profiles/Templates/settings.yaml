@@ -59,6 +59,8 @@ rules: []
 #       timeline_limit(开启后合并的条目上限,默认 50)。
 # TUI @deepseek-ai/dsh-tui: 参数 highlightColor/arrowColor/dividerColor/statusColor/errorColor 可配色(取 "#rrggbb" 真彩或 16 色名如 BrightCyan;
 # arrowColor 缺省跟随 highlightColor, 其余缺省不留痕; 示例见下)。sidebarWidth/inputHeight/gpuBackend 亦在此配。
+# keys 改快捷键:动作名: 按键串(修饰键 Ctrl/Alt 用 + 连接, 多键序列用空格分隔, 如 "Ctrl+X W");未写的动作用默认键位,TUI 内 /keys 列出全部动作与当前绑定;
+# 首键须带 Ctrl/Alt 或为 F 键, 冲突(同一按键串多个动作/一个是另一个的前缀)记 WARN 并回退默认。keySequenceTimeoutMs 为前缀等待超时(毫秒, 缺省 0 = 一直等)。
 plugins:
   "@deepseek-ai/dsh-memory": false
   "@deepseek-ai/dsh-toon": false
@@ -72,6 +74,9 @@ plugins:
   #   dividerColor: BrightBlack
   #   statusColor: "#9aa0a6"
   #   errorColor: "#ff6b6b"
+  #   keys:
+  #     overview: F5
+  #     newSession: "Ctrl+X Ctrl+N"
 
 # 下面这块由 `dsharp config schema --write-template` 从各插件声明生成(编译期 schema, 不靠反射):
 # 顶层 settings 与每个插件支持的参数都会列在这里, 全部是注释, 不会改变默认行为。
