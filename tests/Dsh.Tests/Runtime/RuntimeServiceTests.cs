@@ -34,15 +34,18 @@ public class RuntimeServiceTests
     public async Task Strict_Get_HidesServicesOfInactivePlugins()
     {
         var ctx = new Context();
+        (object? Strict, object? Loose) duringApply = default;
         var registration = ctx.Plugin(PluginDefinition.From((pluginCtx, _) =>
         {
             pluginCtx.Provide("late", "value");
+            duringApply = (ctx.Get("late"), ctx.Get("late", strict: false));
             throw new InvalidOperationException("activation failed");
         }, "failing"));
         await registration.WaitAsync();
+        Assert.Null(duringApply.Strict);
+        Assert.Equal("value", duringApply.Loose);
         Assert.Equal(ActivationState.Failed, registration.State);
-        Assert.Null(ctx.Get("late"));
-        Assert.Equal("value", ctx.Get("late", strict: false));
+        Assert.Null(ctx.Get("late", strict: false));
     }
 
     [Fact]
