@@ -4,11 +4,9 @@ using Dsh.Runtime;
 namespace Dsh.SessionQuery;
 
 /** 会话全文检索:活会话按事件数、历史会话按持久层 Revision 增量刷新内存索引。 */
-public sealed class SessionQueryService : Service, IDisposable
+public sealed class SessionQueryService : Service, ISessionQueryService, IDisposable
 {
-    public const string ServiceName = "sessionQuery";
-
-    private const string PersistenceServiceName = "sessionPersistence";
+    public const string ServiceName = ISessionQueryService.ServiceName;
 
     private readonly SessionQueryIndex _index;
     private readonly Dictionary<string, string> _versions = new(StringComparer.Ordinal);
@@ -41,7 +39,7 @@ public sealed class SessionQueryService : Service, IDisposable
             _versions[session.Id.Value] = version;
         }
 
-        if (Ctx.Get<ISessionPersistence>(PersistenceServiceName, false) is not { } persistence)
+        if (Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName, false) is not { } persistence)
             return;
         foreach (var snapshot in persistence.List())
         {

@@ -1,5 +1,6 @@
 ﻿using Dsh.Account;
 using Dsh.Gui.ViewModels;
+using Dsh.Core;
 
 namespace Dsh.Tests;
 

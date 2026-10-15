@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Globalization;
 using System.Text;
+using Dsh.Core;
 
 namespace Dsh.IdeHistory;
 

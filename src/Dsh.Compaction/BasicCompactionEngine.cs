@@ -78,7 +78,7 @@ public class BasicCompactionEngine : CompactionEngine, IDisposable
             return result;
         if (string.IsNullOrWhiteSpace(agent.Session.Header.Title))
         {
-            Ctx.Get<ISessionPersistence>("sessionPersistence", strict: false)?.Rename(agent.Session.Id, title);
+            Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName, strict: false)?.Rename(agent.Session.Id, title);
             agent.Session.Rename(title);
         }
         return result with { Summary = summary };

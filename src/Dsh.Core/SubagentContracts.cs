@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Llm;
+using Dsh.Runtime.Events;
 
 namespace Dsh.Core;
 
@@ -94,12 +95,89 @@ public sealed record SubagentStartRequest
 /** 子代理 provider 的能力视图:供消费方在不接触 provider SPI 的情况下探测能力。 */
 public sealed record SubagentProviderInfo(SubagentCapabilities Capabilities, bool InheritsParentContext);
 
-/** 子代理启动服务的消费侧契约:实现由 subagent 插件的 SubagentRuntime 提供,工作流等模块只面向本接口。 */
+/** 子代理服务的消费侧契约:实现由 subagent 插件的 SubagentRuntime 提供,工作流与 TUI/GUI 等模块只面向本接口。 */
 public interface ISubagentService
 {
     public const string ServiceName = "subagents";
 
+    /** 子代理委派工具的缺省名:界面据此把工具调用渲染成子代理卡片。 */
+    public const string DefaultToolName = "subagent";
+
     Task<ISubagentRun> StartAsync(string name, SubagentStartRequest request);
 
     SubagentProviderInfo? GetProviderInfo(string name);
+
+    /** 存活子代理的本地 agent;已结束或非本地运行返回 null。 */
+    IAgent? GetLive(SessionId id);
+
+    Task<IReadOnlyList<SubagentListEntry>> ListChildrenAsync(SessionId parentSessionId, CancellationToken signal = default);
+
+    Task<IReadOnlyList<SubagentListEntry>> ListDescendantsAsync(
+        SessionId parentSessionId, int depth = int.MaxValue, CancellationToken signal = default);
+}
+
+public abstract record SubagentListEntry
+{
+    public required SessionId Id { get; init; }
+    public SessionId? Parent { get; init; }
+    public int? Depth { get; init; }
+
+    public sealed record Child : SubagentListEntry
+    {
+        public required string Mode { get; init; }
+        public string? Label { get; init; }
+        public bool HasChildren { get; init; }
+    }
+
+    public sealed record Diagnostic : SubagentListEntry
+    {
+        public required string Reason { get; init; }
+    }
+}
+
+public sealed record SubagentRunInfo(string RunId, string Provider, SessionId Id, bool Local);
+
+public sealed record SubagentRunEndInfo(
+    string RunId,
+    string Provider,
+    SessionId Id,
+    bool Local,
+    SubagentStopReason StopReason,
+    IReadOnlyList<ContentBlock>? LastAssistantMessage = null,
+    SubagentInterruptionSnapshot? Interruption = null);
+
+public sealed record SubagentStartNotification(SubagentRunInfo Info) : INotification
+{
+    public static string EventName => "subagent/start";
+}
+
+public sealed record SubagentEndNotification(SubagentRunEndInfo Info) : INotification
+{
+    public static string EventName => "subagent/end";
+}
+
+/** 子会话身份事件:由 subagent 插件写入并注册编解码,界面只读地据此识别子代理会话。 */
+public sealed record SubagentDescriptorPayload(int Version, string Mode, string Provider, string? Label = null)
+    : SessionEventPayload
+{
+    public const string EventType = "subagent/descriptor";
+    public const int CurrentVersion = 3;
+    public const string OneShotMode = "one-shot";
+    public const string ContinuableMode = "continuable";
+
+    public override string Type => EventType;
+
+    public static SubagentDescriptorPayload OneShot(string provider, string? label)
+        => new(CurrentVersion, OneShotMode, provider, label);
+
+    // 提供者每次激活只向子会话 own 后缀追加一个 descriptor；own 后缀里首个即为身份（fork 种子里的祖先 descriptor 不参与）。
+    public static SubagentDescriptorPayload? IdentityOf(Session session)
+    {
+        foreach (var sessionEvent in session.OwnEvents())
+        {
+            if (sessionEvent.Data is SubagentDescriptorPayload payload)
+                return payload.Version == CurrentVersion ? payload : null;
+        }
+        return null;
+    }
 }

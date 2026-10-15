@@ -1,6 +1,4 @@
-﻿using Dsh.Core;
-
-namespace Dsh.Presets;
+﻿namespace Dsh.Core;
 
 /**
  * 创造模式运行时能力接缝: 由 Dsh.Inspection 实现并注册为服务 "creativeToolset"。

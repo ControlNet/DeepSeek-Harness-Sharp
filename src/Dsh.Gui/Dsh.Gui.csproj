@@ -3,7 +3,6 @@
   <Import Project="..\Dsh.Plugins.Generator\DshPluginPackage.props" />
 
   <ItemGroup>
-    <ProjectReference Include="..\Dsh.Account\Dsh.Account.csproj" />
     <ProjectReference Include="..\Dsh.Boot\Dsh.Boot.csproj" />
     <ProjectReference Include="..\Dsh.Core\Dsh.Core.csproj" />
     <ProjectReference Include="..\Dsh.Interaction\Dsh.Interaction.csproj" />
@@ -11,8 +10,6 @@
     <ProjectReference Include="..\Dsh.Pty\Dsh.Pty.csproj" />
     <ProjectReference Include="..\Dsh.RemoteHost\Dsh.RemoteHost.csproj" />
     <ProjectReference Include="..\Dsh.Runtime\Dsh.Runtime.csproj" />
-    <ProjectReference Include="..\Dsh.SessionQuery\Dsh.SessionQuery.csproj" />
-    <ProjectReference Include="..\Dsh.Subagent\Dsh.Subagent.csproj" />
   </ItemGroup>
 
   <ItemGroup>

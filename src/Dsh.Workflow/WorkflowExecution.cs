@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Core;
 using Dsh.Llm;
-using Dsh.Ptc;
+using Dsh.ScriptHost;
 
 namespace Dsh.Workflow;
 

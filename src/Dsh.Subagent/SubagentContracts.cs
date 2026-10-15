@@ -15,14 +15,3 @@ public interface ISubagentProvider
     bool InheritsParentContext { get; }
     Task<ISubagentRun> StartAsync(ResolvedSubagentStartRequest request);
 }
-
-public sealed record SubagentRunInfo(string RunId, string Provider, SessionId Id, bool Local);
-
-public sealed record SubagentRunEndInfo(
-    string RunId,
-    string Provider,
-    SessionId Id,
-    bool Local,
-    SubagentStopReason StopReason,
-    IReadOnlyList<ContentBlock>? LastAssistantMessage = null,
-    SubagentInterruptionSnapshot? Interruption = null);

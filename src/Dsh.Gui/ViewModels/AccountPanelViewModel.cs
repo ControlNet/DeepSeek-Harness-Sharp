@@ -1,6 +1,6 @@
 ﻿using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Dsh.Account;
+using Dsh.Core;
 
 namespace Dsh.Gui.ViewModels;
 

@@ -1,7 +1,6 @@
 using Dsh.Runtime;
 using Dsh.Llm;
 using Dsh.Core;
-using Dsh.Subagent;
 
 namespace Dsh.Tui;
 
@@ -15,17 +14,17 @@ internal sealed record SubagentNode(
     bool HasChildren);
 
 /**
- * TUI 侧子代理查询层: 直接消费进程内 SubagentRuntime 的子树/活代理查询与 SessionStore,
+ * TUI 侧子代理查询层: 经 ISubagentService 契约消费进程内子代理的子树/活代理查询与 SessionStore,
  * 不引入新协议; 服务缺失时全部退化为空结果。
  */
 internal sealed class SubagentDirectory
 {
-    private readonly SubagentRuntime? _runtime;
+    private readonly ISubagentService? _runtime;
     private readonly SessionStore? _store;
 
     public SubagentDirectory(Context ctx)
     {
-        _runtime = ctx.Get<SubagentRuntime>(SubagentRuntime.ServiceName, false);
+        _runtime = ctx.Get<ISubagentService>(ISubagentService.ServiceName, false);
         _store = ctx.Get<SessionStore>(SessionStore.ServiceName, false);
     }
 

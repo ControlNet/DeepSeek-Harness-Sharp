@@ -1,8 +1,13 @@
+using System.Reflection;
 using System.Xml.Linq;
+using Dsh.Plugins;
 
 namespace Dsh.Tests;
 
-/** 模块引用白名单:防止插件重新耦合到宿主/原生装载层或互相引用。 */
+/**
+ * 模块引用白名单: src 下的项目默认只能引用共享层, 插件之间禁止互相引用, 协作一律经 ctx 服务 + Core/Interaction 契约。
+ * 宿主(Dsh.Host 与两个 exe)不在 src 下, 是唯一允许"知道全部"的组合根。
+ */
 public sealed class PluginReferenceRulesTests
 {
     private static readonly HashSet<string> HostInfraModules = ["Dsh.Plugins.Host", "Dsh.Plugins.Native"];
@@ -13,26 +18,36 @@ public sealed class PluginReferenceRulesTests
         ["Dsh.Plugins.Native"] = ["Dsh.Plugins.Host", "Dsh.Plugins.Native.Host"],
     };
 
-    private static readonly HashSet<string> PluginAllowedTargets =
-        ["Dsh.Runtime", "Dsh.Plugins.Abstractions", "Dsh.Core", "Dsh.Llm", "Dsh.Interaction", "Dsh.Boot", "Dsh.Ptc", "Dsh.Presets", "Dsh.Pty"];
+    /** 插件装载机制本身: 只受 HostInfra 规则约束(对 HostInfra 的引用也只由该规则裁定)。 */
+    private static readonly HashSet<string> LoaderModules =
+        ["Dsh.Plugins.Host", "Dsh.Plugins.Native", "Dsh.Plugins.Native.Host", "Dsh.Plugins.Generator"];
 
-    private static readonly HashSet<string> FeaturePlugins =
-    [
-        "Dsh.Interaction", "Dsh.Tools", "Dsh.Jobs", "Dsh.PtyTerminal", "Dsh.Persistence", "Dsh.Compaction",
-        "Dsh.Subagent", "Dsh.Goal", "Dsh.Interaction.AskUser", "Dsh.Skills", "Dsh.PlanMode",
-        "Dsh.SessionQuery", "Dsh.Mcp", "Dsh.Memory", "Dsh.AgentInstructions", "Dsh.Checkpoints",
-        "Dsh.IdeHistory", "Dsh.Web", "Dsh.Workflow", "Dsh.Telemetry", "Dsh.E2b", "Dsh.Presets",
-        "Dsh.Account",
-    ];
+    /** 契约层: 任何项目都可直接引用(Boot 按用户决策承载 settings 模型)。 */
+    private static readonly HashSet<string> ContractLayers =
+        ["Dsh.Runtime", "Dsh.Plugins.Abstractions", "Dsh.Llm", "Dsh.Core", "Dsh.Interaction", "Dsh.Boot"];
 
-    private static readonly Dictionary<string, HashSet<string>> CoreLayerAllowed = new()
+    /** 共享库: 不含插件入口的纯能力库, 可被多个插件复用。 */
+    private static readonly HashSet<string> SharedLibraries =
+        ["Dsh.Pty", "Dsh.Transport", "Dsh.RemoteHost", "Dsh.Sdk", "Dsh.ScriptHost"];
+
+    /** 卫星程序集: 实现所属插件自有的 SPI 并由其反射发现, 只允许引用所属插件。 */
+    private static readonly Dictionary<string, HashSet<string>> SatelliteOwners = new()
+    {
+        ["Dsh.Tui.GL"] = ["Dsh.Tui"],
+        ["Dsh.Tui.Vk"] = ["Dsh.Tui"],
+    };
+
+    private static readonly Dictionary<string, HashSet<string>> LayerAllowed = new()
     {
         ["Dsh.Runtime"] = [],
         ["Dsh.Pty"] = ["Dsh.Transport"],
+        ["Dsh.Transport"] = [],
         ["Dsh.Plugins.Native"] = [],
         ["Dsh.Plugins.Abstractions"] = ["Dsh.Runtime"],
         ["Dsh.Llm"] = ["Dsh.Runtime"],
+        ["Dsh.Boot"] = ["Dsh.Runtime", "Dsh.Plugins.Host"],
         ["Dsh.Core"] = ["Dsh.Runtime", "Dsh.Plugins.Abstractions", "Dsh.Llm"],
+        ["Dsh.Interaction"] = ["Dsh.Runtime", "Dsh.Plugins.Abstractions", "Dsh.Llm", "Dsh.Core", "Dsh.Boot"],
     };
 
     [Fact]
@@ -49,23 +64,57 @@ public sealed class PluginReferenceRulesTests
     }
 
     [Fact]
-    public void FeaturePlugins_ReferenceOnlySharedLayers()
+    public void Projects_ReferenceOnlySharedLayers()
     {
-        foreach (var (project, references) in ProjectReferences())
+        var projects = ProjectReferences();
+        var violations = new List<string>();
+        foreach (var (project, references) in projects.OrderBy(entry => entry.Key, StringComparer.Ordinal))
         {
-            if (!FeaturePlugins.Contains(project))
+            if (LoaderModules.Contains(project))
                 continue;
-            var illegal = references.Where(target => !PluginAllowedTargets.Contains(target)).ToList();
-            Assert.True(illegal.Count == 0, $"{project} must not reference: {string.Join(", ", illegal)}");
+            var owners = SatelliteOwners.GetValueOrDefault(project) ?? [];
+            violations.AddRange(references
+                .Where(target => !HostInfraModules.Contains(target))
+                .Where(target => !ContractLayers.Contains(target) && !SharedLibraries.Contains(target) && !owners.Contains(target))
+                .Order(StringComparer.Ordinal)
+                .Select(target => $"{project} -> {target}"));
         }
+        Assert.True(violations.Count == 0, $"plugin-to-plugin references:\n{string.Join("\n", violations)}");
     }
 
     [Fact]
-    public void CoreLayer_DoesNotReferenceUpwards()
+    public void Whitelists_NameExistingProjects()
     {
-        foreach (var (project, allowed) in CoreLayerAllowed)
+        var projects = ProjectReferences();
+        var stale = LoaderModules
+            .Concat(ContractLayers)
+            .Concat(SharedLibraries)
+            .Concat(SatelliteOwners.Keys)
+            .Concat(SatelliteOwners.Values.SelectMany(owners => owners))
+            .Concat(LayerAllowed.Keys)
+            .Where(name => !projects.ContainsKey(name))
+            .Distinct()
+            .ToList();
+        Assert.True(stale.Count == 0, $"whitelisted projects not found under src: {string.Join(", ", stale)}");
+    }
+
+    [Fact]
+    public void SharedLibrariesAndSatellites_AreNotPlugins()
+    {
+        var plugins = SharedLibraries
+            .Concat(SatelliteOwners.Keys)
+            .Where(name => Assembly.Load(name).GetType(PluginHost.ManifestTypeName) is not null)
+            .ToList();
+        Assert.True(plugins.Count == 0, $"shared libraries and satellites must not declare a plugin: {string.Join(", ", plugins)}");
+    }
+
+    [Fact]
+    public void ContractLayers_DoNotReferenceUpwards()
+    {
+        var projects = ProjectReferences();
+        foreach (var (project, allowed) in LayerAllowed)
         {
-            var illegal = ProjectReferences()[project].Where(target => !allowed.Contains(target)).ToList();
+            var illegal = projects[project].Where(target => !allowed.Contains(target)).ToList();
             Assert.True(illegal.Count == 0, $"{project} must only reference [{string.Join(", ", allowed)}], found: {string.Join(", ", illegal)}");
         }
     }

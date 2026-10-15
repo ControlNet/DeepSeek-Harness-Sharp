@@ -14,8 +14,6 @@ using Dsh.Llm;
 using Dsh.RemoteHost;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
-using Dsh.SessionQuery;
-using Dsh.Subagent;
 
 namespace Dsh.Gui.ViewModels;
 
@@ -396,7 +394,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             await Task.Delay(ContentSearchDebounceMs, signal);
-            var service = _ctx.Get<SessionQueryService>(SessionQueryService.ServiceName, false);
+            var service = _ctx.Get<ISessionQueryService>(ISessionQueryService.ServiceName, false);
             if (service is null)
                 return;
             foreach (var hit in service.Search(query, ContentSearchLimit))
@@ -2177,7 +2175,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _openAssistant = null;
         _openReasoning = null;
-        var isSubagent = string.Equals(call.Name, SubagentTool.DefaultToolName, StringComparison.Ordinal);
+        var isSubagent = string.Equals(call.Name, ISubagentService.DefaultToolName, StringComparison.Ordinal);
         var label = isSubagent ? ReadDescription(call.Arguments) : null;
         var message = AppendMessage(new MessageViewModel(
             "工具",

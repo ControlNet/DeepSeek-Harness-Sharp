@@ -1,5 +1,6 @@
 using Dsh.IdeHistory;
 using Dsh.Runtime;
+using Dsh.Core;
 
 namespace Dsh.Tests;
 
