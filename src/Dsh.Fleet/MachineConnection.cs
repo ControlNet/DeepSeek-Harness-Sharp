@@ -95,6 +95,19 @@ public sealed class MachineConnection : IAsyncDisposable
         return channel.Reader.ReadAllAsync(cancellationToken);
     }
 
+    /**
+     * A separate raw channel to this machine's host for a relay that speaks the host protocol itself (the web bridge); none of its traffic goes through this connection.
+     * Local machines get a host.sock stream that has already presented the host token.
+     * SSH machines get their own `ssh -T` running the dsharp this connection deployed or found, so it first waits for this connection unless the machine is offline.
+     */
+    public async Task<Stream> OpenChannelAsync(CancellationToken cancellationToken)
+    {
+        if (Machine.IsLocal)
+            return await RemoteHostListener.ConnectAsync(HostLink.LocalRoot(Machine), cancellationToken).ConfigureAwait(false);
+        await WaitReachableAsync(cancellationToken).ConfigureAwait(false);
+        return SshHostLauncher.OpenTunnel(Machine, _commandPath);
+    }
+
     public async Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason, CancellationToken cancellationToken)
     {
         var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
@@ -110,8 +123,16 @@ public sealed class MachineConnection : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _lifetime.CancelAsync().ConfigureAwait(false);
-        if (_loop is { } loop)
-            await loop.ConfigureAwait(false);
+        try
+        {
+            if (_loop is { } loop)
+                await loop.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Disposing while an attempt is still connecting cancels it; that ended FleetClient.DisposeAsync before the other machines were released.
+        }
+
         _lifetime.Dispose();
     }
 
@@ -297,6 +318,32 @@ public sealed class MachineConnection : IAsyncDisposable
         }
 
         LinkProcess = null;
+    }
+
+    /** Completes once connected; fails as soon as the machine is offline (between attempts, or stopped for good) with its last failure. */
+    private async Task WaitReachableAsync(CancellationToken cancellationToken)
+    {
+        var offline = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        StateChanged += Watch;
+        try
+        {
+            var connected = WaitConnectedAsync(cancellationToken);
+            Watch(this);
+            await Task.WhenAny(connected, offline.Task).ConfigureAwait(false);
+            if (!connected.IsCompleted)
+                throw new IOException($"{Machine.Name} ({Machine.Target}) is offline: {Detail}");
+            await connected.ConfigureAwait(false);
+        }
+        finally
+        {
+            StateChanged -= Watch;
+        }
+
+        void Watch(MachineConnection machine)
+        {
+            if (machine.State == MachineConnectionState.Offline)
+                offline.TrySetResult();
+        }
     }
 
     private static async Task<bool> DelayAsync(TimeSpan delay, CancellationToken cancellationToken)

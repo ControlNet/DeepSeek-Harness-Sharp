@@ -42,8 +42,7 @@ public static class SshHostLauncher
     /** hostCommandPath 非空时用它作为远端宿主可执行文件(绝对路径); 为空则按“远端目录/ PATH”推导; clientName 是 host 用来标注由谁回答了审批的显示名。 */
     public static async Task<Connection> ConnectAsync(MachineSpec workspace, string? hostCommandPath, string clientName, CancellationToken cancellationToken)
     {
-        if (workspace.Auth == SshAuth.Password && string.IsNullOrEmpty(workspace.Password))
-            throw new InvalidOperationException("认证方式为“password”但密码为空: 请在设置页填写密码（注意区分大小写、是否有尾部空格）。");
+        RequirePassword(workspace);
 
         var startInfo = BuildSshStartInfo(workspace, out var askPass);
         startInfo.ArgumentList.Add(HarnessCommand(workspace, hostCommandPath));
@@ -70,6 +69,38 @@ public static class SshHostLauncher
             if (askPass is not null)
                 TryDelete(askPass);
         }
+    }
+
+    /**
+     * Starts the same `ssh -T ... dsharp host --serve --stdio` as ConnectAsync but hands back the raw frame channel without the handshake, for relays that speak the host protocol themselves (the web bridge).
+     * Disposing the returned stream ends the ssh process.
+     */
+    public static SshTunnelStream OpenTunnel(MachineSpec workspace, string? hostCommandPath)
+    {
+        RequirePassword(workspace);
+        var startInfo = BuildSshStartInfo(workspace, out var askPass);
+        startInfo.ArgumentList.Add(HarnessCommand(workspace, hostCommandPath));
+        Process process;
+        try
+        {
+            process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start ssh");
+        }
+        catch
+        {
+            if (askPass is not null)
+                TryDelete(askPass);
+            throw;
+        }
+
+        var stderr = new StringBuilder();
+        _ = DrainAsync(process.StandardError, stderr);
+        return new SshTunnelStream(process, askPass, () => Describe(stderr));
+    }
+
+    private static void RequirePassword(MachineSpec workspace)
+    {
+        if (workspace.Auth == SshAuth.Password && string.IsNullOrEmpty(workspace.Password))
+            throw new InvalidOperationException("认证方式为“password”但密码为空: 请在设置页填写密码（注意区分大小写、是否有尾部空格）。");
     }
 
     /** 后台把 stderr 读进有界缓冲(排空管道, 避免背压死锁), 供失败时汇报。 */
@@ -282,7 +313,7 @@ public static class SshHostLauncher
         return askPass;
     }
 
-    private static void Kill(Process process)
+    internal static void Kill(Process process)
     {
         try
         {
@@ -315,7 +346,7 @@ public static class SshHostLauncher
     /** POSIX 单引号转义, 避免密码里的引号/空白破坏脚本。 */
     private static string Quote(string value) => "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 
-    private static void TryDelete(string path)
+    internal static void TryDelete(string path)
     {
         try
         {
