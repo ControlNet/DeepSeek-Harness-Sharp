@@ -62,6 +62,11 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    ```
 
    动作名:`newSession`、`sessionMenu`、`detach`、`deleteSessionMenu`、`agentList`、`overview`、`openShell`、`quit`、`splitPane`、`closePane`、`prevSession`、`nextSession`、`focusLeft`/`focusRight`/`focusUp`/`focusDown`、`focusNextPane`、`interrupt`(默认 `Ctrl+C`,连按两次退出)、`promptCommandMenu`(默认 `Ctrl+P`)。按键串的首键必须带 `Ctrl`/`Alt` 或是 F 键(否则会吞掉正常输入);同一按键串绑了多个动作、或一个按键串是另一个的前缀时,启动时记 WARN 日志并让冲突的自定义项回退默认。按下前缀后再按 `Esc` 或未绑定的键即取消。焦点在 shell 窗格时,`interrupt` 与 `promptCommandMenu` 的按键直达 shell,其余动作仍由 DSH 处理。
+9. 会话内定时提醒:直接让模型提醒你即可,例如「30 分钟后提醒我看 CI」「工作日每天 9 点提醒我写日报」。模型用 `schedule_create` / `schedule_list` / `schedule_update` / `schedule_delete` 管理当前会话的提醒;到点后提醒内容作为一条计划消息回到本会话:会话空闲时直接开始新一轮,正在回复时排在当前这一轮之后。
+   - 时间规格(每个提醒选一种):`after_seconds`(N 秒后)、`at`(带时区偏移的 RFC 3339 时刻,或本地日期 + 时间 + 时区)、`every_seconds`(固定间隔,至少 60 秒)、`daily`(每天的本地时间)、`weekly`(每周的 ISO 星期几,周一 1 至周日 7)、`cron`(五段 cron 表达式,按给定时区计算;日期与星期两段都有限定时须同时满足)。
+   - 时区写 `UTC`、IANA 名称(如 `Asia/Shanghai`)或本机时区 id(系统提示里会告诉模型本机时区)。`daily`/`weekly`/`cron` 遇到夏令时跳过的本地时刻会在跳变结束时触发,重复出现的本地时刻只触发一次;`at` 指向不存在的本地时刻会被拒绝,重复时刻取较早的一次。
+   - 提醒属于会话:会话关闭后不再触发;恢复该会话时提醒随之恢复,期间错过的一次性提醒补发一次,循环提醒只补发最近错过的那一次。fork 出的会话不继承提醒,子代理不能使用这些工具。`headless` 单次任务在回复结束后即退出,其中设置的提醒不会触发。
+   - 提醒不是 goal:提醒消息不算用户输入,不会创建、恢复或完成 goal,也不改变 goal 的自动续跑。
 
 ## 图形界面
 
