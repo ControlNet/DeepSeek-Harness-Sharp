@@ -8,7 +8,7 @@ using Dsh.Tools;
 namespace Dsh.Tests;
 
 [Collection(SerialProcessCollection.Name)]
-public class JobsTests : IDisposable
+public partial class JobsTests : IDisposable
 {
     private readonly Context _ctx;
     private readonly ToolRuntime _tools;
@@ -81,7 +81,7 @@ public class JobsTests : IDisposable
 
     private string StartBashJob(IAgent? owner, string command, int? outputLimitBytes = null)
     {
-        if (!BashProbe.IsAvailable)
+        if (!ShellProbe.Bash)
             Assert.Skip("bash 不可用(WSL/Git Bash 无响应), 跳过依赖外部 shell 的用例");
         return _jobs.Start(new JobStart
         {

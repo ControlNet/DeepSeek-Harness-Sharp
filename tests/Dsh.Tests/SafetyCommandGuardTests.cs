@@ -122,7 +122,7 @@ public sealed class SafetyCommandGuardTests
 
         private Task<ToolExecutionResult> RunAsync(string command)
         {
-            if (!BashProbe.IsAvailable)
+            if (!ShellProbe.Bash)
                 Assert.Skip("bash is unavailable; skipping the shell-backed guard test");
             return _tools.Execute(new ToolExecutionInput
             {

@@ -27,6 +27,28 @@ public sealed record BashRunValue(
     BashStreamOutput Stdout,
     BashStreamOutput Stderr);
 
+/** The process one shell call starts: argv plus the environment overrides layered on the scrubbed parent environment. */
+internal readonly record struct ShellLaunch(IReadOnlyList<string> Argv, IReadOnlyDictionary<string, string?> Env);
+
+/**
+ * One model-visible tool that runs each command in a fresh shell process.
+ * bash, pwsh, powershell and wsl share parameters, timeout, output capture and rendering; they differ in prompt text, extra parameters and how a command becomes a process.
+ */
+internal sealed record ShellCommandDialect(
+    string ToolName,
+    string Description,
+    string SectionText,
+    string CommandDescription,
+    string DescriptionExample,
+    Func<string, JsonElement, IReadOnlyDictionary<string, string?>?, ShellLaunch> Launch)
+{
+    public IReadOnlyDictionary<string, System.Text.Json.Nodes.JsonObject> ExtraParameters { get; init; } =
+        new Dictionary<string, System.Text.Json.Nodes.JsonObject>();
+
+    /** The shell exists only on Windows; elsewhere the tool is not registered at all. */
+    public bool WindowsOnly { get; init; }
+}
+
 public static class BashTool
 {
     public const string ToolName = "bash";
@@ -37,37 +59,51 @@ public static class BashTool
         "Execute a bash command (`bash -c`) and return its stdout/stderr. "
         + "Each call runs in a fresh shell: no state (cwd, variables, functions) persists between calls — "
         + "pass `workdir` instead of using `cd`. Non-zero exits are reported as `[exit code: N]`. "
+        + "On Windows this bash is Git-Bash (MSYS2), not WSL: drives appear as `/c/...`, Windows executables run directly, and Linux-only tools are missing — use the `wsl` tool for a real Linux distribution. "
+        + "For PowerShell use `pwsh` (PowerShell 7, cross-platform) or, on Windows only, `powershell` (Windows PowerShell 5.1). "
         + "Current harness environment facts are exposed through managed `$DSH_*` variables; inspect them when needed. "
         + "Commands may run under a file sandbox; a blocked file operation is reported as `[sandbox: file access denied under <mode> mode]` — a policy denial, not a bug in the command; do not retry another way. "
         + "Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. "
         + "Background execution is not available; long-running commands must finish within the timeout.";
 
     public static IDisposable Register(Context ctx, BashToolConfig? config = null)
+        => RegisterShell(ctx, new ShellCommandDialect(
+                ToolName,
+                Description,
+                SectionText,
+                "The bash command to execute.",
+                "\"npm install\" → \"Install package dependencies\"",
+                (command, _, envs) => new ShellLaunch(["bash", "-c", command], MergeEnv(envs))),
+            config ?? new BashToolConfig());
+
+    internal static IDisposable RegisterShell(Context ctx, ShellCommandDialect dialect, BashToolConfig config)
     {
-        var resolved = config ?? new BashToolConfig();
+        if (dialect.WindowsOnly && !OperatingSystem.IsWindows())
+            return new CompositeDisposable();
         var tools = ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!;
         var systemPrompt = ctx.Get<SystemPrompt>(SystemPrompt.ServiceName)!;
         var subprocess = ctx.Get<SubprocessService>(SubprocessService.ServiceName)!;
-        var section = systemPrompt.Section(PromptSection.Literal("tool:bash", SectionText));
+        var section = systemPrompt.Section(PromptSection.Literal($"tool:{dialect.ToolName}", dialect.SectionText));
+        var parameters = new Dictionary<string, System.Text.Json.Nodes.JsonObject>
+        {
+            ["command"] = ToolSchemas.StringParam(dialect.CommandDescription),
+            ["description"] = ToolSchemas.StringParam(
+                "Clear, concise description of what this command does in active voice, "
+                + "5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; "
+                + $"\"git status\" → \"Show working tree status\"; {dialect.DescriptionExample}."),
+            ["timeoutMs"] = ToolSchemas.NumberParam("Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry."),
+            ["workdir"] = ToolSchemas.StringParam("Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."),
+            ["envs"] = ToolSchemas.StringMapParam("Environment variables to set for this command (object of string values). `DSH_*` keys are ignored."),
+        };
+        foreach (var (name, schema) in dialect.ExtraParameters)
+            parameters[name] = schema;
         var registration = tools.Register(new ToolDefinition
         {
-            Name = ToolName,
-            Description = Description,
-            Parameters = ToolSchemas.ObjectSchema(
-                new Dictionary<string, System.Text.Json.Nodes.JsonObject>
-                {
-                    ["command"] = ToolSchemas.StringParam("The bash command to execute."),
-                    ["description"] = ToolSchemas.StringParam(
-                        "Clear, concise description of what this command does in active voice, "
-                        + "5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; "
-                        + "\"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\"."),
-                    ["timeoutMs"] = ToolSchemas.NumberParam("Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry."),
-                    ["workdir"] = ToolSchemas.StringParam("Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."),
-                    ["envs"] = ToolSchemas.StringMapParam("Environment variables to set for this command (object of string values). `DSH_*` keys are ignored."),
-                },
-                "command"),
-            Output = new ToolOutputDefinition(OutputSchema, (_, value) => Render(value)),
-            Execute = (args, exec) => Execute(args, exec, subprocess, resolved),
+            Name = dialect.ToolName,
+            Description = dialect.Description,
+            Parameters = ToolSchemas.ObjectSchema(parameters, "command"),
+            Output = new ToolOutputDefinition(OutputSchema, (_, value) => Render(value, dialect.ToolName)),
+            Execute = (args, exec) => Execute(args, exec, subprocess, config, dialect),
         });
         return new CompositeDisposable(section, registration);
     }
@@ -108,9 +144,7 @@ public static class BashTool
         }
         """);
 
-    internal static System.Text.Json.Nodes.JsonObject OutputSchemaShared => OutputSchema;
-
-    private static async Task<object?> Execute(JsonElement args, ToolRunContext exec, SubprocessService subprocess, BashToolConfig config)
+    private static async Task<object?> Execute(JsonElement args, ToolRunContext exec, SubprocessService subprocess, BashToolConfig config, ShellCommandDialect dialect)
     {
         var command = args.GetProperty("command").GetString() ?? "";
         double? timeoutMsArg = args.TryGetProperty("timeoutMs", out var timeoutElement) && timeoutElement.ValueKind == JsonValueKind.Number
@@ -129,12 +163,12 @@ public static class BashTool
         using var timeoutSignal = new CancellationTokenSource();
         using var fused = CancellationTokenSource.CreateLinkedTokenSource(exec.Signal, timeoutSignal.Token);
         timeoutSignal.CancelAfter(TimeSpan.FromMilliseconds(timeoutMs));
-        var env = MergeEnv(envs);
+        var launch = dialect.Launch(command, args, envs);
         var handle = subprocess.Spawn(new SubprocessSpawnSpec
         {
-            Argv = ["bash", "-c", command],
+            Argv = launch.Argv,
             Cwd = workdir,
-            Env = env,
+            Env = launch.Env,
             Stdout = new SubprocessCollect(config.MaxOutputBytes, config.MaxSpillBytes),
             Stderr = new SubprocessCollect(config.MaxOutputBytes, config.MaxSpillBytes),
             Signal = fused.Token,
@@ -207,10 +241,10 @@ public static class BashTool
         return merged;
     }
 
-    private static IReadOnlyList<ContentBlock> Render(JsonElement value)
+    private static IReadOnlyList<ContentBlock> Render(JsonElement value, string toolName)
     {
         var run = DshJson.Deserialize<BashRunValue>(value)
-        ?? throw new JsonException("bash result value is malformed");
+        ?? throw new JsonException($"{toolName} result value is malformed");
         return [new TextBlock(RenderResult(run))];
     }
 
