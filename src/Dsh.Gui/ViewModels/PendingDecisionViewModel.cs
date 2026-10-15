@@ -66,21 +66,23 @@ public sealed partial class PendingDecisionViewModel(FleetPendingItem item, Func
         var decision = DecisionViewModel.ForQuestion(new AskUserQuestionRequest([.. question.Questions.Select(ToItem)]));
         if (await ask(decision) is not AskUserQuestionAnswer answer)
             return;
-        await SendAsync(token => connection.RespondQuestionAsync(
+        await SendAsync(connection, (host, token) => host.RespondQuestionAsync(
             RequestId, [.. answer.Answers.Select(entry => new RemoteQuestionAnswerItem(entry.Id, entry.Selected, entry.Custom))], token));
     }
 
     private Task RespondApprovalAsync(bool allow)
         => machine() is { } connection
-            ? SendAsync(token => connection.RespondApprovalAsync(RequestId, allow, null, token))
+            ? SendAsync(connection, (host, token) => host.RespondApprovalAsync(RequestId, allow, null, token))
             : Task.CompletedTask;
 
-    private async Task SendAsync(Func<CancellationToken, Task<bool>> respond)
+    /** Answers on the machine's current link, waiting for it while the machine reconnects. */
+    private async Task SendAsync(MachineConnection connection, Func<RemoteHostClient, CancellationToken, Task<bool>> respond)
     {
         IsBusy = true;
         try
         {
-            if (!await respond(CancellationToken.None))
+            var lease = await connection.WaitConnectedAsync(CancellationToken.None);
+            if (!await respond(lease.Client, CancellationToken.None))
                 Superseded?.Invoke(this);
         }
         finally

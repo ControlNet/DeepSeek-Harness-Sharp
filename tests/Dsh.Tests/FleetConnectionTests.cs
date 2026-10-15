@@ -56,7 +56,7 @@ public sealed class FleetConnectionTests
         await WaitForAsync(() => fleet.Pending().Any(item => item is { Machine: "beta", Kind: PendingKinds.Approval }));
         var pending = Assert.Single(fleet.Pending());
         Assert.Equal("bash", pending.Approval!.Tool);
-        Assert.True(await fleet.Find("beta")!.RespondApprovalAsync(pending.RequestId, true, null, Ct));
+        Assert.True(await (await fleet.Find("beta")!.WaitConnectedAsync(Ct)).Client.RespondApprovalAsync(pending.RequestId, true, null, Ct));
         Assert.Equal(ApprovalOutcome.AllowedOnce, await decision.WaitAsync(Arrival, Ct));
         await WaitForAsync(() => fleet.Pending().Count == 0);
 
@@ -67,7 +67,7 @@ public sealed class FleetConnectionTests
         await WaitForAsync(() => fleet.Pending().Any(item => item is { Machine: "alpha", Kind: PendingKinds.Approval }));
         Assert.Contains(fleet.Sessions(), session => session.Machine == "alpha" && session.Session.SessionId == alphaSession);
         Assert.Equal(MachineConnectionState.Connected, fleet.Find("beta")!.State);
-        Assert.True(await fleet.Find("alpha")!.RespondApprovalAsync(Assert.Single(fleet.Pending()).RequestId, false, null, Ct));
+        Assert.True(await (await fleet.Find("alpha")!.WaitConnectedAsync(Ct)).Client.RespondApprovalAsync(Assert.Single(fleet.Pending()).RequestId, false, null, Ct));
         Assert.Equal(ApprovalOutcome.Rejected, await restartedApproval.WaitAsync(Arrival, Ct));
     }
 

@@ -177,7 +177,8 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
             return;
         try
         {
-            await connection.MarkNotificationsReadAsync(request, CancellationToken.None);
+            var lease = await connection.WaitConnectedAsync(CancellationToken.None);
+            await lease.Client.MarkNotificationsReadAsync(request, CancellationToken.None);
         }
         catch (Exception error) when (error is IOException or JsonRpcException or OperationCanceledException)
         {
@@ -189,7 +190,8 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
     {
         try
         {
-            var page = await machine.ListNotificationsAsync(new RemoteNotifyQuery(Limit: HistoryLimit), CancellationToken.None);
+            var lease = await machine.WaitConnectedAsync(CancellationToken.None);
+            var page = await lease.Client.ListNotificationsAsync(new RemoteNotifyQuery(Limit: HistoryLimit), CancellationToken.None);
             _all.RemoveAll(item => item.Machine == machine.Machine.Name);
             _all.AddRange(page.Items.Select(record => Describe(new NotificationItemViewModel(machine.Machine.Name, record))));
             RefreshAll();

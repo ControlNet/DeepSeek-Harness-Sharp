@@ -121,18 +121,6 @@ public sealed class MachineConnection : IAsyncDisposable
         return SshHostLauncher.OpenTunnel(Machine, _commandPath);
     }
 
-    public async Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason, CancellationToken cancellationToken)
-    {
-        var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
-        return await lease.Client.RespondApprovalAsync(requestId, allow, reason, cancellationToken).ConfigureAwait(false);
-    }
-
-    public async Task<bool> RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken)
-    {
-        var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
-        return await lease.Client.RespondQuestionAsync(requestId, answers, cancellationToken).ConfigureAwait(false);
-    }
-
     /**
      * Attaches to a PTY across reconnections: after a drop the next link attaches again and the host starts over with a full-screen snapshot.
      * Returns when the PTY ends; fails when the host does not know the PTY (for example it exited while the machine was unreachable).
@@ -152,19 +140,6 @@ public sealed class MachineConnection : IAsyncDisposable
             {
             }
         }
-    }
-
-    public async Task<RemoteNotifyPage> ListNotificationsAsync(RemoteNotifyQuery query, CancellationToken cancellationToken)
-    {
-        var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
-        return await lease.Client.ListNotificationsAsync(query, cancellationToken).ConfigureAwait(false);
-    }
-
-    /** Returns how many notifications became read; every connected client learns about it through host.notify.changed. */
-    public async Task<int> MarkNotificationsReadAsync(RemoteNotifyMarkRead request, CancellationToken cancellationToken)
-    {
-        var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
-        return await lease.Client.MarkNotificationsReadAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
     /** Records a session this client just started or resumed, ahead of the registry push that announces it (the push, being newer, replaces it). */
