@@ -88,6 +88,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         repo.Commit(("a.txt", "one\n"));
         await using var host = await HarnessHostFixture.CreateAsync("mah", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("harness", Ct);
+        await HarnessHostFixture.OpenProjectAsync(client, repo.Sandbox, Ct);
         var worktree = new RemoteWorktreeChoice("../harness-wt", NewBranch: "harness-task");
         var request = new RemoteAgentStartRequest(HostAgentKinds.Dsharp, repo.Root, Worktree: worktree,
             Selection: RemoteHostMultiClientTests.Selection, Provider: RemoteHostMultiClientTests.Spec);

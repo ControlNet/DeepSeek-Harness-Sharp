@@ -48,7 +48,9 @@ public sealed class GuiViewsHeadlessTests
         using var repo = new GitTestRepository();
         repo.Commit(("a.txt", "one\n"), ("b.txt", "two\n"));
         await using var host = await HarnessHostFixture.CreateAsync("gvg", TestContext.Current.CancellationToken);
-        var viewModel = new GitViewModel(await host.ConnectAsync("git-view", TestContext.Current.CancellationToken), repo.Root);
+        var client = await host.ConnectAsync("git-view", TestContext.Current.CancellationToken);
+        await HarnessHostFixture.OpenProjectAsync(client, repo.Sandbox, TestContext.Current.CancellationToken);
+        var viewModel = new GitViewModel(client, repo.Root);
         Assert.True(await viewModel.RefreshAsync(), viewModel.Status);
         var window = Show(new GitView { DataContext = viewModel });
 
