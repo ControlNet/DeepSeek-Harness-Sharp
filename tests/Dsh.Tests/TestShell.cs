@@ -22,7 +22,11 @@ internal static class TestShell
     public static string Wait(int seconds)
         => OperatingSystem.IsWindows() ? $"ping -n {seconds + 1} 127.0.0.1 > nul" : $"sleep {seconds}";
 
+    /** One line that runs first and then second. */
+    public static string Sequence(string first, string second)
+        => OperatingSystem.IsWindows() ? $"{first} & {second}" : $"{first}; {second}";
+
     /** Arguments that run line non-interactively and then keep the session alive for the given seconds. */
     public static string[] RunThenWait(string line, int seconds)
-        => OperatingSystem.IsWindows() ? ["/v:on", "/c", $"{line} & {Wait(seconds)}"] : ["-c", $"{line}; {Wait(seconds)}"];
+        => [.. Arguments, OperatingSystem.IsWindows() ? "/c" : "-c", Sequence(line, Wait(seconds))];
 }
