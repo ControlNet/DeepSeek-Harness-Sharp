@@ -51,10 +51,12 @@ public sealed class HarnessSettingsSaveTests
         # <<< generated
         """;
 
-    [Fact]
-    public void Save_RewritesOnlyChangedSections()
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void Save_RewritesOnlyChangedSections(string newline)
     {
-        var home = CreateHome();
+        var home = CreateHome(newline);
         try
         {
             var settings = HarnessSettings.Load(home);
@@ -63,6 +65,7 @@ public sealed class HarnessSettingsSaveTests
             settings.Save(home);
 
             var text = ReadSettings(home);
+            Assert.Equal(text.ReplaceLineEndings(newline), text);
             Assert.Contains("# 用户注释: 保留", text);
             Assert.Contains("custom_key: keep-me", text);
             Assert.Contains("""
@@ -70,7 +73,7 @@ public sealed class HarnessSettingsSaveTests
                 # safety:  # 映射(见子项)
                 #   autoApprove:
                 # <<< generated
-                """, text);
+                """.ReplaceLineEndings(newline), text);
             Assert.Contains("\"@deepseek-ai/dsh-memory\": false", text);
             Assert.Contains("autoApprove: true", text);
             Assert.DoesNotContain("autoApprove: false", text);
@@ -85,10 +88,35 @@ public sealed class HarnessSettingsSaveTests
         }
     }
 
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void SavePlugins_KeepsTheFileLineEndings(string newline)
+    {
+        var home = CreateHome(newline);
+        try
+        {
+            var settings = HarnessSettings.Load(home);
+            settings.Plugins["@deepseek-ai/dsh-memory"] = new PluginSetting { Enabled = true };
+
+            settings.SavePlugins(home);
+
+            var text = ReadSettings(home);
+            Assert.Equal(text.ReplaceLineEndings(newline), text);
+            Assert.Contains("\"@deepseek-ai/dsh-memory\": true", text);
+            Assert.Contains("custom_key: keep-me", text);
+            Assert.True(HarnessSettings.Load(home).Plugins["@deepseek-ai/dsh-memory"].Enabled);
+        }
+        finally
+        {
+            TempTree.Delete(home.Root);
+        }
+    }
+
     [Fact]
     public async Task ProviderRemove_KeepsSectionsTheCommandDoesNotOwn()
     {
-        var home = CreateHome();
+        var home = CreateHome("\n");
         try
         {
             var ctx = new Context();
@@ -114,13 +142,13 @@ public sealed class HarnessSettingsSaveTests
         }
     }
 
-    private static HarnessHome CreateHome()
+    private static HarnessHome CreateHome(string newline)
     {
         var home = HarnessHome.Resolve(TempTree.CreateDirectory("settings-save"));
-        File.WriteAllText(Path.Combine(home.Root, "settings.yaml"), Settings);
+        File.WriteAllText(Path.Combine(home.Root, "settings.yaml"), Settings.ReplaceLineEndings(newline));
         return home;
     }
 
     private static string ReadSettings(HarnessHome home)
-        => File.ReadAllText(Path.Combine(home.Root, "settings.yaml")).Replace("\r\n", "\n");
+        => File.ReadAllText(Path.Combine(home.Root, "settings.yaml"));
 }
