@@ -184,6 +184,39 @@ public sealed class HotPlugTests
         }
     }
 
+    /** 开关只改 enabled: 插件参数(包括启动后由其它写入方存进 settings.yaml 的)在 disable/enable 后原样保留。 */
+    [Fact]
+    public async Task PluginManager_ToggleKeepsPluginParameters()
+    {
+        var dir = TempTree.CreateDirectory("hotplug-params");
+        try
+        {
+            var home = HarnessHome.Resolve(Path.Combine(dir, "home"));
+            using var app = await ConfigBoot.Compose(new HarnessOptions(home, Cwd: dir, PluginsDirectory: Path.Combine(dir, "plugins")));
+            var manager = app.Ctx.Get<HarnessPluginManager>("pluginManager")!;
+            var external = HarnessSettings.Load(home);
+            external.Plugins["@deepseek-ai/dsh-tool-todo"] = new PluginSetting
+            {
+                Parameters = new Dictionary<string, object?>(StringComparer.Ordinal) { ["note"] = "keep-me" },
+            };
+            external.SavePlugins(home);
+
+            Assert.Contains("disabled", await manager.DisableAsync("@deepseek-ai/dsh-tool-todo"));
+            var disabled = HarnessSettings.Load(home).Plugins["@deepseek-ai/dsh-tool-todo"];
+            Assert.False(disabled.Enabled);
+            Assert.Equal("keep-me", disabled.Parameters["note"]);
+
+            Assert.Contains("activated", await manager.EnableAsync("@deepseek-ai/dsh-tool-todo"));
+            var enabled = HarnessSettings.Load(home).Plugins["@deepseek-ai/dsh-tool-todo"];
+            Assert.True(enabled.Enabled);
+            Assert.Equal("keep-me", enabled.Parameters["note"]);
+        }
+        finally
+        {
+            TempTree.Delete(dir);
+        }
+    }
+
     private static string ReadSettings(HarnessHome home)
         => File.ReadAllText(Path.Combine(home.Root, "settings.yaml"));
 }
