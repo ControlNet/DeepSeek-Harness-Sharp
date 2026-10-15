@@ -42,12 +42,16 @@ jobs:
         run: |
           EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"; [ -x "$EXE" ] || EXE="$EXE.exe"
           ls /usr/sbin/sshd || true
-          "$EXE" -noColor -parallel none -trait- "Category=LlmSmoke" -class Dsh.Tests.FleetLocalHostTests -class Dsh.Tests.FleetSshEndToEndTests -class Dsh.Tests.WebBridgeHubTests -class Dsh.Tests.WebBridgeSshTunnelTests -class Dsh.Tests.WebUiBrowserTests -class Dsh.Tests.WebBridgeTests -class Dsh.Tests.FleetConnectionTests -class Dsh.Tests.PtyHostTests
+          "$EXE" -noColor -parallel none -trait- "Category=LlmSmoke" -class Dsh.Tests.WebUiBrowserTests -class Dsh.Tests.PtyHostTests
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: webui-${{ matrix.os }}
           path: artifacts020/webui/*.png
+      - name: diag file
+        if: always()
+        shell: bash
+        run: cat "$RUNNER_TEMP/../dsh-diag.txt" 2>/dev/null; cat "$TEMP/dsh-diag.txt" 2>/dev/null; cat "$TMP/dsh-diag.txt" 2>/dev/null; true
       - name: leftovers
         if: always()
         shell: bash

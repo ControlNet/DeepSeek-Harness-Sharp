@@ -98,7 +98,10 @@ internal sealed class ConPtySession : IDisposable
             var commandLine = WindowsProcessLaunch.CommandLine(info.FileName, info.Arguments);
             // Children inherit "ignore Ctrl+C" (set for processes started in a new process group, as the GitHub runner starts its steps), and then Ctrl+C typed into the terminal stopped nothing.
             // The attribute is per process, so normal Ctrl+C processing is restored here, as the Unix spawn restores default signal handling.
-            SetConsoleCtrlHandler(IntPtr.Zero, false);
+            var diagOk = SetConsoleCtrlHandler(IntPtr.Zero, false);
+            var diagError = Marshal.GetLastWin32Error();
+            Console.Error.WriteLine($"DIAG ctrl handler ok={diagOk} error={diagError} cp={GetConsoleCP()} pid={Environment.ProcessId} exe={Environment.ProcessPath}");
+            System.IO.File.AppendAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "dsh-diag.txt"), $"ok={diagOk} error={diagError} cp={GetConsoleCP()} pid={Environment.ProcessId} exe={Environment.ProcessPath}\n");
             var (savedInput, savedOutput, savedError) = ParkStdHandles();
             ProcessInformation processInfo;
             try
@@ -296,4 +299,7 @@ internal sealed class ConPtySession : IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetConsoleCtrlHandler(IntPtr handlerRoutine, bool add);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetConsoleCP();
 }
