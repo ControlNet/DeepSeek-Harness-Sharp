@@ -39,6 +39,15 @@ internal static class UnixPtyNative
     private static readonly short PosixSpawnSetsid = OperatingSystem.IsMacOS() ? (short)0x0400 : (short)0x80;
     /** 不透明类型的保守容量: glibc 2.39 的 posix_spawnattr_t 含两个 sigset_t(共 256 字节)加调度参数, 已超 256。 */
     private const int SpawnAttrBytes = 1024;
+    /** POSIX_SPAWN_SETSIGDEF and POSIX_SPAWN_SETSIGMASK have the same values in glibc and Darwin. */
+    private const short PosixSpawnSetSigDefault = 0x04;
+    private const short PosixSpawnSetSigMask = 0x08;
+    /** Capacity for an opaque sigset_t: glibc uses 128 bytes, Darwin 4. */
+    private const int SigsetBytes = 128;
+    private const int SigkillNumber = 9;
+    private static readonly int SigstopNumber = OperatingSystem.IsMacOS() ? 17 : 19;
+    /** Darwin arm64 passes variadic arguments on the stack, so ioctl's argument has to follow the eight register arguments. */
+    private static readonly bool VariadicArgumentsOnStack = OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
 
     public static (int MasterFd, int Pid) Spawn(PtyStartInfo info)
     {
@@ -68,7 +77,7 @@ internal static class UnixPtyNative
             Marshal.Copy(new byte[SpawnAttrBytes], 0, attributes, SpawnAttrBytes);
             var attributesReady = posix_spawnattr_init(attributes) == 0;
             if (attributesReady)
-                posix_spawnattr_setflags(attributes, PosixSpawnSetsid);
+                ConfigureSpawnAttributes(attributes, allocated);
             try
             {
                 // 用 addopen 而不是 adddup2: 子进程以新会话首进程身份 open 从端, 内核才会把该 tty 设为其控制终端。
@@ -114,6 +123,25 @@ internal static class UnixPtyNative
         }
     }
 
+    /**
+     * New session, plus a clean signal state: a child inherits ignored dispositions and the blocked mask across exec.
+     * A dsharp started by `cmd &` in a script or by a CI job ignores SIGINT, so without the reset Ctrl+C never interrupts the terminal's programs.
+     */
+    private static void ConfigureSpawnAttributes(IntPtr attributes, List<IntPtr> allocated)
+    {
+        var defaults = Marshal.AllocHGlobal(SigsetBytes);
+        allocated.Add(defaults);
+        var mask = Marshal.AllocHGlobal(SigsetBytes);
+        allocated.Add(mask);
+        sigfillset(defaults);
+        sigdelset(defaults, SigkillNumber);
+        sigdelset(defaults, SigstopNumber);
+        sigemptyset(mask);
+        posix_spawnattr_setsigdefault(attributes, defaults);
+        posix_spawnattr_setsigmask(attributes, mask);
+        posix_spawnattr_setflags(attributes, (short)(PosixSpawnSetsid | PosixSpawnSetSigDefault | PosixSpawnSetSigMask));
+    }
+
     private static (int Master, int Slave, string SlaveName) OpenPty(int rows, int cols)
     {
         var winsize = AllocWinsize(new Winsize
@@ -150,7 +178,9 @@ internal static class UnixPtyNative
             WsRow = checked((ushort)rows),
             WsCol = checked((ushort)cols),
         };
-        if (ioctl((int)master.DangerousGetHandle(), Tiocswinsz, ref ws) != 0)
+        var fd = (int)master.DangerousGetHandle();
+        var result = VariadicArgumentsOnStack ? ioctlAfterRegisters(fd, Tiocswinsz, 0, 0, 0, 0, 0, 0, ref ws) : ioctl(fd, Tiocswinsz, ref ws);
+        if (result != 0)
             throw new Win32Exception(Marshal.GetLastWin32Error(), "ioctl(TIOCSWINSZ) failed");
     }
 
@@ -293,6 +323,25 @@ internal static class UnixPtyNative
 
     [DllImport("libc", SetLastError = true)]
     private static extern int ioctl(int fd, ulong request, ref Winsize argp);
+
+    /** The same ioctl with six unused register arguments, which puts argp in the first stack slot where Darwin arm64 reads variadic arguments. */
+    [DllImport("libc", EntryPoint = "ioctl", SetLastError = true)]
+    private static extern int ioctlAfterRegisters(int fd, ulong request, nint x2, nint x3, nint x4, nint x5, nint x6, nint x7, ref Winsize argp);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int posix_spawnattr_setsigdefault(IntPtr attributes, IntPtr signals);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int posix_spawnattr_setsigmask(IntPtr attributes, IntPtr signals);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int sigfillset(IntPtr signals);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int sigemptyset(IntPtr signals);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int sigdelset(IntPtr signals, int signal);
 
     [DllImport("libc", SetLastError = true)]
     private static extern int close(int fd);
