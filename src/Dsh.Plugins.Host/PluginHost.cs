@@ -25,7 +25,7 @@ public sealed record ManagedPlugin(
 
 public sealed class PluginHost
 {
-    private const string ManifestTypeName = "Dsh.Plugins.Generated.DshPluginManifest";
+    public const string ManifestTypeName ="Dsh.Plugins.Generated.DshPluginManifest";
     private const string RegistrationsMethodName = "Registrations";
     private const string SharedDependenciesMethodName = "SharedDependencies";
     private const string SharedPoolDirectoryName = ".shared";
