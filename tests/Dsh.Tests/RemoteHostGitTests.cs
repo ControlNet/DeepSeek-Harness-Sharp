@@ -22,6 +22,7 @@ public sealed class RemoteHostGitTests : IDisposable
         _repo.Write("new.txt", "fresh\n");
         await using var host = await HarnessHostFixture.CreateAsync("mgs", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("git", Ct);
+        await HarnessHostFixture.OpenProjectAsync(client, _repo.Sandbox, Ct);
 
         var status = await client.GitStatusAsync(_repo.Root, Ct);
         var diff = await client.GitDiffAsync(new RemoteGitDiffRequest(_repo.Root, GitDiffTarget.WorkingTree), Ct);
@@ -44,6 +45,7 @@ public sealed class RemoteHostGitTests : IDisposable
         _repo.Commit(("a.txt", "one\n"));
         await using var host = await HarnessHostFixture.CreateAsync("mgw", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("git", Ct);
+        await HarnessHostFixture.OpenProjectAsync(client, _repo.Sandbox, Ct);
         var path = Path.Combine(_repo.Sandbox, "feature-wt");
 
         var added = await client.AddWorktreeAsync(new RemoteGitWorktreeAdd(_repo.Root, path, NewBranch: "feature"), Ct);

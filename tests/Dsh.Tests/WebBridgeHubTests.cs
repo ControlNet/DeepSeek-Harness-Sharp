@@ -153,7 +153,7 @@ public sealed class WebBridgeHubTests
 
         public static async Task<HubFixture> StartAsync()
         {
-            var executable = RealHostProcesses.Executable ?? throw new InvalidOperationException("dsharp has not been built (DeepSeek-Harness-Sharp/bin/Debug/net10.0)");
+            var executable = RealHostProcesses.Executable;
             var localHome = await StartHostAsync(executable, "hl");
             var secondHome = await StartHostAsync(executable, "hs");
             var closedPort = ClosedLoopbackPort();

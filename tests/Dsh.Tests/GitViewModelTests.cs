@@ -24,7 +24,9 @@ public sealed class GitViewModelTests : IDisposable
         _repo.Write("a.txt", "one\nchanged\n");
         _repo.Write("new.txt", "fresh\n");
         await using var host = await HarnessHostFixture.CreateAsync("gvs", TestContext.Current.CancellationToken);
-        var viewModel = new GitViewModel(await host.ConnectAsync("git-view", Ct), _repo.Root);
+        var client = await host.ConnectAsync("git-view", Ct);
+        await HarnessHostFixture.OpenProjectAsync(client, _repo.Sandbox, Ct);
+        var viewModel = new GitViewModel(client, _repo.Root);
 
         Assert.True(await viewModel.RefreshAsync(), viewModel.Status);
         var groups = viewModel.Groups.ToDictionary(group => group.Section, group => group.Items.Select(item => (item.Code, item.Path)).ToList());
@@ -52,7 +54,9 @@ public sealed class GitViewModelTests : IDisposable
     {
         _repo.Commit(("a.txt", "one\n"));
         await using var host = await HarnessHostFixture.CreateAsync("gvw", TestContext.Current.CancellationToken);
-        var viewModel = new GitViewModel(await host.ConnectAsync("git-view", Ct), _repo.Root);
+        var client = await host.ConnectAsync("git-view", Ct);
+        await HarnessHostFixture.OpenProjectAsync(client, _repo.Sandbox, Ct);
+        var viewModel = new GitViewModel(client, _repo.Root);
         Assert.True(await viewModel.RefreshAsync(), viewModel.Status);
         var requested = new List<GitWorktree>();
         viewModel.NewSessionRequested += requested.Add;

@@ -9,6 +9,8 @@ public sealed class HostAutostartTests
     [Fact]
     public void Unit_RunsTheCurrentBinary_KeepsPtysOnStop_AndQuotesForSystemd()
     {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("systemd units are installed on Linux only; systemd escaping doubles the backslashes of a Windows binary path");
         var (executable, arguments) = HostAutostart.ServeCommand();
 
         var unit = HostAutostart.RenderUnit(executable, [.. arguments, "$x"], "/data/100% $HOME \"x\"");

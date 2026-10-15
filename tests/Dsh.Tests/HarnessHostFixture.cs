@@ -63,6 +63,16 @@ internal sealed class HarnessHostFixture : IAsyncDisposable
         return client;
     }
 
+    /**
+     * host.file.* and host.git.* reach only the home directories and session projects (HostPathPolicy).
+     * Starts a shell in Project, as a session there would, so that a test directory outside the user's home (the Windows CI checkout on D:) is reachable.
+     */
+    public static async Task OpenProjectAsync(RemoteHostClient client, string project, CancellationToken cancellationToken)
+    {
+        var (fileName, arguments) = RemoteHostMultiClientTests.Shell;
+        await client.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments, Cwd: project), cancellationToken);
+    }
+
     /** 模拟 host 进程重启: 停监听、释放后端, 应用按同一个 home 重新组合后再起 host; PTY daemon 保持运行。 */
     public async Task RestartHostAsync(CancellationToken cancellationToken)
     {

@@ -285,8 +285,8 @@ internal sealed class GitTestRepository : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(Sandbox) && Root == Path.Combine(Sandbox, "repo"))
-            Directory.Delete(Sandbox, recursive: true);
+        if (Root == Path.Combine(Sandbox, "repo"))
+            TempTree.Delete(Sandbox);
     }
 
     private void Configure()

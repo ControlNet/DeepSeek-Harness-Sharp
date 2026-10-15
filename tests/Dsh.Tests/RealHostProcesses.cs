@@ -18,7 +18,17 @@ internal static class RealHostProcesses
           file: false
         """;
 
-    public static string? Executable => PtyTuiHarness.FindTuiExecutable();
+    /** This worktree's dsharp; CI builds only the test project, so without it the test is skipped (as PtyTuiHarness and the template plugin tests do). */
+    public static string Executable
+    {
+        get
+        {
+            var executable = PtyTuiHarness.FindTuiExecutable();
+            if (executable is null)
+                Assert.Skip("dsharp has not been built (DeepSeek-Harness-Sharp/bin/Debug/net10.0)");
+            return executable;
+        }
+    }
 
     /** A short home under the repository (socket paths are limited to 108 bytes) with throwaway settings. */
     public static string CreateHome(string prefix)

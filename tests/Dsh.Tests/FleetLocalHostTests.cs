@@ -146,7 +146,7 @@ public sealed class FleetLocalHostTests
     {
         if (!OperatingSystem.IsLinux())
             Assert.Skip("real host processes are cleaned up through /proc (Linux only)");
-        return RealHostProcesses.Executable ?? throw new InvalidOperationException("dsharp has not been built (DeepSeek-Harness-Sharp/bin/Debug/net10.0)");
+        return RealHostProcesses.Executable;
     }
 
     private static async Task<string> StartShellAsync(MachineConnection connection, string cwd)

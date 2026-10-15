@@ -244,7 +244,8 @@ public sealed class GuiWorkspaceTests
                 Assert.True(shellTab is { IsClosable: true, IsSelected: true });
                 var shellSessions = workspace.Fleet.Find("alpha")!.Sessions.Where(item => item.Kind == HostSessionKinds.Terminal).ToList();
                 shellTab.Terminal!.Session!.Send("pwd\r"u8);
-                await UntilAsync(() => ScreenText(shellTab.Terminal).Contains(project, StringComparison.Ordinal), "the shell runs in the project directory");
+                // On a CI checkout the project path is longer than the 80 columns, so pwd prints it across two rows.
+                await UntilAsync(() => ScreenText(shellTab.Terminal).Replace("\n", "", StringComparison.Ordinal).Contains(project, StringComparison.Ordinal), "the shell runs in the project directory");
 
                 var shellId = Assert.Single(shellSessions).SessionId;
                 await session.CloseTabCommand.ExecuteAsync(shellTab);

@@ -114,7 +114,7 @@ public sealed class FleetSshEndToEndTests
     {
         if (!OperatingSystem.IsLinux() || !File.Exists(Sshd))
             Assert.Skip($"needs Linux with {Sshd}");
-        return RealHostProcesses.Executable ?? throw new InvalidOperationException("dsharp has not been built (DeepSeek-Harness-Sharp/bin/Debug/net10.0)");
+        return RealHostProcesses.Executable;
     }
 
     /**
