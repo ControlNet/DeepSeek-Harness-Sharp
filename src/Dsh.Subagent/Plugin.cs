@@ -7,6 +7,7 @@ using Dsh.Plugins;
 [assembly: DshPlugin(Dsh.Subagent.Plugin.SubagentSpawnInProcess)]
 [assembly: DshPlugin(Dsh.Subagent.Plugin.SubagentForkInProcess)]
 [assembly: DshPlugin(Dsh.Subagent.Plugin.ToolSubagent)]
+[assembly: DshPlugin(Dsh.Subagent.Plugin.ToolSubagentListModels)]
 [assembly: DshPlugin(Dsh.Subagent.Plugin.ToolSubagentControl)]
 [assembly: DshPlugin(Dsh.Subagent.Plugin.ToolSubagentControlListAgents)]
 
@@ -18,6 +19,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
     internal const string SubagentSpawnInProcess = "@deepseek-ai/dsh-subagent-spawn-in-process";
     internal const string SubagentForkInProcess = "@deepseek-ai/dsh-subagent-fork-in-process";
     internal const string ToolSubagent = "@deepseek-ai/dsh-tool-subagent";
+    internal const string ToolSubagentListModels = "@deepseek-ai/dsh-tool-subagent/list-models";
     internal const string ToolSubagentControl = "@deepseek-ai/dsh-tool-subagent-control";
     internal const string ToolSubagentControlListAgents = "@deepseek-ai/dsh-tool-subagent-control/list-agents";
 
@@ -27,6 +29,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
         SubagentSpawnInProcess => [SubagentRuntime.ServiceName],
         SubagentForkInProcess => [SubagentRuntime.ServiceName],
         ToolSubagent => [ToolRuntime.ServiceName, SubagentRuntime.ServiceName, LlmRuntime.ServiceName],
+        ToolSubagentListModels => [ToolRuntime.ServiceName, LlmRuntime.ServiceName, SystemPrompt.ServiceName],
         ToolSubagentControl => [ToolRuntime.ServiceName],
         ToolSubagentControlListAgents => [ToolRuntime.ServiceName],
         _ => throw new InvalidOperationException($"Unknown DSH package '{packageName}'."),
@@ -38,6 +41,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
         SubagentSpawnInProcess => SubagentInProcessProviders.RegisterSpawn(ctx, ProviderName(config)),
         SubagentForkInProcess => SubagentInProcessProviders.RegisterFork(ctx, ProviderName(config)),
         ToolSubagent => SubagentTool.Apply(ctx, config),
+        ToolSubagentListModels => SubagentModelsTool.Apply(ctx),
         ToolSubagentControl => SubagentControlTools.Apply(ctx),
         ToolSubagentControlListAgents => SubagentControlTools.ApplyListAgents(ctx),
         _ => throw new InvalidOperationException($"Unknown DSH package '{packageName}'."),

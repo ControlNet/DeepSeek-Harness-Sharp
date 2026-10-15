@@ -49,7 +49,20 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 7. 看图:模型可调用 `read_image` 工具读取本地图片(PNG/JPEG/GIF/WebP/BMP/TIFF 等常见格式,无扩展名的文件按内容识别),图片本身随工具结果交给模型;路径解析与 `read` 相同(相对路径按会话工作目录)。
    - 长边超过 2000px 的图片自动降采样,结果里写明原始尺寸与坐标换算倍数;源文件上限 20 MiB,存入附件库的图片不超过 5 MiB(超出时改用 JPEG 压缩)。
    - 需要接收图片输入的模型:DeepSeek 以内置模型目录为准(如 `deepseek-v4-flash-vision-exp`),Anthropic 与 OpenAI 兼容提供方以 models.dev 标注的输入模态为准;当前模型明确不支持图片时 `read_image` 直接报错,未收录的模型交由提供方自行判定。
-8. MCP 资源:`settings.yaml` 的 `mcp:` 段配置了 MCP 服务器时,模型可用 `list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource` 三个工具读取服务器暴露的资源,`server` 参数填 `mcp:` 段里的服务器名。
+8. TUI 快捷键:默认是 `Ctrl+X` 前缀序列(如 `Ctrl+X W` 总览、`Ctrl+X N` 新会话、`Ctrl+X +`/`Ctrl+X -` 分屏/关窗格;按下 `Ctrl+X` 后状态行会列出可用的后续键),TUI 内 `/keys` 列出全部动作与当前绑定。改键写在 `settings.yaml` 的 `plugins."@deepseek-ai/dsh-tui".keys` 下,格式为 `动作名: 按键串`,修饰键(`Ctrl`/`Alt`)用 `+` 连接,多键序列用空格分隔,未写的动作保持默认:
+
+   ```yaml
+   plugins:
+     "@deepseek-ai/dsh-tui":
+       keys:
+         overview: F5                  # 单键打开总览
+         newSession: "Ctrl+X Ctrl+N"
+         splitPane: "Ctrl+X |"
+       keySequenceTimeoutMs: 1500      # 前缀等待超时(毫秒),缺省 0 = 一直等到下一个键
+   ```
+
+   动作名:`newSession`、`sessionMenu`、`detach`、`deleteSessionMenu`、`agentList`、`overview`、`openShell`、`quit`、`splitPane`、`closePane`、`prevSession`、`nextSession`、`focusLeft`/`focusRight`/`focusUp`/`focusDown`、`focusNextPane`、`interrupt`(默认 `Ctrl+C`,连按两次退出)、`promptCommandMenu`(默认 `Ctrl+P`)。按键串的首键必须带 `Ctrl`/`Alt` 或是 F 键(否则会吞掉正常输入);同一按键串绑了多个动作、或一个按键串是另一个的前缀时,启动时记 WARN 日志并让冲突的自定义项回退默认。按下前缀后再按 `Esc` 或未绑定的键即取消。焦点在 shell 窗格时,`interrupt` 与 `promptCommandMenu` 的按键直达 shell,其余动作仍由 DSH 处理。
+9. MCP 资源:`settings.yaml` 的 `mcp:` 段配置了 MCP 服务器时,模型可用 `list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource` 三个工具读取服务器暴露的资源,`server` 参数填 `mcp:` 段里的服务器名。
    - 文本资源直接返回;超过工具结果落盘阈值(`storage.tool_results.max_bytes`,缺省 64 KiB)时只保留头尾,全文写入 `<home>/tool-results/` 下的文件并在结果里给出路径,模型可用 `read` 分段读取。
    - 二进制资源存入内容寻址附件库(`<home>/attachments/`),结果给出附件 id、本地路径与字节数;图片可再用 `read_image` 查看。
    - 列表工具不带 `cursor` 时取回全部分页,带 `cursor` 时只取该页并返回 `nextCursor`;资源模板(如 `notes://{name}`)需由模型填好变量后交给 `read_mcp_resource`。
@@ -206,4 +219,5 @@ safety:
 
 - `plugins:` 支持两种写法:`"@deepseek-ai/dsh-tool-todo": false`(禁用),或带参数的 `"@deepseek-ai/dsh-tool-todo": { enabled: true, ... }`(保存插件参数);插件被发现即启用,这里的禁用项与 `/plugins` 命令是仅有的两个开关来源。
 - 运行期数据:`<home>/logs/dsh-YYYYMMDD.log`(按天 + `file_max_mb` 切分、`keep_days` 清理),`<home>/sessions/<工作目录转写>/<会话 id>/session.jsonl.zstd`,`<home>/telemetry.jsonl`(agent 生命周期与错误事件,可用 `plugins: {"@deepseek-ai/dsh-telemetry": false}` 关闭)。
+- 子代理模型:模型可调用 `list_subagent_models` 查看子代理能用的模型路由,即已配置 key 的 provider 及其生效模型(`settings.yaml` 声明的模型 ∪ models.dev 目录),模型公布了推理强度时一并列出;`subagent` 工具的 `provider`/`model`/`reasoning_effort` 参数直接取用其中一行,不填则沿用该工具插件参数里的 `agentOptions`,再缺省则跟随当前会话的模型。未配置 key 的 provider 不会出现在列表中。可用 `plugins: {"@deepseek-ai/dsh-tool-subagent/list-models": false}` 关闭该工具。
 - 会话检索:TUI/CLI 内 `/session-query <关键词>` 搜索历史会话(命中用 `/session <id>` 打开);模型侧对应 `session_search` 工具。检索覆盖内存中的活会话与 `sessions/` 下的历史日志。

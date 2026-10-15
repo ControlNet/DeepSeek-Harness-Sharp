@@ -195,6 +195,7 @@ public sealed class GpuRenderer : IDisposable, IGpuHostClient
     public bool OnFrame()
     {
         _chat.DrainUi();
+        _chat.ExpireKeySequence();
         if (_chat.ExitRequested)
             return true;
 
