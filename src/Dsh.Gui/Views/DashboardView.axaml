@@ -1,0 +1,216 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Dsh.Gui.ViewModels"
+             x:Class="Dsh.Gui.Views.DashboardView"
+             x:DataType="vm:DashboardViewModel"
+             x:CompileBindings="True"
+             FontFamily="{DynamicResource Font.Ui}">
+
+  <Grid RowDefinitions="Auto,Auto,*" Background="{DynamicResource Brush.Bg.Chat}">
+
+    <StackPanel Grid.Row="0" Margin="20,8,20,8" Spacing="10">
+      <WrapPanel Name="SummaryTiles">
+        <Button Classes="SummaryTile" Margin="0,0,10,0" Command="{Binding SelectFilterCommand}"
+                CommandParameter="{Binding FilterChips[2]}" ToolTip.Tip="只看运行中的会话">
+          <StackPanel>
+            <TextBlock Text="{Binding RunningCount}" Classes="Metric" />
+            <TextBlock Text="运行中" Classes="Tertiary" />
+          </StackPanel>
+        </Button>
+        <Button Name="AttentionTile" Classes="SummaryTile" Classes.alert="{Binding HasAttention}" Margin="0,0,10,0"
+                Command="{Binding ShowAttentionCommand}" ToolTip.Tip="只看需要关注的会话">
+          <StackPanel>
+            <TextBlock Text="{Binding AttentionCount}" Classes="Metric" />
+            <TextBlock Text="需要关注" Classes="Tertiary" />
+          </StackPanel>
+        </Button>
+        <Button Classes="SummaryTile" Classes.alert="{Binding HasOfflineMachines}" Margin="0,0,10,0" IsHitTestVisible="False">
+          <StackPanel>
+            <TextBlock Text="{Binding OfflineMachineCount}" Classes="Metric" />
+            <TextBlock Text="离线机器" Classes="Tertiary" />
+          </StackPanel>
+        </Button>
+        <Button Classes="SummaryTile" Margin="0,0,10,0" Command="{Binding SelectFilterCommand}"
+                CommandParameter="{Binding FilterChips[0]}" ToolTip.Tip="显示全部会话">
+          <StackPanel>
+            <TextBlock Text="{Binding SessionCount}" Classes="Metric" />
+            <TextBlock Text="全部会话" Classes="Tertiary" />
+          </StackPanel>
+        </Button>
+      </WrapPanel>
+
+      <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+        <ItemsControl Grid.Column="0" ItemsSource="{Binding FilterChips}" VerticalAlignment="Center">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <StackPanel Orientation="Horizontal" Spacing="4" />
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:DashboardChipViewModel">
+              <Button Classes="Chip" Classes.selected="{Binding IsSelected}" Content="{Binding Label}"
+                      Command="{Binding $parent[UserControl].((vm:DashboardViewModel)DataContext).SelectFilterCommand}"
+                      CommandParameter="{Binding}" />
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <TextBox Grid.Column="1" Name="SearchBox" Classes="Search" PlaceholderText="搜索标题、Agent、项目、机器…"
+                 Text="{Binding SearchText}" MaxWidth="420" HorizontalAlignment="Stretch" />
+        <Button Grid.Column="2" Classes="Chip" ToolTip.Tip="排序">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <Path Classes="Icon" Width="14" Height="14" Data="{StaticResource Icon.Sort}" />
+            <TextBlock Text="排序" />
+          </StackPanel>
+          <Button.Flyout>
+            <Flyout Placement="BottomEdgeAlignedRight">
+              <ItemsControl ItemsSource="{Binding SortChips}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:DashboardChipViewModel">
+                    <Button Classes="Ghost" Classes.selected="{Binding IsSelected}" Content="{Binding Label}"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                            Command="{Binding $parent[UserControl].((vm:DashboardViewModel)DataContext).SelectSortCommand}"
+                            CommandParameter="{Binding}" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </Flyout>
+          </Button.Flyout>
+        </Button>
+        <Button Grid.Column="3" Classes="Primary" Command="{Binding NewSessionCommand}" ToolTip.Tip="在任意机器上新建会话">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <Path Classes="Icon" Stroke="{DynamicResource Brush.Text.OnAccent}" Data="{StaticResource Icon.Plus}" />
+            <TextBlock Text="新建会话" VerticalAlignment="Center" />
+          </StackPanel>
+        </Button>
+      </Grid>
+    </StackPanel>
+
+    <Border Grid.Row="1" Height="1" Background="{DynamicResource Brush.Border.Subtle}" />
+
+    <ScrollViewer Grid.Row="2" Name="DashboardScroll" HorizontalScrollBarVisibility="Disabled" Padding="20,12,20,12">
+      <StackPanel Spacing="16">
+        <TextBlock Text="没有符合条件的会话" Classes="Tertiary" HorizontalAlignment="Center" Margin="0,20"
+                   IsVisible="{Binding HasNoVisibleSessions}" />
+        <ItemsControl ItemsSource="{Binding Machines}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:DashboardMachineViewModel">
+              <StackPanel Spacing="8" Margin="0,0,0,8">
+                <Grid ColumnDefinitions="*,Auto">
+                  <Button Classes="Ghost" HorizontalAlignment="Left" Padding="4,2" Command="{Binding ToggleCommand}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Path Classes="Icon" Data="{StaticResource Icon.Machine}" />
+                      <TextBlock Text="{Binding Name}" Classes="Title" VerticalAlignment="Center" />
+                      <Border Classes="Pill" Classes.running="{Binding IsConnected}" Classes.attention="{Binding IsUnreachable}">
+                        <TextBlock Text="{Binding StateLabel}" Classes="Tertiary" />
+                      </Border>
+                      <TextBlock Text="{Binding VersionLabel}" Classes="Tertiary" VerticalAlignment="Center" />
+                      <TextBlock Text="{Binding Target}" Classes="Tertiary" VerticalAlignment="Center" />
+                      <TextBlock Text="{Binding SessionCount, StringFormat='{}{0} 个会话'}" Classes="Tertiary" VerticalAlignment="Center" />
+                    </StackPanel>
+                  </Button>
+                  <Button Grid.Column="1" Classes="Chip" IsEnabled="{Binding IsConnected}" ToolTip.Tip="在这台机器上新建会话"
+                          Command="{Binding $parent[UserControl].((vm:DashboardViewModel)DataContext).NewSessionOnMachineCommand}"
+                          CommandParameter="{Binding}">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                      <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Plus}" />
+                      <TextBlock Text="新建" />
+                    </StackPanel>
+                  </Button>
+                </Grid>
+                <TextBlock Text="{Binding Detail}" Classes="Tertiary" Margin="28,0,0,0" TextWrapping="Wrap"
+                           IsVisible="{Binding HasDetail}" />
+                <ItemsControl ItemsSource="{Binding Projects}" IsVisible="{Binding IsExpanded}" Margin="28,0,0,0">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:DashboardProjectViewModel">
+                      <StackPanel Spacing="6" Margin="0,0,0,6">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                          <Path Classes="Icon" Width="14" Height="14" Data="{StaticResource Icon.Folder}" />
+                          <TextBlock Text="{Binding Name}" Classes="Secondary" FontWeight="SemiBold" VerticalAlignment="Center" />
+                          <TextBlock Text="{Binding PathLabel}" Classes="Tertiary" VerticalAlignment="Center" />
+                          <Button Classes="Icon" Width="22" Height="22" ToolTip.Tip="在这个项目里新建会话"
+                                  Command="{Binding $parent[UserControl].((vm:DashboardViewModel)DataContext).NewSessionInProjectCommand}"
+                                  CommandParameter="{Binding}">
+                            <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Plus}" />
+                          </Button>
+                        </StackPanel>
+                        <ItemsControl ItemsSource="{Binding Sessions}">
+                          <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                              <WrapPanel />
+                            </ItemsPanelTemplate>
+                          </ItemsControl.ItemsPanel>
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:SessionCardViewModel">
+                              <Border Classes="SessionCard" Classes.attention="{Binding NeedsAttention}"
+                                      Classes.offline="{Binding !IsMachineOnline}">
+                                <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="6">
+                                  <Button Grid.Row="0" Classes="Ghost" Padding="0" HorizontalAlignment="Stretch"
+                                          HorizontalContentAlignment="Stretch" ToolTip.Tip="打开会话"
+                                          Command="{Binding $parent[UserControl].((vm:DashboardViewModel)DataContext).OpenCommand}"
+                                          CommandParameter="{Binding}">
+                                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
+                                      <Border Classes="AgentBadge" Background="{Binding BadgeBrush}">
+                                        <TextBlock Text="{Binding BadgeGlyph}" />
+                                      </Border>
+                                      <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Title}" Classes="Body" FontWeight="SemiBold"
+                                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding AgentLabel}" Classes="Tertiary" TextTrimming="CharacterEllipsis" />
+                                      </StackPanel>
+                                      <Border Grid.Column="2" Classes="Pill" Classes.attention="{Binding NeedsAttention}"
+                                              Classes.running="{Binding IsRunning}">
+                                        <TextBlock Text="{Binding StatusLabel}" Classes="Tertiary" />
+                                      </Border>
+                                    </Grid>
+                                  </Button>
+                                  <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
+                                    <Border Classes="Pill attention" IsVisible="{Binding HasPending}">
+                                      <TextBlock Text="{Binding PendingLabel}" Classes="Tertiary" />
+                                    </Border>
+                                    <TextBlock Text="{Binding KindLabel}" Classes="Tertiary" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding LastActivityText}" Classes="Tertiary" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding ExitLabel}" Classes="Tertiary" VerticalAlignment="Center" />
+                                  </StackPanel>
+                                  <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="4">
+                                    <Button Classes="Chip" Padding="8,2" IsVisible="{Binding CanStop}" ToolTip.Tip="停止会话"
+                                            Command="{Binding $parent[UserControl].((vm:DashboardViewModel)DataContext).StopCommand}"
+                                            CommandParameter="{Binding}">
+                                      <StackPanel Orientation="Horizontal" Spacing="4">
+                                        <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Stop}" />
+                                        <TextBlock Text="停止" />
+                                      </StackPanel>
+                                    </Button>
+                                    <Button Classes="Chip" Padding="8,2" IsVisible="{Binding CanResume}" ToolTip.Tip="恢复会话"
+                                            Command="{Binding $parent[UserControl].((vm:DashboardViewModel)DataContext).ResumeCommand}"
+                                            CommandParameter="{Binding}">
+                                      <StackPanel Orientation="Horizontal" Spacing="4">
+                                        <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Play}" />
+                                        <TextBlock Text="恢复" />
+                                      </StackPanel>
+                                    </Button>
+                                    <Button Classes="Chip" Padding="8,2" ToolTip.Tip="在新窗口中打开"
+                                            Command="{Binding $parent[UserControl].((vm:DashboardViewModel)DataContext).OpenInWindowCommand}"
+                                            CommandParameter="{Binding}">
+                                      <StackPanel Orientation="Horizontal" Spacing="4">
+                                        <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.OpenWindow}" />
+                                        <TextBlock Text="新窗口" />
+                                      </StackPanel>
+                                    </Button>
+                                  </StackPanel>
+                                </Grid>
+                              </Border>
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                      </StackPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

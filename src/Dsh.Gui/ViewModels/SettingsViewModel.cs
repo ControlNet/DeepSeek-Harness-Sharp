@@ -65,6 +65,9 @@ public sealed partial class SettingsViewModel : ObservableObject
     /** 主题/字号等外观项变化后由视图重新应用 App 资源。 */
     public event Action? Applied;
 
+    /** The machine list was saved; the workspace reconnects to the saved machines. */
+    public event Action? MachinesSaved;
+
     /** 拖动字号滑块时的实时预览: 不写盘, 由 MainWindow 用内存值重应用外观。 */
     public event Action? Preview;
 
@@ -665,6 +668,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             store.Save(new FleetConfig([.. others, .. RemoteWorkspaces.Select(row => row.ToModel())], BuildDeploySettings()));
             Status = $"远程工作区已保存（{RemoteWorkspaces.Count} 个）";
+            MachinesSaved?.Invoke();
         }
         catch (InvalidOperationException error)
         {

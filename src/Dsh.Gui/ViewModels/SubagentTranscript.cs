@@ -9,6 +9,9 @@ namespace Dsh.Gui.ViewModels;
  */
 internal sealed class SubagentTranscript
 {
+    /** Source plugin name of the system messages that carry an ACP agent's plan (see the host's ACP transcript). */
+    private const string AcpPlanSource = "acp-plan";
+
     private MessageViewModel? _openAssistant;
     private MessageViewModel? _openReasoning;
     private string _model = "助手";
@@ -39,6 +42,11 @@ internal sealed class SubagentTranscript
                 break;
             case UserMessagePayload user:
                 ApplyUserMessage(user, messages);
+                break;
+            case SystemMessagePayload system:
+                _openAssistant = null;
+                _openReasoning = null;
+                Add(new MessageViewModel(SystemLabel(system.Message.Source), SessionText.ContentText(system.Message.Content), MessageKind.System, false), messages);
                 break;
             case RequestHeaderPayload header when header.Header.Config.Model is { Length: > 0 } model:
                 _model = model;
@@ -89,6 +97,14 @@ internal sealed class SubagentTranscript
                 break;
         }
     }
+
+    /** ACP agents publish their plan as a system message from the "acp-plan" source; other plugin messages show the plugin's name. */
+    private static string SystemLabel(MessageSource source) => source switch
+    {
+        PluginMessageSource { Plugin: AcpPlanSource } => "计划",
+        PluginMessageSource plugin => plugin.Plugin,
+        _ => "系统",
+    };
 
     private void ApplyChunk(StreamChunk chunk, IList<MessageViewModel> messages)
     {

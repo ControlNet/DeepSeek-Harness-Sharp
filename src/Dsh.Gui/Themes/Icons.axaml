@@ -32,4 +32,11 @@
   <StreamGeometry x:Key="Icon.Expand">M8,10 L12,14 L16,10</StreamGeometry>
   <StreamGeometry x:Key="Icon.Collapse">M8,13 L12,9 L16,13</StreamGeometry>
   <StreamGeometry x:Key="Icon.Menu">M4,7 L20,7 M4,12 L20,12 M4,17 L20,17</StreamGeometry>
+  <StreamGeometry x:Key="Icon.Dashboard">M4,4 L10.5,4 L10.5,11 L4,11 Z M13.5,4 L20,4 L20,8 L13.5,8 Z M13.5,11 L20,11 L20,20 L13.5,20 Z M4,14 L10.5,14 L10.5,20 L4,20 Z</StreamGeometry>
+  <StreamGeometry x:Key="Icon.Bell">M6,16.5 L6,11 A6,6 0 0 1 18,11 L18,16.5 L19.5,18 L4.5,18 Z M10,20.5 L14,20.5</StreamGeometry>
+  <StreamGeometry x:Key="Icon.OpenWindow">M13,4 L20,4 L20,11 M20,4 L11,13 M17,14 L17,19.5 L4.5,19.5 L4.5,7 L10,7</StreamGeometry>
+  <StreamGeometry x:Key="Icon.Play">M8,5 L19,12 L8,19 Z</StreamGeometry>
+  <StreamGeometry x:Key="Icon.Back">M15,6 L9,12 L15,18</StreamGeometry>
+  <StreamGeometry x:Key="Icon.Check">M5,12.5 L10,17.5 L19,7</StreamGeometry>
+  <StreamGeometry x:Key="Icon.Machine">M4,5 L20,5 L20,15 L4,15 Z M9,19 L15,19 M12,15 L12,19</StreamGeometry>
 </ResourceDictionary>

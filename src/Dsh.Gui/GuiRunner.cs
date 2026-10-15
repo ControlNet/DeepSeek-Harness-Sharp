@@ -11,10 +11,12 @@ namespace Dsh.Gui;
 
 public static class GuiRunner
 {
+    /** startLocalHost launches `host serve` for this computer's machine when its host is not running yet (see FleetOptions.StartLocalHost). */
     public static async Task<int> Run(
         HarnessApp app,
         string cwd,
-        string? resumeSessionId = null)
+        string? resumeSessionId = null,
+        Func<string, CancellationToken, Task>? startLocalHost = null)
     {
         using var instance = SingleInstance.Acquire(app.Home.Root);
         if (instance is null)
@@ -26,7 +28,7 @@ public static class GuiRunner
         var agents = app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
         var agent = await OpenAgentAsync(app, agents, workspace, resumeSessionId);
 
-        var (exitCode, lastSession) = await RunAvaloniaAsync(app, agent, settings, instance);
+        var (exitCode, lastSession) = await RunAvaloniaAsync(app, agent, settings, instance, startLocalHost);
         var sessions = app.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
         await sessions.Flush(lastSession);
         return exitCode;
@@ -40,7 +42,8 @@ public static class GuiRunner
     public static int RunOnMainThread(
         HarnessApp app,
         string cwd,
-        string? resumeSessionId = null)
+        string? resumeSessionId = null,
+        Func<string, CancellationToken, Task>? startLocalHost = null)
     {
         using var instance = SingleInstance.Acquire(app.Home.Root);
         if (instance is null)
@@ -51,7 +54,7 @@ public static class GuiRunner
         var agents = app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
         var agent = OpenAgentAsync(app, agents, workspace, resumeSessionId).GetAwaiter().GetResult();
 
-        var (exitCode, lastSession) = RunAvalonia(app, agent, settings, instance);
+        var (exitCode, lastSession) = RunAvalonia(app, agent, settings, instance, startLocalHost);
         app.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(lastSession).GetAwaiter().GetResult();
         return exitCode;
     }
@@ -89,14 +92,15 @@ public static class GuiRunner
         HarnessApp app,
         AgentLoopAgent agent,
         GuiSettingsSnapshot settings,
-        SingleInstance instance)
+        SingleInstance instance,
+        Func<string, CancellationToken, Task>? startLocalHost)
     {
         var done = new TaskCompletionSource<(int, Session)>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
             try
             {
-                done.TrySetResult(RunAvalonia(app, agent, settings, instance));
+                done.TrySetResult(RunAvalonia(app, agent, settings, instance, startLocalHost));
             }
             catch (Exception error)
             {
@@ -114,7 +118,8 @@ public static class GuiRunner
         HarnessApp app,
         AgentLoopAgent agent,
         GuiSettingsSnapshot settings,
-        SingleInstance instance)
+        SingleInstance instance,
+        Func<string, CancellationToken, Task>? startLocalHost)
     {
         MainWindow? window = null;
         instance.ActivationRequested += () =>
@@ -125,7 +130,7 @@ public static class GuiRunner
         App.StartupAppearance = application => ThemeService.Apply(application, settings);
         App.StartupWindowFactory = () =>
         {
-            window = new MainWindow(app, agent);
+            window = new MainWindow(app, agent, FleetWorkspace.ForHome(app.Home, startLocalHost));
             return window;
         };
         var exitCode = BuildApp(settings).StartWithClassicDesktopLifetime([], ShutdownMode.OnExplicitShutdown);

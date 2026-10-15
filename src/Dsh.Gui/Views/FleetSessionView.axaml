@@ -1,0 +1,118 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Dsh.Gui.ViewModels"
+             xmlns:views="using:Dsh.Gui.Views"
+             x:Class="Dsh.Gui.Views.FleetSessionView"
+             x:DataType="vm:FleetSessionViewModel"
+             x:CompileBindings="True"
+             FontFamily="{DynamicResource Font.Ui}">
+
+  <Grid RowDefinitions="Auto,Auto,Auto,*" Background="{DynamicResource Brush.Bg.Chat}">
+
+    <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="10" Margin="16,8,20,6">
+      <Button Classes="Icon" Width="30" Height="30" Command="{Binding BackCommand}" ToolTip.Tip="返回工作台 (Esc)"
+              IsVisible="{Binding !IsInWindow}">
+        <Path Classes="Icon" Data="{StaticResource Icon.Back}" />
+      </Button>
+      <Border Grid.Column="1" Classes="AgentBadge" Background="{Binding Card.BadgeBrush}">
+        <TextBlock Text="{Binding Card.BadgeGlyph}" />
+      </Border>
+      <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <TextBlock Text="{Binding Card.Title}" Classes="Title" />
+          <Border Classes="Pill" Classes.attention="{Binding Card.NeedsAttention}" Classes.running="{Binding Card.IsRunning}">
+            <TextBlock Name="StatusText" Text="{Binding Card.StatusLabel}" Classes="Tertiary" />
+          </Border>
+          <Border Classes="Pill attention" IsVisible="{Binding Card.HasPending}">
+            <TextBlock Text="{Binding Card.PendingLabel}" Classes="Tertiary" />
+          </Border>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <TextBlock Text="{Binding Machine}" Classes="Tertiary" />
+          <TextBlock Text="·" Classes="Tertiary" />
+          <TextBlock Text="{Binding ProjectLabel}" Classes="Tertiary" TextTrimming="CharacterEllipsis" />
+          <TextBlock Text="·" Classes="Tertiary" />
+          <TextBlock Text="{Binding Card.AgentLabel}" Classes="Tertiary" />
+          <TextBlock Text="·" Classes="Tertiary" />
+          <TextBlock Text="{Binding Card.KindLabel}" Classes="Tertiary" />
+        </StackPanel>
+      </StackPanel>
+      <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+        <Button Classes="Chip" Command="{Binding AddShellCommand}" ToolTip.Tip="在项目目录打开一个终端">
+          <StackPanel Orientation="Horizontal" Spacing="4">
+            <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Terminal}" />
+            <TextBlock Text="终端" />
+          </StackPanel>
+        </Button>
+        <Button Classes="Chip" Command="{Binding StopCommand}" IsVisible="{Binding Card.CanStop}" ToolTip.Tip="停止会话">
+          <StackPanel Orientation="Horizontal" Spacing="4">
+            <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Stop}" />
+            <TextBlock Text="停止" />
+          </StackPanel>
+        </Button>
+        <Button Classes="Chip" Command="{Binding ResumeCommand}" IsVisible="{Binding Card.CanResume}" ToolTip.Tip="恢复会话">
+          <StackPanel Orientation="Horizontal" Spacing="4">
+            <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Play}" />
+            <TextBlock Text="恢复" />
+          </StackPanel>
+        </Button>
+        <Button Classes="Chip" Command="{Binding OpenInWindowCommand}" ToolTip.Tip="在新窗口中打开">
+          <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.OpenWindow}" />
+        </Button>
+      </StackPanel>
+    </Grid>
+
+    <StackPanel Grid.Row="1" Margin="20,0,20,4" Spacing="4">
+      <Border Classes="Pill error" HorizontalAlignment="Left" IsVisible="{Binding HasError}">
+        <TextBlock Text="{Binding Error}" Classes="Tertiary" />
+      </Border>
+      <ItemsControl ItemsSource="{Binding Pending}" ItemTemplate="{StaticResource Template.PendingDecision}"
+                    IsVisible="{Binding HasPending}" />
+    </StackPanel>
+
+    <Grid Grid.Row="2" Margin="20,0,20,0">
+      <ItemsControl ItemsSource="{Binding Tabs}">
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <StackPanel Orientation="Horizontal" Spacing="12" />
+          </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:SessionTabViewModel">
+            <StackPanel Orientation="Horizontal" Spacing="2">
+              <Button Classes="Tab" Classes.selected="{Binding IsSelected}" Content="{Binding Title}"
+                      Command="{Binding $parent[UserControl].((vm:FleetSessionViewModel)DataContext).SelectTabCommand}"
+                      CommandParameter="{Binding}" />
+              <Button Classes="Icon" Width="20" Height="20" IsVisible="{Binding IsClosable}" ToolTip.Tip="关闭终端"
+                      Command="{Binding $parent[UserControl].((vm:FleetSessionViewModel)DataContext).CloseTabCommand}"
+                      CommandParameter="{Binding}">
+                <Path Classes="Icon" Width="10" Height="10" Data="{StaticResource Icon.Close}" />
+              </Button>
+            </StackPanel>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+      <Border Height="1" VerticalAlignment="Bottom" Background="{DynamicResource Brush.Border.Subtle}" />
+    </Grid>
+
+    <ItemsControl Grid.Row="3" ItemsSource="{Binding Tabs}">
+      <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+          <Panel />
+        </ItemsPanelTemplate>
+      </ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate x:DataType="vm:SessionTabViewModel">
+          <Panel IsVisible="{Binding IsSelected}">
+            <Panel IsVisible="{Binding IsTranscript}">
+              <views:SessionTranscriptView DataContext="{Binding Transcript}" />
+            </Panel>
+            <Panel IsVisible="{Binding IsTerminal}" Margin="16,8,16,12">
+              <views:TerminalPaneView DataContext="{Binding Terminal}" />
+            </Panel>
+          </Panel>
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+  </Grid>
+</UserControl>

@@ -35,6 +35,12 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
+            Capture(window, "headless-dashboard");
+            Assert.True(viewModel.IsDashboardPage);
+            Assert.True(window.GetVisualDescendants().OfType<DashboardView>().Single().IsVisible);
+
+            viewModel.ShowChatCommand.Execute(null);
+            Dispatcher.UIThread.RunJobs();
             Capture(window, "headless-chat");
             Assert.True(viewModel.IsChatPage);
             Assert.True(window.GetVisualDescendants().OfType<ChatView>().Single().IsVisible);
@@ -260,12 +266,13 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
         var window = new MainWindow(environment.App, environment.Agent);
         var viewModel = window.ViewModel!;
         window.Show();
+        viewModel.ShowChatCommand.Execute(null);
         Dispatcher.UIThread.RunJobs();
         try
         {
             Assert.Equal("标准", viewModel.PresetLabel);
             var chip = window.GetVisualDescendants().OfType<Button>()
-                .First(button => button.Flyout is Flyout { Content: ItemsControl });
+                .First(button => button.IsEffectivelyVisible && button.Flyout is Flyout { Content: ItemsControl });
             var flyout = (Flyout)chip.Flyout!;
             flyout.ShowAt(chip);
             Dispatcher.UIThread.RunJobs();
@@ -359,6 +366,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
         var window = new MainWindow(environment.App, environment.Agent);
         var viewModel = window.ViewModel!;
         window.Show();
+        viewModel.ShowChatCommand.Execute(null);
         Dispatcher.UIThread.RunJobs();
         Flyout? flyout = null;
         try
@@ -397,6 +405,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
             var window = new MainWindow(environment.App, environment.Agent);
             var viewModel = window.ViewModel!;
             window.Show();
+            viewModel.ShowChatCommand.Execute(null);
             Dispatcher.UIThread.RunJobs();
 
             var before = string.Join('\n', Enumerable.Range(0, 12).Select(index => $"line {index}")) + "\n";

@@ -1,0 +1,40 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Dsh.Gui.ViewModels"
+             x:Class="Dsh.Gui.Views.CommandPaletteView"
+             x:DataType="vm:CommandPaletteViewModel"
+             x:CompileBindings="True">
+  <Border Classes="Overlay" PointerPressed="OnOverlayPressed">
+    <Border Width="620" VerticalAlignment="Top" Margin="0,80,0,0" Padding="10"
+            Background="{DynamicResource Brush.Bg.Card}" BorderBrush="{DynamicResource Brush.Border.Subtle}" BorderThickness="1"
+            CornerRadius="{DynamicResource CornerRadius.Card}" PointerPressed="OnPanelPressed">
+      <Grid RowDefinitions="Auto,Auto,*" RowSpacing="8">
+        <TextBox Name="QueryBox" Classes="Search" PlaceholderText="跳转到会话：输入标题、Agent、项目、机器…" Text="{Binding Query}" />
+        <TextBlock Grid.Row="1" Text="没有匹配的会话" Classes="Tertiary" Margin="6,0" IsVisible="{Binding HasNoResults}" />
+        <ListBox Grid.Row="2" Name="ResultList" MaxHeight="420" ItemsSource="{Binding Results}" SelectedItem="{Binding Selected}"
+                 Background="Transparent">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:SessionCardViewModel">
+              <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Background="Transparent" Tapped="OnResultTapped">
+                <Border Classes="AgentBadge" Background="{Binding BadgeBrush}">
+                  <TextBlock Text="{Binding BadgeGlyph}" />
+                </Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                  <TextBlock Text="{Binding Title}" Classes="Body" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <TextBlock Text="{Binding Machine}" Classes="Tertiary" />
+                    <TextBlock Text="{Binding ProjectName}" Classes="Tertiary" />
+                    <TextBlock Text="{Binding AgentLabel}" Classes="Tertiary" />
+                  </StackPanel>
+                </StackPanel>
+                <Border Grid.Column="2" Classes="Pill" Classes.attention="{Binding NeedsAttention}" Classes.running="{Binding IsRunning}">
+                  <TextBlock Text="{Binding StatusLabel}" Classes="Tertiary" />
+                </Border>
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+    </Border>
+  </Border>
+</UserControl>

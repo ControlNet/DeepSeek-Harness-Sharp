@@ -61,38 +61,6 @@
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>
                 <Separator Margin="4,4" />
-                <Button x:Name="RemoteWorkspaceButton" Classes="Ghost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="8,4"
-                        PointerEntered="OnRemoteWorkspaceHover" Content="远程工作区">
-                  <Button.Flyout>
-                    <Flyout Placement="RightEdgeAlignedTop">
-                      <StackPanel Width="300">
-                      <ScrollViewer MaxHeight="360" VerticalScrollBarVisibility="Auto">
-                        <ItemsControl ItemsSource="{Binding RemoteWorkspaces}">
-                          <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="vm:RemoteWorkspaceChoiceViewModel">
-                              <Button Classes="Ghost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="8,4"
-                                      Command="{Binding OpenCommand}">
-                                <StackPanel>
-                                  <TextBlock Text="{Binding Name}" />
-                                  <TextBlock Text="{Binding Summary}" Classes="Tertiary" FontSize="{DynamicResource FontSize.Status}"
-                                             TextTrimming="CharacterEllipsis" />
-                                </StackPanel>
-                              </Button>
-                            </DataTemplate>
-                          </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                      </ScrollViewer>
-                      <Grid ColumnDefinitions="*,*" ColumnSpacing="6" Margin="0,4,0,0"
-                            IsVisible="{Binding HasRemotePages}">
-                        <Button Grid.Column="0" Classes="Ghost" HorizontalAlignment="Stretch" Content="上一页"
-                                Command="{Binding RemotePageBackCommand}" />
-                        <Button Grid.Column="1" Classes="Ghost" HorizontalAlignment="Stretch" Content="下一页"
-                                Command="{Binding RemotePageForwardCommand}" />
-                      </Grid>
-                      </StackPanel>
-                    </Flyout>
-                  </Button.Flyout>
-                </Button>
                 <Button Classes="Ghost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="8,4"
                         Content="打开新工作区…" Command="{Binding PickWorkspaceCommand}" />
               </StackPanel>
@@ -142,6 +110,30 @@
 
     <StackPanel DockPanel.Dock="Bottom" Margin="8,4,8,8" Spacing="2">
       <Button Classes="Ghost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+              Classes.selected="{Binding IsDashboardPage}" Command="{Binding ShowDashboardCommand}">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Path Classes="Icon" Data="{StaticResource Icon.Dashboard}" />
+          <TextBlock Text="工作台" VerticalAlignment="Center" />
+          <Border Classes="AttentionBadge" IsVisible="{Binding Workspace.Dashboard.HasAttention}">
+            <TextBlock Text="{Binding Workspace.Dashboard.AttentionCount}" />
+          </Border>
+        </StackPanel>
+      </Button>
+      <ItemsControl ItemsSource="{Binding Workspace.Pages.Available}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:WorkspacePageEntry">
+            <Button Classes="Ghost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                    Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).ShowWorkspacePageCommand}"
+                    CommandParameter="{Binding}">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Path Classes="Icon" Data="{Binding Icon}" />
+                <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+              </StackPanel>
+            </Button>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+      <Button Classes="Ghost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
               Command="{Binding OpenLocalTerminalCommand}">
         <StackPanel Orientation="Horizontal" Spacing="8">
           <Path Classes="Icon" Data="{StaticResource Icon.Terminal}" />
@@ -162,68 +154,6 @@
           <TextBlock Text="设置" VerticalAlignment="Center" />
         </StackPanel>
       </Button>
-    </StackPanel>
-
-    <!-- 远端会话区必须有界: DockPanel 不会压缩已停靠的子项, 无界列表会溢出并压住底部“终端/设置”; 限高 + 自身滚动。 -->
-    <StackPanel DockPanel.Dock="Top" Margin="6,6,8,0" IsVisible="{Binding HasRemoteSessions}">
-      <TextBlock Text="远程工作区" Classes="Tertiary" Margin="6,0,0,2" />
-      <ScrollViewer x:Name="RemoteSessionsScroll" MaxHeight="{DynamicResource Layout.RemoteSectionMaxHeight}"
-                    VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <ItemsControl ItemsSource="{Binding RemoteSessionGroups}">
-          <ItemsControl.ItemTemplate>
-            <DataTemplate x:DataType="vm:RemoteWorkspaceGroupViewModel">
-              <StackPanel Margin="0,2,0,4">
-                <Grid ColumnDefinitions="*,Auto,Auto,Auto">
-                  <Button Grid.Column="0" Classes="Ghost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="6,4"
-                          Command="{Binding ToggleCommand}">
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                      <Path Classes="Icon" Width="14" Height="14" Data="{StaticResource Icon.Folder}" />
-                      <TextBlock Text="{Binding Header}" Classes="Secondary" VerticalAlignment="Center"
-                                 TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-                  </Button>
-                  <Button Grid.Column="1" Classes="Icon" Width="24" Height="24" ToolTip.Tip="刷新远端会话" VerticalAlignment="Center"
-                          Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).RefreshRemoteSessionsCommand}">
-                    <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Refresh}" />
-                  </Button>
-                  <Button Grid.Column="2" Classes="Icon" Width="24" Height="24" ToolTip.Tip="远端终端" VerticalAlignment="Center"
-                          Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).OpenRemoteTerminalCommand}">
-                    <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Terminal}" />
-                  </Button>
-                  <Button Grid.Column="3" Classes="Icon" Width="24" Height="24" ToolTip.Tip="在远端新建会话" VerticalAlignment="Center"
-                          Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).NewRemoteSessionCommand}">
-                    <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Plus}" />
-                  </Button>
-                </Grid>
-                <ItemsControl ItemsSource="{Binding Sessions}" IsVisible="{Binding IsExpanded}" Margin="10,0,0,0">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="vm:RemoteSessionNodeViewModel">
-                      <Button Classes="SessionItem" Classes.selected="{Binding IsSelected}"
-                              HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="8,5"
-                              Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).OpenRemoteSessionCommand}"
-                              CommandParameter="{Binding}">
-                        <Grid ColumnDefinitions="*,Auto">
-                          <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="{Binding Title}" Classes="Body" FontSize="{DynamicResource FontSize.List}"
-                                       TextTrimming="CharacterEllipsis" />
-                            <TextBlock Text="{Binding Summary}" Classes="Tertiary" FontSize="{DynamicResource FontSize.Status}"
-                                       TextTrimming="CharacterEllipsis" />
-                          </StackPanel>
-                          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="8,0,0,0" VerticalAlignment="Center">
-                            <TextBlock Text="● 运行中" FontSize="{DynamicResource FontSize.Status}"
-                                       Foreground="{DynamicResource Brush.Status.Success}" IsVisible="{Binding IsRunning}" />
-                            <TextBlock Text="{Binding RelativeTime}" Classes="Tertiary" />
-                          </StackPanel>
-                        </Grid>
-                      </Button>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
-              </StackPanel>
-            </DataTemplate>
-          </ItemsControl.ItemTemplate>
-        </ItemsControl>
-      </ScrollViewer>
     </StackPanel>
 
     <Grid>

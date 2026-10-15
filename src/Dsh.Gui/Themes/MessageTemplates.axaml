@@ -1,0 +1,19 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:vm="using:Dsh.Gui.ViewModels"
+                    xmlns:views="using:Dsh.Gui.Views">
+
+  <!-- A message of a read-only or remote transcript (subagent view, sessions on fleet machines): role, folded preview, markdown body and tool detail. -->
+  <DataTemplate x:Key="Template.TranscriptMessage" x:DataType="vm:MessageViewModel">
+    <Border Classes="Msg" Classes.user="{Binding IsUser}" HorizontalAlignment="{Binding Align}">
+      <StackPanel Spacing="3">
+        <TextBlock Text="{Binding Role}" Classes="Tertiary" IsVisible="{Binding HasRole}" />
+        <TextBlock Text="{Binding Preview}" Classes="Secondary" IsVisible="{Binding ShowPreview}" />
+        <views:MarkdownView Text="{Binding Text}" IsVisible="{Binding ShowMarkdown}" />
+        <TextBlock Text="{Binding Text}" Classes="Body" IsVisible="{Binding ShowPlainBody}" />
+        <TextBlock Text="{Binding Detail}" Classes="Body" IsVisible="{Binding ShowDetail}"
+                   FontFamily="{DynamicResource Font.Mono}" />
+      </StackPanel>
+    </Border>
+  </DataTemplate>
+</ResourceDictionary>

@@ -14,7 +14,9 @@ public sealed record PluginEntrypointOptions(
     // `--gpu-capture-plan <file>`: 脚本化按键 + 多帧拍帧; 窗口隐藏不抢前台, 计划跑完即退出。
     string? GpuCapturePlanPath = null,
     // `--gpu-card <N|路径>`: 显式指定 GBM/KMS 上屏的 DRM 卡(多卡接屏时用); 严格指定, 不可用则拒绝 GPU 形态。
-    string? GpuCard = null);
+    string? GpuCard = null,
+    // 在本机按给定 harness home 拉起 `host serve` 常驻进程; 只有组合根知道可执行文件如何启动自己。
+    Func<string, CancellationToken, Task>? StartLocalHost = null);
 
 /** 入口插件契约:插件类实现它,并在类上声明 DshEntrypoint("tui") 之类的入口名。 */
 public interface IDshEntrypoint

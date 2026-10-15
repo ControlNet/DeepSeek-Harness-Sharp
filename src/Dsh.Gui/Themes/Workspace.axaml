@@ -1,0 +1,117 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!-- Session cards of the dashboard: a card that needs the user gets a warning border; cards of an unreachable machine are greyed. -->
+  <Style Selector="Border.SessionCard">
+    <Setter Property="Background" Value="{DynamicResource Brush.Bg.Card}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource Brush.Border.Subtle}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="{DynamicResource CornerRadius.Card}" />
+    <Setter Property="Padding" Value="12,10" />
+    <Setter Property="Margin" Value="0,0,10,10" />
+    <Setter Property="Width" Value="300" />
+  </Style>
+  <Style Selector="Border.SessionCard.attention">
+    <Setter Property="BorderBrush" Value="{DynamicResource Brush.Status.Warning}" />
+    <Setter Property="BorderThickness" Value="2" />
+  </Style>
+  <Style Selector="Border.SessionCard.offline">
+    <Setter Property="Opacity" Value="0.5" />
+  </Style>
+
+  <Style Selector="Border.Pill">
+    <Setter Property="CornerRadius" Value="999" />
+    <Setter Property="Padding" Value="7,1" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+    <Setter Property="Background" Value="{DynamicResource Brush.Bg.Inset}" />
+  </Style>
+  <Style Selector="Border.Pill.running">
+    <Setter Property="Background" Value="{DynamicResource Brush.Accent.Soft}" />
+  </Style>
+  <Style Selector="Border.Pill.attention">
+    <Setter Property="Background" Value="{DynamicResource Brush.Status.Warning}" />
+  </Style>
+  <Style Selector="Border.Pill.attention TextBlock">
+    <Setter Property="Foreground" Value="{DynamicResource Brush.Text.OnAccent}" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+  <Style Selector="Border.Pill.error">
+    <Setter Property="Background" Value="{DynamicResource Brush.Status.Error}" />
+  </Style>
+  <Style Selector="Border.Pill.error TextBlock">
+    <Setter Property="Foreground" Value="{DynamicResource Brush.Text.OnAccent}" />
+  </Style>
+
+  <!-- The agent badge: a colored square with the agent's short glyph. -->
+  <Style Selector="Border.AgentBadge">
+    <Setter Property="Width" Value="28" />
+    <Setter Property="Height" Value="28" />
+    <Setter Property="CornerRadius" Value="7" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+  <Style Selector="Border.AgentBadge TextBlock">
+    <Setter Property="Foreground" Value="White" />
+    <Setter Property="FontWeight" Value="Bold" />
+    <Setter Property="FontSize" Value="{DynamicResource FontSize.Status}" />
+    <Setter Property="HorizontalAlignment" Value="Center" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+
+  <!-- Count badge on navigation entries and the bell. -->
+  <Style Selector="Border.AttentionBadge">
+    <Setter Property="Background" Value="{DynamicResource Brush.Status.Warning}" />
+    <Setter Property="CornerRadius" Value="999" />
+    <Setter Property="Padding" Value="6,0" />
+    <Setter Property="MinWidth" Value="18" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+  <Style Selector="Border.AttentionBadge TextBlock">
+    <Setter Property="Foreground" Value="{DynamicResource Brush.Text.OnAccent}" />
+    <Setter Property="FontSize" Value="{DynamicResource FontSize.Status}" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="HorizontalAlignment" Value="Center" />
+  </Style>
+
+  <!-- Summary tiles at the top of the dashboard. -->
+  <Style Selector="Button.SummaryTile">
+    <Setter Property="Background" Value="{DynamicResource Brush.Bg.Card}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource Brush.Border.Subtle}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="{DynamicResource CornerRadius.Card}" />
+    <Setter Property="Padding" Value="14,8" />
+    <Setter Property="MinWidth" Value="120" />
+  </Style>
+  <Style Selector="Button.SummaryTile.alert">
+    <Setter Property="BorderBrush" Value="{DynamicResource Brush.Status.Warning}" />
+    <Setter Property="BorderThickness" Value="2" />
+  </Style>
+  <Style Selector="TextBlock.Metric">
+    <Setter Property="FontSize" Value="22" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="Foreground" Value="{DynamicResource Brush.Text.Primary}" />
+  </Style>
+
+  <!-- Unread notifications stand out; read ones recede. -->
+  <Style Selector="Border.NotificationItem">
+    <Setter Property="CornerRadius" Value="{DynamicResource CornerRadius.Control}" />
+    <Setter Property="Padding" Value="10,8" />
+    <Setter Property="Margin" Value="0,0,0,4" />
+    <Setter Property="Background" Value="Transparent" />
+  </Style>
+  <Style Selector="Border.NotificationItem.unread">
+    <Setter Property="Background" Value="{DynamicResource Brush.Accent.Soft}" />
+  </Style>
+
+  <Style Selector="Border.PendingItem">
+    <Setter Property="Background" Value="{DynamicResource Brush.Bg.Card}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource Brush.Status.Warning}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="{DynamicResource CornerRadius.Control}" />
+    <Setter Property="Padding" Value="10,8" />
+    <Setter Property="Margin" Value="0,0,0,6" />
+  </Style>
+
+  <Style Selector="Border.Overlay">
+    <Setter Property="Background" Value="#80000000" />
+  </Style>
+</Styles>

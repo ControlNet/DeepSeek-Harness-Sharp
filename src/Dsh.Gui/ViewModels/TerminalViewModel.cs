@@ -2,7 +2,6 @@ using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Dsh.Gui.Terminal;
 using Dsh.Pty;
-using Dsh.RemoteHost;
 
 namespace Dsh.Gui.ViewModels;
 
@@ -53,14 +52,11 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
         Attach(_local, $"本地 · {shell}");
     }
 
-    /** 远端终端: 经 RPC 起 PTY, 本地只搬运字节。 */
-    public async Task StartRemoteAsync(IRemoteHost host, string platform)
+    /** Remote terminal: a PTY on a fleet machine, attached through the machine's connection; the view model disposes the connection. */
+    public void AttachRemote(RemotePtyConnection connection, string origin)
     {
-        var (fileName, arguments) = platform == "windows"
-            ? ("cmd.exe", (string[])[])
-            : ("/bin/sh", (string[])["-l"]);
-        _remote = await RemotePtyConnection.StartAsync(host, fileName, arguments, InitialSize, CancellationToken.None);
-        Attach(_remote, $"远端 · {fileName}");
+        _remote = connection;
+        Attach(connection, origin);
     }
 
     /** 控件按自身尺寸算出新的格子数后回调, 用于状态栏显示。 */

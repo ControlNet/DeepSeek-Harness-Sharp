@@ -222,12 +222,6 @@
       </ListBox.ItemTemplate>
     </ListBox>
 
-    <Border Grid.Row="2" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,10,0,0"
-            Padding="10,4" CornerRadius="999" Background="{DynamicResource Brush.Accent.Soft}"
-            IsVisible="{Binding IsRemoteReadOnly}">
-      <TextBlock Text="远端会话 · 只读回放" Classes="Tertiary" />
-    </Border>
-
     <ListBox Grid.Row="2" Name="TraceList" Classes="MessageList" IsVisible="{Binding IsTraceTab}"
              ItemsSource="{Binding TraceView}">
       <ListBox.ItemsPanel>
@@ -264,7 +258,7 @@
       </ListBox.ItemTemplate>
     </ListBox>
 
-    <Border Grid.Row="3" Margin="20,10,20,6" Padding="12,10" IsEnabled="{Binding !IsRemoteReadOnly}"
+    <Border Grid.Row="3" Margin="20,10,20,6" Padding="12,10"
             Background="{DynamicResource Brush.Bg.Card}"
             BorderBrush="{DynamicResource Brush.Border.Subtle}"
             BorderThickness="1"
@@ -473,26 +467,13 @@
 
         <Border Grid.Row="0" Height="1" VerticalAlignment="Bottom" Background="{DynamicResource Brush.Border.Subtle}" />
 
-        <ListBox Grid.Row="1" Classes="MessageList" ItemsSource="{Binding Subagents.Viewing.Messages}">
+        <ListBox Grid.Row="1" Classes="MessageList" ItemsSource="{Binding Subagents.Viewing.Messages}"
+                 ItemTemplate="{StaticResource Template.TranscriptMessage}">
           <ListBox.ItemsPanel>
             <ItemsPanelTemplate>
               <VirtualizingStackPanel />
             </ItemsPanelTemplate>
           </ListBox.ItemsPanel>
-          <ListBox.ItemTemplate>
-            <DataTemplate x:DataType="vm:MessageViewModel">
-              <Border Classes="Msg" Classes.user="{Binding IsUser}" HorizontalAlignment="{Binding Align}">
-                <StackPanel Spacing="3">
-                  <TextBlock Text="{Binding Role}" Classes="Tertiary" IsVisible="{Binding HasRole}" />
-                  <TextBlock Text="{Binding Preview}" Classes="Secondary" IsVisible="{Binding ShowPreview}" />
-                  <views:MarkdownView Text="{Binding Text}" IsVisible="{Binding ShowMarkdown}" />
-                  <TextBlock Text="{Binding Text}" Classes="Body" IsVisible="{Binding ShowPlainBody}" />
-                  <TextBlock Text="{Binding Detail}" Classes="Body" IsVisible="{Binding ShowDetail}"
-                             FontFamily="{DynamicResource Font.Mono}" />
-                </StackPanel>
-              </Border>
-            </DataTemplate>
-          </ListBox.ItemTemplate>
         </ListBox>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="20,8,20,12">

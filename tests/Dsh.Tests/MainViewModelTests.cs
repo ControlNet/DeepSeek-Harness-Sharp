@@ -19,13 +19,20 @@ public sealed class MainViewModelTests
         using var environment = await GuiTestEnvironment.CreateAsync();
         using var viewModel = new MainViewModel(environment.App, environment.Agent);
 
-        Assert.True(viewModel.IsChatPage);
+        Assert.True(viewModel.IsDashboardPage);
+        Assert.False(viewModel.IsChatPage);
         viewModel.ShowSettingsCommand.Execute(null);
         Assert.True(viewModel.IsSettingsPage);
+        viewModel.GoBackCommand.Execute(null);
+        Assert.True(viewModel.IsDashboardPage);
         viewModel.ShowMarketCommand.Execute(null);
         Assert.True(viewModel.IsMarketPage);
         viewModel.ShowChatCommand.Execute(null);
         Assert.True(viewModel.IsChatPage);
+        viewModel.GoBackCommand.Execute(null);
+        Assert.True(viewModel.IsChatPage);
+        viewModel.ShowDashboardCommand.Execute(null);
+        Assert.True(viewModel.IsDashboardPage);
 
         Assert.False(viewModel.IsTraceTab);
         viewModel.ShowTraceCommand.Execute(null);

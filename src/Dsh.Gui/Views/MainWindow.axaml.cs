@@ -31,12 +31,13 @@ public sealed partial class MainWindow : Window
     /** XAML 编译器要求存在无参构造, 实际启动路径走下面的带参构造。 */
     public MainWindow() => InitializeComponent();
 
-    public MainWindow(HarnessApp app, AgentLoopAgent agent) : this()
+    public MainWindow(HarnessApp app, AgentLoopAgent agent, FleetWorkspace? fleet = null) : this()
     {
         _guiSettings = new GuiSettings(app.Home);
         _closeAction = ClosePolicy.Effective(ClosePolicy.Parse(_guiSettings.Load().CloseAction));
-        ViewModel = new MainViewModel(app, agent);
+        ViewModel = new MainViewModel(app, agent, fleet);
         DataContext = ViewModel;
+        ConnectWorkspace(ViewModel.Workspace);
         ViewModel.DecisionRequested += ShowDecisionAsync;
         ViewModel.CopyRequested += CopyToClipboard;
         ViewModel.TerminalRequested += ShowTerminal;
@@ -51,6 +52,35 @@ public sealed partial class MainWindow : Window
     }
 
     public MainViewModel? ViewModel { get; }
+
+    /** Session windows by view model, so the workspace can close or focus them. */
+    private readonly Dictionary<FleetSessionViewModel, SessionWindow> _sessionWindows = [];
+
+    private void ConnectWorkspace(WorkspaceViewModel workspace)
+    {
+        workspace.SessionWindowRequested += ShowSessionWindow;
+        workspace.SessionWindowFocusRequested += session => _sessionWindows.GetValueOrDefault(session)?.Activate();
+        workspace.SessionWindowCloseRequested += session => _sessionWindows.GetValueOrDefault(session)?.Close();
+        workspace.NewSessionDialogRequested += form => _ = new NewSessionWindow(form).ShowDialog(this);
+        // Opening a session from a notification navigates behind the panel; the panel closes so the session is visible.
+        workspace.NavigationRequested += _ => BellButton.Flyout?.Hide();
+        workspace.Notifications.IsForeground = () => IsActive;
+        workspace.Notifications.DesktopNotify = DesktopNotifier.Create();
+        workspace.Start();
+    }
+
+    private void ShowSessionWindow(FleetSessionViewModel session)
+    {
+        var window = new SessionWindow(session);
+        _sessionWindows[session] = window;
+        window.Closed += async (_, _) =>
+        {
+            _sessionWindows.Remove(session);
+            if (ViewModel is { } viewModel)
+                await viewModel.Workspace.SessionWindowClosedAsync(session);
+        };
+        window.Show(this);
+    }
 
     protected override void OnOpened(EventArgs e)
     {
@@ -370,6 +400,11 @@ public sealed partial class MainWindow : Window
         var cancellationToken = CancellationToken.None;
         if (ViewModel is not { } model)
             return null;
+        if (model.Workspace.Fleet.Find(workspace.Name) is { State: MachineConnectionState.Connected, Machine: var connected } machine && connected == workspace)
+        {
+            var lease = await machine.WaitConnectedAsync(cancellationToken);
+            return await new RemoteFolderPickerWindow(lease.Client, initial).ShowDialog<string?>(this);
+        }
         string? hostCommand = null;
         if (model.Preferences.RemoteAutoDeploy)
             hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, model.Preferences.BuildDeploySettings(), null, cancellationToken)).CommandPath;

@@ -395,7 +395,8 @@ public static class HarnessEntrypoint
             shell,
             gpuScreenshot,
             gpuCapturePlan,
-            gpuCard));
+            gpuCard,
+            StartLocalHostAsync));
     }
 
     /** macOS 专用: 由进程主线程同步组合 harness 并运行 GUI(Avalonia.Native 要求主线程初始化 UI)。 */
@@ -403,7 +404,14 @@ public static class HarnessEntrypoint
     {
         var cwd = Directory.GetCurrentDirectory();
         using var app = ConfigBoot.Compose(new HarnessOptions(home, cwd, IsTui: false)).GetAwaiter().GetResult();
-        return Dsh.Gui.GuiRunner.RunOnMainThread(app, cwd, resumeSessionId);
+        return Dsh.Gui.GuiRunner.RunOnMainThread(app, cwd, resumeSessionId, StartLocalHostAsync);
+    }
+
+    /** GUI 连接本机 host 时按需拉起: 以脱离会话的方式起 `host serve`, 与 CLI 的 `session *` 一致。 */
+    private static Task StartLocalHostAsync(string harnessHome, CancellationToken cancellationToken)
+    {
+        HostAutostart.StartDetached(token: null, harnessHome);
+        return Task.CompletedTask;
     }
 }
 
