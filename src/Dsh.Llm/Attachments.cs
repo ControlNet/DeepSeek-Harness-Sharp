@@ -5,8 +5,13 @@ public interface IAttachmentStore
 {
     ImageAttachmentRef Put(byte[] bytes, string mediaType, int width, int height, string? name = null);
 
+    /** 任意二进制按内容寻址落盘(不做图片校验), 返回 id 与本地文件路径。 */
+    StoredAttachment PutBytes(byte[] bytes);
+
     bool TryRead(string attachmentId, out byte[] bytes);
 }
+
+public readonly record struct StoredAttachment(string AttachmentId, string Path);
 
 /** 支持的图片类型识别(魔数嗅探)、扩展名/媒体类型互转。 */
 public static class ImageAttachments

@@ -152,6 +152,25 @@ public sealed class McpServiceTests
         var rendered = Assert.IsType<TextBlock>(Assert.Single(registered.Output.Render(args, value)));
         Assert.Contains("echo:hello", rendered.Text);
     }
+
+    [Fact]
+    public async Task ResourceTools_LiveExactlyAsLongAsAnyServerIsTracked()
+    {
+        var ctx = new Context();
+        _ = new SystemPrompt(ctx, new SystemPromptConfig());
+        var tools = new ToolRuntime(ctx);
+        await using var service = new McpService(ctx);
+        Assert.Null(tools.Get(McpResourceTools.ReadResourceName));
+
+        await service.ConnectAsync([new McpServerConfig("broken", "stdio")], TestContext.Current.CancellationToken);
+        Assert.False(Assert.Single(service.Status()).Connected);
+        Assert.NotNull(tools.Get(McpResourceTools.ListResourcesName));
+        Assert.NotNull(tools.Get(McpResourceTools.ListTemplatesName));
+        Assert.NotNull(tools.Get(McpResourceTools.ReadResourceName));
+
+        await service.DisposeAsync();
+        Assert.Null(tools.Get(McpResourceTools.ReadResourceName));
+    }
 }
 
 public sealed class McpStaleSessionTests
@@ -223,7 +242,7 @@ public sealed class McpReconnectRetryTests
         var calls = 0;
 
         await Assert.ThrowsAsync<HttpRequestException>(async () =>
-            await McpToolBridge.CallWithReconnectAsync(
+            await McpToolBridge.CallWithReconnectAsync<CallToolResult>(
                 invoke: () =>
                 {
                     calls++;
@@ -244,7 +263,7 @@ public sealed class McpReconnectRetryTests
         var calls = 0;
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-            await McpToolBridge.CallWithReconnectAsync(
+            await McpToolBridge.CallWithReconnectAsync<CallToolResult>(
                 invoke: () =>
                 {
                     calls++;
@@ -263,7 +282,7 @@ public sealed class McpReconnectRetryTests
         var calls = 0;
 
         await Assert.ThrowsAsync<HarnessException>(async () =>
-            await McpToolBridge.CallWithReconnectAsync(
+            await McpToolBridge.CallWithReconnectAsync<CallToolResult>(
                 invoke: () =>
                 {
                     calls++;
