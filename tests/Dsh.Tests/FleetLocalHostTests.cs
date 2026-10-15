@@ -135,8 +135,10 @@ public sealed class FleetLocalHostTests
             await session.WriteAsync(Encoding.UTF8.GetBytes($"{TestShell.EchoAnswer("fleet")}\r"), Ct);
             await WaitForTextAsync(transcript, "fleet-42");
             await session.WriteAsync(new[] { ConsoleTunnel.DetachKey }, Ct);
-            await WaitForTextAsync(transcript, "detached from");
+            // ConPTY can tear down with the CLI's last line still unrendered, so a clean exit of the CLI also counts as having detached.
+            await FleetConnectionTests.WaitForAsync(() => TranscriptContains(transcript, "detached from") || session.Status != PtySessionStatus.Running);
             await pump;
+            Assert.True(TranscriptContains(transcript, "detached from") || session.ExitCode == 0, Snapshot(transcript));
             await WaitForSessionStatusAsync(home, shell, HostSessionStatuses.Running);
         }
         finally
@@ -205,9 +207,14 @@ public sealed class FleetLocalHostTests
     }
 
     private static Task WaitForTextAsync(StringBuilder transcript, string text)
-        => FleetConnectionTests.WaitForAsync(() =>
-        {
-            lock (transcript)
-                return transcript.ToString().Contains(text, StringComparison.Ordinal);
-        });
+        => FleetConnectionTests.WaitForAsync(() => TranscriptContains(transcript, text));
+
+    private static bool TranscriptContains(StringBuilder transcript, string text)
+        => Snapshot(transcript).Contains(text, StringComparison.Ordinal);
+
+    private static string Snapshot(StringBuilder transcript)
+    {
+        lock (transcript)
+            return transcript.ToString();
+    }
 }
