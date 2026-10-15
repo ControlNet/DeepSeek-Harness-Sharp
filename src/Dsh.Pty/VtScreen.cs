@@ -1,10 +1,12 @@
+using System.Globalization;
 using System.Text;
 
 namespace Dsh.Pty;
 
 /**
  * VT 屏: 把 PTY 输出的字节流解释成单元格屏(含滚回缓冲), 供 shell 窗格渲染。
- * 覆盖真实 shell 需要的子集: C0 控制、CSI 光标/擦除/插入删除/滚动区/模式/SGR、OSC 透传丢弃、主/备用屏。
+ * 覆盖真实 shell 与全屏 TUI 需要的子集: C0 控制、CSI 光标/擦除/插入删除/滚动区/模式/SGR、OSC 标题与颜色查询、主/备用屏。
+ * DCS/APC/PM/SOS 字符串整体丢弃; 设备状态/属性查询经 Reply 事件应答, 没有订阅者(如 daemon)时应答被丢弃。
  */
 public sealed class VtScreen
 {
@@ -13,6 +15,14 @@ public sealed class VtScreen
 
     /** 渲染行缓冲的栈上限: 一行不超过这么多格就用栈缓冲, 否则退回堆数组。 */
     private const int StackRowCells = 256;
+
+    /** DA1 应答: VT220 级别并声明支持 ANSI 颜色(22); 很多 TUI 用它作为"查询批次结束"的哨兵。 */
+    private const string PrimaryDeviceAttributes = "\u001b[?62;22c";
+
+    /** DA2 应答: 终端类型 0、固件版本 10、ROM 1, 与常见 xterm 兼容终端一致。 */
+    private const string SecondaryDeviceAttributes = "\u001b[>0;10;1c";
+
+    private const string DeviceStatusOk = "\u001b[0n";
 
     private readonly Decoder _decoder = Encoding.UTF8.GetDecoder();
     private readonly List<Cell[]> _scrollback = [];
@@ -31,6 +41,8 @@ public sealed class VtScreen
     private CellColor _penBackground = CellColor.Default;
     private CellStyle _penStyle = CellStyle.None;
     private bool _wrapPending;
+    private bool _insertMode;
+    private char _lastPrinted = ' ';
     private ParseState _state = ParseState.Ground;
     private char[] _decodeBuffer = new char[1024];
 
@@ -58,6 +70,39 @@ public sealed class VtScreen
     /** DECCKM(`?1h`): vim/less 等全屏应用要求方向键发 `\eO` 前缀。 */
     public bool ApplicationCursorKeys { get; private set; }
 
+    /** OSC 0/2 设定的窗口标题。 */
+    public string Title { get; private set; } = "";
+
+    public bool IsAlternateScreen => _altLines is not null;
+
+    /** 滚动区上边界(含, 0 起)。 */
+    public int ScrollTop => _scrollTop;
+
+    /** 滚动区下边界(含, 0 起)。 */
+    public int ScrollBottom => _scrollBottom;
+
+    /** `?2004`: 粘贴内容需要包在 ESC[200~ … ESC[201~ 里送给子进程。 */
+    public bool BracketedPaste { get; private set; }
+
+    /** `?1004`: 子进程要求焦点进出时收到 ESC[I / ESC[O。 */
+    public bool FocusReporting { get; private set; }
+
+    public TerminalMouseTracking MouseTracking { get; private set; }
+
+    /** `?1006`: 鼠标上报用 SGR 编码(ESC[<b;x;yM), 否则用 X10 字节编码。 */
+    public bool SgrMouse { get; private set; }
+
+    public TerminalCursorShape CursorShape { get; private set; }
+
+    /** OSC 10 查询(`?`)应答用的前景色; 非 RGB 时不应答。 */
+    public CellColor QueryForeground { get; set; }
+
+    /** OSC 11 查询(`?`)应答用的背景色; 非 RGB 时不应答。 */
+    public CellColor QueryBackground { get; set; }
+
+    /** 需要写回子进程的应答(光标位置、设备属性、颜色查询); 在 Feed 调用线程上同步触发。 */
+    public event Action<string>? Reply;
+
     public int ScrollbackCount => _scrollback.Count;
 
     public ReadOnlySpan<Cell> Row(int y) => _lines.AsSpan(y * Width, Width);
@@ -71,6 +116,10 @@ public sealed class VtScreen
         var line = _scrollback[index];
         return line.Length == Width ? line : line.AsSpan(0, Math.Min(line.Length, Width));
     }
+
+    /** 按"相对屏幕顶行"的行号取行: 0..Height-1 是当前屏, -1 是最近一行滚回, 越小越旧。 */
+    public ReadOnlySpan<Cell> LineAt(int line)
+        => line >= 0 ? _lines.AsSpan(line * Width, Width) : ScrollbackRow(-line - 1);
 
     /** 追加 PTY 字节流; UTF-8 可能被读切分成多段, 由 Decoder 保留半成品序列。 */
     public void Feed(ReadOnlySpan<byte> bytes)
@@ -96,29 +145,31 @@ public sealed class VtScreen
         height = Math.Max(1, height);
         if (width == Width && height == Height)
             return;
-        var resized = NewLines(width, height);
-        var rows = Math.Min(height, Height);
-        for (var y = 0; y < rows; y++)
-        {
-            var copy = Math.Min(width, Width);
-            _lines.AsSpan(y * Width, copy).CopyTo(resized.AsSpan(y * width, copy));
-        }
+        // 主屏变矮时把顶部行推进滚回, 保住光标所在行(提示符); 备用屏由全屏程序收到 SIGWINCH 后自行重画。
+        var shift = _altLines is null ? Math.Max(0, CursorY - height + 1) : 0;
+        for (var y = 0; y < shift; y++)
+            PushScrollback(_lines.AsSpan(y * Width, Width).ToArray());
+        var resized = CopyLines(_lines, shift, width, height);
         if (_altLines is not null)
-        {
-            var alt = NewLines(width, height);
-            for (var y = 0; y < Math.Min(height, Height); y++)
-            {
-                var copy = Math.Min(width, Width);
-                _altLines.AsSpan(y * Width, copy).CopyTo(alt.AsSpan(y * width, copy));
-            }
-            _altLines = alt;
-        }
+            _altLines = CopyLines(_altLines, 0, width, height);
         _lines = resized;
         Width = width;
         Height = height;
         CursorX = Math.Clamp(CursorX, 0, Width - 1);
-        CursorY = Math.Clamp(CursorY, 0, Height - 1);
+        CursorY = Math.Clamp(CursorY - shift, 0, Height - 1);
+        _wrapPending = false;
         ResetScrollRegion();
+    }
+
+    /** 从 source 的第 skipRows 行起按新尺寸截取/补齐, source 的列宽是当前 Width。 */
+    private Cell[] CopyLines(Cell[] source, int skipRows, int width, int height)
+    {
+        var copied = NewLines(width, height);
+        var rows = Math.Min(height, Height - skipRows);
+        var columns = Math.Min(width, Width);
+        for (var y = 0; y < rows; y++)
+            source.AsSpan((y + skipRows) * Width, columns).CopyTo(copied.AsSpan(y * width, columns));
+        return copied;
     }
 
     /** 把当前屏(可带滚回偏移)写入目标矩形; 越界部分裁掉。 */
@@ -129,10 +180,7 @@ public sealed class VtScreen
         Span<Cell> stackRow = stackalloc Cell[StackRowCells];
         for (var y = 0; y < rows; y++)
         {
-            var source = y - scrollOffset;
-            var line = source >= 0
-                ? _lines.AsSpan(source * Width, Width)
-                : ScrollbackRow(-source - 1);
+            var line = LineAt(y - scrollOffset);
             var width = Math.Min(rect.Width, line.Length);
             var buffer = width <= StackRowCells ? stackRow[..width] : new Cell[width];
             for (var x = 0; x < width; x++)
@@ -174,9 +222,18 @@ public sealed class VtScreen
                 _state = character == '\\' ? ParseState.Ground : ParseState.Osc;
                 if (_state == ParseState.Osc)
                     _osc.Append(character);
+                else
+                    DispatchOsc(_osc.ToString());
                 return;
             case ParseState.EscapeCharset:
                 _state = ParseState.Ground;
+                return;
+            case ParseState.IgnoredString:
+                if (character == '\u001b')
+                    _state = ParseState.IgnoredStringEscape;
+                return;
+            case ParseState.IgnoredStringEscape:
+                _state = character == '\\' ? ParseState.Ground : ParseState.IgnoredString;
                 return;
         }
     }
@@ -206,11 +263,16 @@ public sealed class VtScreen
             case '\a':
                 return;
             default:
-                if (character >= ' ')
+                if (character >= ' ' && !IsZeroWidth(character))
                     Put(character);
                 return;
         }
     }
+
+    /** DEL/C1 控制符与组合附加符、零宽格式符不占格: 每格只存一个 char, 附加符无处安放, 占格会让后续列整体右移。 */
+    private static bool IsZeroWidth(char character)
+        => CharUnicodeInfo.GetUnicodeCategory(character)
+            is UnicodeCategory.Control or UnicodeCategory.NonSpacingMark or UnicodeCategory.EnclosingMark or UnicodeCategory.Format;
 
     private void Escape(char character)
     {
@@ -241,8 +303,14 @@ public sealed class VtScreen
             case '8':
                 RestoreCursor();
                 return;
-            case '(' or ')' or '*' or '+' or '-' or '.' or '/':
+            case '(' or ')' or '*' or '+' or '-' or '.' or '/' or '#' or '%' or ' ':
                 _state = ParseState.EscapeCharset;
+                return;
+            case 'P' or '_' or '^' or 'X':
+                _state = ParseState.IgnoredString;
+                return;
+            case 'c':
+                FullReset();
                 return;
             default:
                 return;
@@ -268,6 +336,7 @@ public sealed class VtScreen
         {
             case '\a':
                 _state = ParseState.Ground;
+                DispatchOsc(_osc.ToString());
                 return;
             case '\u001b':
                 _state = ParseState.OscEscape;
@@ -278,10 +347,48 @@ public sealed class VtScreen
         }
     }
 
+    /** OSC 0/2 设标题; OSC 10/11 的 `?` 查询按 QueryForeground/QueryBackground 应答, 其余编号丢弃。 */
+    private void DispatchOsc(string text)
+    {
+        var separator = text.IndexOf(';');
+        if (separator < 0)
+            return;
+        var code = text[..separator];
+        var argument = text[(separator + 1)..];
+        if (code is "0" or "2")
+            Title = argument;
+        else if (argument == "?" && code is "10" or "11")
+            ReplyColor(code, code == "10" ? QueryForeground : QueryBackground);
+    }
+
+    private void ReplyColor(string code, CellColor color)
+    {
+        if (color.IsRgb)
+            Reply?.Invoke($"\u001b]{code};rgb:{color.R:x2}{color.R:x2}/{color.G:x2}{color.G:x2}/{color.B:x2}{color.B:x2}\u001b\\");
+    }
+
+    /** RIS(ESC c): 回到主屏、清屏清滚回、复位画笔与全部模式。 */
+    private void FullReset()
+    {
+        LeaveAltScreen();
+        _lines = NewLines(Width, Height);
+        _scrollback.Clear();
+        ResetScrollRegion();
+        (CursorX, CursorY, _wrapPending, _insertMode) = (0, 0, false, false);
+        (_penForeground, _penBackground, _penStyle) = (CellColor.Default, CellColor.Default, CellStyle.None);
+        (CursorVisible, ApplicationCursorKeys, BracketedPaste, FocusReporting, SgrMouse) = (true, false, false, false, false);
+        (MouseTracking, CursorShape, Title) = (TerminalMouseTracking.None, TerminalCursorShape.Default, "");
+    }
+
     private void DispatchCsi(string parameters, char final)
     {
         var privateMode = parameters.StartsWith('?');
         var body = privateMode ? parameters[1..] : parameters;
+        if (IsExtendedCsi(parameters, privateMode, final))
+        {
+            DispatchExtendedCsi(parameters, final);
+            return;
+        }
         switch (final)
         {
             case 'A':
@@ -368,9 +475,64 @@ public sealed class VtScreen
             case 'u':
                 RestoreCursor();
                 return;
+            case 'b':
+                RepeatLastPrinted(Count(body, 1));
+                return;
+            case 'c' when Count(body, 0) == 0:
+                Reply?.Invoke(PrimaryDeviceAttributes);
+                return;
+            case 'n':
+                ReportStatus(Count(body, 0));
+                return;
             default:
                 return;
         }
+    }
+
+    /**
+     * 带 `>`/`<`/`=` 前缀或中间字节(空格、`$`、`!`、`"`)的序列, 以及 `?` 前缀下非模式/擦除的序列, 语义与同名终止符的普通序列不同。
+     * 不单独分派的话, vim 的 modifyOtherKeys(CSI > 4;2 m)会被当成 SGR 粗体, kitty 键盘查询(CSI ? u)会被当成恢复光标。
+     */
+    private static bool IsExtendedCsi(string parameters, bool privateMode, char final)
+    {
+        if (parameters.Length > 0 && parameters[0] is '>' or '<' or '=')
+            return true;
+        if (parameters.AsSpan().IndexOfAny(" $!\"") >= 0)
+            return true;
+        return privateMode && final is not ('h' or 'l' or 'J' or 'K');
+    }
+
+    private void DispatchExtendedCsi(string parameters, char final)
+    {
+        if (final == 'c' && parameters.StartsWith('>'))
+            Reply?.Invoke(SecondaryDeviceAttributes);
+        else if (final == 'q' && parameters.EndsWith(' '))
+            CursorShape = CursorShapeOf(Count(parameters.TrimEnd(), 0));
+    }
+
+    /** DECSCUSR: 0 默认, 1/2 方块, 3/4 下划线, 5/6 竖条(奇数闪烁、偶数常亮, 这里不区分闪烁)。 */
+    private static TerminalCursorShape CursorShapeOf(int code) => code switch
+    {
+        1 or 2 => TerminalCursorShape.Block,
+        3 or 4 => TerminalCursorShape.Underline,
+        5 or 6 => TerminalCursorShape.Bar,
+        _ => TerminalCursorShape.Default,
+    };
+
+    private void ReportStatus(int code)
+    {
+        if (code == 5)
+            Reply?.Invoke(DeviceStatusOk);
+        else if (code == 6)
+            Reply?.Invoke($"\u001b[{CursorY + 1};{CursorX + 1}R");
+    }
+
+    /** REP: 重复上一个打印字符; 次数封顶一屏, 防止畸形参数让单个序列写出海量格子。 */
+    private void RepeatLastPrinted(int count)
+    {
+        var repeat = Math.Min(count, Width * Height);
+        for (var index = 0; index < repeat; index++)
+            Put(_lastPrinted);
     }
 
     private void MoveCursor(string body)
@@ -400,7 +562,11 @@ public sealed class VtScreen
     private void SetMode(bool privateMode, string body, bool enabled)
     {
         if (!privateMode)
+        {
+            if (body.Split(';').Contains("4"))
+                _insertMode = enabled;
             return;
+        }
         foreach (var mode in body.Split(';'))
         {
             switch (mode)
@@ -417,11 +583,33 @@ public sealed class VtScreen
                 case "1049" or "47" or "1047":
                     LeaveAltScreen();
                     break;
+                case "2004":
+                    BracketedPaste = enabled;
+                    break;
+                case "1004":
+                    FocusReporting = enabled;
+                    break;
+                case "1006":
+                    SgrMouse = enabled;
+                    break;
+                case "9" or "1000" or "1002" or "1003":
+                    SetMouseTracking(mode, enabled);
+                    break;
                 default:
                     break;
             }
         }
     }
+
+    /** 关闭任一鼠标模式即停止上报(与 xterm 一致: 各模式互斥, 后设的覆盖先设的)。 */
+    private void SetMouseTracking(string mode, bool enabled)
+        => MouseTracking = !enabled ? TerminalMouseTracking.None : mode switch
+        {
+            "9" => TerminalMouseTracking.X10,
+            "1000" => TerminalMouseTracking.Normal,
+            "1002" => TerminalMouseTracking.ButtonEvent,
+            _ => TerminalMouseTracking.AnyEvent,
+        };
 
     private void EnterAltScreen()
     {
@@ -469,6 +657,11 @@ public sealed class VtScreen
         var parts = body.Split(';');
         for (var index = 0; index < parts.Length; index++)
         {
+            if (parts[index].Contains(':'))
+            {
+                SelectColonRendition(parts[index].Split(':'));
+                continue;
+            }
             if (!int.TryParse(parts[index], out var code))
                 continue;
             switch (code)
@@ -484,14 +677,32 @@ public sealed class VtScreen
                 case 2:
                     _penStyle |= CellStyle.Dim;
                     break;
+                case 3:
+                    _penStyle |= CellStyle.Italic;
+                    break;
+                case 4 or 21:
+                    _penStyle |= CellStyle.Underline;
+                    break;
                 case 7:
                     _penStyle |= CellStyle.Reverse;
+                    break;
+                case 9:
+                    _penStyle |= CellStyle.Strikethrough;
                     break;
                 case 22:
                     _penStyle &= ~(CellStyle.Bold | CellStyle.Dim);
                     break;
+                case 23:
+                    _penStyle &= ~CellStyle.Italic;
+                    break;
+                case 24:
+                    _penStyle &= ~CellStyle.Underline;
+                    break;
                 case 27:
                     _penStyle &= ~CellStyle.Reverse;
+                    break;
+                case 29:
+                    _penStyle &= ~CellStyle.Strikethrough;
                     break;
                 case >= 30 and <= 37:
                     _penForeground = (AnsiColor)(code - 30 + 1);
@@ -519,6 +730,31 @@ public sealed class VtScreen
             }
         }
     }
+
+    /**
+     * 冒号子参数形式(ITU T.416): `4:n` 下划线样式(0 关), `38:2:[色彩空间]:r:g:b` / `38:5:n` 前景, 48 背景。
+     * 58(下划线颜色)等其余编号忽略。
+     */
+    private void SelectColonRendition(string[] sub)
+    {
+        if (sub[0] == "4")
+        {
+            _penStyle = sub.Length > 1 && sub[1] == "0" ? _penStyle & ~CellStyle.Underline : _penStyle | CellStyle.Underline;
+            return;
+        }
+        if (sub[0] is not ("38" or "48") || sub.Length < 3)
+            return;
+        var foreground = sub[0] == "38";
+        if (sub[1] == "5")
+            Assign(foreground, int.TryParse(sub[2], out var indexed) ? FromIndexedColor(indexed) : CellColor.Default);
+        else if (sub[1] == "2" && sub.Length >= 5)
+            Assign(foreground, RgbFrom(sub.AsSpan(sub.Length - 3)));
+    }
+
+    private static CellColor RgbFrom(ReadOnlySpan<string> components)
+        => int.TryParse(components[0], out var r) && int.TryParse(components[1], out var g) && int.TryParse(components[2], out var b)
+            ? CellColor.FromRgb(Clamp(r), Clamp(g), Clamp(b))
+            : CellColor.Default;
 
     /** 256 色/真彩色: 0-15 映射 16 色板, 16-255 用 xterm 调色板转 RGB(真彩原样), 供真彩渲染路径使用。 */
     private int ConsumeExtendedColor(string[] parts, int index, bool foreground)
@@ -596,7 +832,8 @@ public sealed class VtScreen
 
     private void ScrollRegionUp()
     {
-        if (_scrollTop == 0)
+        // 备用屏是全屏程序的画布, 滚出去的行不属于用户的历史输出, 不进滚回(与 xterm 一致)。
+        if (_scrollTop == 0 && _altLines is null)
             PushScrollback(_lines.AsSpan(0, Width).ToArray());
         MoveLines(_scrollTop, _scrollTop + 1, _scrollBottom - _scrollTop);
         BlankLine(_scrollBottom);
@@ -622,7 +859,10 @@ public sealed class VtScreen
             _scrollback.RemoveAt(0);
     }
 
-    private void BlankLine(int y) => _lines.AsSpan(y * Width, Width).Fill(new Cell(' '));
+    private void BlankLine(int y) => _lines.AsSpan(y * Width, Width).Fill(Blank());
+
+    /** 擦除/滚入的空白格带当前背景色(BCE): TERM=xterm-256color 声明了 bce, ncurses 程序依赖它铺底色。 */
+    private Cell Blank() => new(' ', CellColor.Default, _penBackground);
 
     private void EraseDisplay(int mode)
     {
@@ -639,9 +879,11 @@ public sealed class VtScreen
                     BlankLine(y);
                 return;
             case 2:
-            case 3:
                 for (var y = 0; y < Height; y++)
                     BlankLine(y);
+                return;
+            case 3:
+                _scrollback.Clear();
                 return;
             default:
                 return;
@@ -655,14 +897,14 @@ public sealed class VtScreen
         {
             case 0:
                 for (var x = CursorX; x < Width; x++)
-                    line[x] = new Cell(' ');
+                    line[x] = Blank();
                 return;
             case 1:
                 for (var x = 0; x <= CursorX && x < Width; x++)
-                    line[x] = new Cell(' ');
+                    line[x] = Blank();
                 return;
             case 2:
-                line.Fill(new Cell(' '));
+                line.Fill(Blank());
                 return;
             default:
                 return;
@@ -697,7 +939,7 @@ public sealed class VtScreen
             return;
         line.Slice(CursorX + count, Width - CursorX - count).CopyTo(line[CursorX..]);
         for (var x = Width - count; x < Width; x++)
-            line[x] = new Cell(' ');
+            line[x] = Blank();
     }
 
     private void InsertCharacters(int count)
@@ -708,49 +950,55 @@ public sealed class VtScreen
             return;
         line[CursorX..(Width - count)].CopyTo(line[(CursorX + count)..]);
         for (var x = CursorX; x < CursorX + count; x++)
-            line[x] = new Cell(' ');
+            line[x] = Blank();
     }
 
     private void EraseCharacters(int count)
     {
         var line = _lines.AsSpan(CursorY * Width, Width);
         for (var x = CursorX; x < Math.Min(Width, CursorX + count); x++)
-            line[x] = new Cell(' ');
+            line[x] = Blank();
     }
 
     private void Put(char character)
     {
+        var advance = TerminalTextWidth.IsWide(character) && Width > 1 ? 2 : 1;
+        if (advance == 2 && CursorX + 1 >= Width && !_wrapPending)
+        {
+            // 宽字符放不下行尾最后一格: 留空该格并折到下一行再写, 而不是丢掉字符。
+            _lines[(CursorY * Width) + CursorX] = Cell();
+            _wrapPending = true;
+        }
         if (_wrapPending)
         {
             CursorX = 0;
             LineFeedNoWrapReset();
             _wrapPending = false;
         }
-        var advance = TerminalTextWidth.IsWide(character) ? 2 : 1;
+        if (_insertMode)
+            InsertCharacters(advance);
         var line = _lines.AsSpan(CursorY * Width, Width);
+        ClearWideRemnants(line, CursorX, advance);
+        line[CursorX] = new Cell(character, _penForeground, _penBackground, _penStyle);
         if (advance == 2)
-        {
-            if (CursorX + 1 >= Width)
-            {
-                line[CursorX] = Cell();
-                CursorX = Width - 1;
-                _wrapPending = true;
-                return;
-            }
-            line[CursorX] = new Cell(character, _penForeground, _penBackground, _penStyle);
             line[CursorX + 1] = new Cell('\0', _penForeground, _penBackground, _penStyle);
-        }
-        else
-        {
-            line[CursorX] = new Cell(character, _penForeground, _penBackground, _penStyle);
-        }
-
+        _lastPrinted = character;
         CursorX += advance;
         if (CursorX >= Width)
         {
             CursorX = Width - 1;
             _wrapPending = true;
         }
+    }
+
+    /** 覆盖宽字符的任一半时把另一半清成空格, 否则会留下没有本体的续格或半个宽字形。 */
+    private static void ClearWideRemnants(Span<Cell> line, int x, int advance)
+    {
+        if (line[x].Character == '\0' && x > 0)
+            line[x - 1] = line[x - 1] with { Character = ' ' };
+        var end = x + advance;
+        if (end < line.Length && line[end].Character == '\0')
+            line[end] = line[end] with { Character = ' ' };
     }
 
     private void LineFeedNoWrapReset()
@@ -780,5 +1028,7 @@ public sealed class VtScreen
         Csi,
         Osc,
         OscEscape,
+        IgnoredString,
+        IgnoredStringEscape,
     }
 }

@@ -191,8 +191,14 @@ public sealed class PtySession : IDisposable
             output.Append(";1");
         if ((cell.Style & CellStyle.Dim) != 0)
             output.Append(";2");
+        if ((cell.Style & CellStyle.Italic) != 0)
+            output.Append(";3");
+        if ((cell.Style & CellStyle.Underline) != 0)
+            output.Append(";4");
         if ((cell.Style & CellStyle.Reverse) != 0)
             output.Append(";7");
+        if ((cell.Style & CellStyle.Strikethrough) != 0)
+            output.Append(";9");
         if (!cell.Foreground.IsDefault)
             output.Append(';').Append(ForegroundSegment(cell.Foreground));
         if (!cell.Background.IsDefault)
