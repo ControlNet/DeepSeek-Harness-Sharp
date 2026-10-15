@@ -13,8 +13,6 @@ namespace Dsh.Tests;
  */
 internal sealed class HeadlessChrome : IAsyncDisposable
 {
-    private const string ListeningPrefix = "DevTools listening on ";
-
     /** Installed before any page script runs; DevTools-injected scripts are exempt from the page's CSP. */
     private const string ProblemRecorder = """
         window.__problems = [];
@@ -23,13 +21,15 @@ internal sealed class HeadlessChrome : IAsyncDisposable
         window.addEventListener('unhandledrejection', (event) => window.__problems.push(`rejection ${event.reason?.message ?? event.reason}`));
         """;
 
-    private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(30);
+    /** A first start on a fresh CI runner sets up the profile and can take much longer than later ones. */
+    private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan DefaultWait = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(100);
 
     private readonly Process _process;
     private readonly string _profile;
     private readonly ClientWebSocket _page = new();
+    private readonly StringBuilder _errorOutput = new();
     private int _nextId;
 
     private HeadlessChrome(Process process, string profile)
@@ -163,18 +163,46 @@ internal sealed class HeadlessChrome : IAsyncDisposable
         return (double.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture), double.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    /** Chrome prints the browser's DevTools WebSocket address on stderr once it listens; the rest of both streams is drained so Chrome never blocks on a full pipe. */
+    /**
+     * Once it listens, Chrome writes the port and path of the browser's DevTools WebSocket into DevToolsActivePort in its profile, on every platform.
+     * Both output streams are drained so Chrome never blocks on a full pipe; stderr is kept for the failure message.
+     */
     private async Task<Uri> ReadDevToolsEndpointAsync(CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(StartTimeout);
-        var line = await _process.StandardError.ReadLineAsync(timeout.Token);
-        while (line is not null && !line.StartsWith(ListeningPrefix, StringComparison.Ordinal))
-            line = await _process.StandardError.ReadLineAsync(timeout.Token);
-        Assert.NotNull(line);
-        _ = _process.StandardError.ReadToEndAsync(CancellationToken.None);
-        _ = _process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-        return new Uri(line[ListeningPrefix.Length..].Trim());
+        _process.ErrorDataReceived += (_, line) =>
+        {
+            lock (_errorOutput)
+                _errorOutput.AppendLine(line.Data);
+        };
+        _process.OutputDataReceived += (_, _) => { };
+        _process.BeginErrorReadLine();
+        _process.BeginOutputReadLine();
+        var portFile = Path.Combine(_profile, "DevToolsActivePort");
+        var deadline = DateTime.UtcNow + StartTimeout;
+        while (DateTime.UtcNow < deadline && !_process.HasExited)
+        {
+            if (await ReadLinesAsync(portFile, cancellationToken) is [var port, var path, ..])
+                return new Uri($"ws://127.0.0.1:{port}{path}");
+            await Task.Delay(PollInterval, cancellationToken);
+        }
+
+        string errors;
+        lock (_errorOutput)
+            errors = _errorOutput.ToString();
+        throw new TimeoutException($"Chrome announced no DevTools endpoint within {StartTimeout} (exited: {_process.HasExited}); stderr: {errors}");
+    }
+
+    /** The lines of a file that may not exist yet or may still be held open by its writer (Windows). */
+    private static async Task<string[]> ReadLinesAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return File.Exists(path) ? await File.ReadAllLinesAsync(path, cancellationToken) : [];
+        }
+        catch (IOException)
+        {
+            return [];
+        }
     }
 
     private async Task AttachToPageAsync(Uri browserEndpoint, CancellationToken cancellationToken)
