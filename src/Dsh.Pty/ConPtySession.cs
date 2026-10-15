@@ -96,26 +96,31 @@ internal sealed class ConPtySession : IDisposable
             }
 
             var commandLine = BuildCommandLine(info);
-            var (savedInput, savedOutput, savedError) = ParkStdHandles();
             ProcessInformation processInfo;
-            try
+            // The std handles are process-wide: concurrent starts must not interleave park and restore.
+            // CI (Windows): two sessions started in parallel, one restored the real handles before the other created its child, which then inherited the test runner's redirected stdout/stdin, printed its prompt there and exited at once.
+            lock (StdHandleGate)
             {
-                if (!CreateProcess(
-                        null,
-                        commandLine,
-                        IntPtr.Zero,
-                        IntPtr.Zero,
-                        false,
-                        flags,
-                        environment,
-                        info.WorkingDirectory,
-                        ref startupInfo,
-                        out processInfo))
-                    throw new InvalidOperationException($"CreateProcess failed: {Marshal.GetLastWin32Error()}");
-            }
-            finally
-            {
-                RestoreStdHandles(savedInput, savedOutput, savedError);
+                var (savedInput, savedOutput, savedError) = ParkStdHandles();
+                try
+                {
+                    if (!CreateProcess(
+                            null,
+                            commandLine,
+                            IntPtr.Zero,
+                            IntPtr.Zero,
+                            false,
+                            flags,
+                            environment,
+                            info.WorkingDirectory,
+                            ref startupInfo,
+                            out processInfo))
+                        throw new InvalidOperationException($"CreateProcess failed: {Marshal.GetLastWin32Error()}");
+                }
+                finally
+                {
+                    RestoreStdHandles(savedInput, savedOutput, savedError);
+                }
             }
 
             var input = new FileStream(inputWrite, FileAccess.Write, 4096, isAsync: false);
@@ -270,6 +275,8 @@ internal sealed class ConPtySession : IDisposable
         public int dwProcessId;
         public int dwThreadId;
     }
+
+    private static readonly Lock StdHandleGate = new();
 
     private static (IntPtr Input, IntPtr Output, IntPtr Error) ParkStdHandles()
     {
