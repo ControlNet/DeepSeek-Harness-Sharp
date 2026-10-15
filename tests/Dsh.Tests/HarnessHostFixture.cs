@@ -81,7 +81,8 @@ internal sealed class HarnessHostFixture : IAsyncDisposable
         TempTree.Delete(Root);
     }
 
-    private async Task StartHostAsync(CancellationToken cancellationToken)
+    /** Starts the host on the current application (after StopHostAsync, the same live sessions are served again). */
+    public async Task StartHostAsync(CancellationToken cancellationToken)
     {
         _backend = await HarnessRemoteHostBackend.CreateAsync(Environment.App, PtyEndpoint, cancellationToken);
         var server = new RemoteHostServer(new RemoteHostServerOptions(), _backend);
@@ -90,7 +91,8 @@ internal sealed class HarnessHostFixture : IAsyncDisposable
         _listener = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(server, Root, serving), cancellationToken);
     }
 
-    private async Task StopHostAsync()
+    /** Stops the listener and the backend; connected clients lose their connection while the application and its sessions stay alive. */
+    public async Task StopHostAsync()
     {
         if (_serving is null || _listener is null || _backend is null)
             return;

@@ -172,7 +172,7 @@ public sealed class RemoteHostMultiClientTests
         => host.Environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(SessionId.Create(sessionId))!;
 
     /** 与 ApprovalService 派发应答者的方式相同: 在该 agent 的作用域上跑审批瀑布, 没有应答者时得到 Unavailable。 */
-    private static async Task<ApprovalOutcome> RaiseApprovalAsync(HarnessHostFixture host, IAgent agent, string tool)
+    internal static async Task<ApprovalOutcome> RaiseApprovalAsync(HarnessHostFixture host, IAgent agent, string tool)
     {
         var ctx = host.Environment.App.Ctx;
         var request = new ApprovalRequest(agent, tool, new ToolCallId($"call-{Guid.NewGuid():N}"), "needs approval", "{}");
