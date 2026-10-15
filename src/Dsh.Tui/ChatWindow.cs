@@ -1120,14 +1120,22 @@ public sealed class ChatWindow : IDisposable
             RequestExit();
             return;
         }
-        foreach (var local in LocalCommands)
+        var local = LocalCommands.FirstOrDefault(command => string.Equals(verb, command.Name, StringComparison.OrdinalIgnoreCase));
+        if (local is null)
         {
-            if (!string.Equals(verb, local.Name, StringComparison.OrdinalIgnoreCase))
-                continue;
-            await local.Run(pane, text);
+            await RunRegisteredCommandAsync(pane, text);
             return;
         }
-        await RunRegisteredCommandAsync(pane, text);
+        // async void 链上的异常会直接终止进程: 本地命令的失败只报告给用户。
+        try
+        {
+            await local.Run(pane, text);
+        }
+        catch (Exception error)
+        {
+            var message = error.Message;
+            QueueAction(() => pane.AppendRaw($"  command failed: {message}\n"));
+        }
     }
 
     private async Task RunRegisteredCommandAsync(ChatPane pane, string text)
@@ -1767,22 +1775,10 @@ public sealed class ChatWindow : IDisposable
             return;
         }
 
-        var parts = commandLine.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-        // 缺省: 把**当前这个 TUI 会话**交给 daemon 里的一个新 TUI 继续跑(等价 tmux 的 detach/attach 语义),
-        // 这样 attach 回来看到的是完整 TUI 画面(侧栏/输入行/状态行), 而不是一个空 shell;
-        // 显式 `/detach <cmd> ...` 仍按命令起一个普通会话。
-        var executable = Environment.ProcessPath;
-        var isDotnetHost = executable is not null
-            && string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase);
-        var fileName = parts.Length > 0 ? parts[0] : executable ?? PtyShell.Resolve();
-        var arguments = parts.Length > 0
-            ? parts[1].Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            : isDotnetHost
-                ? [Environment.GetCommandLineArgs()[0], "tui", "--session", pane.Agent.Id.ToString()]
-                : ["tui", "--session", pane.Agent.Id.ToString()];
+        var (fileName, arguments) = DetachTarget(commandLine, pane.Agent.Id.ToString());
         // 不带命令 = 起的还是 TUI 本体, 它要鼠标(拖动分隔线/滚轮); 带命令 = 任意命令/普通 shell, 不能打开
         // 宿主终端上报(Unix 上代理原样透传, 报文会被当成命令敲进那个程序)。
-        var wantsMouse = parts.Length == 0;
+        var wantsMouse = commandLine.Length == 0;
 
         try
         {
@@ -1811,6 +1807,24 @@ public sealed class ChatWindow : IDisposable
         {
             pane.AppendRaw($"  detach failed: {error.Message}\n");
         }
+    }
+
+    /**
+     * `/detach` 的启动目标。
+     * 缺省: 把**当前这个 TUI 会话**交给 daemon 里的一个新 TUI 继续跑(等价 tmux 的 detach/attach 语义), attach 回来看到的是完整 TUI 画面而不是一个空 shell。
+     * 显式 `/detach <cmd> [args...]` 按命令起一个普通会话。
+     */
+    internal static (string FileName, string[] Arguments) DetachTarget(string commandLine, string sessionId)
+    {
+        var parts = commandLine.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length > 0)
+            return (parts[0], parts.Length > 1 ? parts[1].Split(' ', StringSplitOptions.RemoveEmptyEntries) : []);
+        var executable = Environment.ProcessPath;
+        var isDotnetHost = executable is not null
+            && string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase);
+        return (executable ?? PtyShell.Resolve(), isDotnetHost
+            ? [Environment.GetCommandLineArgs()[0], "tui", "--session", sessionId]
+            : ["tui", "--session", sessionId]);
     }
 
     internal void AddPane(AgentLoopAgent agent, SplitOrientation? orientation)
