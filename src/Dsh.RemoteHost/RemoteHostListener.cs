@@ -1,4 +1,5 @@
 ﻿using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.Versioning;
 using System.Text;
@@ -171,6 +172,9 @@ public static class RemoteHostListener
         if (!File.Exists(portFile))
             throw new IOException("host daemon not started");
         var port = int.Parse((await File.ReadAllTextAsync(portFile, cancellationToken).ConfigureAwait(false)).Trim());
+        // A refused loopback connect takes about 2 s on Windows (SYN retransmits); the port file a killed host left behind made every reconnect attempt that slow.
+        if (!IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(listener => listener.Port == port))
+            throw new IOException("host daemon not listening");
         return await TransportConnection.ConnectTcpAsync("127.0.0.1", port, cancellationToken).ConfigureAwait(false);
     }
 
