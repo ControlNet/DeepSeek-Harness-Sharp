@@ -1,0 +1,253 @@
+using System.Text.Json;
+using Dsh.AgentAdapters;
+using Dsh.Fleet;
+
+namespace Dsh.Tests;
+
+/**
+ * The web UI in real headless Chrome against the hub bridge of two real `dsharp host serve` processes (plus an offline SSH machine).
+ * Sessions are real: a terminal session runs /bin/sh, and an ACP session runs the test-only scripted ACP agent (Assets/scripted-acp-agent.py), which runs each prompt as a shell command after asking for permission; no model is involved.
+ * Screenshots land in artifacts020/webui; every page must finish without CSP violations or uncaught errors.
+ */
+[Collection(SerialProcessCollection.Name)]
+public sealed class WebUiBrowserTests
+{
+    private const string LocalMachine = MachineSpec.LocalName;
+    private const string SecondMachine = WebBridgeHubTests.SecondMachine;
+    private const string PhoneWidth = "390";
+    private const int PhoneWidthPixels = 390;
+    private const int PhoneHeightPixels = 844;
+    private const string NoProblems = "[]";
+
+    private static readonly TimeSpan SessionWait = TimeSpan.FromSeconds(60);
+
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    private static string Artifacts => HeadlessChrome.ArtifactDirectory("webui");
+
+    private static string ScriptedAgent => Path.Combine(AppContext.BaseDirectory, "Assets", "scripted-acp-agent.py");
+
+    /**
+     * Two browsers (separate profiles, so separate logins) on the same bridge: the dashboard shows both machines, a terminal session started from the UI runs a real command,
+     * an ACP approval appears in both browsers and disappears from the other one when answered in one, and reading a notification in one browser updates the other.
+     */
+    [Fact(Timeout = 300000)]
+    public async Task Desktop_TwoBrowsersShareSessionsApprovalsAndNotifications()
+    {
+        await using var hub = await WebBridgeHubTests.HubFixture.StartAsync();
+        using var repository = new GitTestRepository();
+        repository.Commit(("README.md", "hello web\n"));
+        repository.Write("README.md", "hello web\nchanged line\n");
+        await using var first = await LoggedInBrowserAsync(hub);
+        await using var second = await LoggedInBrowserAsync(hub);
+
+        await DashboardShowsEveryMachineAsync(first);
+        await TerminalRunsARealCommandAsync(first, hub.SecondHome);
+        var acpSession = await ApprovalIsSharedAndFirstAnswerWinsAsync(first, second, repository.Root);
+        await DashboardFiltersAsync(first, acpSession);
+        await NotificationReadStateIsSharedAsync(first, second);
+        await FilesAndGitAsync(first, repository.Root);
+
+        Assert.Equal(NoProblems, await first.ProblemsAsync(Ct));
+        Assert.Equal(NoProblems, await second.ProblemsAsync(Ct));
+    }
+
+    /** A 390x844 touch phone: no horizontal scrolling, a collapsible menu, and a terminal whose key bar sends Ctrl+C to a real shell. */
+    [Fact(Timeout = 300000)]
+    public async Task Phone_LayoutFitsAndTerminalKeyBarWorks()
+    {
+        await using var hub = await WebBridgeHubTests.HubFixture.StartAsync();
+        await using var phone = await LoggedInBrowserAsync(hub, phone: true);
+        await phone.WaitForAsync($"document.querySelectorAll('section.machine').length === 3", Ct);
+
+        Assert.Equal(PhoneWidth, await phone.EvaluateAsync("String(window.innerWidth)", Ct));
+        await AssertNoHorizontalScrollAsync(phone);
+        await phone.WaitForAsync("document.querySelector(\"section.machine[data-machine='lab'] .error\")", Ct);
+        var pageText = await phone.EvaluateAsync("document.body.textContent", Ct);
+        Assert.All(WebBridgeHubTests.SecretValues, secret => Assert.DoesNotContain(secret, pageText, StringComparison.Ordinal));
+        Assert.Equal("none", await phone.EvaluateAsync("getComputedStyle(document.getElementById('nav')).display", Ct));
+        await phone.ScreenshotAsync(Path.Combine(Artifacts, "phone-dashboard.png"), Ct);
+        await phone.TapAsync("#nav-toggle", Ct);
+        await phone.WaitUntilAsync("document.getElementById('nav-toggle').getAttribute('aria-expanded')", "true", Ct);
+        Assert.Equal("true", await phone.EvaluateAsync("String([...document.querySelectorAll('#nav a')].every((item) => item.getBoundingClientRect().height >= 44))", Ct));
+        await phone.ScreenshotAsync(Path.Combine(Artifacts, "phone-menu.png"), Ct);
+
+        await StartSessionThroughFormAsync(phone, LocalMachine, AgentKinds.Terminal, "/bin/sh", hub.LocalHome, prompt: null);
+        await phone.WaitForAsync("document.querySelector('.xterm-rows')", Ct, SessionWait);
+        Assert.Equal("flex", await phone.EvaluateAsync("getComputedStyle(document.querySelector('.key-bar')).display", Ct));
+        Assert.Equal("true", await phone.EvaluateAsync("String([...document.querySelectorAll('.key-bar .key')].every((key) => key.getBoundingClientRect().height >= 44))", Ct));
+        await TypeInTerminalAsync(phone, "sleep 120", tap: true);
+        await phone.TapAsync(".key-bar .key[aria-label='Ctrl+C']", Ct);
+        await TypeInTerminalAsync(phone, "echo phone-$((6*7))", tap: true);
+        await WaitForTerminalTextAsync(phone, "phone-42");
+        await AssertNoHorizontalScrollAsync(phone);
+        await phone.ScreenshotAsync(Path.Combine(Artifacts, "phone-terminal-keybar.png"), Ct);
+        await phone.NavigateAsync(new Uri($"{await phone.EvaluateAsync("location.origin", Ct)}/#/"), Ct);
+        await phone.WaitForAsync(Query("a.session-row"), Ct);
+        await AssertNoHorizontalScrollAsync(phone);
+        await phone.ScreenshotAsync(Path.Combine(Artifacts, "phone-dashboard-with-session.png"), Ct);
+        Assert.Equal(NoProblems, await phone.ProblemsAsync(Ct));
+    }
+
+    private static async Task<HeadlessChrome> LoggedInBrowserAsync(WebBridgeHubTests.HubFixture hub, bool phone = false)
+    {
+        var chrome = await HeadlessChrome.StartAsync(Artifacts, Ct);
+        if (phone)
+            await chrome.EmulatePhoneAsync(PhoneWidthPixels, PhoneHeightPixels, Ct);
+        await chrome.NavigateAsync(hub.Access.Url("/"), Ct);
+        await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "login", Ct);
+        await chrome.ClickAsync("#token", Ct);
+        await chrome.InsertTextAsync(hub.Access.Token, Ct);
+        await chrome.PressEnterAsync(Ct);
+        await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "connected", Ct);
+        await chrome.WaitForAsync("document.getElementById('status').textContent.startsWith('2/3 machines connected')", Ct, SessionWait);
+        return chrome;
+    }
+
+    private static async Task DashboardShowsEveryMachineAsync(HeadlessChrome chrome)
+    {
+        await chrome.WaitUntilAsync("[...document.querySelectorAll('section.machine')].map((section) => `${section.dataset.machine}:${section.querySelector('.chip').textContent}`).join(',')",
+            $"{LocalMachine}:Connected,{SecondMachine}:Connected,{WebBridgeHubTests.OfflineMachine}:Offline", Ct, SessionWait);
+        Assert.Equal("1/3", await chrome.EvaluateAsync("document.querySelector('#tile-offline .tile-value').textContent", Ct));
+        await chrome.ScreenshotAsync(Path.Combine(Artifacts, "dashboard-machines.png"), Ct);
+    }
+
+    /** Starts /bin/sh as a terminal session on the second machine from the New session form and types a command into xterm. */
+    private static async Task TerminalRunsARealCommandAsync(HeadlessChrome chrome, string project)
+    {
+        await StartSessionThroughFormAsync(chrome, SecondMachine, AgentKinds.Terminal, "/bin/sh", project, prompt: null);
+        await chrome.WaitForAsync("document.querySelector('.xterm-rows')", Ct, SessionWait);
+        await TypeInTerminalAsync(chrome, "echo web-$((6*7))", tap: false);
+        await WaitForTerminalTextAsync(chrome, "web-42");
+        await chrome.ScreenshotAsync(Path.Combine(Artifacts, "terminal-session.png"), Ct);
+    }
+
+    /**
+     * Starts the scripted ACP agent on the bridge's machine with a first prompt; its permission request shows in the session view of one browser and on the pending page of the other.
+     * Allowing it in the first removes it from the second, and the command's real output reaches the transcript. Returns the session id.
+     */
+    private static async Task<string> ApprovalIsSharedAndFirstAnswerWinsAsync(HeadlessChrome first, HeadlessChrome second, string project)
+    {
+        var sessionId = await StartSessionThroughFormAsync(first, LocalMachine, AgentKinds.Acp, $"python3 {ScriptedAgent}", project, "echo acp-$((6*7))");
+        await first.WaitForAsync(Query(".session-pending article.pending[data-kind='approval']"), Ct, SessionWait);
+        await second.NavigateAsync(new Uri($"{await second.EvaluateAsync("location.origin", Ct)}/#/pending"), Ct);
+        await second.WaitForAsync(Query("#pending-list article.pending[data-kind='approval']"), Ct, SessionWait);
+        Assert.Contains("echo acp-$((6*7))", await second.EvaluateAsync("document.querySelector('#pending-list article.pending').textContent", Ct), StringComparison.Ordinal);
+        Assert.Equal("1", await second.EvaluateAsync("document.getElementById('pending-count').textContent", Ct));
+        await first.ScreenshotAsync(Path.Combine(Artifacts, "acp-approval-session.png"), Ct);
+        await second.ScreenshotAsync(Path.Combine(Artifacts, "acp-approval-pending-page.png"), Ct);
+
+        await first.ClickAsync(".session-pending article.pending button.primary", Ct);
+        await second.WaitUntilAsync("String(document.querySelectorAll('#pending-list article.pending').length)", "0", Ct);
+        await second.WaitForAsync("document.getElementById('pending-count').hidden", Ct);
+        await first.WaitUntilAsync("document.querySelector('#transcript .tool .chip')?.textContent", "done", Ct, SessionWait);
+        Assert.Contains("acp-42", await first.EvaluateAsync("document.querySelector('#transcript .tool-result').textContent", Ct), StringComparison.Ordinal);
+        await first.WaitForAsync("document.querySelectorAll('#transcript .plan .plan-completed').length === 2", Ct);
+        await second.ScreenshotAsync(Path.Combine(Artifacts, "acp-approval-gone-in-other-browser.png"), Ct);
+        await first.EvaluateAsync("document.querySelector('#transcript .tool').open = true", Ct);
+        await first.ScreenshotAsync(Path.Combine(Artifacts, "acp-transcript-after-allow.png"), Ct);
+        return sessionId;
+    }
+
+    /** The search box narrows the dashboard to the matching session; the dark theme follows the system preference. */
+    private static async Task DashboardFiltersAsync(HeadlessChrome chrome, string acpSession)
+    {
+        await chrome.NavigateAsync(new Uri($"{await chrome.EvaluateAsync("location.origin", Ct)}/#/"), Ct);
+        await chrome.WaitForAsync("document.querySelectorAll('a.session-row').length === 2", Ct, SessionWait);
+        await chrome.ClickAsync("#session-search", Ct);
+        await chrome.InsertTextAsync(AgentKinds.Acp, Ct);
+        await chrome.WaitUntilAsync("[...document.querySelectorAll('a.session-row')].map((row) => row.dataset.session).join(',')", acpSession, Ct);
+        await chrome.EvaluateAsync("const search = document.getElementById('session-search'); search.value = ''; search.dispatchEvent(new Event('input'))", Ct);
+        await chrome.SetColorSchemeAsync("dark", Ct);
+        await chrome.WaitForAsync("document.querySelectorAll('a.session-row').length === 2", Ct);
+        await AssertNoHorizontalScrollAsync(chrome);
+        await chrome.ScreenshotAsync(Path.Combine(Artifacts, "dashboard-dark.png"), Ct);
+        await chrome.SetColorSchemeAsync("light", Ct);
+    }
+
+    /**
+     * The approval left a notification on the bridge's machine.
+     * Opening it in the second browser jumps to its target and marks it read in the first; "Mark all read" in the first clears the second's badge.
+     */
+    private static async Task NotificationReadStateIsSharedAsync(HeadlessChrome first, HeadlessChrome second)
+    {
+        foreach (var chrome in new[] { first, second })
+        {
+            await chrome.NavigateAsync(new Uri($"{await chrome.EvaluateAsync("location.origin", Ct)}/#/notifications"), Ct);
+            await chrome.WaitForAsync(Query("#notification-list button.notification.unread"), Ct, SessionWait);
+        }
+        await second.ScreenshotAsync(Path.Combine(Artifacts, "notifications-unread.png"), Ct);
+        var opened = await second.EvaluateAsync("document.querySelector('#notification-list button.notification.unread').dataset.id", Ct);
+        await second.ClickAsync($"#notification-list button.notification[data-id='{opened}']", Ct);
+        await second.WaitUntilAsync("location.hash", "#/pending", Ct);
+        await first.WaitUntilAsync($"document.querySelector(\"#notification-list button.notification[data-id='{opened}']\").dataset.read", "true", Ct);
+
+        await second.NavigateAsync(new Uri($"{await second.EvaluateAsync("location.origin", Ct)}/#/notifications"), Ct);
+        await first.ClickAsync("#mark-all-read", Ct);
+        await second.WaitUntilAsync("String(document.querySelectorAll('#notification-list button.notification.unread').length)", "0", Ct);
+        await second.WaitForAsync("document.getElementById('unread-count').hidden", Ct);
+        await second.ScreenshotAsync(Path.Combine(Artifacts, "notifications-read-in-other-browser.png"), Ct);
+    }
+
+    /** Browses the repository, previews a file, and shows the working-tree diff of the changed file. */
+    private static async Task FilesAndGitAsync(HeadlessChrome chrome, string repository)
+    {
+        var origin = await chrome.EvaluateAsync("location.origin", Ct);
+        await chrome.NavigateAsync(new Uri($"{origin}/#/m/{LocalMachine}/files?path={Uri.EscapeDataString(repository)}"), Ct);
+        await chrome.WaitForAsync("[...document.querySelectorAll('#file-list .file-row')].some((row) => row.textContent === 'README.md')", Ct);
+        await chrome.EvaluateAsync("[...document.querySelectorAll('#file-list button.file-row')].find((row) => row.textContent === 'README.md').click()", Ct);
+        await chrome.WaitUntilAsync("document.getElementById('file-text')?.textContent", "hello web\nchanged line\n", Ct);
+        await chrome.ScreenshotAsync(Path.Combine(Artifacts, "files-preview.png"), Ct);
+
+        await chrome.NavigateAsync(new Uri($"{origin}/#/m/{LocalMachine}/git?project={Uri.EscapeDataString(repository)}"), Ct);
+        await chrome.WaitForAsync("document.querySelector('#git-status button.file-row')", Ct);
+        await chrome.ClickAsync("#git-status button.file-row", Ct);
+        await chrome.WaitUntilAsync("document.querySelector('#diff-text .diff-line.added')?.textContent", "+changed line\n", Ct);
+        await chrome.ScreenshotAsync(Path.Combine(Artifacts, "git-diff.png"), Ct);
+    }
+
+    /** Fills in and submits the New session form like a user; returns the new session's id from the session page the form opens. */
+    private static async Task<string> StartSessionThroughFormAsync(HeadlessChrome chrome, string machine, string agentKind, string command, string project, string? prompt)
+    {
+        var origin = await chrome.EvaluateAsync("location.origin", Ct);
+        await chrome.NavigateAsync(new Uri($"{origin}/#/new?machine={Uri.EscapeDataString(machine)}"), Ct);
+        await chrome.WaitForAsync($"document.querySelector('#new-agent option[value={JsonSerializer.Serialize(agentKind)}]')", Ct);
+        await chrome.EvaluateAsync($$"""
+            (() => {
+              const set = (id, value) => {
+                const element = document.getElementById(id);
+                element.value = value;
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+              };
+              set('new-agent', {{JsonSerializer.Serialize(agentKind)}});
+              set('new-command', {{JsonSerializer.Serialize(command)}});
+              set('new-project', {{JsonSerializer.Serialize(project)}});
+              set('new-prompt', {{JsonSerializer.Serialize(prompt ?? "")}});
+            })()
+            """, Ct);
+        await chrome.ClickAsync("#new-start", Ct);
+        var routePrefix = $"#/m/{machine}/s/";
+        await chrome.WaitForAsync($"location.hash.startsWith({JsonSerializer.Serialize(routePrefix)})", Ct, SessionWait);
+        return Uri.UnescapeDataString((await chrome.EvaluateAsync("location.hash", Ct))[routePrefix.Length..]);
+    }
+
+    private static async Task TypeInTerminalAsync(HeadlessChrome chrome, string line, bool tap)
+    {
+        if (tap)
+            await chrome.TapAsync("#terminal-screen", Ct);
+        else
+            await chrome.ClickAsync("#terminal-screen", Ct);
+        await chrome.InsertTextAsync(line, Ct);
+        await chrome.PressEnterAsync(Ct);
+    }
+
+    private static Task WaitForTerminalTextAsync(HeadlessChrome chrome, string expected)
+        => chrome.WaitForAsync($"document.querySelector('.xterm-rows').textContent.includes({JsonSerializer.Serialize(expected)})", Ct, SessionWait);
+
+    /** A selector as a "some element matches" expression. */
+    private static string Query(string selector) => $"document.querySelector({JsonSerializer.Serialize(selector)})";
+
+    /** Long paths and session lists must wrap or truncate, never widen the page. */
+    private static async Task AssertNoHorizontalScrollAsync(HeadlessChrome chrome)
+        => Assert.Equal("true", await chrome.EvaluateAsync("String(document.documentElement.scrollWidth <= window.innerWidth)", Ct));
+}

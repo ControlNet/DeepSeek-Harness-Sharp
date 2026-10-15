@@ -1,9 +1,5 @@
-using System.ComponentModel;
-using System.Diagnostics;
 using System.Net;
 using System.Net.WebSockets;
-using System.Text;
-using System.Text.Json;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 using Dsh.WebBridge;
@@ -221,24 +217,23 @@ public sealed class WebBridgeTests
         }
     }
 
-    /** Opens the real page in headless Chrome with the one-time #token link and checks that it logs in, connects and renders host.info. */
+    /** Opens the real page in headless Chrome with the one-time #token link and checks that it logs in, connects and shows the version the machine's host reports in host.hello. */
     [Fact(Timeout = 120000)]
     public async Task HeadlessChrome_LogsInThroughFragmentAndShowsHostInfo()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var fixture = await BridgeFixture.StartAsync(cancellationToken);
-        var artifacts = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../artifacts020/web-bridge"));
-        Directory.CreateDirectory(artifacts);
+        var artifacts = HeadlessChrome.ArtifactDirectory("web-bridge");
         await using var chrome = await HeadlessChrome.StartAsync(artifacts, cancellationToken);
 
-        await chrome.SendAsync("Page.navigate", $$"""{"url":"{{fixture.Access.Url("/")}}#token={{fixture.Token}}"}""", cancellationToken);
+        await chrome.NavigateAsync(new Uri($"{fixture.Access.Url("/")}#token={fixture.Token}"), cancellationToken);
         await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "connected", cancellationToken);
+        await chrome.WaitUntilAsync("document.querySelector('section.machine .host-version')?.textContent", $"dsharp {RemoteHostServer.ReleaseVersion}", cancellationToken);
 
-        Assert.Equal("fake", await chrome.EvaluateAsync("document.querySelectorAll('#info dd')[1].textContent", cancellationToken));
-        Assert.Equal("", await chrome.EvaluateAsync("location.hash", cancellationToken));
+        Assert.DoesNotContain(fixture.Token, await chrome.EvaluateAsync("location.href", cancellationToken), StringComparison.Ordinal);
         Assert.Equal("none", await chrome.EvaluateAsync("getComputedStyle(document.getElementById('login')).display", cancellationToken));
-        var screenshot = await chrome.SendAsync("Page.captureScreenshot", """{"format":"png"}""", cancellationToken);
-        await File.WriteAllBytesAsync(Path.Combine(artifacts, "host-info.png"), Convert.FromBase64String(screenshot.GetProperty("data").GetString()!), cancellationToken);
+        Assert.Equal("[]", await chrome.ProblemsAsync(cancellationToken));
+        await chrome.ScreenshotAsync(Path.Combine(artifacts, "host-info.png"), cancellationToken);
     }
 
     private static Task NoHost() => Task.CompletedTask;
@@ -326,111 +321,6 @@ public sealed class WebBridgeTests
             _daemonStop.Dispose();
             await Backend.DisposeAsync();
             TempTree.Delete(Root);
-        }
-    }
-
-    /** The machine's google-chrome, headless with a throwaway profile inside artifacts020, driven over the DevTools protocol; skips the test when Chrome is not installed. */
-    private sealed class HeadlessChrome : IAsyncDisposable
-    {
-        private const string ListeningPrefix = "DevTools listening on ";
-
-        private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(30);
-        private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(100);
-
-        private readonly Process _process;
-        private readonly string _profile;
-        private readonly ClientWebSocket _page = new();
-        private int _nextId;
-
-        private HeadlessChrome(Process process, string profile)
-        {
-            _process = process;
-            _profile = profile;
-        }
-
-        public static async Task<HeadlessChrome> StartAsync(string artifacts, CancellationToken cancellationToken)
-        {
-            var profile = Path.Combine(artifacts, $"chrome-profile-{Guid.NewGuid():N}");
-            var start = new ProcessStartInfo("google-chrome") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-            foreach (var argument in (string[])["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", $"--user-data-dir={profile}", "--remote-debugging-port=0", "--window-size=420,820", "about:blank"])
-                start.ArgumentList.Add(argument);
-            var chrome = new HeadlessChrome(StartOrSkip(start), profile);
-            var browserEndpoint = await chrome.ReadDevToolsEndpointAsync(cancellationToken);
-            await chrome.AttachToPageAsync(browserEndpoint, cancellationToken);
-            return chrome;
-        }
-
-        /** Sends one DevTools command to the page and returns its result. */
-        public async Task<JsonElement> SendAsync(string method, string parameters, CancellationToken cancellationToken)
-        {
-            var id = ++_nextId;
-            await _page.SendAsync(Encoding.UTF8.GetBytes($$"""{"id":{{id}},"method":"{{method}}","params":{{parameters}}}"""), WebSocketMessageType.Text, endOfMessage: true, cancellationToken);
-            var reply = await WebSocketRpc.ReceiveUntilAsync(_page, message => message.TryGetProperty("id", out var replyId) && replyId.GetInt32() == id);
-            Assert.False(reply.TryGetProperty("error", out var error), error.ToString());
-            return reply.GetProperty("result");
-        }
-
-        public async Task<string> EvaluateAsync(string expression, CancellationToken cancellationToken)
-        {
-            var result = await SendAsync("Runtime.evaluate", $$"""{"expression":"{{JsonEncodedText.Encode(expression)}}","returnByValue":true}""", cancellationToken);
-            return result.GetProperty("result").TryGetProperty("value", out var value) ? value.ToString() : "";
-        }
-
-        public async Task WaitUntilAsync(string expression, string expected, CancellationToken cancellationToken)
-        {
-            var deadline = DateTime.UtcNow + StartTimeout;
-            var actual = await EvaluateAsync(expression, cancellationToken);
-            while (actual != expected && DateTime.UtcNow < deadline)
-            {
-                await Task.Delay(PollInterval, cancellationToken);
-                actual = await EvaluateAsync(expression, cancellationToken);
-            }
-
-            Assert.True(actual == expected, $"{expression} stayed \"{actual}\"; page status: {await EvaluateAsync("document.getElementById('status').textContent", cancellationToken)}");
-        }
-
-        /** Chrome prints the browser's DevTools WebSocket address on stderr once it listens; the rest of both streams is drained so Chrome never blocks on a full pipe. */
-        private async Task<Uri> ReadDevToolsEndpointAsync(CancellationToken cancellationToken)
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(StartTimeout);
-            var line = await _process.StandardError.ReadLineAsync(timeout.Token);
-            while (line is not null && !line.StartsWith(ListeningPrefix, StringComparison.Ordinal))
-                line = await _process.StandardError.ReadLineAsync(timeout.Token);
-            Assert.NotNull(line);
-            _ = _process.StandardError.ReadToEndAsync(CancellationToken.None);
-            _ = _process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-            return new Uri(line[ListeningPrefix.Length..].Trim());
-        }
-
-        private async Task AttachToPageAsync(Uri browserEndpoint, CancellationToken cancellationToken)
-        {
-            using var http = new HttpClient();
-            var targets = JsonDocument.Parse(await http.GetStringAsync(new Uri($"http://{browserEndpoint.Authority}/json/list"), cancellationToken)).RootElement;
-            var page = targets.EnumerateArray().First(target => target.GetProperty("type").GetString() == "page");
-            await _page.ConnectAsync(new Uri(page.GetProperty("webSocketDebuggerUrl").GetString()!), cancellationToken);
-        }
-
-        private static Process StartOrSkip(ProcessStartInfo start)
-        {
-            try
-            {
-                return Process.Start(start) ?? throw new InvalidOperationException("google-chrome did not start");
-            }
-            catch (Win32Exception)
-            {
-                Assert.Skip("google-chrome is not installed on this machine");
-                throw;
-            }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            _page.Dispose();
-            _process.Kill(entireProcessTree: true);
-            await _process.WaitForExitAsync();
-            _process.Dispose();
-            TempTree.Delete(_profile);
         }
     }
 }
