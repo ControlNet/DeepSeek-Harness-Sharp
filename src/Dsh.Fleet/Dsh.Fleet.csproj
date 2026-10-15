@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dsh.Boot\Dsh.Boot.csproj" />
+    <ProjectReference Include="..\Dsh.Notifications\Dsh.Notifications.csproj" />
     <ProjectReference Include="..\Dsh.Transport\Dsh.Transport.csproj" />
     <ProjectReference Include="..\Dsh.RemoteHost\Dsh.RemoteHost.csproj" />
   </ItemGroup>

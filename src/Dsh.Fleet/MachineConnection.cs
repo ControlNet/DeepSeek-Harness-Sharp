@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Channels;
+using Dsh.Notifications;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 
@@ -54,6 +55,18 @@ public sealed class MachineConnection : IAsyncDisposable
 
     public event Action<MachineConnection>? PendingChanged;
 
+    /** A notification the host added to its history (host.notify.added). */
+    public event Action<MachineConnection, NotificationRecord>? NotificationAdded;
+
+    /** Notifications some client marked read (host.notify.changed), with the ids that became read. */
+    public event Action<MachineConnection, IReadOnlyList<string>>? NotificationsRead;
+
+    /** The history was re-read after a (re)connection; records added while the machine was unreachable are only visible through host.notify.list. */
+    public event Action<MachineConnection>? NotificationsReloaded;
+
+    /** Unread notifications in the host's history; 0 while never connected or when the host keeps no history. */
+    public int UnreadNotifications { get; private set; }
+
     public IReadOnlyList<RemoteHostSession> Sessions
     {
         get
@@ -106,6 +119,43 @@ public sealed class MachineConnection : IAsyncDisposable
         var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
         return await lease.Client.RespondQuestionAsync(requestId, answers, cancellationToken).ConfigureAwait(false);
     }
+
+    /**
+     * Attaches to a PTY across reconnections: after a drop the next link attaches again and the host starts over with a full-screen snapshot.
+     * Returns when the PTY ends; fails when the host does not know the PTY (for example it exited while the machine was unreachable).
+     */
+    public async Task AttachPtyAsync(string ptyId, Stream input, Stream output, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
+            try
+            {
+                await lease.Client.AttachPtyAsync(ptyId, input, output, linked.Token).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception error) when (!cancellationToken.IsCancellationRequested && error is OperationCanceledException or IOException or ObjectDisposedException)
+            {
+            }
+        }
+    }
+
+    public async Task<RemoteNotifyPage> ListNotificationsAsync(RemoteNotifyQuery query, CancellationToken cancellationToken)
+    {
+        var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
+        return await lease.Client.ListNotificationsAsync(query, cancellationToken).ConfigureAwait(false);
+    }
+
+    /** Returns how many notifications became read; every connected client learns about it through host.notify.changed. */
+    public async Task<int> MarkNotificationsReadAsync(RemoteNotifyMarkRead request, CancellationToken cancellationToken)
+    {
+        var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
+        return await lease.Client.MarkNotificationsReadAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    /** Records a session this client just started or resumed, ahead of the registry push that announces it (the push, being newer, replaces it). */
+    public void Remember(RemoteHostSession session) => ApplySession(session);
 
     public async ValueTask DisposeAsync()
     {
@@ -207,13 +257,24 @@ public sealed class MachineConnection : IAsyncDisposable
         }
     }
 
-    private Task[] StartPumps(RemoteHostClient client, CancellationToken cancellationToken) =>
-    [
-        PumpAsync(client.ApprovalsAsync(cancellationToken), AddApproval),
-        PumpAsync(client.QuestionsAsync(cancellationToken), AddQuestion),
-        PumpAsync(client.ResolutionsAsync(cancellationToken), Resolve),
-        PumpAsync(client.HostSessionChangesAsync(cancellationToken), ApplySession),
-    ];
+    private Task[] StartPumps(RemoteHostClient client, CancellationToken cancellationToken)
+    {
+        Task[] pumps =
+        [
+            PumpAsync(client.ApprovalsAsync(cancellationToken), AddApproval),
+            PumpAsync(client.QuestionsAsync(cancellationToken), AddQuestion),
+            PumpAsync(client.ResolutionsAsync(cancellationToken), Resolve),
+            PumpAsync(client.HostSessionChangesAsync(cancellationToken), ApplySession),
+        ];
+        if (!client.Supports(HostCapabilities.NotifyHistory))
+            return pumps;
+        return
+        [
+            .. pumps,
+            PumpAsync(client.NotificationsAddedAsync(cancellationToken), AddNotification),
+            PumpAsync(client.NotificationChangesAsync(cancellationToken), ApplyNotificationsRead),
+        ];
+    }
 
     private static async Task PumpAsync<T>(IAsyncEnumerable<T> source, Action<T> apply)
     {
@@ -244,6 +305,12 @@ public sealed class MachineConnection : IAsyncDisposable
         SessionsChanged?.Invoke(this);
         if (client.Supports(HostCapabilities.PendingBroadcast))
             ReplacePending(await client.ListPendingAsync(cancellationToken).ConfigureAwait(false));
+        if (!client.Supports(HostCapabilities.NotifyHistory))
+            return;
+        var history = await client.ListNotificationsAsync(new RemoteNotifyQuery(Limit: 1), cancellationToken).ConfigureAwait(false);
+        lock (_gate)
+            UnreadNotifications = history.UnreadCount;
+        NotificationsReloaded?.Invoke(this);
     }
 
     /** Hosts without the session registry only list harness sessions. */
@@ -360,6 +427,24 @@ public sealed class MachineConnection : IAsyncDisposable
         PendingChanged?.Invoke(this);
     }
 
+    private void AddNotification(NotificationRecord record)
+    {
+        if (!record.IsRead)
+        {
+            lock (_gate)
+                UnreadNotifications++;
+        }
+
+        NotificationAdded?.Invoke(this, record);
+    }
+
+    private void ApplyNotificationsRead(RemoteNotifyChanged changed)
+    {
+        lock (_gate)
+            UnreadNotifications = changed.UnreadCount;
+        NotificationsRead?.Invoke(this, changed.ReadIds);
+    }
+
     private void RememberResolved(string requestId)
     {
         if (!_resolved.Add(requestId))
@@ -392,11 +477,13 @@ public sealed class MachineConnection : IAsyncDisposable
             while (!cancellationToken.IsCancellationRequested)
             {
                 var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
-                await PumpEventsAsync(lease, sessionId, cursor, writer, cancellationToken).ConfigureAwait(false);
+                using var resumed = new ResumeWatch(this, sessionId);
+                await PumpEventsAsync(lease, sessionId, cursor, writer, resumed.Token, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            await UnsubscribeAsync(sessionId).ConfigureAwait(false);
         }
         catch (JsonRpcException error)
         {
@@ -408,10 +495,32 @@ public sealed class MachineConnection : IAsyncDisposable
         }
     }
 
-    /** Pumps one link's subscription; returns when the link drops. A rejected resume from the middle is retried from the start once. */
-    private static async Task PumpEventsAsync(HostLease lease, string sessionId, EventCursor cursor, ChannelWriter<RemoteEventInfo> writer, CancellationToken cancellationToken)
+    /** The reader stopped: the host stops pushing this session's events to this connection instead of filling an unread stream. */
+    private async Task UnsubscribeAsync(string sessionId)
     {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
+        Task<HostLease> connected;
+        lock (_gate)
+            connected = _connected.Task;
+        if (!connected.IsCompletedSuccessfully)
+            return;
+        var lease = connected.Result;
+        try
+        {
+            await lease.Client.UnsubscribeAsync(sessionId, lease.Lifetime).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is OperationCanceledException or IOException or JsonRpcException or ObjectDisposedException)
+        {
+        }
+    }
+
+    /**
+     * Pumps one link's subscription until the link drops or the session is resumed; a rejected resume from the middle is retried from the start once.
+     * The host serves a session without a live agent from its persisted history and pushes nothing after it, so resuming the session needs a new subscription.
+     */
+    private static async Task PumpEventsAsync(
+        HostLease lease, string sessionId, EventCursor cursor, ChannelWriter<RemoteEventInfo> writer, CancellationToken resumed, CancellationToken cancellationToken)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime, resumed);
         try
         {
             await foreach (var item in lease.Client.SubscribeAsync(sessionId, cursor.SubscribeFrom, linked.Token).ConfigureAwait(false))
@@ -419,6 +528,8 @@ public sealed class MachineConnection : IAsyncDisposable
                 if (cursor.Accept(item))
                     await writer.WriteAsync(item, cancellationToken).ConfigureAwait(false);
             }
+            // The client closed the stream while its link is still up: nothing more arrives on it before the link drops or the session is resumed.
+            await Task.Delay(Timeout.Infinite, linked.Token).ConfigureAwait(false);
         }
         catch (Exception error) when (!cancellationToken.IsCancellationRequested && error is OperationCanceledException or IOException or ObjectDisposedException)
         {
@@ -426,6 +537,55 @@ public sealed class MachineConnection : IAsyncDisposable
         catch (JsonRpcException) when (cursor.SubscribeFrom > 0)
         {
             cursor.RestartFromBeginning();
+        }
+    }
+
+    private RemoteHostSession? SessionOf(string sessionId)
+    {
+        lock (_gate)
+            return _sessions.GetValueOrDefault(sessionId);
+    }
+
+    /** Signals when a session that had no live agent (exited or not yet listed) comes back to life on the host. */
+    private sealed class ResumeWatch : IDisposable
+    {
+        private readonly MachineConnection _machine;
+        private readonly string _sessionId;
+        private readonly CancellationTokenSource _resumed = new();
+        private readonly Lock _gate = new();
+        private bool _exited;
+        private bool _disposed;
+
+        public ResumeWatch(MachineConnection machine, string sessionId)
+        {
+            (_machine, _sessionId) = (machine, sessionId);
+            _exited = IsExited();
+            machine.SessionsChanged += OnSessionsChanged;
+        }
+
+        public CancellationToken Token => _resumed.Token;
+
+        public void Dispose()
+        {
+            _machine.SessionsChanged -= OnSessionsChanged;
+            lock (_gate)
+            {
+                _disposed = true;
+                _resumed.Dispose();
+            }
+        }
+
+        private bool IsExited() => _machine.SessionOf(_sessionId) is not { Status: not HostSessionStatuses.Exited };
+
+        private void OnSessionsChanged(MachineConnection _)
+        {
+            lock (_gate)
+            {
+                var exited = IsExited();
+                if (_exited && !exited && !_disposed)
+                    _resumed.Cancel();
+                _exited = exited;
+            }
         }
     }
 
