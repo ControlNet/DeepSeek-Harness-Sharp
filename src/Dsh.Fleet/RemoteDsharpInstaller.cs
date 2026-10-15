@@ -15,7 +15,7 @@ namespace Dsh.Fleet;
 public static class RemoteDsharpInstaller
 {
     /** OpenSSH 自身失败(连接/认证/端口不通)的退出码固定为 255; 远端命令自身的失败是别的退出码。 */
-    private const int SshFailureExitCode = 255;
+    internal const int SshFailureExitCode = 255;
 
     /**
      * 部署身份 = 本项目的发布版本(Directory.Build.props 的 Version, 经 RemoteHostServer.ReleaseVersion 读出), 写在 `~/.dsharp/RID/.dsharp-version`。

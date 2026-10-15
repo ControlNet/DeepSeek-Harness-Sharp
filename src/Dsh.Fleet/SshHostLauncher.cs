@@ -136,6 +136,20 @@ public static class SshHostLauncher
         }
     }
 
+    /** A command line a person can paste into a POSIX shell to run remoteCommand on the machine with the same port, key, proxy and options. */
+    public static string CommandLine(MachineSpec workspace, string remoteCommand)
+    {
+        var line = new StringBuilder($"ssh -p {workspace.Port}");
+        foreach (var option in workspace.SshOptions ?? [])
+            line.Append($" -o {Quote(option)}");
+        if (workspace.Auth == SshAuth.Key && workspace.KeyPath is { Length: > 0 } key)
+            line.Append($" -i {Quote(key)}");
+        if (workspace.Proxy is { Length: > 0 } proxy)
+            line.Append($" -o {Quote($"ProxyCommand={proxy}")}");
+        line.Append($" {workspace.User}@{workspace.Host} {Quote(remoteCommand)}");
+        return line.ToString();
+    }
+
     /** 用 scp 上传本地文件到远端(认证与 ssh 一致); remotePath 支持 `~`。 */
     public static async Task UploadAsync(MachineSpec workspace, string localPath, string remotePath, CancellationToken cancellationToken)
     {

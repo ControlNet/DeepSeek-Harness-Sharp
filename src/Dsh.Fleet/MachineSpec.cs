@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Dsh.Fleet;
 
 /** How the client reaches a machine's host. */
@@ -50,8 +52,10 @@ public sealed record MachineSpec(
     public static MachineSpec Ssh(string name, string host, int port, string user, string auth)
         => new(name, MachineKinds.Ssh, host, port, user, auth);
 
+    [JsonIgnore]
     public bool IsLocal => Kind == MachineKinds.Local;
 
     /** user@host:port for SSH machines, the harness home (or "this computer") for local ones. */
+    [JsonIgnore]
     public string Target => IsLocal ? HarnessHome ?? "this computer" : $"{User}@{Host}:{Port}";
 }
