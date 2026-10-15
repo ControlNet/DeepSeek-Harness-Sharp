@@ -204,12 +204,14 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
 
     private void OnReloaded(MachineConnection machine) => _ = LoadAsync(machine);
 
+    /** A push is always a new record: a history load answered just before it may already list the record, and the desktop notification is still due. */
     private void OnAdded(MachineConnection machine, NotificationRecord record)
     {
-        if (_all.Any(item => item.Machine == machine.Machine.Name && item.Id == record.Id))
-            return;
-        _all.Add(Describe(new NotificationItemViewModel(machine.Machine.Name, record)));
-        RefreshAll();
+        if (!_all.Any(item => item.Machine == machine.Machine.Name && item.Id == record.Id))
+        {
+            _all.Add(Describe(new NotificationItemViewModel(machine.Machine.Name, record)));
+            RefreshAll();
+        }
         if (DesktopKinds.Contains(record.Kind) && IsForeground?.Invoke() != true)
             DesktopNotify?.Invoke($"{machine.Machine.Name} · {record.Title}", record.Body ?? SessionPresentation.NotificationKindLabel(record.Kind));
     }
