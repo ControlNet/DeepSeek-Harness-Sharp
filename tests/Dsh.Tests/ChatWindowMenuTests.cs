@@ -900,7 +900,8 @@ public class ChatWindowMenuTests : IDisposable
     [Fact]
     public async Task Mouse_Wheel_Scrolls_Transcript()
     {
-        var rows = string.Join('\n', Enumerable.Range(1, 40).Select(index => $"row-{index:D2}"));
+        const int RowCount = 40;
+        var rows = string.Join('\n', Enumerable.Range(1, RowCount).Select(index => $"row-{index:D2}"));
         using var chat = await CreateChat((_, commands) => commands.Register(new CommandDefinition
         {
             Name = "dump",
@@ -918,11 +919,10 @@ public class ChatWindowMenuTests : IDisposable
         var frame = DrawFrame(chat);
         Assert.Contains("row-40", frame);
 
-        for (var notch = 0; notch < 12; notch++)
-        {
+        // Acceleration depends on wall-clock gaps between notches: under CI load 12 notches stayed at 1x and stopped short of row-01.
+        // One notch scrolls at least one line, so one notch per transcript row reaches the top at any speed.
+        for (var notch = 0; notch < RowCount; notch++)
             chat.HandleMouseWheel(1f, 20, 10, layout);
-            await Task.Delay(10, TestContext.Current.CancellationToken);
-        }
 
         frame = DrawFrame(chat);
         Assert.DoesNotContain("row-40", frame);
