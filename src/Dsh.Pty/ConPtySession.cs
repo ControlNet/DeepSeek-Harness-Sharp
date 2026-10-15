@@ -96,6 +96,9 @@ internal sealed class ConPtySession : IDisposable
             }
 
             var commandLine = WindowsProcessLaunch.CommandLine(info.FileName, info.Arguments);
+            // Children inherit "ignore Ctrl+C" (set for processes started in a new process group, as the GitHub runner starts its steps), and then Ctrl+C typed into the terminal stopped nothing.
+            // The attribute is per process, so normal Ctrl+C processing is restored here, as the Unix spawn restores default signal handling.
+            SetConsoleCtrlHandler(IntPtr.Zero, false);
             var (savedInput, savedOutput, savedError) = ParkStdHandles();
             ProcessInformation processInfo;
             try
@@ -290,4 +293,7 @@ internal sealed class ConPtySession : IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCtrlHandler(IntPtr handlerRoutine, bool add);
 }
