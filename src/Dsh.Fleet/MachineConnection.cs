@@ -195,7 +195,8 @@ public sealed class MachineConnection : IAsyncDisposable
             var commandPath = await ResolveCommandPathAsync(cancellationToken).ConfigureAwait(false);
             return await HostLink.OpenSshAsync(Machine, commandPath, _options, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception error) when (!cancellationToken.IsCancellationRequested)
+        // A cancelled attempt can also fail with its own error: an ssh killed by the cancellation exits with 255, which surfaced from DisposeAsync.
+        catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // The deployed path may be stale (removed or replaced); resolve it again on the next attempt.
             _commandPath = null;

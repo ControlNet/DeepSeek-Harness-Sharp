@@ -101,6 +101,44 @@ public sealed class FleetConnectionTests
         await reading;
     }
 
+    /** Disposal cancels a running attempt, which can then fail with its own error (a killed ssh exits with 255); DisposeAsync must still complete. */
+    [Fact(Timeout = 30000)]
+    public async Task Dispose_WhileTheCancelledAttemptFailsWithItsOwnError_Completes()
+    {
+        var home = TempTree.CreateSocketDirectory("fx");
+        try
+        {
+            var starting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var options = TestOptions with
+            {
+                StartLocalHost = async (_, cancellationToken) =>
+                {
+                    starting.TrySetResult();
+                    try
+                    {
+                        await Task.Delay(Timeout.Infinite, cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    throw new IOException("the host process was killed");
+                },
+            };
+            var connection = new MachineConnection(MachineSpec.Local(home, "dying"), options);
+            connection.Start();
+            await starting.Task.WaitAsync(Ct);
+
+            await connection.DisposeAsync();
+
+            Assert.Equal(MachineConnectionState.Offline, connection.State);
+        }
+        finally
+        {
+            TempTree.Delete(home);
+        }
+    }
+
     private static async Task<string> CreateSessionAsync(FleetClient fleet, string machine, string cwd)
     {
         var lease = await fleet.Find(machine)!.WaitConnectedAsync(Ct);
