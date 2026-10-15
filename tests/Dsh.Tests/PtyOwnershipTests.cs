@@ -8,49 +8,44 @@ public sealed class PtyOwnershipTests
     [Fact(Timeout = 30000)]
     public async Task Identify_Publish_And_Control_RoundTrip()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.Skip("daemon socket tests run on Unix");
-            return;
-        }
-        if (!File.Exists("/bin/sh"))
-        {
-            Assert.Skip("/bin/sh unavailable");
-            return;
-        }
-
-        var socketPath = Path.Combine(Path.GetTempPath(), $"dsh-pty-own-{Guid.NewGuid():N}", "dsh.sock");
-        Directory.CreateDirectory(Path.GetDirectoryName(socketPath)!);
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = TempTree.CreateSocketDirectory("pown");
         try
         {
-            await using var daemon = new PtyDaemon(socketPath: socketPath);
-            await daemon.StartAsync(TestContext.Current.CancellationToken);
+            var socketPath = Path.Combine(root, "dsh.sock");
+            TempTree.AssertFitsMacOsSocketLimit(socketPath);
+            var portFile = OperatingSystem.IsWindows() ? Path.Combine(root, "dsh.port") : null;
+            await using var daemon = new PtyDaemon(new PtyHost(), socketPath, portFile);
+            await daemon.StartAsync(cancellationToken);
 
-            var started = await PtyDaemonClient.StartAsync(
-                new PtyDaemonStartParams { FileName = "/bin/sh", Arguments = ["-c", "sleep 10"], Rows = 10, Columns = 40 },
+            var (fileName, arguments) = OperatingSystem.IsWindows()
+                ? ("cmd.exe", (string[])["/c", "ping -n 60 127.0.0.1 > nul"])
+                : ("/bin/sh", (string[])["-c", "sleep 10"]);
+            var started = await PtyDaemonRetry.StartAsync(
+                new PtyDaemonStartParams { FileName = fileName, Arguments = [.. arguments], Rows = 10, Columns = 40 },
                 socketPath,
-                null,
-                TestContext.Current.CancellationToken);
+                portFile,
+                cancellationToken);
 
-            await PtyDaemonClient.IdentifyAsync(started.Id, "session-abc", socketPath, null, TestContext.Current.CancellationToken);
+            await PtyDaemonClient.IdentifyAsync(started.Id, "session-abc", socketPath, portFile, cancellationToken);
             await PtyDaemonClient.PublishPanesAsync(
                 started.Id,
                 "session-abc",
                 [new PtyPaneSnapshotDto { Id = 0, Kind = "chat", Title = "chat", SessionId = "session-abc", Focused = true, Lines = ["hello"] }],
                 socketPath,
-                null,
-                TestContext.Current.CancellationToken);
+                portFile,
+                cancellationToken);
 
-            var listed = await PtyDaemonClient.ListAsync(socketPath, null, TestContext.Current.CancellationToken);
+            var listed = await PtyDaemonClient.ListAsync(socketPath, portFile, cancellationToken);
             var dto = Assert.Single(listed, session => session.Id == started.Id);
             Assert.Equal("session-abc", dto.AgentSessionId);
             Assert.NotNull(dto.Panes);
             Assert.Equal("hello", Assert.Single(dto.Panes!).Lines![0]);
 
-            var seq = await PtyDaemonClient.ControlSendAsync(started.Id, "text", 0, "ping", socketPath, null, TestContext.Current.CancellationToken);
+            var seq = await PtyDaemonClient.ControlSendAsync(started.Id, "text", 0, "ping", socketPath, portFile, cancellationToken);
             Assert.True(seq > 0);
 
-            var messages = await PtyDaemonClient.ControlReadAsync(started.Id, 0, socketPath, null, TestContext.Current.CancellationToken);
+            var messages = await PtyDaemonClient.ControlReadAsync(started.Id, 0, socketPath, portFile, cancellationToken);
             var message = Assert.Single(messages);
             Assert.Equal("text", message.Kind);
             Assert.Equal(0, message.PaneId);
@@ -58,9 +53,7 @@ public sealed class PtyOwnershipTests
         }
         finally
         {
-            var directory = Path.GetDirectoryName(socketPath)!;
-            if (Directory.Exists(directory))
-                Directory.Delete(directory, recursive: true);
+            TempTree.Delete(root);
         }
     }
 }
