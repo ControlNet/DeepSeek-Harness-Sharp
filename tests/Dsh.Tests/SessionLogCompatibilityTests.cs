@@ -75,6 +75,27 @@ public sealed class SessionLogCompatibilityTests : IDisposable
         Assert.Contains("not marked ignorable", error.InnerException?.Message);
     }
 
+    [Fact]
+    public void Header_ParentCallId_RoundTripsAndStaysNullWhenAbsent()
+    {
+        var parent = NewHeader();
+        var child = NewHeader() with { ParentSession = parent.Id, ParentCallId = ToolCallId.Create("call-spawn-7"), Origin = "subagent" };
+        using (var writer = new JsonlSessionPersistence(_root))
+        {
+            foreach (var header in (SessionHeader[])[parent, child])
+            {
+                using var handle = writer.Create(header);
+                handle.Append([new SessionEvent { Type = SessionEventTypes.TurnStart, Seq = 0, Time = header.CreatedAt, Data = new TurnStartPayload(1) }]);
+                handle.Close();
+            }
+        }
+
+        using var reader = new JsonlSessionPersistence(_root);
+        Assert.Equal(ToolCallId.Create("call-spawn-7"), reader.Stat(child.Id)?.Header.ParentCallId);
+        Assert.Null(reader.Stat(parent.Id)?.Header.ParentCallId);
+        Assert.Throws<JsonException>(() => (parent with { ParentCallId = ToolCallId.Create("call-orphan") }).Validate());
+    }
+
     private SessionHeader NewHeader() => new()
     {
         Version = SessionHeader.SessionFormatVersion,

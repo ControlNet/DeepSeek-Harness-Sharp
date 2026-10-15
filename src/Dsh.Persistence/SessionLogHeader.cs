@@ -32,6 +32,7 @@ internal static class SessionLogHeader
             if (header.Cwd is { } cwd) writer.WriteString("cwd", cwd);
             if (header.Title is { } title) writer.WriteString("title", title);
             if (header.ParentSession is { } parent) writer.WriteString("parentSession", parent.Value);
+            if (header.ParentCallId is { } parentCallId) writer.WriteString("parentCallId", parentCallId.Value);
             if (header.IsSeeded) writer.WriteNumber("seedLength", inheritedEventCount!.Value);
             if (header.Origin is { } origin) writer.WriteString("origin", origin);
             writer.WriteNumber("delegationDepth", header.DelegationDepth ?? 0);
@@ -103,6 +104,9 @@ internal static class SessionLogHeader
         if (line["parentSession"] is not null
             && (line["parentSession"] is not JsonValue parentValue || !parentValue.TryGetValue<string>(out _)))
             return null;
+        if (line["parentCallId"] is not null
+            && (line["parentCallId"] is not JsonValue parentCallValue || !parentCallValue.TryGetValue<string>(out _)))
+            return null;
         if (line["rootSession"] is not null
             && (line["rootSession"] is not JsonValue rootValue || !rootValue.TryGetValue<string>(out _)))
             return null;
@@ -127,6 +131,9 @@ internal static class SessionLogHeader
             Title = line["title"] is JsonValue titleNode && titleNode.TryGetValue<string>(out var title) ? title : null,
             ParentSession = line["parentSession"] is JsonValue parentNode && parentNode.TryGetValue<string>(out var parent)
                 ? SessionId.Create(parent)
+                : null,
+            ParentCallId = line["parentCallId"] is JsonValue parentCallNode && parentCallNode.TryGetValue<string>(out var parentCall)
+                ? ToolCallId.Create(parentCall)
                 : null,
             IsSeeded = isSeeded,
             Origin = line["origin"] is JsonValue originNode && originNode.TryGetValue<string>(out var originText) ? originText : null,
