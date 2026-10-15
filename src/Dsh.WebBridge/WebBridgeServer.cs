@@ -204,7 +204,7 @@ public sealed class WebBridgeServer : IAsyncDisposable
         var head = $"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n";
         await stream.WriteAsync(Encoding.ASCII.GetBytes(head), cancellationToken).ConfigureAwait(false);
         using var socket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions { IsServer = true, KeepAliveInterval = KeepAliveInterval });
-        await HostRelay.RunAsync(socket, token => OpenChannelAsync(machine, token), cancellationToken).ConfigureAwait(false);
+        await HostRelay.RunAsync(socket, token => OpenChannelAsync(machine, token), reason => CredentialRedaction.Redact(reason, machine.Machine), cancellationToken).ConfigureAwait(false);
     }
 
     /** The machine named by ?machine=, or the first (local) machine when the query names none; null for an unknown name. */

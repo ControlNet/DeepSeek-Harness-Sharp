@@ -23,7 +23,8 @@ internal static class HostRelay
     /** Why the relay ended; a null status means the socket broke and no close frame can be sent. */
     private readonly record struct RelayEnd(WebSocketCloseStatus? Status, string Reason);
 
-    public static async Task RunAsync(WebSocket socket, Func<CancellationToken, Task<Stream>> connectHost, CancellationToken cancellationToken)
+    /** Close reasons reach the browser, so each passes through redact first (connection failures may quote ssh or proxy command lines). */
+    public static async Task RunAsync(WebSocket socket, Func<CancellationToken, Task<Stream>> connectHost, Func<string, string> redact, CancellationToken cancellationToken)
     {
         Stream host;
         try
@@ -32,7 +33,7 @@ internal static class HostRelay
         }
         catch (Exception error) when (error is IOException or SocketException or InvalidOperationException or TimeoutException or NotSupportedException or System.ComponentModel.Win32Exception)
         {
-            await CloseAsync(socket, new RelayEnd(WebSocketCloseStatus.InternalServerError, error.Message)).ConfigureAwait(false);
+            await CloseAsync(socket, new RelayEnd(WebSocketCloseStatus.InternalServerError, redact(error.Message))).ConfigureAwait(false);
             return;
         }
 
@@ -42,7 +43,7 @@ internal static class HostRelay
         var end = await await Task.WhenAny(toHost, toBrowser).ConfigureAwait(false);
         // Releasing the host connection first also ends the host-side pump.
         await host.DisposeAsync().ConfigureAwait(false);
-        await CloseAsync(socket, end).ConfigureAwait(false);
+        await CloseAsync(socket, end with { Reason = redact(end.Reason) }).ConfigureAwait(false);
         await relay.CancelAsync().ConfigureAwait(false);
         await Task.WhenAll(toHost, toBrowser).ConfigureAwait(false);
     }

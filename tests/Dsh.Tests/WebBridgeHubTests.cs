@@ -17,11 +17,14 @@ namespace Dsh.Tests;
 [Collection(SerialProcessCollection.Name)]
 public sealed class WebBridgeHubTests
 {
-    private const string SecondMachine = "second";
-    private const string OfflineMachine = "lab";
+    internal const string SecondMachine = "second";
+    internal const string OfflineMachine = "lab";
     private const string PasswordSecret = "PASSWORD-SECRET-7f3a";
     private const string ProxySecret = "PROXY-SECRET-91bd";
     private const string OptionSecret = "OPTION-SECRET-c2e8";
+
+    /** Credentials stored in the offline machine's spec; no text the bridge sends to a browser may contain them. */
+    internal static readonly string[] SecretValues = [PasswordSecret, ProxySecret, OptionSecret];
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -39,7 +42,7 @@ public sealed class WebBridgeHubTests
         Assert.Equal([MachineKinds.Local, MachineKinds.Local, MachineKinds.Ssh], listed.Select(machine => machine.GetProperty("Kind").GetString()));
         Assert.All(listed.Take(2), machine => Assert.Equal(RemoteHostServer.ReleaseVersion, machine.GetProperty("HostVersion").GetString()));
         Assert.Equal($"dev@127.0.0.1:{hub.ClosedPort}", listed[2].GetProperty("Target").GetString());
-        foreach (var secret in new[] { PasswordSecret, ProxySecret, OptionSecret, "\"Password\"", "\"KeyPath\"", "\"Proxy\"", "\"SshOptions\"" })
+        foreach (var secret in (string[])[.. SecretValues, "\"Password\"", "\"KeyPath\"", "\"Proxy\"", "\"SshOptions\""])
             Assert.DoesNotContain(secret, body, StringComparison.Ordinal);
     }
 
@@ -84,6 +87,7 @@ public sealed class WebBridgeHubTests
         Assert.Equal(WebSocketMessageType.Close, received.MessageType);
         Assert.Equal(WebSocketCloseStatus.InternalServerError, offline.CloseStatus);
         Assert.Contains("offline", offline.CloseStatusDescription, StringComparison.Ordinal);
+        Assert.All(SecretValues, secret => Assert.DoesNotContain(secret, offline.CloseStatusDescription, StringComparison.Ordinal));
     }
 
     internal static async Task HelloAsync(ClientWebSocket socket)
@@ -123,7 +127,7 @@ public sealed class WebBridgeHubTests
      * Two real hosts under their own harness homes, a bridge on the first one serving both plus an SSH machine on a closed port.
      * The SSH machine stores a password, a proxy with credentials and an extra ssh option, none of which may reach the browser.
      */
-    private sealed class HubFixture : IAsyncDisposable
+    internal sealed class HubFixture : IAsyncDisposable
     {
         private readonly WebBridgeServer _bridge;
 
