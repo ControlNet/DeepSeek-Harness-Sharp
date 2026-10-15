@@ -1,3 +1,5 @@
+using System.Runtime.Loader;
+
 namespace Dsh.Plugins;
 
 /** 配置项的类型族: 由生成器按声明类型归类, 文档/面板据此选择写法与控件。 */
@@ -54,6 +56,15 @@ public static class DshPluginSettingsRegistry
             Providers.RemoveAll(existing => string.Equals(existing.Package, snapshot.Package, StringComparison.Ordinal));
             Providers.Add(snapshot);
         }
+        // A plugin's settings leave with its load context; only the context references the handler, so the context stays collectible.
+        if (AssemblyLoadContext.GetLoadContext(provider.GetType().Assembly) is { IsCollectible: true } context)
+            context.Unloading += _ => Forget(snapshot);
+    }
+
+    private static void Forget(Snapshot snapshot)
+    {
+        lock (Gate)
+            Providers.RemoveAll(existing => ReferenceEquals(existing, snapshot));
     }
 
     /** 已注册的配置面(文档在前, 其余按包名序); 快照返回, 调用方不必持有锁。 */
