@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Threading.Channels;
 using System.Text;
 using System.Text.Json;
+using Dsh.Transport;
 
 namespace Dsh.Pty;
 
@@ -16,7 +17,7 @@ public static class PtyDaemonClient
     {
         using var socket = await ConnectAsync(socketPath, portFile, cancellationToken);
         using var stream = new NetworkStream(socket, ownsSocket: true);
-        await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "list" }, cancellationToken);
+        await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "list" }, socketPath, portFile, cancellationToken);
         var response = await ReadResponseAsync(stream, cancellationToken);
         return response.Sessions ?? [];
     }
@@ -29,7 +30,7 @@ public static class PtyDaemonClient
     {
         using var socket = await ConnectAsync(socketPath, portFile, cancellationToken);
         using var stream = new NetworkStream(socket, ownsSocket: true);
-        await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "kill", Id = id }, cancellationToken);
+        await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "kill", Id = id }, socketPath, portFile, cancellationToken);
         var response = await ReadResponseAsync(stream, cancellationToken);
         return response.Killed ?? [];
     }
@@ -42,7 +43,7 @@ public static class PtyDaemonClient
         ArgumentNullException.ThrowIfNull(parameters);
         using var socket = await ConnectAsync(socketPath, portFile, cancellationToken);
         using var stream = new NetworkStream(socket, ownsSocket: true);
-        await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "start", Params = parameters }, cancellationToken);
+        await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "start", Params = parameters }, socketPath, portFile, cancellationToken);
         var response = await ReadResponseAsync(stream, cancellationToken);
         return response.Session
             ?? throw new InvalidOperationException("daemon returned no PTY session");
@@ -200,6 +201,8 @@ public static class PtyDaemonClient
                 MouseButtonState = mouse.ButtonState,
                 MouseEventFlags = mouse.EventFlags,
             },
+            socketPath,
+            portFile,
             cancellationToken);
         await ReadResponseAsync(stream, cancellationToken);
     }
@@ -220,7 +223,7 @@ public static class PtyDaemonClient
         await TryResizeToClientAsync(id, socketPath, portFile, cancellationToken);
         using var socket = await ConnectAsync(socketPath, portFile, cancellationToken);
         using var stream = new NetworkStream(socket, ownsSocket: true);
-        await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "attach", Id = id }, cancellationToken);
+        await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "attach", Id = id }, socketPath, portFile, cancellationToken);
         var response = await ReadResponseAsync(stream, cancellationToken);
         if (!response.Ok)
             throw new InvalidOperationException(response.Error ?? "daemon attach failed");
@@ -266,7 +269,7 @@ public static class PtyDaemonClient
         var stream = new NetworkStream(socket, ownsSocket: false);
         try
         {
-            await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "subscribe", Id = id }, cancellationToken);
+            await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "subscribe", Id = id }, socketPath, portFile, cancellationToken);
             var response = await ReadResponseAsync(stream, cancellationToken);
             var session = response.Session
                 ?? throw new InvalidOperationException("daemon returned no PTY session for subscribe");
@@ -473,6 +476,8 @@ public static class PtyDaemonClient
                 Id = id,
                 Params = new PtyDaemonStartParams { Rows = rows, Columns = columns },
             },
+            socketPath,
+            portFile,
             cancellationToken);
         await ReadResponseAsync(stream, cancellationToken);
     }
@@ -505,12 +510,17 @@ public static class PtyDaemonClient
     {
         using var socket = await ConnectAsync(socketPath, portFile, cancellationToken);
         using var stream = new NetworkStream(socket, ownsSocket: true);
-        await WriteRequestAsync(stream, request, cancellationToken);
+        await WriteRequestAsync(stream, request, socketPath, portFile, cancellationToken);
         return await ReadResponseAsync(stream, cancellationToken);
     }
 
-    private static async Task WriteRequestAsync(Stream stream, PtyDaemonRequest request, CancellationToken cancellationToken)
+    private static async Task WriteRequestAsync(Stream stream, PtyDaemonRequest request, string socketPath, string? portFile, CancellationToken cancellationToken)
     {
+        // The daemon rejects requests without the token it wrote next to its endpoint before it started listening.
+        var endpoint = OperatingSystem.IsWindows() ? portFile : socketPath;
+        request.Token = (endpoint is null ? null : LocalEndpointToken.Read(endpoint))
+            ?? throw new InvalidOperationException(
+                $"the dsharp tui daemon at {endpoint} issued no access token ({LocalEndpointToken.PathFor(endpoint ?? socketPath)}); it was started by an older build, stop that daemon process and retry");
         var json = JsonSerializer.Serialize(request, PtyDaemonJson.Options) + "\n";
         await stream.WriteAsync(Encoding.UTF8.GetBytes(json), cancellationToken);
         await stream.FlushAsync(cancellationToken);

@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -34,6 +35,30 @@ public static class OwnerOnlyFiles
         File.Delete(path);
         using var stream = OperatingSystem.IsWindows() ? CreateWindows(path) : CreateUnix(path);
         stream.Write(Encoding.UTF8.GetBytes(contents));
+    }
+
+    /**
+     * Binds a Unix domain socket that only the owner can connect to.
+     * The socket is created inside an owner-only directory, so nobody else can reach it in the moment before its own mode is narrowed to 0600.
+     */
+    [UnsupportedOSPlatform("windows")]
+    public static Socket ListenUnixSocket(string socketPath, int backlog)
+    {
+        EnsureDirectory(Path.GetDirectoryName(socketPath)!);
+        File.Delete(socketPath);
+        var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        try
+        {
+            listener.Bind(new UnixDomainSocketEndPoint(socketPath));
+            File.SetUnixFileMode(socketPath, OwnerReadWrite);
+            listener.Listen(backlog);
+            return listener;
+        }
+        catch
+        {
+            listener.Dispose();
+            throw;
+        }
     }
 
     [UnsupportedOSPlatform("windows")]

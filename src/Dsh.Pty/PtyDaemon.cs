@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Dsh.Transport;
 
 namespace Dsh.Pty;
 
@@ -17,10 +18,14 @@ public sealed class PtyDaemon : IAsyncDisposable
     private readonly object _gate = new();
     private Socket? _listener;
     private TcpListener? _tcpListener;
+    private LocalEndpointToken? _token;
     private Task? _acceptLoop;
     private bool _started;
 
     private static readonly TimeSpan ControlReadTimeout = TimeSpan.FromSeconds(30);
+
+    /** Upper bound of one request line; publish-panes carries at most PaneBridge.MaxPublishedBytes of text, which JSON escaping can inflate several times. */
+    private const int MaxRequestLineBytes = 1024 * 1024;
 
     /** 每个 pty 的跨进程归属与输入通道: agent 会话 id、窗格快照、控制消息队列。 */
     private readonly ConcurrentDictionary<string, PtyRemoteState> _remote = new(StringComparer.Ordinal);
@@ -59,7 +64,8 @@ public sealed class PtyDaemon : IAsyncDisposable
         {
             var portFile = _portFile
                 ?? throw new InvalidOperationException("A port file is required for the Windows daemon");
-            Directory.CreateDirectory(Path.GetDirectoryName(portFile)!);
+            // The token must exist before the port file announces the endpoint: clients send it with their first request.
+            _token = LocalEndpointToken.Issue(portFile);
             _tcpListener = new TcpListener(IPAddress.Loopback, 0);
             _tcpListener.Start();
             var port = ((IPEndPoint)_tcpListener.LocalEndpoint).Port;
@@ -69,12 +75,8 @@ public sealed class PtyDaemon : IAsyncDisposable
         {
             var socketPath = _socketPath
                 ?? throw new InvalidOperationException("A socket path is required for the Unix daemon");
-            Directory.CreateDirectory(Path.GetDirectoryName(socketPath)!);
-            if (File.Exists(socketPath))
-                File.Delete(socketPath);
-            _listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            _listener.Bind(new UnixDomainSocketEndPoint(socketPath));
-            _listener.Listen(16);
+            _token = LocalEndpointToken.Issue(socketPath);
+            _listener = OwnerOnlyFiles.ListenUnixSocket(socketPath, 16);
         }
 
         _acceptLoop = AcceptLoopAsync(_cts.Token);
@@ -136,6 +138,9 @@ public sealed class PtyDaemon : IAsyncDisposable
         catch (IOException)
         {
         }
+
+        // The field stays set: handlers still draining after Stop must keep rejecting, not dereference null.
+        _token?.Dispose();
     }
 
     public async ValueTask DisposeAsync()
@@ -176,21 +181,25 @@ public sealed class PtyDaemon : IAsyncDisposable
             using var stream = new NetworkStream(socket, ownsSocket: true);
             while (!cancellationToken.IsCancellationRequested)
             {
-                var line = await ReadLineAsync(stream, cancellationToken);
+                var line = await ReadLineAsync(stream, MaxRequestLineBytes, cancellationToken);
                 if (line is null)
                     return;
 
-                var request = JsonSerializer.Deserialize<PtyDaemonRequest>(line, PtyDaemonJson.Options);
-                if (request is null)
+                var request = ParseRequest(line);
+                if (request is null || !_token!.Matches(request.Token))
                 {
-                    await WriteResponseAsync(stream, new PtyDaemonResponse { Ok = false, Error = "invalid request" }, cancellationToken);
-                    continue;
+                    await WriteResponseAsync(stream, new PtyDaemonResponse { Ok = false, Error = request is null ? "invalid request" : "unauthorized" }, cancellationToken);
+                    return;
                 }
 
                 var handled = await HandleRequestAsync(request, stream, cancellationToken);
                 if (handled)
                     return;
             }
+        }
+        catch (InvalidDataException)
+        {
+            // Request line over MaxRequestLineBytes: drop the connection without buffering the rest.
         }
         catch (OperationCanceledException)
         {
@@ -205,6 +214,18 @@ public sealed class PtyDaemon : IAsyncDisposable
         {
             lock (_gate)
                 _clientSockets.Remove(socket);
+        }
+    }
+
+    private static PtyDaemonRequest? ParseRequest(string line)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<PtyDaemonRequest>(line, PtyDaemonJson.Options);
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 
@@ -569,7 +590,8 @@ public sealed class PtyDaemon : IAsyncDisposable
         await stream.FlushAsync(cancellationToken);
     }
 
-    private static async Task<string?> ReadLineAsync(Stream stream, CancellationToken cancellationToken)
+    /** Reads byte by byte so that nothing after the newline is consumed: attach/subscribe hand the same stream to the raw tunnel. */
+    private static async Task<string?> ReadLineAsync(Stream stream, int maxBytes, CancellationToken cancellationToken)
     {
         var bytes = new List<byte>();
         var single = new byte[1];
@@ -580,6 +602,8 @@ public sealed class PtyDaemon : IAsyncDisposable
                 return bytes.Count == 0 ? null : Encoding.UTF8.GetString(bytes.ToArray());
             if (single[0] == (byte)'\n')
                 return Encoding.UTF8.GetString(bytes.ToArray());
+            if (bytes.Count == maxBytes)
+                throw new InvalidDataException($"request line exceeds {maxBytes} bytes");
             bytes.Add(single[0]);
         }
     }
