@@ -72,8 +72,8 @@ public sealed class RemoteHostPtyTests
 
         var changes = late.HostSessionChangesAsync(Ct);
         await late.StopPtyAsync(ptyId, Ct);
-        var exited = await RemoteHostMultiClientTests.NextAsync(changes, session => session.SessionId == ptyId);
-        Assert.Equal(HostSessionStatuses.Exited, exited.Status);
+        // Throttled activity pushes from the earlier output may still arrive first, so wait for the exit itself.
+        await RemoteHostMultiClientTests.NextAsync(changes, session => session.SessionId == ptyId && session.Status == HostSessionStatuses.Exited);
         await lateView.Completion.WaitAsync(Arrival, Ct);
     }
 
@@ -84,7 +84,7 @@ public sealed class RemoteHostPtyTests
             : ($"echo {prefix}-$(({left}+{right}))\n", $"{prefix}-{left + right}");
 
     /** 一个客户端对一个远端 PTY 的视图: 输入经管道送进 AttachPtyAsync, 输出累积成文本供断言。 */
-    private sealed class TerminalCapture : IAsyncDisposable
+    internal sealed class TerminalCapture : IAsyncDisposable
     {
         private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(20);
 

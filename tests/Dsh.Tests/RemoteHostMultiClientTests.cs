@@ -168,11 +168,11 @@ public sealed class RemoteHostMultiClientTests
     internal static (string FileName, string[] Arguments) Shell
         => OperatingSystem.IsWindows() ? ("cmd.exe", ["/v:on"]) : ("/bin/sh", []);
 
-    private static IAgent Agent(HarnessHostFixture host, string sessionId)
+    internal static IAgent Agent(HarnessHostFixture host, string sessionId)
         => host.Environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(SessionId.Create(sessionId))!;
 
     /** 与 ApprovalService 派发应答者的方式相同: 在该 agent 的作用域上跑审批瀑布, 没有应答者时得到 Unavailable。 */
-    private static async Task<ApprovalOutcome> RaiseApprovalAsync(HarnessHostFixture host, IAgent agent, string tool)
+    internal static async Task<ApprovalOutcome> RaiseApprovalAsync(HarnessHostFixture host, IAgent agent, string tool)
     {
         var ctx = host.Environment.App.Ctx;
         var request = new ApprovalRequest(agent, tool, new ToolCallId($"call-{Guid.NewGuid():N}"), "needs approval", "{}");
@@ -188,10 +188,10 @@ public sealed class RemoteHostMultiClientTests
             new AskUserQuestionRequest([new AskUserQuestionItem("q1", "pick one", Options: [new AskUserQuestionOption("A"), new AskUserQuestionOption("B")])], agent),
             Ct);
 
-    internal static async Task<T> NextAsync<T>(IAsyncEnumerable<T> stream, Func<T, bool>? match = null)
+    internal static async Task<T> NextAsync<T>(IAsyncEnumerable<T> stream, Func<T, bool>? match = null, TimeSpan? within = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        timeout.CancelAfter(Arrival);
+        timeout.CancelAfter(within ?? Arrival);
         await foreach (var item in stream.WithCancellation(timeout.Token))
         {
             if (match is null || match(item))
