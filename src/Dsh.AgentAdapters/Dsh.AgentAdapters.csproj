@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Catalog of external coding agents (Codex, Claude Code, OpenCode, generic ACP agents, raw terminal commands):
+    launch commands, executable probing, terminal attention rules, and an ACP client that drives an agent process over stdio.
+    Shared capability library without a plugin entry; command lines are verified against each installed CLI and its vendor documentation.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\Dsh.Transport\Dsh.Transport.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

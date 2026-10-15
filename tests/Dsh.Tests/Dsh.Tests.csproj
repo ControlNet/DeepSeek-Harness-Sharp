@@ -103,6 +103,7 @@
     <ProjectReference Include="..\..\src\Dsh.RemoteHost\Dsh.RemoteHost.csproj" />
     <ProjectReference Include="..\..\src\Dsh.GitInspect\Dsh.GitInspect.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Notifications\Dsh.Notifications.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.AgentAdapters\Dsh.AgentAdapters.csproj" />
     <ProjectReference Include="..\..\Dsh.Host\Dsh.Host.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Gui\Dsh.Gui.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Plugins.Generator\Dsh.Plugins.Generator.csproj" />

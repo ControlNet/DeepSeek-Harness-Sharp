@@ -11,6 +11,7 @@
     <Project Path="src/Dsh.A2A/Dsh.A2A.csproj" />
     <Project Path="src/Dsh.Account/Dsh.Account.csproj" />
     <Project Path="src/Dsh.Acp/Dsh.Acp.csproj" />
+    <Project Path="src/Dsh.AgentAdapters/Dsh.AgentAdapters.csproj" />
     <Project Path="src/Dsh.AgentInstructions/Dsh.AgentInstructions.csproj" />
     <Project Path="src/Dsh.Board/Dsh.Board.csproj" />
     <Project Path="src/Dsh.Boot/Dsh.Boot.csproj" />
