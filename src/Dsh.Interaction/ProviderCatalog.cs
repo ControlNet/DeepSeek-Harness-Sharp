@@ -193,15 +193,17 @@ public static class ProviderCatalog
     {
         // 同一 home 可能被多个窗口/面板并发刷新: 串行化写入, 避免两个 Move 相互抢同一个目标文件。
         await CacheWriteGate.WaitAsync(signal);
+        var temp = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {
-            var temp = $"{path}.{Guid.NewGuid():N}.tmp";
             await File.WriteAllTextAsync(temp, content, signal);
             File.Move(temp, path, overwrite: true);
         }
         finally
         {
             CacheWriteGate.Release();
+            // A cancelled or failed write leaves no stray temp file in the cache directory.
+            File.Delete(temp);
         }
     }
 

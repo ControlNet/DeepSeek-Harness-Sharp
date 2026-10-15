@@ -34,6 +34,9 @@ public sealed class ChatWindow : IDisposable
     private IReadOnlyList<string> _skillCandidates = [];
     private IReadOnlyList<string> _providerCatalogCandidates = [];
     private ProviderCatalogSnapshot? _providerCatalog;
+    /** Cancelled by Dispose: background work started by this window must not outlive it. */
+    private readonly CancellationTokenSource _lifetime = new();
+    private Task _providerCatalogRefresh = Task.CompletedTask;
     private IReadOnlyList<string>? _mcpPanelLines;
     private IReadOnlyList<PtyDaemonSessionDto> _daemonPtys = [];
     private PaneNode _paneTree = new PaneLeaf(0);
@@ -845,6 +848,10 @@ public sealed class ChatWindow : IDisposable
 
     public void Dispose()
     {
+        // The catalog refresh writes models-dev.json into the home: let it observe the cancellation and finish before the home may be removed.
+        // CI (Windows): a test deleted the home while the refresh still held models-dev.json.<guid>.tmp open.
+        _lifetime.Cancel();
+        _providerCatalogRefresh.GetAwaiter().GetResult();
         _paneTools?.Dispose();
         foreach (var pane in _panes.Values)
             pane.Dispose();
@@ -2864,18 +2871,23 @@ public sealed class ChatWindow : IDisposable
     {
         _providerCatalog = ProviderCatalog.LoadCached(_home);
         _providerCatalogCandidates = CatalogCandidates(_providerCatalog);
-        _ = RefreshProviderCatalogCandidatesAsync();
+        _providerCatalogRefresh = RefreshProviderCatalogCandidatesAsync(_lifetime.Token);
     }
 
-    private async Task RefreshProviderCatalogCandidatesAsync()
+    private async Task RefreshProviderCatalogCandidatesAsync(CancellationToken cancellationToken)
     {
         try
         {
-            var snapshot = await ProviderCatalog.LoadAsync(_home, refresh: false);
+            var snapshot = await ProviderCatalog.LoadAsync(_home, refresh: false, cancellationToken).ConfigureAwait(false);
+            if (cancellationToken.IsCancellationRequested)
+                return;
             _providerCatalog = snapshot;
             _providerCatalogCandidates = CatalogCandidates(snapshot);
             if (snapshot.Error is { Length: > 0 } error)
                 _ctx.LoggerFor("tui").Warn($"provider catalog: {error}");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
         }
         catch (Exception error)
         {
