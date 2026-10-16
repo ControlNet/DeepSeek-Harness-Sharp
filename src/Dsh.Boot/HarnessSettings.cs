@@ -44,6 +44,9 @@ public sealed class HarnessSettings
     [YamlMember(Alias = "storage")]
     public StorageSettings? Storage { get; set; }
 
+    [YamlMember(Alias = "sandbox")]
+    public SandboxSettings? Sandbox { get; set; }
+
     [YamlIgnore]
     public Dictionary<string, PluginSetting> Plugins { get; set; } = [];
 
@@ -203,6 +206,14 @@ public sealed class SafetySettings
 
     [YamlMember(Alias = "blacklist")]
     public List<string> Blacklist { get; set; } = [];
+}
+
+/** Plugin sandbox switch; per-plugin grants live under plugins."<package>".permissions. */
+public sealed class SandboxSettings
+{
+    /** Plugin sandbox switch; false (the default) keeps plugin loading and execution unchanged. */
+    [YamlMember(Alias = "enabled")]
+    public bool Enabled { get; set; }
 }
 
 public sealed class StorageSettings

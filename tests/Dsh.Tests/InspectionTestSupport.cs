@@ -94,4 +94,10 @@ internal sealed class RecordingPluginManager : IPluginManager
         Calls.Add($"enable:{package}");
         return Task.FromResult($"plugin {package} enabled");
     }
+
+    public string SetPermission(string package, PluginPermission permission, bool allowed)
+    {
+        Calls.Add($"permission:{package}:{permission}:{allowed}");
+        return $"plugin {package} {permission} {allowed}";
+    }
 }

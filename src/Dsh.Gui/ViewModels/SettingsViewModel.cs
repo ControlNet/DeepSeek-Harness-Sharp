@@ -541,6 +541,31 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
     }
 
+    /** Plugin library picker, wired by MainWindow to the platform storage provider. */
+    public Func<Task<string?>>? PluginFilePicker { get; set; }
+
+    [RelayCommand]
+    private async Task BrowsePluginPathAsync()
+    {
+        if (PluginFilePicker is not null && await PluginFilePicker() is { Length: > 0 } path)
+            PluginInput = path;
+    }
+
+    /** Market permission toggles: the same settings mutation as /plugins ban_write|enable_write. */
+    private void SetPluginPermission(string package, PluginPermission permission, bool allowed)
+    {
+        if (Manager() is not { } manager)
+            return;
+        try
+        {
+            Status = manager.SetPermission(package, permission, allowed);
+        }
+        catch (Exception error)
+        {
+            Status = $"插件权限写入失败: {error.Message}";
+        }
+    }
+
     [RelayCommand]
     private async Task PluginActionAsync(string action)
     {
@@ -829,8 +854,13 @@ public sealed partial class SettingsViewModel : ObservableObject
         var settings = HarnessSettings.Load(_home);
         foreach (var package in manager.PackageNames.OrderBy(name => name, StringComparer.Ordinal))
         {
-            var enabled = settings.Plugins.GetValueOrDefault(package)?.Enabled ?? true;
-            Plugins.Add(new PluginRowViewModel(package, manager.Describe(package), enabled));
+            var setting = settings.Plugins.GetValueOrDefault(package);
+            Plugins.Add(new PluginRowViewModel(
+                package,
+                manager.Describe(package),
+                setting?.Enabled ?? true,
+                setting?.Permissions ?? PluginPermissions.AllAllowed,
+                SetPluginPermission));
         }
     }
 
@@ -895,7 +925,13 @@ public sealed record ShortcutRowViewModel(string Keys, string Description);
 /** 显卡下拉的一项: Value 写进 settings.yaml 的 gpu.adapter, Label 给人看。 */
 public sealed record GpuAdapterOption(string Value, string Label);
 
-public sealed class PluginRowViewModel(string package, string description, bool enabled) : ObservableObject
+/** One plugin row; permission toggles write back through setPermission as soon as they change. */
+public sealed partial class PluginRowViewModel(
+    string package,
+    string description,
+    bool enabled,
+    PluginPermissions permissions,
+    Action<string, PluginPermission, bool> setPermission) : ObservableObject
 {
     public string Package { get; } = package;
 
@@ -906,6 +942,23 @@ public sealed class PluginRowViewModel(string package, string description, bool 
     public string ActionLabel => Enabled ? "禁用" : "启用";
 
     public string WireAction => $"{(Enabled ? "disable" : "enable")}:{Package}";
+
+    public string RemoveAction => $"remove:{Package}";
+
+    [ObservableProperty]
+    private bool _canRead = permissions.Read;
+
+    [ObservableProperty]
+    private bool _canWrite = permissions.Write;
+
+    [ObservableProperty]
+    private bool _canNetwork = permissions.Network;
+
+    partial void OnCanReadChanged(bool value) => setPermission(Package, PluginPermission.Read, value);
+
+    partial void OnCanWriteChanged(bool value) => setPermission(Package, PluginPermission.Write, value);
+
+    partial void OnCanNetworkChanged(bool value) => setPermission(Package, PluginPermission.Network, value);
 }
 
 /** “远程”分页的一行: 可编辑字段, 保存时转回 SshWorkspace。 */
