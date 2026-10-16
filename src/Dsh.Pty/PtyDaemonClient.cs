@@ -63,8 +63,11 @@ public static class PtyDaemonClient
      */
     public static async Task AttachConsoleAsync(string id, Stream output, CancellationToken cancellationToken = default)
     {
+        var socketPath = PtyDaemonPaths.SocketPath();
+        var portFile = OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile() : null;
+        await TryResizeToClientAsync(id, socketPath, portFile, cancellationToken);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var sizeWatch = WatchConsoleSizeAsync(id, stop.Token);
+        var sizeWatch = WatchConsoleSizeAsync(id, socketPath, portFile, stop.Token);
         try
         {
             var socketPath = PtyDaemonPaths.SocketPath();
@@ -114,10 +117,8 @@ public static class PtyDaemonClient
      * 常驻 TUI 便一直按旧尺寸画(调大留白、调小被压)。这里定时比对并上报, daemon 落盘尺寸文件后会话重排。
      * 独立窗口(GPU)形态有自己的尺寸来源(窗口 OnResize), 不走这里。
      */
-    private static async Task WatchConsoleSizeAsync(string id, CancellationToken cancellationToken)
+    private static async Task WatchConsoleSizeAsync(string id, string socketPath, string? portFile, CancellationToken cancellationToken)
     {
-        if (Console.IsOutputRedirected)
-            return;
         if (!TryReadConsoleSize(out var columns, out var rows))
             return;
         while (true)
@@ -130,7 +131,7 @@ public static class PtyDaemonClient
             (columns, rows) = (currentColumns, currentRows);
             try
             {
-                await ResizeAsync(id, rows, columns, cancellationToken);
+                await ResizeAsync(id, rows, columns, socketPath, portFile, cancellationToken);
             }
             catch (Exception error) when (error is IOException or SocketException or InvalidOperationException or PtyDaemonNotRunningException)
             {
@@ -141,6 +142,18 @@ public static class PtyDaemonClient
 
     private static bool TryReadConsoleSize(out int columns, out int rows)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            if (!UnixPtyNative.TryReadWindowSize(1, out columns, out rows))
+                UnixPtyNative.TryReadWindowSize(0, out columns, out rows);
+            return rows >= 4 && columns >= 20;
+        }
+        if (Console.IsOutputRedirected)
+        {
+            columns = 0;
+            rows = 0;
+            return false;
+        }
         try
         {
             columns = Console.WindowWidth;
@@ -497,14 +510,10 @@ public static class PtyDaemonClient
         string? portFile,
         CancellationToken cancellationToken)
     {
-        if (Console.IsOutputRedirected)
+        if (!TryReadConsoleSize(out var columns, out var rows))
             return;
         try
         {
-            var rows = Console.WindowHeight;
-            var columns = Console.WindowWidth;
-            if (rows < 4 || columns < 20)
-                return;
             await ResizeAsync(id, rows, columns, socketPath, portFile, cancellationToken);
         }
         catch (Exception)
