@@ -213,8 +213,10 @@ jobs:
             -class Dsh.Tests.AcpTests
             -class Dsh.Tests.LspTests
             -class Dsh.Tests.SdkTests
+            -class Dsh.Tests.Mcp.McpResourceToolsTests
             -class Dsh.Tests.ProjectMemoryTests
             -class Dsh.Tests.SessionAutoRenameTests
+            -class Dsh.Tests.SessionLogCompatibilityTests
             -class Dsh.Tests.RemoteHostCapabilityTests
             -class Dsh.Tests.RemoteHostTests
             -class Dsh.Tests.FrameCodecTests
