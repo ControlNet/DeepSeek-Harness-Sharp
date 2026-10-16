@@ -4,12 +4,12 @@ using Dsh.Pty;
 
 namespace Dsh.Tests;
 
-/** Chunk-to-buffer reads shared by local PTY sessions and daemon subscriptions. */
+/** Chunk-to-buffer reads shared by local PTY sessions, daemon subscriptions and their test doubles. */
 public sealed class PtyOutputReaderTests
 {
     private const int SmallBuffer = 4;
 
-    /** The tail must arrive even when the program produces no further output. */
+    /** The tail of a chunk larger than the buffer must arrive without any further output from the program. */
     [Fact(Timeout = 10000)]
     public async Task Tail_Of_A_Large_Chunk_Is_Read_Without_Waiting_For_More_Output()
     {
@@ -26,7 +26,7 @@ public sealed class PtyOutputReaderTests
         Assert.Equal("0123456789", text.ToString());
     }
 
-    /** Completion must not discard the unread part of the final chunk. */
+    /** A completed channel still yields its buffered tail; 0 is returned only after the last byte. */
     [Fact(Timeout = 10000)]
     public async Task Completed_Channel_Drains_The_Tail_Before_Reporting_End()
     {

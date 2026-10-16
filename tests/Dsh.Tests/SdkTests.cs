@@ -27,13 +27,13 @@ public sealed class SdkTests
             """);
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task Transport_HandlesIncomingRequestAndWritesResponse()
     {
         var input = new StringReader("""
             {"jsonrpc":"2.0","id":"1","method":"echo","params":{"value":"ok"}}
             """);
-        var output = new StringWriter();
+        var output = new JsonRpcLineCapture();
         await using var transport = new JsonRpcLineTransport(input, output);
         transport.RequestHandler = (method, parameters) =>
         {
@@ -42,9 +42,7 @@ public sealed class SdkTests
             return Task.FromResult<object?>(new Dictionary<string, object?> { ["echo"] = value });
         };
         transport.Start();
-        await WaitUntilAsync(() => output.ToString().Contains("\"echo\""));
-        var line = output.ToString().TrimEnd();
-        using var document = JsonDocument.Parse(line);
+        using var document = await output.NextMessageAsync(TestContext.Current.CancellationToken);
         Assert.Equal("2.0", document.RootElement.GetProperty("jsonrpc").GetString());
         Assert.Equal("1", document.RootElement.GetProperty("id").GetString());
         Assert.Equal("ok", document.RootElement.GetProperty("result").GetProperty("echo").GetString());
@@ -203,7 +201,7 @@ public sealed class SdkTests
         Directory.Delete(home, true);
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task SdkServer_AcceptsTsWireInitializeRequest()
     {
         var home = Path.Combine(AppContext.BaseDirectory, "sdk-test-home", Guid.NewGuid().ToString("N"));
@@ -213,14 +211,12 @@ public sealed class SdkTests
             var input = new StringReader("""
                 {"jsonrpc":"2.0","id":"1","method":"initialize","params":{"cwd":"C:\\work","provider":"deepseek-official","model":"deepseek-v4-flash"}}
                 """);
-            var output = new StringWriter();
+            var output = new JsonRpcLineCapture();
             await using var transport = new JsonRpcLineTransport(input, output);
             var server = new HarnessSdkServer(app.Ctx, transport);
             transport.RequestHandler = server.HandleRequestAsync;
             transport.Start();
-            await WaitUntilAsync(() => output.ToString().Contains("serverInfo"));
-            var line = output.ToString().TrimEnd();
-            using var document = JsonDocument.Parse(line);
+            using var document = await output.NextMessageAsync(TestContext.Current.CancellationToken);
             Assert.Equal("2.0", document.RootElement.GetProperty("jsonrpc").GetString());
             Assert.Equal("1", document.RootElement.GetProperty("id").GetString());
             Assert.Equal("deepseek-harness-sdk-runtime",
@@ -315,16 +311,6 @@ public sealed class SdkTests
         public void Reset() => ResetCalled = true;
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(2);
-        while (!condition())
-        {
-            if (DateTime.UtcNow >= deadline)
-                throw new TimeoutException("condition was not met before the timeout");
-            await Task.Delay(10);
-        }
-    }
 
     private sealed class DuplexTransportPair
     {

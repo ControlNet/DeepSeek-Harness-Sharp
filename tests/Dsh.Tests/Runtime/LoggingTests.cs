@@ -42,6 +42,18 @@ public class LoggingTests
     }
 
     [Fact]
+    public void Redaction_MasksGitHubTokens()
+    {
+        using var setup = LoggingSetup.Create();
+        var ctx = new Context(setup);
+        ctx.LoggerFor("test").Warn("tokens %s and %s", "ghp_testOnly0123456789abcdefXYZ", "github_pat_testOnly_0123456789abcdef");
+        var message = Assert.Single(ctx.Root.Logger.Buffer);
+        Assert.Contains("ghp_***", message.Text);
+        Assert.Contains("github_pat_***", message.Text);
+        Assert.DoesNotContain("0123456789abcdef", message.Text);
+    }
+
+    [Fact]
     public void Logger_FormatsPlaceholdersCompatibility()
     {
         using var setup = LoggingSetup.Create();
