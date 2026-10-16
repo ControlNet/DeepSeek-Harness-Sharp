@@ -81,7 +81,15 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    - 二进制资源存入内容寻址附件库(`<home>/attachments/`),结果给出附件 id、本地路径与字节数;图片可再用 `read_image` 查看。
    - 列表工具不带 `cursor` 时取回全部分页,带 `cursor` 时只取该页并返回 `nextCursor`;只有不带 `cursor` 的完整列举才清除对应列表的变更提醒,资源列表与模板列表分别记账,列举其中一个不会清除另一个的提醒。资源模板(如 `notes://{name}`)需由模型填好变量后交给 `read_mcp_resource`。
    - 服务器未声明 resources 能力时三个工具直接报错说明;服务器推送资源列表变更后,模型会在下一次请求时收到提示并重新列举。旧协议接收会话通知,`2026-07-28` 起仅监听列表变更,不订阅单个资源内容。监听在活连接中结束或失败会显示错误,下一次 MCP 调用沿现有单次重连路径恢复,不会静默丢失后续通知。`/mcp` 会标出声明了 resources 的服务器。
-10. 网页搜索引擎:`web_search` 工具的 `engine` 参数选择搜索引擎,同一次调用里的所有查询都发给这个引擎;不填 `engine` 时走通用网页搜索。系统提示词会列出当前可用的引擎,每条搜索结果都标明回答它的引擎及其局限(只搜了哪类对象、限流额度)。
+10. 会话内定时提醒:直接让模型提醒你即可,例如「30 分钟后提醒我看 CI」「工作日每天 9 点提醒我写日报」。模型用 `schedule_create` / `schedule_list` / `schedule_update` / `schedule_delete` 管理当前会话的提醒;到点后提醒内容作为一条计划消息回到本会话:会话空闲时直接开始新一轮,正在回复时排在当前这一轮之后。
+   - 时间规格(每个提醒选一种):`after_seconds`(正安全整数秒)、`at`(带偏移的绝对时刻,或本地日期 + 时间 + 时区)、`every_seconds`(安全整数秒,至少 60 秒)、`daily`(每天的本地时间)、`weekly`(每周的 ISO 星期几,周一 1 至周日 7,不可重复)、`cron`(按给定时区计算的五段 Vixie cron)。本地日期严格写 `YYYY-MM-DD`,时间必须包含秒:`HH:mm:ss`,可带 1–3 位小数秒,返回值统一为 `HH:mm:ss.fff`。绝对时刻写 `YYYY-MM-DDTHH:mm:ss[.fff]Z` 或数字偏移 `±HH:mm`,必须使用大写 `T`/`Z`,偏移小时范围 00–23、分钟 00–59,不接受 `-00:00`。日期、时间和时区不自动去除首尾空白;cron 允许首尾和字段之间的空白。
+   - 时区只接受 `UTC` 或有效的多段 IANA 名称(如 `Asia/Shanghai`),不接受 Windows id、固定偏移或空白;系统提示给出的本机建议也会映射为 IANA/UTC,无法映射则建议 `UTC`。`daily`/`weekly`/`cron` 跳过夏令时中不存在的本地时刻,重复时刻只在较早的瞬间触发一次;`at` 指向不存在的本地时刻会被拒绝,重复时刻取较早的一次。
+   - 提醒属于会话:会话关闭后不再触发;恢复该会话时提醒随之恢复,期间错过的一次性提醒补发一次,循环提醒只补发最近错过的那一次。fork 出的会话不继承提醒,子代理不能使用这些工具。`headless` 单次任务在回复结束后即退出,其中设置的提醒不会触发。
+   - 提醒不是 goal:提醒消息不算用户输入,不会创建、恢复或完成 goal,也不改变 goal 的自动续跑。
+   - 派发会先推进提醒状态,再排入会话收件箱。删除已派发的提醒不撤回排队消息;用户中断会清空收件箱,已派发的一次性提醒不会重投。禁用定时提醒插件后仍可读取带 `ignorable` 标记的会话事件,重新启用后恢复提醒状态;禁用期间不运行计时器。事件注册支持与其他会话的日志读写并发进行。
+   - cron 严格限定五段:`分钟 小时 日期 月份 星期`。只接受数字、`*`、升序范围 `a-b`、步进 `*/n` / `a-b/n` 及其逗号列表;步长须为正安全整数,星期日可写 0 或 7。不接受名称、宏、`?`、`L`、`W`、`#`、倒序范围、单值步进 `a/n` 或秒字段。Vixie 的日期/星期 star 标记取决于该字段原文是否以 `*` 开头(包括 `*/n`):任一带 star 标记时两段都须匹配,两段均无 star 标记时任一匹配即可;完整数字范围不等同于 `*`,列表中 `*` 的位置也会影响标记。
+   - 所有平台(包括 Windows invariant-globalization 发布档)均使用内置 TZDB 规则与时区别名映射,不依赖系统 tzdata 或 ICU,规则随应用版本更新。别名使用与 Intl 一致的稳定规范名(如 `Asia/Kolkata` 规范化为 `Asia/Calcutta`)。UTC 目标限定为 0001–9999 年且保留毫秒;规则没有可表示的未来目标时返回 `time_out_of_range`。
+11. 网页搜索引擎:`web_search` 工具的 `engine` 参数选择搜索引擎,同一次调用里的所有查询都发给这个引擎;不填 `engine` 时走通用网页搜索。系统提示词会列出当前可用的引擎,每条搜索结果都标明回答它的引擎及其局限(只搜了哪类对象、限流额度)。
 
    | 引擎 | 插件包 | 搜索范围 | 凭据参数 | 未配置凭据时的限制 |
    | --- | --- | --- | --- | --- |
@@ -125,7 +133,7 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    入口与限制依据:[百度搜索 API](https://ai.baidu.com/ai-doc/AppBuilder/pmaxd1hvy)、[Google 当前可用范围与停服说明](https://developers.google.com/custom-search/v1/overview)、[Bing API 退役公告](https://learn.microsoft.com/en-us/lifecycle/announcements/bing-search-api-retirement)、[Bing 公共 RSS](https://www.bing.com/search?q=dotnet&format=rss)、[DuckDuckGo HTML](https://html.duckduckgo.com/html/?q=dotnet)。
    注意 `/plugins disable|enable` 会丢弃该插件的参数,重新启用后需要再写一次凭据与地区配置。
 
-11. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
+12. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
    - 切换只影响之后的相对路径解析,以及新启动的 shell/终端的默认目录;已经存在的 `bash_persistent` shell 与终端仍停在各自的目录。
    - 写权限根固定为会话的初始目录,不随切换移动:写入权限根之外的文件(`write`/`edit`/`str_replace_editor`)、在权限根之外启动 shell/终端或建 worktree,都会先弹审批,提示「目标路径在权限根之外」;审批策略为 never 时直接拒绝。
    - 两者分别对应插件 `@deepseek-ai/dsh-tool-working-directory` 与 `@deepseek-ai/dsh-tool-worktree`,可用 `/plugins disable` 关闭。

@@ -162,6 +162,16 @@ jobs:
           echo "运行: ${ARGS[*]}"
           "${ARGS[@]}"
 
+      - name: 定时提醒时区回归（发布档 invariant globalization）
+        shell: pwsh
+        run: |
+          $runtime = Get-Content tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.runtimeconfig.json -Raw | ConvertFrom-Json -AsHashtable
+          $runtime.runtimeOptions.configProperties['System.Globalization.Invariant'] = $true
+          $config = Join-Path $env:RUNNER_TEMP 'schedule-invariant.runtimeconfig.json'
+          $runtime | ConvertTo-Json -Depth 20 | Set-Content $config
+          dotnet exec --runtimeconfig $config tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.dll -noColor -class 'Dsh.Tests.ScheduleTests+Rules' -class 'Dsh.Tests.ScheduleClockCompatibilityTests' -class 'Dsh.Tests.ScheduleCronCompatibilityTests' -class 'Dsh.Tests.ScheduleToolCompatibilityTests' -class 'Dsh.Tests.ScheduleUpstreamReferenceTests' -failSkips
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: 原生遏制回归（NativeGuardTests，${{ matrix.native-cc }}，跳过即失败）
         shell: bash
         run: |

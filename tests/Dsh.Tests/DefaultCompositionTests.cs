@@ -31,6 +31,9 @@ public sealed class DefaultCompositionTests
             Assert.NotNull(tools.Get("todo_write"));
             Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-goal")?.State);
             Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-tool-goal")?.State);
+            Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-schedule")?.State);
+            Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-tool-schedule")?.State);
+            Assert.NotNull(tools.Get("schedule_create"));
             Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-tool-web")?.State);
             Assert.NotNull(tools.Get("web_search"));
             Assert.NotNull(tools.Get("web_fetch"));
