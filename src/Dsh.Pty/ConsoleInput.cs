@@ -14,7 +14,6 @@ internal static class ConsoleInput
     public static Stream OpenForRead()
         => OperatingSystem.IsWindows() ? new WindowsRawConsoleStream() : new UnixStdinStream();
 
-    private const int InterruptedSystemCall = 4;
     private const short PollIn = 0x0001;
     private const int InterruptedSystemCall = 4;
     private const int PollTimeoutMs = 200;

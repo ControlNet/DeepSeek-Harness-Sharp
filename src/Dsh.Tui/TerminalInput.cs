@@ -316,7 +316,6 @@ public sealed class TerminalInputParser
 /** 阻塞读取原始字节并逐个解码为键或鼠标事件; 仅在 Unix 终端后端使用。自管道承载 UI 重绘的跨线程唤醒。 */
 internal sealed class TerminalInputReader : ITerminalInputSource
 {
-    private const int InterruptedSystemCall = 4;
     private const short PollIn = 0x0001;
     private const int InterruptedSystemCall = 4;
     private const int FGetFl = 3;
