@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using Dsh.Pty;
+using Dsh.ScriptHost;
 using Microsoft.Win32.SafeHandles;
 
 namespace Dsh.Tests;
@@ -22,6 +23,7 @@ public sealed class UnixPtyDescriptorOwnershipTests
     private const int InvalidDescriptor = int.MaxValue;
     private const int SyscallFailure = -1;
     private const int HangupWaitMilliseconds = 1000;
+    internal const string SpawnFailureProbeArgument = "--unix-pty-spawn-failure-probe";
 
     [Fact(Timeout = 30000)]
     public async Task ConcurrentSpawns_DoNotInheritSlaves_AndOriginalSlaveClosesIndependently()
@@ -124,23 +126,82 @@ public sealed class UnixPtyDescriptorOwnershipTests
     }
 
     [Fact]
-    public void SpawnFailure_ClosesBothDescriptors()
+    public async Task SpawnFailure_ClosesBothDescriptors()
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
             Assert.Skip("Unix PTY 描述符语义仅适用于 Linux/macOS");
 
-        var warm = OpenPty();
-        using (new SafeFileHandle((IntPtr)warm.Master, ownsHandle: true))
-        using (new SafeFileHandle((IntPtr)warm.Slave, ownsHandle: true))
+        var command = PtcScriptHostClient.ResolveHostCommand()
+            ?? throw new InvalidOperationException("The real test executable is unavailable.");
+        var startInfo = new ProcessStartInfo(command.FileName)
         {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        foreach (var argument in command.Arguments)
+            startInfo.ArgumentList.Add(argument == PtcScriptHost.HostArgument ? SpawnFailureProbeArgument : argument);
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("The native descriptor probe did not start.");
+        var cancellationToken = TestContext.Current.CancellationToken;
+        try
+        {
+            var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var errors = process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+            var stdout = await output;
+            var stderr = await errors;
+            Assert.True(process.ExitCode == 0, $"""
+                Native descriptor cleanup probe exited with {process.ExitCode}.
+                {stdout}
+                {stderr}
+                """);
+            Assert.Contains("UNIX_PTY_SPAWN_FAILURE_CLEAN", stdout);
         }
-        var directory = OperatingSystem.IsMacOS() ? "/dev/fd" : "/proc/self/fd";
-        var spawn = Native.GetMethod("Spawn", BindingFlags.Static | BindingFlags.Public)!;
-        var command = new PtyStartInfo { FileName = $"""/dsh-nonexistent-{Guid.NewGuid():N}""", Arguments = [] };
-        var before = Directory.GetFileSystemEntries(directory).Length;
-        var exception = Assert.Throws<TargetInvocationException>(() => spawn.Invoke(null, [command]));
-        Assert.Equal(Enoent, Assert.IsType<Win32Exception>(exception.InnerException).NativeErrorCode);
-        Assert.Equal(before, Directory.GetFileSystemEntries(directory).Length);
+        finally
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+        }
+    }
+
+    internal static int RunSpawnFailureProbe()
+    {
+        try
+        {
+            var warm = OpenPty();
+            using (new SafeFileHandle((IntPtr)warm.Master, ownsHandle: true))
+            using (new SafeFileHandle((IntPtr)warm.Slave, ownsHandle: true))
+            {
+            }
+            var directory = OperatingSystem.IsMacOS() ? "/dev/fd" : "/proc/self/fd";
+            var spawn = Native.GetMethod("Spawn", BindingFlags.Static | BindingFlags.Public)!;
+            var command = new PtyStartInfo { FileName = $"""/dsh-nonexistent-{Guid.NewGuid():N}""", Arguments = [] };
+            void FailSpawn()
+            {
+                var exception = Assert.Throws<TargetInvocationException>(() => spawn.Invoke(null, [command]));
+                Assert.Equal(Enoent, Assert.IsType<Win32Exception>(exception.InnerException).NativeErrorCode);
+            }
+
+            // This entry runs before xUnit discovery: no previous PTY read, Harness, model or daemon can finish in the background.
+            // Warm the real reflection/native error path, directory enumeration, assertions and standard streams before measuring.
+            FailSpawn();
+            _ = Directory.GetFileSystemEntries(directory).ToHashSet(StringComparer.Ordinal);
+            Console.Out.Flush();
+            Console.Error.Flush();
+            var before = Directory.GetFileSystemEntries(directory).ToHashSet(StringComparer.Ordinal);
+            FailSpawn();
+            var after = Directory.GetFileSystemEntries(directory).ToHashSet(StringComparer.Ordinal);
+            Assert.Empty(after.Except(before, StringComparer.Ordinal));
+            Assert.Empty(before.Except(after, StringComparer.Ordinal));
+            Console.WriteLine("UNIX_PTY_SPAWN_FAILURE_CLEAN");
+            return 0;
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine(error);
+            return 1;
+        }
     }
 
     private static (int Master, int Slave, string SlaveName) OpenPty()
