@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dsh.Llm;
@@ -20,9 +21,12 @@ public sealed record SessionEvent
 
 public static class SessionEventCodec
 {
-    private static readonly Dictionary<string, Func<JsonElement, JsonSerializerOptions, SessionEventPayload>> Readers = [];
-    private static readonly Dictionary<string, Action<SessionEventPayload, Utf8JsonWriter, JsonSerializerOptions>> Writers = [];
-    private static readonly HashSet<string> IgnorableTypes = [];
+    private readonly record struct Registration(
+        Func<JsonElement, JsonSerializerOptions, SessionEventPayload> Reader,
+        Action<SessionEventPayload, Utf8JsonWriter, JsonSerializerOptions> Writer,
+        bool Ignorable);
+
+    private static readonly ConcurrentDictionary<string, Registration> Registrations = new(StringComparer.Ordinal);
 
     static SessionEventCodec()
     {
@@ -66,22 +70,20 @@ public static class SessionEventCodec
     {
         if (ignorable && SessionEventTypes.SurfaceEligible.Contains(type))
             throw new ArgumentException($"surface event type \"{type}\" cannot be registered as ignorable", nameof(ignorable));
-        Readers[type] = (element, options) => reader(element, options);
-        Writers[type] = (payload, w, options) => writer((T)payload, w, options);
-        if (ignorable)
-            IgnorableTypes.Add(type);
-        else
-            IgnorableTypes.Remove(type);
+        Registrations[type] = new Registration(
+            reader,
+            (payload, w, options) => writer((T)payload, w, options),
+            ignorable);
     }
 
-    public static bool IsRegistered(string type) => Readers.ContainsKey(type);
+    public static bool IsRegistered(string type) => Registrations.ContainsKey(type);
 
-    public static bool IsIgnorable(string type) => IgnorableTypes.Contains(type);
+    public static bool IsIgnorable(string type) => Registrations.TryGetValue(type, out var registration) && registration.Ignorable;
 
     public static SessionEventPayload ReadPayload(string type, JsonElement data, bool ignorable, JsonSerializerOptions options)
     {
-        if (Readers.TryGetValue(type, out var reader))
-            return reader(data, options);
+        if (Registrations.TryGetValue(type, out var registration))
+            return registration.Reader(data, options);
         if (ignorable)
             return new UnknownSessionEventPayload(type, data.Clone());
         throw new JsonException($"unrecognized session event type \"{type}\" without the ignorable marker");
@@ -94,9 +96,9 @@ public static class SessionEventCodec
             unknown.Raw.WriteTo(writer);
             return;
         }
-        if (!Writers.TryGetValue(payload.Type, out var write))
+        if (!Registrations.TryGetValue(payload.Type, out var registration))
             throw new JsonException($"no session payload writer registered for \"{payload.Type}\"");
-        write(payload, writer, options);
+        registration.Writer(payload, writer, options);
     }
 }
 
