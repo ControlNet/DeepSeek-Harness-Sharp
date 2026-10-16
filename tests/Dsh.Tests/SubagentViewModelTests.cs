@@ -57,7 +57,7 @@ public sealed class SubagentViewModelTests
         });
         try
         {
-            await GuiTestEnvironment.PumpAsync(run.Result);
+            // Live ownership lasts until disposal; completing a model request is not a precondition for the badge.
             await store.Flush(run.LocalAgent!.Session);
             await panel.RefreshAsync();
             Assert.True(panel.Nodes.Single(node => node.Id == run.Id).IsLive);

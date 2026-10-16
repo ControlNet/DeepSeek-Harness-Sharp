@@ -103,6 +103,111 @@ public sealed class VtScreenRenderStateTests
     }
 
     [Theory]
+    [InlineData("\e(0", "\e(B")]
+    [InlineData("\e)0\u000e", "\u000f")]
+    public void Dec_Special_Graphics_Maps_The_Invoked_G0_Or_G1_Character_Set(string designate, string ascii)
+    {
+        var screen = Fed(designate + "_`abcdefghijklmnopqrstuvwxyz{|}~" + ascii + "x", width: 40);
+        Assert.Equal("\u00a0◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·x", RowText(screen, 0));
+    }
+
+    [Fact]
+    public void Charset_Designation_Survives_Fragmented_Feeds_And_SI_SO_Select_Without_Printing()
+    {
+        var screen = Fed("\e(");
+        screen.Feed("0lq");
+        screen.Feed("k\e");
+        screen.Feed("(Bx\e)");
+        screen.Feed("0\u000ex\u000fx\u000eq");
+        Assert.Equal("┌─┐x│x─", RowText(screen, 0));
+        Assert.Equal(7, screen.CursorX);
+    }
+
+    [Fact]
+    public void SI_SO_Inside_A_Designation_Do_Not_Consume_Its_Final_Byte()
+    {
+        var screen = Fed("\e)\u000e0x\e(\u000f0q");
+        Assert.Equal("│─", RowText(screen, 0));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Saved_Cursor_Restores_Both_Character_Sets_And_Their_Invocation(bool useG1)
+    {
+        var graphics = useG1 ? "\e(B\e)0\u000e" : "\e(0\e)B\u000f";
+        var other = useG1 ? "\e(0\e)B\u000f" : "\e(B\e)0\u000e";
+        var screen = Fed(graphics + "\e7" + other + "x\e8lqx" + (useG1 ? "\u000f" : "\u000e") + "x");
+        Assert.Equal("┌─│x", RowText(screen, 0));
+        // REP repeats the already translated glyph, not a newly mapped ASCII source.
+        screen.Feed((useG1 ? "\u000e" : "\u000f") + "x\e[2b");
+        Assert.Equal("┌─│x│││", RowText(screen, 0));
+    }
+
+    [Fact]
+    public void Full_Reset_Restores_ASCII_Character_Sets_And_Default_Invocation()
+    {
+        var screen = Fed("\e(0\e)0\u000e\e7\ecx\u000ex\u000fx");
+        Assert.Equal("xxx", RowText(screen, 0));
+        screen.Feed("\e8x\u000ex");
+        Assert.Equal("xxx", RowText(screen, 0));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void Snapshot_Preserves_Charset_State_Without_Retranslating_Literal_Cells(bool alternate, bool useG1)
+    {
+        var source = Fed("qx\e[2;1H\e(0\e)B\u000f\e7lqk\e(B", width: 8, height: 4);
+        if (alternate)
+            source.Feed("\e[?1049hqx");
+        source.Feed("\e[3;1H\e(0\e)B\u000f\e7");
+        source.Feed((useG1 ? "\e(B\e)0\u000e" : "\e(0\e)B\u000f") + "lqqqqqqk");
+        var restored = Fed("\e(0\e)0\u000e", width: 8, height: 4);
+        restored.Feed(source.Snapshot());
+        AssertScreensEqual(source, restored);
+        foreach (var continuation in new[] { "x", "\u000fx", "\e8lq", "\e[?1049lq", "\e8x", "\u000ex" })
+        {
+            source.Feed(continuation);
+            restored.Feed(continuation);
+            AssertScreensEqual(source, restored);
+        }
+    }
+
+    [Theory]
+    [InlineData('(', "x│x│")]
+    [InlineData(')', "xx│x")]
+    public void Snapshot_Preserves_A_Fragmented_Charset_Designation(char target, string expected)
+    {
+        var source = Fed("x\e" + target);
+        var restored = new VtScreen(source.Width, source.Height);
+        restored.Feed(source.Snapshot());
+        const string continuation = "0x\u000ex\u000fx";
+        source.Feed(continuation);
+        restored.Feed(continuation);
+        Assert.Equal(expected, RowText(restored, 0));
+        AssertScreensEqual(source, restored);
+    }
+
+    [Theory]
+    [InlineData("\e(0")]
+    [InlineData("\e)0\u000e")]
+    public void Snapshot_Preserves_Literal_Right_Edge_While_Graphics_Is_Selected(string graphics)
+    {
+        var source = Fed("abcdefgq" + graphics, width: 8, height: 3);
+        var restored = new VtScreen(8, 3);
+        restored.Feed(source.Snapshot());
+        AssertScreensEqual(source, restored);
+        Assert.Equal("abcdefgq", RowText(restored, 0));
+        source.Feed("x");
+        restored.Feed("x");
+        Assert.Equal("│", RowText(restored, 1));
+        AssertScreensEqual(source, restored);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void Snapshot_And_Subsequent_Output_Match_The_Live_Screen(bool alternate)

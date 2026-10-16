@@ -39,7 +39,7 @@ const KEYS = [
 ];
 
 export function terminalPanel(machineLink, ptyId) {
-  const screen = h('div', { className: 'terminal-screen', id: 'terminal-screen', dataset: { ptyId } });
+  const screen = h('div', { className: 'terminal-screen', id: 'terminal-screen', dataset: { ptyId }, 'aria-busy': 'true' });
   const state = h('p', { className: 'terminal-state muted', id: 'terminal-state' }, 'Attaching…');
   const term = new Terminal({
     cursorBlink: true,
@@ -72,6 +72,14 @@ export function terminalPanel(machineLink, ptyId) {
     ctrlButton.setAttribute('aria-pressed', String(armed));
   }
 
+  // xterm focuses on mousedown. Touch input can arrive before the browser's
+  // compatibility mouse event, so focus in the actual touch/pen user gesture.
+  // Do not cancel it: dragging the viewport must still scroll normally.
+  screen.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'touch' || event.pointerType === 'pen')
+      term.focus();
+  });
+
   const keyBar = h('div', { className: 'key-bar', role: 'toolbar', 'aria-label': 'Terminal keys' }, KEYS.map((key) => {
     const button = key.modifier ? ctrlButton : h('button', { type: 'button', className: 'key', 'aria-label': key.name ?? key.label }, key.label);
     // Pressing a key must not move focus away from the terminal, or the phone keyboard closes.
@@ -102,7 +110,9 @@ export function terminalPanel(machineLink, ptyId) {
     data: (bytes, snapshot) => {
       if (snapshot)
         term.reset();
-      term.write(bytes);
+      // The rows exist as soon as open() runs, before the initial snapshot has
+      // been parsed. Mark the initial attachment ready only when xterm consumes it.
+      term.write(bytes, snapshot ? () => screen.setAttribute('aria-busy', 'false') : undefined);
       setState('');
     },
     eof: () => setState('The process has ended.'),

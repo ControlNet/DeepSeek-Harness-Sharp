@@ -20,8 +20,8 @@ public sealed class RemoteHostNotifyTests
         var request = await RemoteHostMultiClientTests.NextAsync(alice.ApprovalsAsync(Ct));
         var added = await RemoteHostMultiClientTests.NextAsync(alice.NotificationsAddedAsync(Ct));
         var seenByBob = await RemoteHostMultiClientTests.NextAsync(bob.NotificationsAddedAsync(Ct));
-        await alice.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct);
-        await decision.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+        Assert.True(await alice.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct));
+        Assert.Equal(Dsh.Core.ApprovalOutcome.Rejected, await decision.WaitAsync(TimeSpan.FromSeconds(10), Ct));
 
         Assert.True(alice.Supports(HostCapabilities.NotifyHistory));
         Assert.Equal(added, seenByBob);

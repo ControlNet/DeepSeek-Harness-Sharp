@@ -26,8 +26,7 @@ public sealed class PtySession : IDisposable, ITerminalConnection
     private const int ExitDrainMilliseconds = 150;
 
     private readonly CancellationTokenSource _pumpCts = new();
-    private byte[]? _pending;
-    private int _pendingOffset;
+    private readonly PtyOutputReader _outputReader;
     private UnixPtySession? _unix;
     private ConPtySession? _conPty;
     private Process? _process;
@@ -43,6 +42,7 @@ public sealed class PtySession : IDisposable, ITerminalConnection
         Command = startInfo.Command;
         StartedAt = DateTimeOffset.UtcNow;
         _screen = new VtScreen(startInfo.Columns, startInfo.Rows);
+        _outputReader = new PtyOutputReader(_output.Reader);
     }
 
     public PtySessionId Id { get; }
@@ -107,42 +107,11 @@ public sealed class PtySession : IDisposable, ITerminalConnection
      * 读会话输出。数据来自常驻泵而不是后端本身: 泵让"没人 attach"的会话也被持续读走(否则子进程写满 PTY 缓冲就卡住),
      * 同时把最近输出留在回放缓冲里, 供 attach 时先铺屏。
      */
-    public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-    {
-        if (buffer.IsEmpty)
-            return 0;
-        // A partial chunk is already readable even when the channel is empty
-        // (or completed). Waiting on the channel first strands its remainder.
-        while (_pending is null)
-        {
-            if (_output.Reader.TryRead(out var chunk))
-            {
-                _pending = chunk;
-                _pendingOffset = 0;
-            }
-            else if (!await _output.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                return 0;
-            }
-        }
-
-        var take = Math.Min(_pending.Length - _pendingOffset, buffer.Length);
-        _pending.AsSpan(_pendingOffset, take).CopyTo(buffer.Span);
-        _pendingOffset += take;
-        if (_pendingOffset >= _pending.Length)
-            _pending = null;
-        return take;
-    }
+    public ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        => _outputReader.ReadAsync(buffer, cancellationToken);
 
     /** 丢掉尚在输出队列里的历史字节: 新 proxy attach 时先清空, 否则早先的 detach 标记会让它立刻退出。 */
-    public void DrainPendingOutput()
-    {
-        _pending = null;
-        _pendingOffset = 0;
-        while (_output.Reader.TryRead(out _))
-        {
-        }
-    }
+    public void DrainPendingOutput() => _outputReader.DrainPendingOutput();
 
     /** 当前 VT 状态的完整重建: 主/备用屏、光标、画笔和输入模式均与之后的原始输出一致。 */
     public byte[] Snapshot()
@@ -304,10 +273,11 @@ public sealed class PtySession : IDisposable, ITerminalConnection
             new BoundedChannelOptions(256) { FullMode = BoundedChannelFullMode.DropOldest });
         lock (_gate)
         {
-            _subscribers.Add(channel);
             channel.Writer.TryWrite(Snapshot());
             if (_outputEnded || _status == PtySessionStatus.Exited)
                 channel.Writer.TryComplete();
+            else
+                _subscribers.Add(channel);
         }
 
         return new PtySessionSubscription(this, channel);

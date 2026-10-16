@@ -60,7 +60,7 @@ public sealed class WebUiBrowserTests
         Assert.Equal(NoProblems, await second.ProblemsAsync(ct));
     }
 
-    /** A real ACP agent (the installed `opencode acp`) asks to run a shell command: the approval reaches both browsers and the first answer wins. */
+    /** A real ACP agent shares approval across browsers and completes after its originating browser tab closes. */
     [Fact(Timeout = 600000)]
     [Trait("Category", "LlmSmoke")]
     public async Task Desktop_RealAcpAgentApprovalIsSharedAcrossBrowsers()
@@ -74,9 +74,12 @@ public sealed class WebUiBrowserTests
         await using var first = await LoggedInBrowserAsync(hub);
         await using var second = await LoggedInBrowserAsync(hub);
 
-        await ApprovalIsSharedAndFirstAnswerWinsAsync(first, second, repository.Root);
+        var sessionId = await ApprovalIsSharedAndFirstAnswerWinsAsync(first, second, repository.Root);
+        var stopped = await FleetCliProcess.RunAsync(RealHostProcesses.Executable, hub.LocalHome, "session", "stop", $"{LocalMachine}/{sessionId}");
+        Assert.True(stopped.ExitCode == 0, stopped.Error);
+        await second.WaitUntilAsync("String(document.getElementById('composer-send').disabled)", "true", ct);
+        await second.ScreenshotAsync(Path.Combine(Artifacts, "acp-stopped-by-cli.png"), ct);
 
-        Assert.Equal(NoProblems, await first.ProblemsAsync(ct));
         Assert.Equal(NoProblems, await second.ProblemsAsync(ct));
     }
 
@@ -105,10 +108,19 @@ public sealed class WebUiBrowserTests
         await phone.WaitForAsync("document.querySelector('.xterm-rows')", Ct, SessionWait);
         Assert.Equal("flex", await phone.EvaluateAsync("getComputedStyle(document.querySelector('.key-bar')).display", Ct));
         Assert.Equal("true", await phone.EvaluateAsync("String([...document.querySelectorAll('.key-bar .key')].every((key) => key.getBoundingClientRect().height >= 44))", Ct));
+        // Do not let xterm's opening autofocus hide a broken touch-to-focus path.
+        Assert.Equal("false", await phone.EvaluateAsync("""
+            (() => {
+              document.activeElement?.blur();
+              return String(document.activeElement === document.querySelector('#terminal-screen .xterm-helper-textarea'));
+            })()
+            """, Ct));
         // Ctrl+C goes in only once the shell runs the wait, so it cannot reach the shell before the wait starts.
         await TypeInTerminalAsync(phone, TestShell.Sequence(TestShell.EchoAnswer("busy"), TestShell.Wait(120)), tap: true);
         await WaitForTerminalTextAsync(phone, "busy-42");
         await phone.TapAsync(".key-bar .key[aria-label='Ctrl+C']", Ct);
+        Assert.Equal("true", await phone.EvaluateAsync(
+            "String(document.activeElement === document.querySelector('#terminal-screen .xterm-helper-textarea'))", Ct));
         await TypeInTerminalAsync(phone, TestShell.EchoAnswer("phone"), tap: true);
         await WaitForTerminalTextAsync(phone, "phone-42");
         await AssertNoHorizontalScrollAsync(phone);
@@ -169,12 +181,12 @@ public sealed class WebUiBrowserTests
 
     /**
      * Starts the real ACP agent on the bridge's machine with a first prompt; its permission request shows in the session view of one browser and on the pending page of the other.
-     * Allowing it in the first removes it from the second, and the command's real output reaches the transcript.
+     * The originating browser allows a deliberately long-running command and closes its tab; the second browser receives the real result from the same Host session.
      */
-    private static async Task ApprovalIsSharedAndFirstAnswerWinsAsync(HeadlessChrome first, HeadlessChrome second, string project)
+    private static async Task<string> ApprovalIsSharedAndFirstAnswerWinsAsync(HeadlessChrome first, HeadlessChrome second, string project)
     {
-        const string prompt = "Run exactly this shell command once with your bash tool: echo acp-$((6*7)) . Then reply with its output only.";
-        await StartSessionThroughFormAsync(first, LocalMachine, AgentKinds.Acp, "opencode acp", project, prompt);
+        const string prompt = "Run exactly this shell command once with your bash tool: sleep 12; echo acp-$((6*7)) . Then reply with its output only.";
+        var sessionId = await StartSessionThroughFormAsync(first, LocalMachine, AgentKinds.Acp, "opencode acp", project, prompt);
         await first.WaitForAsync(Query(".session-pending article.pending[data-kind='approval']"), Ct, AgentWait);
         await second.NavigateAsync(new Uri($"{await second.EvaluateAsync("location.origin", Ct)}/#/pending"), Ct);
         await second.WaitForAsync(Query("#pending-list article.pending[data-kind='approval']"), Ct, SessionWait);
@@ -186,10 +198,15 @@ public sealed class WebUiBrowserTests
         await first.ClickAsync(".session-pending article.pending button.primary", Ct);
         await second.WaitUntilAsync("String(document.querySelectorAll('#pending-list article.pending').length)", "0", Ct);
         await second.WaitForAsync("document.getElementById('pending-count').hidden", Ct);
-        await first.WaitForAsync("[...document.querySelectorAll('#transcript .tool-result')].some((result) => result.textContent.includes('acp-42'))", Ct, AgentWait);
+        Assert.Equal(NoProblems, await first.ProblemsAsync(Ct));
+        Assert.Equal("false", await first.EvaluateAsync("String([...document.querySelectorAll('#transcript .tool-result')].some((result) => result.textContent.includes('acp-42')))", Ct));
+        await first.SendAsync("Page.close", "{}", Ct);
+        await second.NavigateAsync(new Uri($"{await second.EvaluateAsync("location.origin", Ct)}/#/m/{LocalMachine}/s/{sessionId}"), Ct);
+        await second.WaitForAsync("[...document.querySelectorAll('#transcript .tool-result')].some((result) => result.textContent.includes('acp-42'))", Ct, AgentWait);
         await second.ScreenshotAsync(Path.Combine(Artifacts, "acp-approval-gone-in-other-browser.png"), Ct);
-        await first.EvaluateAsync("document.querySelectorAll('#transcript .tool').forEach((tool) => tool.open = true)", Ct);
-        await first.ScreenshotAsync(Path.Combine(Artifacts, "acp-transcript-after-allow.png"), Ct);
+        await second.EvaluateAsync("document.querySelectorAll('#transcript .tool').forEach((tool) => tool.open = true)", Ct);
+        await second.ScreenshotAsync(Path.Combine(Artifacts, "acp-transcript-after-client-close.png"), Ct);
+        return sessionId;
     }
 
     /** The search box narrows the dashboard to the matching session; the dark theme follows the system preference. */
@@ -278,10 +295,15 @@ public sealed class WebUiBrowserTests
 
     private static async Task TypeInTerminalAsync(HeadlessChrome chrome, string line, bool tap)
     {
+        // Creating xterm's DOM is not attachment readiness: consume the first
+        // real PTY snapshot before typing, without bypassing user focus events.
+        await chrome.WaitUntilAsync("document.getElementById('terminal-screen').getAttribute('aria-busy')", "false", Ct, SessionWait);
         if (tap)
             await chrome.TapAsync("#terminal-screen", Ct);
         else
             await chrome.ClickAsync("#terminal-screen", Ct);
+        Assert.Equal("true", await chrome.EvaluateAsync(
+            "String(document.activeElement === document.querySelector('#terminal-screen .xterm-helper-textarea'))", Ct));
         await chrome.InsertTextAsync(line, Ct);
         await chrome.PressEnterAsync(Ct);
     }

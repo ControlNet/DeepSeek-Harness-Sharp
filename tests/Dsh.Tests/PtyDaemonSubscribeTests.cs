@@ -183,12 +183,13 @@ public sealed class PtyDaemonSubscribeTests
             await using var daemon = new PtyDaemon(new PtyHost(), socketPath, portFile);
             await daemon.StartAsync(cancellationToken);
             var started = await PtyDaemonRetry.StartAsync(
-                StartParams(Shell("echo BYE & ping -n 3 127.0.0.1 > nul", "echo BYE; sleep 2")),
+                StartParams(Shell("set /p value= & echo BYE", "read line; echo BYE")),
                 socketPath,
                 portFile,
                 cancellationToken);
 
             await using var session = await PtyDaemonRetry.SubscribeAsync(started.Id, socketPath, portFile, cancellationToken);
+            await session.WriteAsync(Encoding.UTF8.GetBytes("done\r"), cancellationToken);
             await session.Completion.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             var buffer = new byte[256];

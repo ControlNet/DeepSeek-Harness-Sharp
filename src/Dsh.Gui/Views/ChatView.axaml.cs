@@ -72,7 +72,11 @@ public sealed partial class ChatView : UserControl
     {
         if (!_sticky || _viewModel?.Messages.Count is not > 0)
             return;
-        Dispatcher.UIThread.Post(() => MessageList.ScrollIntoView(_viewModel.Messages[^1]));
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_sticky && _viewModel?.Messages.Count is > 0)
+                MessageList.ScrollIntoView(_viewModel.Messages[^1]);
+        });
     }
 
     private void OnModelFlyoutOpened(object? sender, EventArgs e)

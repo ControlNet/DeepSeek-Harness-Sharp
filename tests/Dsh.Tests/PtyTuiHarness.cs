@@ -35,12 +35,11 @@ internal sealed class PtyTuiHarness : IDisposable
 
     public string Home { get; }
 
-    /** 找不到已构建的 TUI 可执行文件时返回 null(调用方直接 return); 环境缺配置/不支持 AF_UNIX 时 Assert.Skip。 */
-    public static async Task<PtyTuiHarness?> StartAsync(params string[] extraArguments)
+    /** 测试构建必须提供真实 TUI; 环境缺配置/不支持 AF_UNIX 时 Assert.Skip。 */
+    public static async Task<PtyTuiHarness> StartAsync(params string[] extraArguments)
     {
         var executable = FindTuiExecutable();
-        if (executable is null)
-            return null;
+        Assert.NotNull(executable);
         var realHome = HarnessHome.Default().Root;
         if (!File.Exists(Path.Combine(realHome, "settings.yaml")))
             Assert.Skip($"环境缺少 {realHome}/settings.yaml, 无法启动 dsharp");

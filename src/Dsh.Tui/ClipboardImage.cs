@@ -68,6 +68,7 @@ internal static class ClipboardImage
             process.StartInfo = new ProcessStartInfo
             {
                 FileName = fileName,
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -77,6 +78,7 @@ internal static class ClipboardImage
                 process.StartInfo.ArgumentList.Add(argument);
             if (!process.Start())
                 return false;
+            process.StandardInput.Close();
             using var buffer = new MemoryStream();
             process.StandardOutput.BaseStream.CopyTo(buffer);
             if (!process.WaitForExit(TimeoutMs))

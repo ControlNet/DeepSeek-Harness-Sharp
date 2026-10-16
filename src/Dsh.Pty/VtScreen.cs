@@ -45,6 +45,10 @@ public sealed class VtScreen
     private bool _autoWrap = true;
     private bool _insertMode;
     private char _lastPrinted = ' ';
+    private CharacterSet _g0;
+    private CharacterSet _g1;
+    private bool _useG1;
+    private char _charsetTarget;
     private ParseState _state = ParseState.Ground;
     private char[] _decodeBuffer = new char[1024];
 
@@ -164,6 +168,7 @@ public sealed class VtScreen
         AppendModes(output);
         AppendCursor(output, CaptureCursor(), _lines);
         output.Append("\u001b]2;").Append(Title).Append("\u001b\\");
+        AppendPendingCharset(output);
         return output.ToString();
     }
 
@@ -175,7 +180,14 @@ public sealed class VtScreen
         AppendRegion(output, _scrollTop, _scrollBottom);
         AppendModes(output);
         AppendCursor(output, CaptureCursor(), _lines);
+        AppendPendingCharset(output);
         return output.ToString();
+    }
+
+    private void AppendPendingCharset(StringBuilder output)
+    {
+        if (_state == ParseState.EscapeCharset)
+            output.Append('\u001b').Append(_charsetTarget);
     }
 
     private void AppendModes(StringBuilder output)
@@ -208,6 +220,7 @@ public sealed class VtScreen
     private void AppendScreen(StringBuilder output, Cell[] cells)
     {
         output.Append("\u001b[0m\u001b[2J\u001b[H");
+        AppendCharacterSets(output, default);
         for (var y = 0; y < Height; y++)
         {
             output.Append("\u001b[").Append(y + 1).Append(";1H");
@@ -221,6 +234,9 @@ public sealed class VtScreen
 
     private void AppendCursor(StringBuilder output, CursorState cursor, Cell[] cells)
     {
+        // Cells already contain Unicode glyphs. Replaying them under DEC graphics
+        // would translate literal ASCII a second time, including a pending-wrap cell.
+        AppendCharacterSets(output, default);
         var x = Math.Clamp(cursor.X, 0, Width - 1);
         var y = Math.Clamp(cursor.Y, 0, Height - 1);
         if (cursor.WrapPending && x == Width - 1)
@@ -241,7 +257,13 @@ public sealed class VtScreen
         else
             output.Append("\u001b[").Append(y + 1).Append(';').Append(x + 1).Append('H');
         AppendSgr(output, new Cell(' ', cursor.Foreground, cursor.Background, cursor.Style));
+        AppendCharacterSets(output, cursor);
     }
+
+    private static void AppendCharacterSets(StringBuilder output, CursorState cursor)
+        => output.Append("\u001b(").Append(cursor.G0 == CharacterSet.DecSpecialGraphics ? '0' : 'B')
+            .Append("\u001b)").Append(cursor.G1 == CharacterSet.DecSpecialGraphics ? '0' : 'B')
+            .Append(cursor.UseG1 ? '\u000e' : '\u000f');
 
     public void Resize(int width, int height)
     {
@@ -315,6 +337,13 @@ public sealed class VtScreen
             _osc.Clear();
             return;
         }
+        // SI/SO remain controls inside a fragmented escape/CSI, not its final byte.
+        if (character is '\u000e' or '\u000f'
+            && _state is not (ParseState.Osc or ParseState.OscEscape or ParseState.IgnoredString or ParseState.IgnoredStringEscape))
+        {
+            _useG1 = character == '\u000e';
+            return;
+        }
         switch (_state)
         {
             case ParseState.Ground:
@@ -337,6 +366,14 @@ public sealed class VtScreen
                     DispatchOsc(_osc.ToString());
                 return;
             case ParseState.EscapeCharset:
+                if (character is '0' or 'B')
+                {
+                    var charset = character == '0' ? CharacterSet.DecSpecialGraphics : CharacterSet.Ascii;
+                    if (_charsetTarget == '(')
+                        _g0 = charset;
+                    else if (_charsetTarget == ')')
+                        _g1 = charset;
+                }
                 _state = ParseState.Ground;
                 return;
             case ParseState.IgnoredString:
@@ -375,9 +412,18 @@ public sealed class VtScreen
                 return;
             default:
                 if (character >= ' ' && !IsZeroWidth(character))
-                    Put(character);
+                    Put(MapCharacter(character));
                 return;
         }
+    }
+
+    private char MapCharacter(char character)
+    {
+        // VT100 DEC Special Graphics, positions 0x5f..0x7e.
+        const string graphics = "\u00a0◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·";
+        return (_useG1 ? _g1 : _g0) == CharacterSet.DecSpecialGraphics && character is >= '_' and <= '~'
+            ? graphics[character - '_']
+            : character;
     }
 
     /** DEL/C1 控制符与组合附加符、零宽格式符不占格: 每格只存一个 char, 附加符无处安放, 占格会让后续列整体右移。 */
@@ -415,6 +461,7 @@ public sealed class VtScreen
                 RestoreCursor();
                 return;
             case '(' or ')' or '*' or '+' or '-' or '.' or '/' or '#' or '%' or ' ':
+                _charsetTarget = character;
                 _state = ParseState.EscapeCharset;
                 return;
             case 'P' or '_' or '^' or 'X':
@@ -487,6 +534,9 @@ public sealed class VtScreen
         ResetScrollRegion();
         (CursorX, CursorY, _wrapPending, _insertMode, _autoWrap) = (0, 0, false, false, true);
         _savedCursor = _mainSavedCursor = _mainCursor = default;
+        _g0 = _g1 = CharacterSet.Ascii;
+        _useG1 = false;
+        _charsetTarget = '\0';
         (_penForeground, _penBackground, _penStyle) = (CellColor.Default, CellColor.Default, CellStyle.None);
         (CursorVisible, ApplicationCursorKeys, BracketedPaste, FocusReporting, SgrMouse) = (true, false, false, false, false);
         (MouseTracking, CursorShape, Title) = (TerminalMouseTracking.None, TerminalCursorShape.Default, "");
@@ -755,10 +805,13 @@ public sealed class VtScreen
         _scrollBottom = Math.Clamp(_mainScrollBottom, _scrollTop, Height - 1);
     }
 
-    private readonly record struct CursorState(int X, int Y, CellColor Foreground, CellColor Background, CellStyle Style, bool WrapPending);
+    private enum CharacterSet { Ascii, DecSpecialGraphics }
+
+    private readonly record struct CursorState(int X, int Y, CellColor Foreground, CellColor Background,
+        CellStyle Style, bool WrapPending, CharacterSet G0, CharacterSet G1, bool UseG1);
 
     private CursorState CaptureCursor()
-        => new(CursorX, CursorY, _penForeground, _penBackground, _penStyle, _wrapPending);
+        => new(CursorX, CursorY, _penForeground, _penBackground, _penStyle, _wrapPending, _g0, _g1, _useG1);
 
     private void ApplyCursor(CursorState cursor)
     {
@@ -766,6 +819,7 @@ public sealed class VtScreen
         CursorY = Math.Clamp(cursor.Y, 0, Height - 1);
         (_penForeground, _penBackground, _penStyle) = (cursor.Foreground, cursor.Background, cursor.Style);
         _wrapPending = cursor.WrapPending && CursorX == Width - 1;
+        (_g0, _g1, _useG1) = (cursor.G0, cursor.G1, cursor.UseG1);
     }
 
     private void SaveCursor() => _savedCursor = CaptureCursor();

@@ -25,7 +25,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task OrdinaryChat_CreatesOnlyOnHost_AndBroadcastsComposerImagesAndCommands()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("gchat", TestContext.Current.CancellationToken);
+        await using var host = await HarnessHostFixture.CreateAsync("gc", TestContext.Current.CancellationToken);
         using var gui = await GuiTestEnvironment.CreateAsync();
         var observer = await host.ConnectAsync("other-client", Ct);
         await HeadlessGui.RunAsync(async () =>
@@ -64,7 +64,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task ClosingGui_DetachesOnly_AndPendingTaskCanBeAnsweredByAnotherClient()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("gclose", TestContext.Current.CancellationToken);
+        await using var host = await HarnessHostFixture.CreateAsync("gl", TestContext.Current.CancellationToken);
         using var gui = await GuiTestEnvironment.CreateAsync();
         var observer = await host.ConnectAsync("survivor", Ct);
         string id = "";
@@ -97,7 +97,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task PersistedPreFleetChat_IsResumedByHostWithSameIdentityAndFullTranscript()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("gmigrate", TestContext.Current.CancellationToken);
+        await using var host = await HarnessHostFixture.CreateAsync("gm", TestContext.Current.CancellationToken);
         var legacy = host.Environment.Agent.Session;
         var id = legacy.Id.Value;
         legacy.Append(new UserMessagePayload(MessageFactory.CreateUserText("persisted before fleet")), new SurfaceOp.Append());
@@ -120,7 +120,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task HostTruncation_RebuildsRichChatProjection_WithoutKeepingDiscardedMessages()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("greset", TestContext.Current.CancellationToken);
+        await using var host = await HarnessHostFixture.CreateAsync("gr", TestContext.Current.CancellationToken);
         using var gui = await GuiTestEnvironment.CreateAsync();
         await HeadlessGui.RunAsync(async () =>
         {
@@ -143,7 +143,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task AnotherClientAnswer_ClosesOrdinaryChatDecisionDialog_AndWinsOnce()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("gdecision", TestContext.Current.CancellationToken);
+        await using var host = await HarnessHostFixture.CreateAsync("gd", TestContext.Current.CancellationToken);
         using var gui = await GuiTestEnvironment.CreateAsync();
         var observer = await host.ConnectAsync("answering-client", Ct);
         await HeadlessGui.RunAsync(async () =>
@@ -174,7 +174,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task KeyboardComposer_RebindsAfterReattach_AndSendsOrdinaryChatToHost()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("gkeys", TestContext.Current.CancellationToken);
+        await using var host = await HarnessHostFixture.CreateAsync("gk", TestContext.Current.CancellationToken);
         using var gui = await GuiTestEnvironment.CreateAsync();
         var observer = await host.ConnectAsync("keyboard-observer", Ct);
         await HeadlessGui.RunAsync(async () =>
@@ -213,6 +213,18 @@ public sealed class GuiHostChatIntegrationTests
                 var snapshot = await observer.GetSessionSnapshotAsync(viewModel.CurrentSessionId.Value, Ct);
                 Assert.Contains(snapshot.Events, item => DshJson.Deserialize<SessionEvent>(item.EventJson)?.Data is UserMessagePayload user
                     && user.Message.Content.OfType<Dsh.Llm.TextBlock>().Any(block => block.Text == "typed through the ordinary composer"));
+                // Schedule close ahead of the queued sticky scroll without reentering message projection.
+                viewModel.MessagesChanged += () =>
+                {
+                    if (viewModel.Messages.Any(message => message.Text == "last message before closing"))
+                        Dispatcher.UIThread.Post(window.Close, DispatcherPriority.Send);
+                };
+                var agent = host.Environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(viewModel.CurrentSessionId)!;
+                agent.Session.Append(new UserMessagePayload(MessageFactory.CreateUserText("last message before closing")), new SurfaceOp.Append());
+                await GuiTestEnvironment.WaitForAsync(viewModel.Messages,
+                    () => viewModel.Messages.Any(message => message.Text == "last message before closing"));
+                Dispatcher.UIThread.RunJobs();
+                Assert.False(window.IsVisible);
             }
             finally
             {
