@@ -124,33 +124,6 @@ public static class PtyDaemonClient
             }
         }, cancellationToken, reportInitial: false);
 
-    private static bool TryReadConsoleSize(out int columns, out int rows)
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            (columns, rows) = UnixPtyNative.ReadWindowSize(1) ?? UnixPtyNative.ReadWindowSize(0) ?? (0, 0);
-            return rows >= 4 && columns >= 20;
-        }
-        if (Console.IsOutputRedirected)
-        {
-            columns = 0;
-            rows = 0;
-            return false;
-        }
-        try
-        {
-            columns = Console.WindowWidth;
-            rows = Console.WindowHeight;
-            return rows >= 4 && columns >= 20;
-        }
-        catch (Exception error) when (error is IOException or ArgumentOutOfRangeException)
-        {
-            columns = 0;
-            rows = 0;
-            return false;
-        }
-    }
-
     /** 把代理解析出的鼠标事件发给 daemon 注入会话; 失败只丢这一条, 绝不打断输入。 */
     private static async Task ForwardMouseAsync(string id, ChannelReader<PtyMouseEvent> events, CancellationToken cancellationToken)
     {
@@ -488,7 +461,7 @@ public static class PtyDaemonClient
         string? portFile,
         CancellationToken cancellationToken)
     {
-        if (!TryReadConsoleSize(out var columns, out var rows))
+        if (ConsoleTunnel.ReadSize() is not var (columns, rows))
             return;
         try
         {

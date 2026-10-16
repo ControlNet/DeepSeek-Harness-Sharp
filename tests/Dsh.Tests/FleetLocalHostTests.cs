@@ -201,6 +201,18 @@ public sealed class FleetLocalHostTests
             await WaitForTextAsync(transcript, "attaching to");
             await session.WriteAsync(Encoding.UTF8.GetBytes($"{TestShell.EchoAnswer("fleet")}\r"), Ct);
             await WaitForTextAsync(transcript, "fleet-42");
+
+            session.Resize(rows: 31, columns: 91);
+            var socketPath = PtyDaemonPaths.SocketPath(home);
+            var portFile = OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile(home) : null;
+            var geometry = Assert.Single(await PtyDaemonClient.ListAsync(socketPath, portFile, Ct), item => item.Id == shell);
+            while (geometry.Rows != 31 || geometry.Columns != 91)
+            {
+                await Task.Delay(100, Ct);
+                geometry = Assert.Single(await PtyDaemonClient.ListAsync(socketPath, portFile, Ct), item => item.Id == shell);
+            }
+            Assert.Equal(31, geometry.Rows);
+            Assert.Equal(91, geometry.Columns);
             await session.WriteAsync(new[] { ConsoleTunnel.DetachKey }, Ct);
             // ConPTY can tear down with the CLI's last line still unrendered, so a clean exit of the CLI also counts as having detached.
             await FleetConnectionTests.WaitForAsync(() => TranscriptContains(transcript, "detached from") || session.Status != PtySessionStatus.Running);

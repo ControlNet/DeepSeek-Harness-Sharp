@@ -55,7 +55,7 @@ public static class ConsoleTunnel
     /** Reports the current terminal size, then every change; report failures are left to the callback, which may retry on the next change. */
     internal static async Task WatchSizeAsync(Func<int, int, CancellationToken, Task> report, CancellationToken cancellationToken, bool reportInitial = true)
     {
-        if (Console.IsOutputRedirected || ReadSize() is not var (columns, rows))
+        if (ReadSize() is not var (columns, rows))
             return;
         if (reportInitial)
             await report(columns, rows, cancellationToken);
@@ -69,8 +69,15 @@ public static class ConsoleTunnel
         }
     }
 
-    private static (int Columns, int Rows)? ReadSize()
+    internal static (int Columns, int Rows)? ReadSize()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            var size = UnixPtyNative.ReadWindowSize(1) ?? UnixPtyNative.ReadWindowSize(0);
+            return size is { Columns: >= MinimumColumns, Rows: >= MinimumRows } ? size : null;
+        }
+        if (Console.IsOutputRedirected)
+            return null;
         try
         {
             var (columns, rows) = (Console.WindowWidth, Console.WindowHeight);
