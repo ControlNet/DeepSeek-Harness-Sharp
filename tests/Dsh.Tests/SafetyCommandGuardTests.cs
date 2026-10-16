@@ -2,6 +2,7 @@ using System.Text.Json;
 using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Interaction;
+using Dsh.Jobs;
 using Dsh.Llm;
 using Dsh.Runtime;
 using Dsh.Tools;
@@ -122,7 +123,7 @@ public sealed class SafetyCommandGuardTests
 
         private Task<ToolExecutionResult> RunAsync(string command)
         {
-            if (!BashProbe.IsAvailable)
+            if (!ShellProbe.Bash)
                 Assert.Skip("bash is unavailable; skipping the shell-backed guard test");
             return _tools.Execute(new ToolExecutionInput
             {
@@ -131,6 +132,49 @@ public sealed class SafetyCommandGuardTests
                 Arguments = JsonSerializer.SerializeToElement(new { command, description = "safety guard test" }, DshJson.Options),
                 Signal = default,
             });
+        }
+    }
+
+    public sealed class ShellDialectFamilies : IDisposable
+    {
+        private readonly Context _ctx = new();
+        private readonly ToolRuntime _tools;
+        private readonly List<IDisposable> _registrations = [];
+
+        public ShellDialectFamilies()
+        {
+            _ = new SystemPrompt(_ctx, new SystemPromptConfig());
+            _tools = new ToolRuntime(_ctx);
+            _ = new SubprocessService(_ctx);
+            _registrations.AddRange([BashTool.Register(_ctx), PwshTool.Register(_ctx), PersistentBashTool.Register(_ctx), PersistentPwshTool.Register(_ctx)]);
+        }
+
+        public void Dispose()
+        {
+            foreach (var registration in _registrations)
+                registration.Dispose();
+        }
+
+        /** The guard answers before any shell starts, so these cases need neither bash nor pwsh. */
+        [Theory]
+        [InlineData("bash: touch canary", "bash_persistent", "touch canary")]
+        [InlineData("wsl: touch canary", "bash", "true && touch canary")]
+        [InlineData("pwsh: Remove-Item canary", "pwsh_persistent", "remove-item canary")]
+        [InlineData("powershell: Remove-Item canary", "pwsh", "Get-Date; Remove-Item canary")]
+        public async Task ShellRule_BlocksEveryToolOfTheSameDialect(string rule, string tool, string command)
+        {
+            using var guard = SafetyCommandGuard.Register(_ctx, new SafetySettings { Blacklist = [rule] });
+
+            var result = await _tools.Execute(new ToolExecutionInput
+            {
+                CallId = ToolCallId.Create($"call-{Guid.NewGuid():N}"),
+                Name = tool,
+                Arguments = JsonSerializer.SerializeToElement(new { command }, DshJson.Options),
+                Signal = default,
+            });
+
+            Assert.True(result.IsError);
+            Assert.Contains("blocked by safety.blacklist", string.Concat(result.Content.OfType<TextBlock>().Select(block => block.Text)));
         }
     }
 }

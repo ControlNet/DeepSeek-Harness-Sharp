@@ -93,7 +93,7 @@ public partial class ToolsTests : IDisposable
 
         private Task<ToolExecutionResult> Bash2(string command, long? timeoutMs = null)
         {
-            if (!BashProbe.IsAvailable)
+            if (!ShellProbe.Bash)
                 Assert.Skip("bash 不可用(WSL/Git Bash 无响应), 跳过依赖外部 shell 的用例");
             return _outer.Execute("bash", JsonSerializer.Serialize(new
             {
@@ -165,7 +165,7 @@ public partial class ToolsTests : IDisposable
         [Fact]
         public async Task Workdir_IsHonored()
         {
-            if (!BashProbe.IsAvailable)
+            if (!ShellProbe.Bash)
                 Assert.Skip("bash 不可用(WSL/Git Bash 无响应), 跳过依赖外部 shell 的用例");
             var dir = Path.Combine(Path.GetTempPath(), $"dsh-bash-workdir-{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
@@ -230,37 +230,10 @@ public partial class ToolsTests : IDisposable
                 timeoutMs,
             }, DshJson.Options));
 
-        private static bool PwshAvailable()
-        {
-            try
-            {
-                using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "pwsh",
-                    Arguments = "--version",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                });
-                if (process is null)
-                    return false;
-                if (!process.WaitForExit(5000))
-                {
-                    process.Kill(entireProcessTree: true);
-                    return false;
-                }
-                return process.ExitCode == 0;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
         [Fact]
         public async Task Echo_ReturnsStdoutAndZeroExit()
         {
-            if (!PwshAvailable()) return;
+            if (!ShellProbe.Pwsh) return;
             var result = await Run("Write-Output hello");
             Assert.False(result.IsError);
             var success = Assert.IsType<ToolExecutionResult.Success>(result);
@@ -271,7 +244,7 @@ public partial class ToolsTests : IDisposable
         [Fact]
         public async Task NonAsciiOutput_IsUtf8Pinned()
         {
-            if (!PwshAvailable()) return;
+            if (!ShellProbe.Pwsh) return;
             var result = await Run("[Console]::Out.WriteLine('你好')");
             Assert.False(result.IsError);
             var success = Assert.IsType<ToolExecutionResult.Success>(result);
@@ -281,7 +254,7 @@ public partial class ToolsTests : IDisposable
         [Fact]
         public async Task NonZeroExit_IsReportedNotErrored()
         {
-            if (!PwshAvailable()) return;
+            if (!ShellProbe.Pwsh) return;
             var result = await Run("[Console]::Error.WriteLine('oops'); exit 3");
             Assert.False(result.IsError);
             var success = Assert.IsType<ToolExecutionResult.Success>(result);
@@ -294,7 +267,7 @@ public partial class ToolsTests : IDisposable
         [Fact]
         public async Task Timeout_KillsAndReports()
         {
-            if (!PwshAvailable()) return;
+            if (!ShellProbe.Pwsh) return;
             var result = await Run("Start-Sleep -Seconds 30", timeoutMs: 500);
             Assert.False(result.IsError);
             var success = Assert.IsType<ToolExecutionResult.Success>(result);
@@ -305,7 +278,7 @@ public partial class ToolsTests : IDisposable
         [Fact]
         public async Task Envs_AreApplied()
         {
-            if (!PwshAvailable()) return;
+            if (!ShellProbe.Pwsh) return;
             var result = await _outer.Execute("pwsh", JsonSerializer.Serialize(new
             {
                 command = "Write-Output $env:MYVAR",

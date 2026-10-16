@@ -10,6 +10,8 @@ using Dsh.Plugins;
 [assembly: DshPlugin(Dsh.Tools.Plugin.ToolTodo)]
 [assembly: DshPlugin(Dsh.Tools.Plugin.ToolStrReplaceEditor)]
 [assembly: DshPlugin(Dsh.Tools.Plugin.FsLocal)]
+[assembly: DshPlugin(Dsh.Tools.Plugin.ToolPowershell)]
+[assembly: DshPlugin(Dsh.Tools.Plugin.ToolWsl)]
 [assembly: DshPlugin(Dsh.Tools.Plugin.ToolWorkingDirectory)]
 [assembly: DshPlugin(Dsh.Tools.Plugin.ToolWorktree)]
 
@@ -25,6 +27,8 @@ public sealed class Plugin(string packageName) : IDshPlugin
     internal const string ToolTodo = "@deepseek-ai/dsh-tool-todo";
     internal const string ToolStrReplaceEditor = "@deepseek-ai/dsh-tool-str-replace-editor";
     internal const string FsLocal = "@deepseek-ai/dsh-fs-local";
+    internal const string ToolPowershell = "@deepseek-ai/dsh-tool-powershell";
+    internal const string ToolWsl = "@deepseek-ai/dsh-tool-wsl";
     internal const string ToolWorkingDirectory = "@deepseek-ai/dsh-tool-working-directory";
     internal const string ToolWorktree = "@deepseek-ai/dsh-tool-worktree";
 
@@ -33,6 +37,8 @@ public sealed class Plugin(string packageName) : IDshPlugin
         Subprocess => [],
         ToolBash => [ToolRuntime.ServiceName, SystemPrompt.ServiceName, SubprocessService.ServiceName],
         ToolPwsh => [ToolRuntime.ServiceName, SystemPrompt.ServiceName, SubprocessService.ServiceName],
+        ToolPowershell => [ToolRuntime.ServiceName, SystemPrompt.ServiceName, SubprocessService.ServiceName],
+        ToolWsl => [ToolRuntime.ServiceName, SystemPrompt.ServiceName, SubprocessService.ServiceName],
         ToolFs => [ToolRuntime.ServiceName, SystemPrompt.ServiceName],
         ToolFsSearch => [ToolRuntime.ServiceName, SystemPrompt.ServiceName],
         ToolTodo => [ToolRuntime.ServiceName],
@@ -48,6 +54,8 @@ public sealed class Plugin(string packageName) : IDshPlugin
         Subprocess => RegisterSubprocess(ctx),
         ToolBash => BashTool.Register(ctx),
         ToolPwsh => PwshTool.Register(ctx),
+        ToolPowershell => WindowsPowerShellTool.Register(ctx),
+        ToolWsl => WslTool.Register(ctx),
         ToolFs => new CompositeDisposable(ReadTool.Register(ctx), ReadImageTool.Register(ctx), WriteTool.Register(ctx), EditTool.Register(ctx)),
         ToolFsSearch => new CompositeDisposable(GlobTool.Register(ctx), GrepTool.Register(ctx)),
         ToolTodo => TodoWriteTool.Register(ctx, ConfigOf(config)?.GetValueOrDefault("allowParallelInProgress") as bool? ?? true),
