@@ -29,11 +29,18 @@ public sealed class WebError : HarnessException
     }
 }
 
-public sealed record WebSearchRequest(string Query, int? MaxResults = null);
+/** Engine names a search provider id; null routes to the configured or the single general-purpose provider. */
+public sealed record WebSearchRequest(string Query, int? MaxResults = null, string? Engine = null);
 
 public sealed record WebSearchSource(string Url, string? Title = null, string? Snippet = null, string? PublishedAt = null);
 
-public sealed record WebSearchResult(string? Content, IReadOnlyList<WebSearchSource> Sources, bool Truncated);
+/** Engine is the id of the provider that answered; Limitations states what that engine did not cover or how it was throttled. */
+public sealed record WebSearchResult(
+    string? Content,
+    IReadOnlyList<WebSearchSource> Sources,
+    bool Truncated,
+    string? Engine = null,
+    string? Limitations = null);
 
 public sealed record WebFetchRequest(string Url);
 
@@ -53,6 +60,12 @@ public interface IWebProvider
 
 public interface IWebSearchProvider : IWebProvider
 {
+    /** One line for the web_search prompt: what this engine covers and when to pick it. */
+    string Description => "General web search.";
+
+    /** False for single-site engines: they run only when a call names them, so they never make the default choice ambiguous. */
+    bool ImplicitCandidate => true;
+
     Task<WebSearchResult> Search(WebSearchRequest request, CancellationToken signal = default);
 }
 

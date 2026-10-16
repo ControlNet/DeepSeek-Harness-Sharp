@@ -96,6 +96,14 @@ jobs:
           dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
           -p:DshNativeCompiler=${{ matrix.native-cc }}
 
+      - name: 真实 Unix TUI 的 raw 输入与退出恢复
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet build DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -c Debug --nologo -m:2 -p:DshNativeCompiler=${{ matrix.native-cc }}
+          python3 scripts/check-tui-raw-mode.py --runs 8 --home-template artifacts/raw/empty-template
+
       - name: 安装 sqlite3（Windows；SQLitePCLRaw.provider.sqlite3 需要系统 sqlite3.dll）
         if: runner.os == 'Windows'
         shell: pwsh

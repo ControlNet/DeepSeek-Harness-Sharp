@@ -18,6 +18,9 @@ public sealed class AccountServiceTests
     public async Task SignIn_RunsPkceFlow_StoresGrantAndReadsDetails()
     {
         using var home = new AccountTempHome();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        string? callbackUrl = null;
+        Task<HttpResponseMessage>? callbackTask = null;
         var opened = new List<string>();
         string? challenge = null;
         var handler = new AccountHttpHandler(request =>
@@ -27,7 +30,7 @@ public sealed class AccountServiceTests
                 case "/auth-api/v0/dsh/auth_init":
                     var init = JsonDocument.Parse(request.Body!).RootElement;
                     challenge = init.GetProperty("code_challenge").GetString();
-                    StartCallback(init.GetProperty("redirect_uri").GetString()!, "code-123", init.GetProperty("state").GetString()!);
+                    callbackUrl = $"{init.GetProperty("redirect_uri").GetString()}?code=code-123&state={init.GetProperty("state").GetString()}";
                     return AccountHttpHandler.Json(AccountHttpHandler.Envelope(
                         "{\"authorize_url\":\"" + Origin + "/dsh/authorize?x=1\",\"authorize_id\":\"auth-1\",\"expires_in\":300}"));
                 case "/auth-api/v0/dsh/auth_exchange":
@@ -47,10 +50,19 @@ public sealed class AccountServiceTests
                     return AccountHttpHandler.Json(AccountHttpHandler.Envelope("{}"));
             }
         });
-        using var service = new AccountService(new Context(), Config(enabled: true), home.Home, handler, url => { opened.Add(url); return true; });
+        using var service = new AccountService(new Context(), Config(enabled: true), home.Home, handler, url =>
+        {
+            opened.Add(url);
+            if (callbackTask is null && callbackUrl is not null)
+                callbackTask = CallbackClient.GetAsync(callbackUrl, cancellationToken);
+            return true;
+        });
 
-        var profile = await service.SignInAsync(TestContext.Current.CancellationToken);
-        var balance = await service.GetBalanceAsync(TestContext.Current.CancellationToken);
+        var profile = await service.SignInAsync(cancellationToken);
+        Assert.NotNull(callbackTask);
+        using var callbackResponse = await callbackTask;
+        Assert.Equal(HttpStatusCode.OK, callbackResponse.StatusCode);
+        var balance = await service.GetBalanceAsync(cancellationToken);
 
         Assert.NotNull(profile);
         Assert.Equal("小明", profile.Name);
@@ -207,19 +219,6 @@ public sealed class AccountServiceTests
         Assert.Null(service.TryGetToken(new Uri(AccountConfig.DefaultInferenceOrigin)));
     }
 
-    private static void StartCallback(string redirectUri, string code, string state)
-    {
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                _ = await CallbackClient.GetAsync($"{redirectUri}?code={code}&state={state}");
-            }
-            catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
-            {
-            }
-        });
-    }
 
     private static async Task WaitForAsync(Func<bool> condition)
     {

@@ -40,6 +40,10 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    TUI 的 GPU 渲染后端由 `plugins."@deepseek-ai/dsh-tui"` 的 `gpuBackend` 配置项决定(`auto|vk|gl|cpu`,缺省 `auto`，优先以 `vk` 后端启动)，`vsync` 即垂直同步默认为 `true`。
 
    Linux 上 `vk` 后端要求 glibc >= 2.33(ppy.SDL3-CS 要求), 老系统请用 `gl` 或升级 glibc; 后端不可用时 dsharp 会输出原因并自动回退(`gl` -> CPU)。
+
+   终端 TUI 的后台 Git 面板、检查点和命令工具不继承交互终端输入,刷新或执行命令期间仍可逐键输入。普通命令的标准输入立即收到 EOF;需要持续输入的管道协议(如 `bash_persistent`)单独保持输入管道,交互式 shell 仍使用独立 PTY。窗口调整和子进程退出信号不会被误当作输入结束。正常 `/exit` 会恢复终端行模式、回显和主屏幕。
+
+   Unix 下可用 `python3 scripts/check-tui-raw-mode.py --runs 8 --llm-smoke` 对已构建的 Debug TUI 做真实 PTY 回归(需 Python 3 和可用的模型配置)。它只操作独立 PTY,验证跨后台刷新和窗口调整的输入与正常退出的完整 termios 恢复;Linux 可额外加 `--strace` 诊断,但跟踪会改变信号时序,不能替代无跟踪回归。隔离配置、原始跟踪和结果保存在 `artifacts/raw/regression/`,其中配置与跟踪可能含私密信息,不要上传该目录。
 3. 插件运维:TUI 内用 `/plugins list|add <包|dll 路径>|remove <包> [--force]|disable <包>|enable <包>|ban_write <包>|enable_write <包>`(输入 `/plugins` 后按 Tab 可从浮层选单选子命令与包名);改动写回 `settings.yaml` 的 `plugins:` 段并保留注释。
 
     `ban_write`/`enable_write` 切换该插件的写权限(`plugins."<包>".permissions.write`),`enable`/`disable` 保留权限设置,`remove` 连同参数与权限一并清除。权限目前只记录在配置里,由后续版本的插件沙箱强制执行。
@@ -64,7 +68,51 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    ```
 
    动作名:`newSession`、`sessionMenu`、`detach`、`deleteSessionMenu`、`agentList`、`overview`、`openShell`、`quit`、`splitPane`、`closePane`、`prevSession`、`nextSession`、`focusLeft`/`focusRight`/`focusUp`/`focusDown`、`focusNextPane`、`interrupt`(默认 `Ctrl+C`,连按两次退出)、`promptCommandMenu`(默认 `Ctrl+P`)。按键串的首键必须带 `Ctrl`/`Alt` 或是 F 键(否则会吞掉正常输入);同一按键串绑了多个动作、或一个按键串是另一个的前缀时,启动时记 WARN 日志并让冲突的自定义项回退默认。按下前缀后再按 `Esc` 或未绑定的键即取消。焦点在 shell 窗格时,`interrupt` 与 `promptCommandMenu` 的按键直达 shell,其余动作仍由 DSH 处理。
-9. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
+9. 网页搜索引擎:`web_search` 工具的 `engine` 参数选择搜索引擎,同一次调用里的所有查询都发给这个引擎;不填 `engine` 时走通用网页搜索。系统提示词会列出当前可用的引擎,每条搜索结果都标明回答它的引擎及其局限(只搜了哪类对象、限流额度)。
+
+   | 引擎 | 插件包 | 搜索范围 | 凭据参数 | 未配置凭据时的限制 |
+   | --- | --- | --- | --- | --- |
+   | `deepseek-official`(默认) | `@deepseek-ai/dsh-web-search-deepseek` | 全网网页 | `apiKey`(必填) | 不可用 |
+   | `github-repos` | `@deepseek-ai/dsh-web-search-github` | GitHub 仓库的名称、描述与 topic(查询里加 `in:readme` 可搜 README) | `token`(可选) | 每 IP 每分钟 10 次(配置后 30 次) |
+   | `github-code` | `@deepseek-ai/dsh-web-search-github` | GitHub 默认分支上的文件内容 | `token`(必填) | 不可用(配置后每分钟 10 次) |
+   | `stackoverflow` | `@deepseek-ai/dsh-web-search-stackoverflow` | Stack Overflow 的问题(标题、正文、标签) | `key`(可选,在 stackapps.com 注册应用获得) | 每 IP 每天 300 次(配置后 10000 次) |
+   | `baidu` | `@deepseek-ai/dsh-web-search-baidu` | 百度全网网页引用(千帆/AppBuilder `baidu_search_v2`) | `apiKey`(AppBuilder API Key,需开通搜索) | 不可用;额度和计费以控制台为准 |
+   | `google` | `@deepseek-ai/dsh-web-search-google` | Google Programmable Search Engine 配置的语料 | `apiKey` 与 `searchEngineId`(cx),均必填 | 不可用;仅既有 API 客户可用,2027-01-01 停服 |
+   | `bing` | `@deepseek-ai/dsh-web-search-bing` | Bing 公共 RSS 入口的首屏结果 | 无;可配 `market`(默认不传,由站点选择地区) | 无公开自动调用额度/SLA,可能限流或封禁 |
+   | `duckduckgo` | `@deepseek-ai/dsh-web-search-duckduckgo` | DuckDuckGo 公共 HTML 入口的首屏链接与标题 | 无;可配 `region`(默认 `wt-wt`) | 无公开自动调用额度/SLA,可能要求人工验证 |
+
+   各引擎插件独立发现并启用,各自在 `plugins:` 段写 `false` 即单独关闭;缺凭据的引擎不进入可用列表,显式调用时给出配置项提示。
+   新增的四个引擎都是 named-only,不会抢占默认 DeepSeek 搜索;也可在 `plugins."@deepseek-ai/dsh-web".searchProvider` 显式设为默认。
+   凭据只从 `settings.yaml` 读取,错误只展示不含查询串的端点;请求、凭据与原始响应不会写入搜索日志:
+
+   ```yaml
+   plugins:
+     "@deepseek-ai/dsh-web-search-github":
+       token: <GitHub token>          # 可选; 开启 github-code 并提高限流, 只需公开仓库只读权限
+     "@deepseek-ai/dsh-web-search-stackoverflow":
+       key: <Stack Exchange key>      # 可选; 提高每日配额
+     # "@deepseek-ai/dsh-web-search-stackoverflow": false   # 单独关闭 Stack Overflow 引擎
+     "@deepseek-ai/dsh-web-search-baidu":
+       apiKey: <AppBuilder API Key>
+     "@deepseek-ai/dsh-web-search-google":
+       apiKey: <Google API key>       # 仅既有 Custom Search JSON API 客户
+       searchEngineId: <cx>
+     "@deepseek-ai/dsh-web-search-bing":
+       market: zh-CN
+     "@deepseek-ai/dsh-web-search-duckduckgo":
+       region: cn-zh
+     # "@deepseek-ai/dsh-web-search-duckduckgo": false
+   ```
+
+   传输、代理与错误语义由所有站点引擎共享:统一读取 `network.outbound_proxy.url`/`bypass`,不另建绕过代理的 handler;代理在当前进程共享,修改后后续请求使用新路由。
+   HTTP 429/配额错误返回 `WEB_PROVIDER_ERROR`,保留 `Retry-After` 提示;人工验证、重定向及无法识别的响应也报错,不伪装成“没有结果”,不自动换引擎。
+   百度最多取 50 条网页引用;Google 每次最多 10 条、只能访问前 100 条,默认每天 100 次免费请求,开通计费后最高每天 10000 次,具体范围由 cx 决定。
+   Bing RSS 不是已于 2025-08-11 退役的 Azure Bing Search API,没有总数或翻页保证,结果相关性可能与交互网页不同;其 RSS 条款限制个人非商业 RSS 阅读用途,其他用途需 Microsoft 许可。
+   DuckDuckGo 不提供完整网页搜索的公开 JSON API,这里使用非 JavaScript HTML 入口而不是只有百科摘要的 Instant Answer API;遇到站点验证需人工处理或由用户选择其他引擎,不会自动解验证码。
+   入口与限制依据:[百度搜索 API](https://ai.baidu.com/ai-doc/AppBuilder/pmaxd1hvy)、[Google 当前可用范围与停服说明](https://developers.google.com/custom-search/v1/overview)、[Bing API 退役公告](https://learn.microsoft.com/en-us/lifecycle/announcements/bing-search-api-retirement)、[Bing 公共 RSS](https://www.bing.com/search?q=dotnet&format=rss)、[DuckDuckGo HTML](https://html.duckduckgo.com/html/?q=dotnet)。
+   注意 `/plugins disable|enable` 会丢弃该插件的参数,重新启用后需要再写一次凭据与地区配置。
+
+10. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
    - 切换只影响之后的相对路径解析,以及新启动的 shell/终端的默认目录;已经存在的 `bash_persistent` shell 与终端仍停在各自的目录。
    - 写权限根固定为会话的初始目录,不随切换移动:写入权限根之外的文件(`write`/`edit`/`str_replace_editor`)、在权限根之外启动 shell/终端或建 worktree,都会先弹审批,提示「目标路径在权限根之外」;审批策略为 never 时直接拒绝。
    - 两者分别对应插件 `@deepseek-ai/dsh-tool-working-directory` 与 `@deepseek-ai/dsh-tool-worktree`,可用 `/plugins disable` 关闭。
