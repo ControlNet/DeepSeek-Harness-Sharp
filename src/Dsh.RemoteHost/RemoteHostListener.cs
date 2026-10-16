@@ -10,6 +10,7 @@ namespace Dsh.RemoteHost;
 /**
  * loopback 监听: Unix domain socket(非 Windows) 或 TCP loopback + 端口文件(Windows); 逐连接服务。
  * Every connection must open with the daemon's LocalEndpointToken before any JSON-RPC frame; the stdio bridge presents it on behalf of the SSH client.
+ * TCP port files are immutable snapshots: publish a complete sibling by rename; readers allow replacement while holding the old snapshot.
  */
 public static class RemoteHostListener
 {
@@ -31,9 +32,11 @@ public static class RemoteHostListener
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var portFile = RemoteHostEndpoint.PortFile(root);
-        await File.WriteAllTextAsync(portFile, ((IPEndPoint)listener.LocalEndpoint).Port.ToString(), cancellationToken).ConfigureAwait(false);
+        var temporary = $"{portFile}.{Guid.NewGuid():N}.tmp";
         try
         {
+            await File.WriteAllTextAsync(temporary, ((IPEndPoint)listener.LocalEndpoint).Port.ToString(), cancellationToken).ConfigureAwait(false);
+            File.Move(temporary, portFile, overwrite: true);
             while (!cancellationToken.IsCancellationRequested)
             {
                 TcpClient client;
@@ -55,6 +58,7 @@ public static class RemoteHostListener
         finally
         {
             listener.Stop();
+            TryDelete(temporary);
             TryDelete(portFile);
         }
     }
@@ -171,7 +175,10 @@ public static class RemoteHostListener
         var portFile = RemoteHostEndpoint.PortFile(root);
         if (!File.Exists(portFile))
             throw new IOException("host daemon not started");
-        var port = int.Parse((await File.ReadAllTextAsync(portFile, cancellationToken).ConfigureAwait(false)).Trim());
+        int port;
+        await using (var file = new FileStream(portFile, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1, useAsync: true))
+        using (var reader = new StreamReader(file))
+            port = int.Parse((await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false)).Trim());
         // A refused loopback connect takes about 2 s on Windows (SYN retransmits); the port file a killed host left behind made every reconnect attempt that slow.
         if (!IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(listener => listener.Port == port))
             throw new IOException("host daemon not listening");
