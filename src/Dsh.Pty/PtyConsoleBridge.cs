@@ -211,6 +211,8 @@ internal sealed class PtyRawMode : IDisposable
 
     private static PtyRawMode? TryEnableUnix()
     {
+        // 与 TUI 一样先让 .NET 记录原始终端, 否则其 atexit 会在本类恢复后再次套回 raw。
+        _ = Console.TreatControlCAsInput;
         if (Console.IsOutputRedirected)
             return null;
         var size = OperatingSystem.IsMacOS() ? MacTermiosSize : LinuxTermiosSize;
