@@ -49,6 +49,54 @@ public sealed class SessionLogCompatibilityTests : IDisposable
     }
 
     [Fact]
+    public async Task ConcurrentRegistration_PreservesSessionRoundTripsAndIgnorableMarkers()
+    {
+        const int workerCount = 4;
+        const int registrationsPerWorker = 128;
+        var prefix = $"compat-probe/concurrent-{Guid.NewGuid():N}";
+        var cancellation = TestContext.Current.CancellationToken;
+        using var start = new Barrier(workerCount);
+        var workers = Enumerable.Range(0, workerCount).Select(worker => Task.Factory.StartNew(() =>
+        {
+            var session = Session.Create(SessionId.Create(Guid.NewGuid().ToString("N")));
+            start.SignalAndWait(cancellation);
+            for (var index = 0; index < registrationsPerWorker; index++)
+            {
+                var core = session.Append(new TurnStartPayload(index + 1));
+                var coreJson = JsonSerializer.Serialize(core, DshJson.Options);
+                var restoredCore = JsonSerializer.Deserialize<SessionEvent>(coreJson, DshJson.Options)!;
+                Assert.Equal(core.Data, Assert.IsType<TurnStartPayload>(restoredCore.Data));
+                Assert.Equal(core.Seq, restoredCore.Seq);
+                Assert.Equal(SessionEventTypes.TurnStart, restoredCore.Type);
+                Assert.False(restoredCore.Ignorable);
+
+                var type = $"{prefix}/{worker}/{index}";
+                for (var version = 0; version < 2; version++)
+                {
+                    var ignorable = version == 0;
+                    var note = $"worker={worker};event={index};registration={version}";
+                    ProbePayload.Register(type, ignorable);
+                    Assert.True(SessionEventCodec.IsRegistered(type));
+                    Assert.Equal(ignorable, SessionEventCodec.IsIgnorable(type));
+                    var annotation = session.Append(new ProbePayload(type, note));
+                    Assert.Equal(ignorable, annotation.Ignorable);
+
+                    var json = JsonSerializer.Serialize(annotation, DshJson.Options);
+                    var restored = JsonSerializer.Deserialize<SessionEvent>(json, DshJson.Options)!;
+                    var payload = Assert.IsType<ProbePayload>(restored.Data);
+                    Assert.Equal(type, restored.Type);
+                    Assert.Equal(type, payload.Type);
+                    Assert.Equal(note, payload.Note);
+                    Assert.Equal(annotation.Seq, restored.Seq);
+                    Assert.Equal(annotation.Time, restored.Time);
+                    Assert.Equal(ignorable, restored.Ignorable);
+                }
+            }
+        }, cancellation, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+        await Task.WhenAll(workers);
+    }
+
+    [Fact]
     public void ReaderWithoutTheType_SkipsIgnorableEvent()
     {
         var id = WriteLog(new ProbePayload(IgnorableType, "annotation"));
