@@ -49,7 +49,13 @@ public static class Program
                 }, new McpServerToolCreateOptions { Name = "change_during_listing" }));
             options.Filters.Request.ListResourcesFilters.Add(next => async (request, signal) =>
             {
+                var cursor = request.Params?.Cursor;
+                // SDK 的静态集合只在首页填充; 分页过滤器先取完整集合, 再按自己的游标切页。
+                if (request.Params is { } parameters)
+                    parameters.Cursor = null;
                 var result = await next(request, signal);
+                if (request.Params is { } original)
+                    original.Cursor = cursor;
                 var change = Interlocked.Exchange(ref changeDuringListing, 0);
                 if (change != 0)
                 {
@@ -57,7 +63,7 @@ public static class Program
                     if (change == 2)
                         throw new McpProtocolException("sample listing failed after notifying", McpErrorCode.InternalError);
                 }
-                var offset = request.Params?.Cursor is { } cursor ? int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture) : 0;
+                var offset = cursor is not null ? int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture) : 0;
                 return new ListResourcesResult
                 {
                     Resources = [.. result.Resources.Skip(offset).Take(2)],
@@ -66,8 +72,13 @@ public static class Program
             });
             options.Filters.Request.ListResourceTemplatesFilters.Add(next => async (request, signal) =>
             {
+                var cursor = request.Params?.Cursor;
+                if (request.Params is { } parameters)
+                    parameters.Cursor = null;
                 var result = await next(request, signal);
-                var offset = request.Params?.Cursor is { } cursor ? int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture) : 0;
+                if (request.Params is { } original)
+                    original.Cursor = cursor;
+                var offset = cursor is not null ? int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture) : 0;
                 return new ListResourceTemplatesResult
                 {
                     ResourceTemplates = [.. result.ResourceTemplates.Skip(offset).Take(1)],
