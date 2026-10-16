@@ -101,9 +101,17 @@ internal sealed class PtyTuiHarness : IDisposable
     /** 解析当前被测 proxy 的屏幕快照；不能按初始尺寸重放 resize 前的历史输出。 */
     public char[,] ReadScreen()
     {
-        var terminal = new VirtualTerminal(Columns, Rows);
-        terminal.Feed(Encoding.UTF8.GetString(Session.Snapshot()));
-        return terminal.Screen;
+        var size = _host.List().Single();
+        var terminal = new VtScreen(size.Columns, size.Rows);
+        terminal.Feed(Session.Snapshot());
+        var screen = new char[terminal.Width, terminal.Height];
+        for (var y = 0; y < terminal.Height; y++)
+        {
+            var row = terminal.Row(y);
+            for (var x = 0; x < row.Length; x++)
+                screen[x, y] = row[x].Character is '\0' ? ' ' : row[x].Character;
+        }
+        return screen;
     }
 
     public void SaveTranscript()
