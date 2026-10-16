@@ -65,14 +65,14 @@ internal static class McpResourceTools
                 "List the resources (uri, name, mimeType, description, size) that one connected MCP server exposes. Without cursor every page is collected; with cursor only that page is returned and nextCursor names the next one. Read a listed resource with read_mcp_resource on the same server.",
                 (handle, cursor, signal) => handle.CallListingAsync(client => cursor is null
                     ? CollectResourcesAsync(client, signal)
-                    : PageAsync(client.ListResourcesAsync(new ListResourcesRequestParams { Cursor = cursor }, signal)), signal),
+                    : PageAsync(client.ListResourcesAsync(new ListResourcesRequestParams { Cursor = cursor }, signal)), templates: false, complete: cursor is null, signal),
                 service)),
             tools.Register(Listing(
                 ListTemplatesName,
                 "List the parameterized resource URI templates (RFC 6570, such as notes://{name}) that one connected MCP server exposes. Fill in every {variable} yourself and pass the resulting URI to read_mcp_resource on the same server. The cursor works as in list_mcp_resources.",
                 (handle, cursor, signal) => handle.CallListingAsync(client => cursor is null
                     ? CollectTemplatesAsync(client, signal)
-                    : PageAsync(client.ListResourceTemplatesAsync(new ListResourceTemplatesRequestParams { Cursor = cursor }, signal)), signal),
+                    : PageAsync(client.ListResourceTemplatesAsync(new ListResourceTemplatesRequestParams { Cursor = cursor }, signal)), templates: true, complete: cursor is null, signal),
                 service)),
             tools.Register(new ToolDefinition
             {
@@ -196,6 +196,7 @@ internal static class McpResourceTools
         var withResources = connected.Where(handle => handle.SupportsResources).ToList();
         var without = connected.Where(handle => !handle.SupportsResources).Select(handle => handle.Config.Name).ToList();
         var stale = withResources.Where(handle => handle.ResourceListStale).Select(handle => handle.Config.Name).ToList();
+        var staleTemplates = withResources.Where(handle => handle.ResourceTemplatesStale).Select(handle => handle.Config.Name).ToList();
         List<string> lines =
         [
             "## MCP resources",
@@ -207,6 +208,10 @@ internal static class McpResourceTools
             lines.Add($"MCP servers without resources (the resource tools fail for them): {string.Join(", ", without)}.");
         if (stale.Count > 0)
             lines.Add($"The resource list changed on {string.Join(", ", stale)} after your last listing; call list_mcp_resources again before relying on it.");
+        if (staleTemplates.Count > 0)
+            lines.Add($"The resource template list changed on {string.Join(", ", staleTemplates)} after your last full template listing; call list_mcp_resource_templates again before relying on it.");
+        foreach (var handle in withResources.Where(handle => handle.ResourceNotificationError is not null))
+            lines.Add($"Resource change notifications are unavailable on {handle.Config.Name}: {handle.ResourceNotificationError}. The next MCP call will reconnect once; until then do not assume either resource list is current.");
         return string.Join('\n', lines);
     }
 

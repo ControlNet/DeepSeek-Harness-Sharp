@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -27,6 +29,7 @@ public static class Program
         var options = new McpServerOptions
         {
             ServerInfo = new Implementation { Name = "resource-sample", Version = "1.0" },
+            ProtocolVersion = args.Contains("--legacy") ? "2025-11-25" : null,
         };
         if (args.Contains(NoResourcesFlag))
         {
@@ -37,6 +40,67 @@ public static class Program
             var resources = Resources();
             options.ResourceCollection = resources;
             options.ToolCollection = [AddResourceTool(resources)];
+            var changeDuringListing = 0;
+            if (args.Contains("--listing-race"))
+                options.ToolCollection.Add(McpServerTool.Create((bool fail) =>
+                {
+                    changeDuringListing = fail ? 2 : 1;
+                    return "next listing will notify before returning";
+                }, new McpServerToolCreateOptions { Name = "change_during_listing" }));
+            options.Filters.Request.ListResourcesFilters.Add(next => async (request, signal) =>
+            {
+                var result = await next(request, signal);
+                var change = Interlocked.Exchange(ref changeDuringListing, 0);
+                if (change != 0)
+                {
+                    await request.Server.SendNotificationAsync(NotificationMethods.ResourceListChangedNotification, cancellationToken: signal);
+                    if (change == 2)
+                        throw new McpProtocolException("sample listing failed after notifying", McpErrorCode.InternalError);
+                }
+                var offset = request.Params?.Cursor is { } cursor ? int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture) : 0;
+                return new ListResourcesResult
+                {
+                    Resources = [.. result.Resources.Skip(offset).Take(2)],
+                    NextCursor = offset + 2 < result.Resources.Count ? (offset + 2).ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+                };
+            });
+            options.Filters.Request.ListResourceTemplatesFilters.Add(next => async (request, signal) =>
+            {
+                var result = await next(request, signal);
+                var offset = request.Params?.Cursor is { } cursor ? int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture) : 0;
+                return new ListResourceTemplatesResult
+                {
+                    ResourceTemplates = [.. result.ResourceTemplates.Skip(offset).Take(1)],
+                    NextCursor = offset + 1 < result.ResourceTemplates.Count ? (offset + 1).ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+                };
+            });
+            var endMode = Array.FindIndex(args, value => value is "--listen-fails" or "--listen-ends" or "--listen-denied");
+            if (endMode >= 0 && !File.Exists(args[endMode + 1]))
+            {
+                var ended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                options.ToolCollection.Add(McpServerTool.Create(() =>
+                {
+                    File.WriteAllText(args[endMode + 1], "ended");
+                    ended.TrySetResult();
+                    return "notification stream ended; tools remain connected";
+                }, new McpServerToolCreateOptions { Name = "end_listen" }));
+                options.Handlers.SubscriptionsListenHandler = async (request, signal) =>
+                {
+                    await request.Server.SendMessageAsync(new JsonRpcNotification
+                    {
+                        Method = NotificationMethods.SubscriptionsAcknowledgedNotification,
+                        Params = new JsonObject
+                        {
+                            ["notifications"] = new JsonObject { ["resourcesListChanged"] = args[endMode] != "--listen-denied" },
+                            ["_meta"] = new JsonObject { [MetaKeys.SubscriptionId] = request.JsonRpcRequest.Id.ToString() },
+                        },
+                    }, signal);
+                    await ended.Task.WaitAsync(signal);
+                    if (args[endMode] == "--listen-fails")
+                        throw new McpProtocolException("sample notification stream failed", McpErrorCode.InternalError);
+                    return new EmptyResult();
+                };
+            }
         }
         await using var server = McpServer.Create(new StdioServerTransport("resource-sample"), options);
         await server.RunAsync();
@@ -60,6 +124,9 @@ public static class Program
             McpServerResource.Create(
                 (string name) => $"note:{name}",
                 new McpServerResourceCreateOptions { UriTemplate = NoteTemplate, Name = "note", MimeType = "text/plain" }),
+            McpServerResource.Create(
+                (string name) => $"archive:{name}",
+                new McpServerResourceCreateOptions { UriTemplate = "archive://{name}", Name = "archive", MimeType = "text/plain" }),
         ];
 
     private static McpServerTool AddResourceTool(McpServerResourceCollection resources)

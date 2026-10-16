@@ -25,6 +25,7 @@ internal sealed class McpServerHandle(McpServerConfig config, Func<IClientTransp
     private long _version;
     private long _resourceListChanges;
     private long _resourceListSeen;
+    private long _resourceTemplatesSeen;
     private string? _error;
 
     public McpServerConfig Config { get; } = config;
@@ -42,27 +43,61 @@ internal sealed class McpServerHandle(McpServerConfig config, Func<IClientTransp
     /** 最近一次成功列举之后又收到过 list_changed 通知。 */
     public bool ResourceListStale => ResourceListChanges > Interlocked.Read(ref _resourceListSeen);
 
+    public bool ResourceTemplatesStale => ResourceListChanges > Interlocked.Read(ref _resourceTemplatesSeen);
+
+    public string? ResourceNotificationError => Volatile.Read(ref _live)?.NotificationError?.Message;
+
     public McpServerStatus Status => new(Config.Name, Config.Transport, Connected, ToolCount, _error, SupportsResources, ResourceListChanges);
 
     public async Task<IList<McpClientTool>> ConnectAsync(CancellationToken signal)
     {
+        var acknowledged = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var options = new McpClientOptions
         {
             Handlers = new McpClientHandlers
             {
-                NotificationHandlers = [new(NotificationMethods.ResourceListChangedNotification, OnResourceListChanged)],
+                NotificationHandlers =
+                [
+                    new(NotificationMethods.ResourceListChangedNotification, OnResourceListChanged),
+                    new(NotificationMethods.SubscriptionsAcknowledgedNotification, (notification, _) =>
+                    {
+                        acknowledged.TrySetResult(notification.Params?["notifications"]?["resourcesListChanged"]?.GetValue<bool>() == true);
+                        return ValueTask.CompletedTask;
+                    }),
+                ],
             },
         };
         var client = await McpClient.CreateAsync(transportFactory(), options, NullLoggerFactory.Instance, signal);
-        var tools = await client.ListToolsAsync(cancellationToken: signal);
-        var listen = new CancellationTokenSource();
-        if (client.ServerCapabilities.Resources?.ListChanged == true
-            && string.CompareOrdinal(client.NegotiatedProtocolVersion, ListenProtocolVersion) >= 0)
-            _ = ListenForResourceListChangesAsync(client, listen.Token);
-        Volatile.Write(ref _live, new Live(client, tools.ToDictionary(tool => tool.Name, StringComparer.Ordinal), listen));
-        _error = null;
-        Interlocked.Increment(ref _version);
-        return tools;
+        Live? live = null;
+        try
+        {
+            var tools = await client.ListToolsAsync(cancellationToken: signal);
+            live = new Live(client, tools.ToDictionary(tool => tool.Name, StringComparer.Ordinal), new CancellationTokenSource());
+            Volatile.Write(ref _live, live);
+            _error = null;
+            if (Interlocked.Increment(ref _version) > 1)
+                Interlocked.Increment(ref _resourceListChanges);
+            if (client.ServerCapabilities.Resources?.ListChanged == true
+                && string.CompareOrdinal(client.NegotiatedProtocolVersion, ListenProtocolVersion) >= 0)
+            {
+                live.ListenTask = ListenForResourceListChangesAsync(live);
+                await Task.WhenAny(acknowledged.Task, live.ListenTask).WaitAsync(options.InitializationTimeout, signal);
+                if (acknowledged.Task.IsCompletedSuccessfully && !acknowledged.Task.Result)
+                    NotificationStreamEnded(live, new McpNotificationStreamEndedException("MCP server did not grant resource list change notifications"));
+            }
+            return tools;
+        }
+        catch
+        {
+            if (live is not null)
+            {
+                Interlocked.CompareExchange(ref _live, null, live);
+                await CloseAsync(live);
+            }
+            else
+                await client.DisposeAsync();
+            throw;
+        }
     }
 
     public void MarkError(string message) => _error = message;
@@ -70,6 +105,7 @@ internal sealed class McpServerHandle(McpServerConfig config, Func<IClientTransp
     public bool TryGetTool(string toolName, out McpClientTool? tool, out long version)
     {
         var live = Volatile.Read(ref _live);
+        ThrowIfNotificationsEnded(live);
         version = Volatile.Read(ref _version);
         tool = null;
         return live is not null && live.Tools.TryGetValue(toolName, out tool);
@@ -83,16 +119,27 @@ internal sealed class McpServerHandle(McpServerConfig config, Func<IClientTransp
             reconnect: version => ReconnectIfVersionAsync(version, signal),
             signal: signal);
 
-    /** 列举请求发出前取号, 成功后记为已读到该号为止的通知, 使请求期间到达的通知仍算未读。 */
-    public async ValueTask<T> CallListingAsync<T>(Func<McpClient, ValueTask<T>> call, CancellationToken signal)
+    /** 只有完整列举才消费对应列表的通知; 单页不代表模型看到了整个列表。请求期间的新通知仍未读。 */
+    public async ValueTask<T> CallListingAsync<T>(Func<McpClient, ValueTask<T>> call, bool templates, bool complete, CancellationToken signal)
     {
         var observed = ResourceListChanges;
         var result = await CallResourcesAsync(call, signal);
+        if (complete)
+        {
+            if (templates)
+                InterlockedMax(ref _resourceTemplatesSeen, observed);
+            else
+                InterlockedMax(ref _resourceListSeen, observed);
+        }
+        return result;
+    }
+
+    private static void InterlockedMax(ref long target, long value)
+    {
         long seen;
         do
-            seen = Interlocked.Read(ref _resourceListSeen);
-        while (seen < observed && Interlocked.CompareExchange(ref _resourceListSeen, observed, seen) != seen);
-        return result;
+            seen = Interlocked.Read(ref target);
+        while (seen < value && Interlocked.CompareExchange(ref target, value, seen) != seen);
     }
 
     // 只在"调用时用的版本仍是最新"时才重连, 使并发调用共享一次重连。
@@ -131,7 +178,9 @@ internal sealed class McpServerHandle(McpServerConfig config, Func<IClientTransp
 
     private McpClient ResourcesClient()
     {
-        var client = Volatile.Read(ref _live)?.Client
+        var live = Volatile.Read(ref _live);
+        ThrowIfNotificationsEnded(live);
+        var client = live?.Client
             ?? throw new HarnessException($"mcp server \"{Config.Name}\" is not connected: {_error ?? "connection closed"}", UnavailableCode);
         return client.ServerCapabilities.Resources is not null
             ? client
@@ -146,7 +195,7 @@ internal sealed class McpServerHandle(McpServerConfig config, Func<IClientTransp
         return ValueTask.CompletedTask;
     }
 
-    private static async Task ListenForResourceListChangesAsync(McpClient client, CancellationToken signal)
+    private async Task ListenForResourceListChangesAsync(Live live)
     {
         var request = new JsonRpcRequest
         {
@@ -160,12 +209,34 @@ internal sealed class McpServerHandle(McpServerConfig config, Func<IClientTransp
         };
         try
         {
-            await client.SendRequestAsync(request, signal);
+            await live.Client.SendRequestAsync(request, live.Listen.Token);
+            if (!live.Listen.IsCancellationRequested)
+                NotificationStreamEnded(live, new McpNotificationStreamEndedException("MCP resource notification stream ended while the connection is still active"));
         }
-        catch (Exception)
+        catch (Exception) when (live.Listen.IsCancellationRequested)
         {
-            // 订阅流随会话关闭或取消而结束; 订阅失败只意味着收不到资源列表变更通知。
+            // 本句柄主动关闭会话, 不属于通知丢失。
         }
+        catch (Exception error)
+        {
+            NotificationStreamEnded(live, new McpNotificationStreamEndedException($"MCP resource notification stream failed: {error.Message}", error));
+        }
+    }
+
+    private void NotificationStreamEnded(Live live, McpNotificationStreamEndedException error)
+    {
+        live.NotificationError = error;
+        if (ReferenceEquals(Volatile.Read(ref _live), live))
+        {
+            _error = error.Message;
+            Interlocked.Increment(ref _resourceListChanges);
+        }
+    }
+
+    private static void ThrowIfNotificationsEnded(Live? live)
+    {
+        if (live?.NotificationError is { } error)
+            throw error;
     }
 
     private static async Task CloseAsync(Live? live)
@@ -173,6 +244,8 @@ internal sealed class McpServerHandle(McpServerConfig config, Func<IClientTransp
         if (live is null)
             return;
         await live.Listen.CancelAsync();
+        if (live.ListenTask is { } listenTask)
+            await listenTask;
         live.Listen.Dispose();
         try
         {
@@ -184,5 +257,12 @@ internal sealed class McpServerHandle(McpServerConfig config, Func<IClientTransp
         }
     }
 
-    private sealed record Live(McpClient Client, IReadOnlyDictionary<string, McpClientTool> Tools, CancellationTokenSource Listen);
+    private sealed record Live(McpClient Client, IReadOnlyDictionary<string, McpClientTool> Tools, CancellationTokenSource Listen)
+    {
+        public Task? ListenTask { get; set; }
+        public volatile McpNotificationStreamEndedException? NotificationError;
+    }
 }
+
+/** 通知流失效使当前 MCP 会话不可再信赖, 下一次调用沿现有单次重连边界恢复。 */
+internal sealed class McpNotificationStreamEndedException(string message, Exception? inner = null) : Exception(message, inner);

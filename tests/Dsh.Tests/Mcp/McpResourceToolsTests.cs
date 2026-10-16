@@ -20,6 +20,8 @@ public sealed class McpResourceServerFixture : IAsyncLifetime
 
     public string Home { get; } = TempTree.CreateDirectory("mcp-resources");
 
+    public string[] ServerArguments { get; init; } = [];
+
     public ToolRuntime Tools { get; private set; } = null!;
 
     public SystemPrompt Prompt { get; private set; } = null!;
@@ -27,12 +29,12 @@ public sealed class McpResourceServerFixture : IAsyncLifetime
     public McpService Service { get; private set; } = null!;
 
     /** Launches the sample through the dotnet host that runs this test process, so no apphost or PATH lookup is involved. */
-    public static McpServerConfig ServerConfig(string name, bool withResources = true)
+    public static McpServerConfig ServerConfig(string name, bool withResources = true, params string[] arguments)
     {
         var dotnetRoot = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", ".."));
         var muxer = Path.Combine(dotnetRoot, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
         var dll = Path.Combine(AppContext.BaseDirectory, SampleDll);
-        return new McpServerConfig(name, "stdio", muxer, withResources ? [dll] : [dll, NoResourcesFlag]);
+        return new McpServerConfig(name, "stdio", muxer, withResources ? [dll, .. arguments] : [dll, NoResourcesFlag, .. arguments]);
     }
 
     public async ValueTask InitializeAsync()
@@ -42,7 +44,7 @@ public sealed class McpResourceServerFixture : IAsyncLifetime
         Tools = new ToolRuntime(Ctx);
         _ = new FileAttachmentStore(Ctx);
         Service = new McpService(Ctx);
-        await Service.ConnectAsync([ServerConfig(ResourceServer), ServerConfig(PlainServer, withResources: false)], TestContext.Current.CancellationToken);
+        await Service.ConnectAsync([ServerConfig(ResourceServer, true, ServerArguments), ServerConfig(PlainServer, withResources: false)], TestContext.Current.CancellationToken);
     }
 
     public Task<ToolExecutionResult> Execute(string name, string arguments)
@@ -113,6 +115,20 @@ public sealed class McpResourceToolsTests(McpResourceServerFixture fixture) : IC
 
         AssertSucceeded(result);
         Assert.Contains("notes://{name}", TextOf(result));
+        Assert.Contains("archive://{name}", TextOf(result));
+    }
+
+    [Fact]
+    public async Task ListingCursor_ReturnsOnlyOnePageAndPreservesTheNextCursor()
+    {
+        var resources = await fixture.Execute(McpResourceTools.ListResourcesName, """{ "server": "res", "cursor": "0" }""");
+        var resourcePage = Assert.IsType<ToolExecutionResult.Success>(resources).Value;
+        Assert.Equal(2, resourcePage.GetProperty("resources").GetArrayLength());
+        Assert.Equal("2", resourcePage.GetProperty("nextCursor").GetString());
+        var templates = await fixture.Execute(McpResourceTools.ListTemplatesName, """{ "server": "res", "cursor": "0" }""");
+        var templatePage = Assert.IsType<ToolExecutionResult.Success>(templates).Value;
+        Assert.Equal(1, templatePage.GetProperty("resourceTemplates").GetArrayLength());
+        Assert.Equal("1", templatePage.GetProperty("nextCursor").GetString());
     }
 
     [Fact]
@@ -206,5 +222,114 @@ public sealed class McpResourceToolsTests(McpResourceServerFixture fixture) : IC
         Assert.Contains(uri, TextOf(relisted));
         Assert.DoesNotContain("resource list changed", await fixture.SectionText());
         Assert.Contains("MCP servers with resources: res.", await fixture.SectionText());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Notification_RequiresIndependentFullResourceAndTemplateListings(bool templatesFirst)
+    {
+        var uri = $"docs://independent-{Guid.NewGuid():N}";
+        var count = fixture.Service.Status().Single(status => status.Name == "res").ResourceListChanges;
+        AssertSucceeded(await fixture.Execute("mcp_res_add_resource", $$"""{ "uri": "{{uri}}", "text": "fresh" }"""));
+        var deadline = DateTime.UtcNow + NotificationDeadline;
+        while (fixture.Service.Status().Single(status => status.Name == "res").ResourceListChanges <= count && DateTime.UtcNow < deadline)
+            await Task.Delay(PollInterval, TestContext.Current.CancellationToken);
+        Assert.Contains("resource list changed on res", await fixture.SectionText());
+        Assert.Contains("resource template list changed on res", await fixture.SectionText());
+
+        AssertSucceeded(await fixture.Execute(McpResourceTools.ListResourcesName, """{ "server": "res", "cursor": "2" }"""));
+        AssertSucceeded(await fixture.Execute(McpResourceTools.ListTemplatesName, """{ "server": "res", "cursor": "1" }"""));
+        Assert.Contains("resource list changed on res", await fixture.SectionText());
+        Assert.Contains("resource template list changed on res", await fixture.SectionText());
+
+        var first = templatesFirst ? McpResourceTools.ListTemplatesName : McpResourceTools.ListResourcesName;
+        var second = templatesFirst ? McpResourceTools.ListResourcesName : McpResourceTools.ListTemplatesName;
+        AssertSucceeded(await fixture.Execute(first, """{ "server": "res" }"""));
+        var section = await fixture.SectionText();
+        Assert.Contains(templatesFirst ? "resource list changed on res" : "resource template list changed on res", section);
+        Assert.DoesNotContain(templatesFirst ? "resource template list changed on res" : "resource list changed on res", section);
+        AssertSucceeded(await fixture.Execute(second, """{ "server": "res" }"""));
+        Assert.DoesNotContain("list changed", await fixture.SectionText());
+    }
+
+    [Fact]
+    public async Task LegacyProtocol_DeliversListChangedWithoutAListenRequest()
+    {
+        await using var legacy = new McpResourceServerFixture { ServerArguments = ["--legacy"] };
+        await legacy.InitializeAsync();
+        AssertSucceeded(await legacy.Execute("mcp_res_add_resource", """{ "uri": "docs://legacy-added", "text": "legacy" }"""));
+        var deadline = DateTime.UtcNow + NotificationDeadline;
+        while (!(await legacy.SectionText()).Contains("resource list changed on res") && DateTime.UtcNow < deadline)
+            await Task.Delay(PollInterval, TestContext.Current.CancellationToken);
+        Assert.Contains("resource list changed on res", await legacy.SectionText());
+        Assert.Null(legacy.Service.Status().Single(status => status.Name == "res").Error);
+    }
+
+    [Theory]
+    [InlineData("--listen-fails", false)]
+    [InlineData("--listen-ends", false)]
+    [InlineData("--listen-fails", true)]
+    [InlineData("--listen-ends", true)]
+    public async Task NotificationStreamEndingOnALiveConnection_IsVisibleAndReconnectsOnTheNextCall(string mode, bool useTool)
+    {
+        var markerHome = TempTree.CreateDirectory("mcp-listen");
+        try
+        {
+            await using var ending = new McpResourceServerFixture { ServerArguments = [mode, Path.Combine(markerHome, "ended")] };
+            await ending.InitializeAsync();
+            AssertSucceeded(await ending.Execute("mcp_res_end_listen", "{}"));
+            var deadline = DateTime.UtcNow + NotificationDeadline;
+            while (ending.Service.Status().Single(status => status.Name == "res").Error is null && DateTime.UtcNow < deadline)
+                await Task.Delay(PollInterval, TestContext.Current.CancellationToken);
+            var status = ending.Service.Status().Single(status => status.Name == "res");
+            Assert.True(status.Connected);
+            Assert.Contains("notification stream", status.Error);
+            Assert.Contains("Resource change notifications are unavailable on res", await ending.SectionText());
+
+            AssertSucceeded(await ending.Execute(useTool ? "mcp_res_add_resource" : McpResourceTools.ReadResourceName,
+                useTool ? """{ "uri": "docs://reconnected", "text": "fresh" }""" : """{ "server": "res", "uri": "docs://guide" }"""));
+            Assert.Null(ending.Service.Status().Single(status => status.Name == "res").Error);
+            var beforeNotification = ending.Service.Status().Single(status => status.Name == "res").ResourceListChanges;
+            AssertSucceeded(await ending.Execute("mcp_res_add_resource", """{ "uri": "docs://after-reconnect", "text": "fresh" }"""));
+            deadline = DateTime.UtcNow + NotificationDeadline;
+            while (ending.Service.Status().Single(status => status.Name == "res").ResourceListChanges <= beforeNotification && DateTime.UtcNow < deadline)
+                await Task.Delay(PollInterval, TestContext.Current.CancellationToken);
+            Assert.True(ending.Service.Status().Single(status => status.Name == "res").ResourceListChanges > beforeNotification);
+            AssertSucceeded(await ending.Execute(McpResourceTools.ListResourcesName, """{ "server": "res" }"""));
+            Assert.Contains("resource template list changed on res", await ending.SectionText());
+        }
+        finally
+        {
+            TempTree.Delete(markerHome);
+        }
+    }
+
+    [Fact]
+    public async Task NotificationSubscriptionDenied_IsReportedWhileToolsRemainConnected()
+    {
+        await using var denied = new McpResourceServerFixture { ServerArguments = ["--listen-denied", Path.Combine(fixture.Home, "unused-marker")] };
+        await denied.InitializeAsync();
+        Assert.True(denied.Service.Status().Single(status => status.Name == "res").Connected);
+        Assert.Contains("did not grant", denied.Service.Status().Single(status => status.Name == "res").Error);
+        Assert.Contains("Resource change notifications are unavailable on res", await denied.SectionText());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NotificationDuringListing_IsNotConsumedEvenWhenTheListingFails(bool fail)
+    {
+        await using var racing = new McpResourceServerFixture { ServerArguments = ["--listing-race"] };
+        await racing.InitializeAsync();
+        AssertSucceeded(await racing.Execute(McpResourceTools.ListResourcesName, """{ "server": "res" }"""));
+        AssertSucceeded(await racing.Execute("mcp_res_change_during_listing", fail ? """{ "fail": true }""" : """{ "fail": false }"""));
+        var listing = await racing.Execute(McpResourceTools.ListResourcesName, """{ "server": "res" }""");
+        Assert.Equal(fail, listing.IsError);
+        Assert.Contains("resource list changed on res", await racing.SectionText());
+        Assert.Contains("resource template list changed on res", await racing.SectionText());
+        AssertSucceeded(await racing.Execute(McpResourceTools.ListResourcesName, """{ "server": "res" }"""));
+        Assert.DoesNotContain("resource list changed on res", await racing.SectionText());
+        Assert.Contains("resource template list changed on res", await racing.SectionText());
     }
 }
