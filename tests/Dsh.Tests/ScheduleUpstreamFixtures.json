@@ -1,0 +1,1493 @@
+{
+  "source": "86a402200d95fecef4529d969836f1fe13c6cb0d",
+  "runtime": {
+    "node": "24.11.1",
+    "icu": "77.1",
+    "cldr": "47.0",
+    "tz": "2025b"
+  },
+  "cases": [
+    {
+      "name": "daily fraction 23:00:00",
+      "kind": "daily",
+      "selector": {
+        "time": "23:00:00",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "decision": "2026-01-04T23:30:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T23:00:00.000Z",
+        "time": "23:00:00.000",
+        "timeZone": "UTC"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-01-04T23:00:00.000Z",
+        "nextScheduledAt": "2026-01-05T23:00:00.000Z"
+      }
+    },
+    {
+      "name": "weekly fraction 23:00:00",
+      "kind": "weekly",
+      "selector": {
+        "time": "23:00:00",
+        "time_zone": "UTC",
+        "weekdays": [
+          7,
+          1
+        ]
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "decision": "2026-01-12T23:30:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-04T23:00:00.000Z",
+        "time": "23:00:00.000",
+        "timeZone": "UTC",
+        "weekdays": [
+          1,
+          7
+        ]
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-01-12T23:00:00.000Z",
+        "nextScheduledAt": "2026-01-18T23:00:00.000Z"
+      }
+    },
+    {
+      "name": "daily fraction 23:00:00.1",
+      "kind": "daily",
+      "selector": {
+        "time": "23:00:00.1",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "decision": "2026-01-04T23:30:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T23:00:00.100Z",
+        "time": "23:00:00.100",
+        "timeZone": "UTC"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-01-04T23:00:00.100Z",
+        "nextScheduledAt": "2026-01-05T23:00:00.100Z"
+      }
+    },
+    {
+      "name": "weekly fraction 23:00:00.1",
+      "kind": "weekly",
+      "selector": {
+        "time": "23:00:00.1",
+        "time_zone": "UTC",
+        "weekdays": [
+          7,
+          1
+        ]
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "decision": "2026-01-12T23:30:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-04T23:00:00.100Z",
+        "time": "23:00:00.100",
+        "timeZone": "UTC",
+        "weekdays": [
+          1,
+          7
+        ]
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-01-12T23:00:00.100Z",
+        "nextScheduledAt": "2026-01-18T23:00:00.100Z"
+      }
+    },
+    {
+      "name": "daily fraction 23:00:00.12",
+      "kind": "daily",
+      "selector": {
+        "time": "23:00:00.12",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "decision": "2026-01-04T23:30:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T23:00:00.120Z",
+        "time": "23:00:00.120",
+        "timeZone": "UTC"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-01-04T23:00:00.120Z",
+        "nextScheduledAt": "2026-01-05T23:00:00.120Z"
+      }
+    },
+    {
+      "name": "weekly fraction 23:00:00.12",
+      "kind": "weekly",
+      "selector": {
+        "time": "23:00:00.12",
+        "time_zone": "UTC",
+        "weekdays": [
+          7,
+          1
+        ]
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "decision": "2026-01-12T23:30:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-04T23:00:00.120Z",
+        "time": "23:00:00.120",
+        "timeZone": "UTC",
+        "weekdays": [
+          1,
+          7
+        ]
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-01-12T23:00:00.120Z",
+        "nextScheduledAt": "2026-01-18T23:00:00.120Z"
+      }
+    },
+    {
+      "name": "daily fraction 23:00:00.123",
+      "kind": "daily",
+      "selector": {
+        "time": "23:00:00.123",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "decision": "2026-01-04T23:30:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T23:00:00.123Z",
+        "time": "23:00:00.123",
+        "timeZone": "UTC"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-01-04T23:00:00.123Z",
+        "nextScheduledAt": "2026-01-05T23:00:00.123Z"
+      }
+    },
+    {
+      "name": "weekly fraction 23:00:00.123",
+      "kind": "weekly",
+      "selector": {
+        "time": "23:00:00.123",
+        "time_zone": "UTC",
+        "weekdays": [
+          7,
+          1
+        ]
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "decision": "2026-01-12T23:30:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-04T23:00:00.123Z",
+        "time": "23:00:00.123",
+        "timeZone": "UTC",
+        "weekdays": [
+          1,
+          7
+        ]
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-01-12T23:00:00.123Z",
+        "nextScheduledAt": "2026-01-18T23:00:00.123Z"
+      }
+    },
+    {
+      "name": "invalid clock 09:00",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock 9:00:00",
+      "kind": "daily",
+      "selector": {
+        "time": "9:00:00",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock 24:00:00",
+      "kind": "daily",
+      "selector": {
+        "time": "24:00:00",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock 09:60:00",
+      "kind": "daily",
+      "selector": {
+        "time": "09:60:00",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock 09:00:60",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:60",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock 09:00:00.1234",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00.1234",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock  09:00:00",
+      "kind": "daily",
+      "selector": {
+        "time": " 09:00:00",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock 09:00:00 ",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00 ",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "canonical zone UTC",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T09:00:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "UTC"
+      }
+    },
+    {
+      "name": "canonical zone Etc/UTC",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "Etc/UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T09:00:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "UTC"
+      }
+    },
+    {
+      "name": "canonical zone Etc/GMT",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "Etc/GMT"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T09:00:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "UTC"
+      }
+    },
+    {
+      "name": "canonical zone US/Eastern",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "US/Eastern"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T14:00:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "America/New_York"
+      }
+    },
+    {
+      "name": "canonical zone america/new_york",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "america/new_york"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T14:00:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "America/New_York"
+      }
+    },
+    {
+      "name": "canonical zone Asia/Kolkata",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "Asia/Kolkata"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T03:30:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "Asia/Calcutta"
+      }
+    },
+    {
+      "name": "canonical zone Asia/Calcutta",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "Asia/Calcutta"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T03:30:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "Asia/Calcutta"
+      }
+    },
+    {
+      "name": "canonical zone Europe/Kyiv",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "Europe/Kyiv"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T07:00:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "Europe/Kiev"
+      }
+    },
+    {
+      "name": "canonical zone Europe/Guernsey",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "Europe/Guernsey"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T09:00:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "Europe/Guernsey"
+      }
+    },
+    {
+      "name": "canonical zone America/Argentina/Buenos_Aires",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "America/Argentina/Buenos_Aires"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T12:00:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "America/Buenos_Aires"
+      }
+    },
+    {
+      "name": "canonical zone Antarctica/South_Pole",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "Antarctica/South_Pole"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T20:00:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "Antarctica/McMurdo"
+      }
+    },
+    {
+      "name": "invalid zone utc",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "utc"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_time_zone"
+    },
+    {
+      "name": "invalid zone GMT",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "GMT"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_time_zone"
+    },
+    {
+      "name": "invalid zone EST",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "EST"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_time_zone"
+    },
+    {
+      "name": "invalid zone Eastern Standard Time",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "Eastern Standard Time"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_time_zone"
+    },
+    {
+      "name": "invalid zone +08:00",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "+08:00"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_time_zone"
+    },
+    {
+      "name": "invalid zone  UTC",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": " UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_time_zone"
+    },
+    {
+      "name": "invalid zone UTC ",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "UTC "
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_time_zone"
+    },
+    {
+      "name": "invalid zone Mars/Olympus",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "Mars/Olympus"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_time_zone"
+    },
+    {
+      "name": "at 2026-01-02T00:00:00.1+23:59",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00.1+23:59",
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T00:01:00.100Z"
+      }
+    },
+    {
+      "name": "at 2026-01-02T00:00:00.12-23:59",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00.12-23:59",
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-02T23:59:00.120Z"
+      }
+    },
+    {
+      "name": "at 2026-01-02T00:00:00.123+00:00",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00.123+00:00",
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-02T00:00:00.123Z"
+      }
+    },
+    {
+      "name": "at 2026-01-02T00:00:00Z",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00Z",
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-02T00:00:00.000Z"
+      }
+    },
+    {
+      "name": "at 2026-01-02t00:00:00Z",
+      "kind": "at",
+      "selector": "2026-01-02t00:00:00Z",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "at 2026-01-02T00:00:00z",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00z",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "at 2026-01-02T00:00:00-00:00",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00-00:00",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "at 2026-02-30T00:00:00Z",
+      "kind": "at",
+      "selector": "2026-02-30T00:00:00Z",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "at 2026-01-02T24:00:00Z",
+      "kind": "at",
+      "selector": "2026-01-02T24:00:00Z",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "at 2026-01-02T00:00:00.1234Z",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00.1234Z",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "at 2026-01-02T00:00:00+24:00",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00+24:00",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "at 2026-01-02T00:00:00+00:60",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00+00:60",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "at 0000-01-01T00:00:00Z",
+      "kind": "at",
+      "selector": "0000-01-01T00:00:00Z",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "at 0001-01-01T00:00:00+01:00",
+      "kind": "at",
+      "selector": "0001-01-01T00:00:00+01:00",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "time_out_of_range"
+    },
+    {
+      "name": "at 9999-12-31T23:59:59.999-01:00",
+      "kind": "at",
+      "selector": "9999-12-31T23:59:59.999-01:00",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "time_out_of_range"
+    },
+    {
+      "name": "invalid clock final \"\\n\"",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00\n",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid at final \"\\n\"",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00Z\n",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock final \"\\r\\n\"",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00\r\n",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid at final \"\\r\\n\"",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00Z\r\n",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock final \" \"",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00 ",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid at final \" \"",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00Z ",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "cron 30,10,20 * * * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "30,10,20 * * * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-01T00:10:00.000Z",
+        "timeZone": "UTC",
+        "expression": "10-30/10 * * * *"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-16T11:30:00.000Z",
+        "nextScheduledAt": "2026-09-16T12:10:00.000Z"
+      }
+    },
+    {
+      "name": "cron 0,0,30 * * * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "0,0,30 * * * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-01T00:30:00.000Z",
+        "timeZone": "UTC",
+        "expression": "0-30/30 * * * *"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-16T12:00:00.000Z",
+        "nextScheduledAt": "2026-09-16T12:30:00.000Z"
+      }
+    },
+    {
+      "name": "cron */1 * * * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "*/1 * * * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-01T00:01:00.000Z",
+        "timeZone": "UTC",
+        "expression": "* * * * *"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-16T12:00:00.000Z",
+        "nextScheduledAt": "2026-09-16T12:01:00.000Z"
+      }
+    },
+    {
+      "name": "cron *,5 * * * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "*,5 * * * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-01T00:01:00.000Z",
+        "timeZone": "UTC",
+        "expression": "* * * * *"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-16T12:00:00.000Z",
+        "nextScheduledAt": "2026-09-16T12:01:00.000Z"
+      }
+    },
+    {
+      "name": "cron 5,* * * * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "5,* * * * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-01T00:01:00.000Z",
+        "timeZone": "UTC",
+        "expression": "0-59 * * * *"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-16T12:00:00.000Z",
+        "nextScheduledAt": "2026-09-16T12:01:00.000Z"
+      }
+    },
+    {
+      "name": "cron 0 9 */2 * 1",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 */2 * 1",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-07T09:00:00.000Z",
+        "timeZone": "UTC",
+        "expression": "0 9 */2 * 1"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-07T09:00:00.000Z",
+        "nextScheduledAt": "2026-09-21T09:00:00.000Z"
+      }
+    },
+    {
+      "name": "cron 0 9 */2 * */2",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 */2 * */2",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-01T09:00:00.000Z",
+        "timeZone": "UTC",
+        "expression": "0 9 */2 * */2"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-15T09:00:00.000Z",
+        "nextScheduledAt": "2026-09-17T09:00:00.000Z"
+      }
+    },
+    {
+      "name": "cron 0 9 1-31 * 5",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 1-31 * 5",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-01T09:00:00.000Z",
+        "timeZone": "UTC",
+        "expression": "0 9 1-31 * 5"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-16T09:00:00.000Z",
+        "nextScheduledAt": "2026-09-17T09:00:00.000Z"
+      }
+    },
+    {
+      "name": "cron 0 0 13 * 0-7",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 0 13 * 0-7",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-02T00:00:00.000Z",
+        "timeZone": "UTC",
+        "expression": "0 0 13 * 0-6"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-16T00:00:00.000Z",
+        "nextScheduledAt": "2026-09-17T00:00:00.000Z"
+      }
+    },
+    {
+      "name": "cron 0 0 13 * 5",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 0 13 * 5",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-04T00:00:00.000Z",
+        "timeZone": "UTC",
+        "expression": "0 0 13 * 5"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-13T00:00:00.000Z",
+        "nextScheduledAt": "2026-09-18T00:00:00.000Z"
+      }
+    },
+    {
+      "name": "cron 0 0 * * */7",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 0 * * */7",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-06T00:00:00.000Z",
+        "timeZone": "UTC",
+        "expression": "0 0 * * */7"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-13T00:00:00.000Z",
+        "nextScheduledAt": "2026-09-20T00:00:00.000Z"
+      }
+    },
+    {
+      "name": "cron */9007199254740991 * * * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "*/9007199254740991 * * * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-01T01:00:00.000Z",
+        "timeZone": "UTC",
+        "expression": "*/60 * * * *"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-16T12:00:00.000Z",
+        "nextScheduledAt": "2026-09-16T13:00:00.000Z"
+      }
+    },
+    {
+      "name": "cron 0 9 * * 1-5",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 * * 1-5",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-01T09:00:00.000Z",
+        "timeZone": "UTC",
+        "expression": "0 9 * * 1-5"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-16T09:00:00.000Z",
+        "nextScheduledAt": "2026-09-17T09:00:00.000Z"
+      }
+    },
+    {
+      "name": "cron 0 0 * 2 *",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 0 * 2 *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-09-01T00:00:00Z",
+      "decision": "2026-09-16T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2027-02-01T00:00:00.000Z",
+        "timeZone": "UTC",
+        "expression": "0 0 * 2 *"
+      },
+      "code": "corrupt_schedule_log"
+    },
+    {
+      "name": "invalid cron 0 9 * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron  0 9 * * *",
+      "kind": "cron",
+      "selector": {
+        "expression": " 0 9 * * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 0 9 * * * ",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 * * * ",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 0 9 * JAN MON",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 * JAN MON",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 0 9 L * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 L * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 0 9 1W * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 1W * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 0 9 * * 1#2",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 * * 1#2",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 0 9 ? * 1",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 ? * 1",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 0 9 * * 5-1",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 * * 5-1",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 5/2 * * * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "5/2 * * * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 0,,5 * * * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "0,,5 * * * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 0 9 * * 8",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 9 * * 8",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron */9007199254740992 * * * *",
+      "kind": "cron",
+      "selector": {
+        "expression": "*/9007199254740992 * * * *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid cron 0 0 30 2 *",
+      "kind": "cron",
+      "selector": {
+        "expression": "0 0 30 2 *",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "time_out_of_range"
+    },
+    {
+      "name": "daily boundary 2026-03-07T12:00:00Z America/New_York",
+      "kind": "daily",
+      "selector": {
+        "time": "02:30:00",
+        "time_zone": "America/New_York"
+      },
+      "now": "2026-03-07T12:00:00Z",
+      "decision": "2026-03-10T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-03-09T06:30:00.000Z",
+        "time": "02:30:00.000",
+        "timeZone": "America/New_York"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-03-10T06:30:00.000Z",
+        "nextScheduledAt": "2026-03-11T06:30:00.000Z"
+      }
+    },
+    {
+      "name": "weekly boundary 2026-03-01T00:00:00Z America/New_York",
+      "kind": "weekly",
+      "selector": {
+        "time": "02:30:00",
+        "time_zone": "America/New_York",
+        "weekdays": [
+          7
+        ]
+      },
+      "now": "2026-03-01T00:00:00Z",
+      "decision": "2026-03-08T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-03-01T07:30:00.000Z",
+        "time": "02:30:00.000",
+        "timeZone": "America/New_York",
+        "weekdays": [
+          7
+        ]
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-03-01T07:30:00.000Z",
+        "nextScheduledAt": "2026-03-15T06:30:00.000Z"
+      }
+    },
+    {
+      "name": "cron boundary 2026-03-01T00:00:00Z America/New_York",
+      "kind": "cron",
+      "selector": {
+        "expression": "30 2 * 3 0",
+        "time_zone": "America/New_York"
+      },
+      "now": "2026-03-01T00:00:00Z",
+      "decision": "2026-03-08T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-03-01T07:30:00.000Z",
+        "timeZone": "America/New_York",
+        "expression": "30 2 * 3 0"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-03-01T07:30:00.000Z",
+        "nextScheduledAt": "2026-03-15T06:30:00.000Z"
+      }
+    },
+    {
+      "name": "daily boundary 2026-10-31T12:00:00Z America/New_York",
+      "kind": "daily",
+      "selector": {
+        "time": "01:30:00",
+        "time_zone": "America/New_York"
+      },
+      "now": "2026-10-31T12:00:00Z",
+      "decision": "2026-11-01T06:45:00Z",
+      "expected": {
+        "scheduledAt": "2026-11-01T05:30:00.000Z",
+        "time": "01:30:00.000",
+        "timeZone": "America/New_York"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-11-01T05:30:00.000Z",
+        "nextScheduledAt": "2026-11-02T06:30:00.000Z"
+      }
+    },
+    {
+      "name": "cron boundary 2026-10-31T12:00:00Z America/New_York",
+      "kind": "cron",
+      "selector": {
+        "expression": "* 1 * * *",
+        "time_zone": "America/New_York"
+      },
+      "now": "2026-10-31T12:00:00Z",
+      "decision": "2026-11-01T06:45:00Z",
+      "expected": {
+        "scheduledAt": "2026-11-01T05:00:00.000Z",
+        "timeZone": "America/New_York",
+        "expression": "* 1 * * *"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-11-01T05:59:00.000Z",
+        "nextScheduledAt": "2026-11-02T06:00:00.000Z"
+      }
+    },
+    {
+      "name": "at boundary 2026-01-01T00:00:00Z America/New_York",
+      "kind": "at",
+      "selector": {
+        "date": "2026-03-08",
+        "time": "02:30:00",
+        "time_zone": "America/New_York"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "at boundary 2026-01-01T00:00:00Z America/New_York",
+      "kind": "at",
+      "selector": {
+        "date": "2026-11-01",
+        "time": "01:30:00.123",
+        "time_zone": "America/New_York"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-11-01T05:30:00.123Z"
+      }
+    },
+    {
+      "name": "daily boundary 2011-12-29T21:59:59Z Pacific/Apia",
+      "kind": "daily",
+      "selector": {
+        "time": "12:00:00",
+        "time_zone": "Pacific/Apia"
+      },
+      "now": "2011-12-29T21:59:59Z",
+      "decision": "2011-12-29T22:00:00Z",
+      "expected": {
+        "scheduledAt": "2011-12-29T22:00:00.000Z",
+        "time": "12:00:00.000",
+        "timeZone": "Pacific/Apia"
+      },
+      "occurrence": {
+        "occurrenceAt": "2011-12-29T22:00:00.000Z",
+        "nextScheduledAt": "2011-12-30T22:00:00.000Z"
+      }
+    },
+    {
+      "name": "daily boundary 1867-10-17T00:00:00Z America/Anchorage",
+      "kind": "daily",
+      "selector": {
+        "time": "12:00:00",
+        "time_zone": "America/Anchorage"
+      },
+      "now": "1867-10-17T00:00:00Z",
+      "decision": "1867-10-19T06:00:00Z",
+      "expected": {
+        "scheduledAt": "1867-10-17T21:59:36.000Z",
+        "time": "12:00:00.000",
+        "timeZone": "America/Anchorage"
+      },
+      "occurrence": {
+        "occurrenceAt": "1867-10-18T21:59:36.000Z",
+        "nextScheduledAt": "1867-10-20T21:59:36.000Z"
+      }
+    },
+    {
+      "name": "daily boundary 0001-01-01T00:00:00Z Etc/GMT+1",
+      "kind": "daily",
+      "selector": {
+        "time": "23:30:00",
+        "time_zone": "Etc/GMT+1"
+      },
+      "now": "0001-01-01T00:00:00Z",
+      "decision": "0001-01-01T00:30:00Z",
+      "expected": {
+        "scheduledAt": "0001-01-01T00:30:00.000Z",
+        "time": "23:30:00.000",
+        "timeZone": "Etc/GMT+1"
+      },
+      "occurrence": {
+        "occurrenceAt": "0001-01-01T00:30:00.000Z",
+        "nextScheduledAt": "0001-01-02T00:30:00.000Z"
+      }
+    },
+    {
+      "name": "daily boundary 9999-12-31T23:00:00Z Etc/GMT-1",
+      "kind": "daily",
+      "selector": {
+        "time": "00:30:00",
+        "time_zone": "Etc/GMT-1"
+      },
+      "now": "9999-12-31T23:00:00Z",
+      "decision": "9999-12-31T23:59:59.999Z",
+      "expected": {
+        "scheduledAt": "9999-12-31T23:30:00.000Z",
+        "time": "00:30:00.000",
+        "timeZone": "Etc/GMT-1"
+      },
+      "occurrence": {
+        "occurrenceAt": "9999-12-31T23:30:00.000Z"
+      }
+    },
+    {
+      "name": "weekly boundary 0001-01-01T00:00:00Z Etc/GMT-1",
+      "kind": "weekly",
+      "selector": {
+        "time": "00:00:00",
+        "time_zone": "Etc/GMT-1",
+        "weekdays": [
+          1
+        ]
+      },
+      "now": "0001-01-01T00:00:00Z",
+      "decision": "0001-01-07T23:00:00Z",
+      "expected": {
+        "scheduledAt": "0001-01-07T23:00:00.000Z",
+        "time": "00:00:00.000",
+        "timeZone": "Etc/GMT-1",
+        "weekdays": [
+          1
+        ]
+      },
+      "occurrence": {
+        "occurrenceAt": "0001-01-07T23:00:00.000Z",
+        "nextScheduledAt": "0001-01-14T23:00:00.000Z"
+      }
+    },
+    {
+      "name": "weekly boundary 9999-12-27T00:00:00Z UTC",
+      "kind": "weekly",
+      "selector": {
+        "time": "23:59:59.999",
+        "time_zone": "UTC",
+        "weekdays": [
+          5
+        ]
+      },
+      "now": "9999-12-27T00:00:00Z",
+      "decision": "9999-12-31T23:59:59.999Z",
+      "expected": {
+        "scheduledAt": "9999-12-31T23:59:59.999Z",
+        "time": "23:59:59.999",
+        "timeZone": "UTC",
+        "weekdays": [
+          5
+        ]
+      },
+      "occurrence": {
+        "occurrenceAt": "9999-12-31T23:59:59.999Z"
+      }
+    },
+    {
+      "name": "cron boundary 0001-01-01T00:01:00Z Etc/GMT+1",
+      "kind": "cron",
+      "selector": {
+        "expression": "* * * * *",
+        "time_zone": "Etc/GMT+1"
+      },
+      "now": "0001-01-01T00:01:00Z",
+      "decision": "0001-01-01T00:30:00Z",
+      "expected": {
+        "scheduledAt": "0001-01-01T00:02:00.000Z",
+        "timeZone": "Etc/GMT+1",
+        "expression": "* * * * *"
+      },
+      "occurrence": {
+        "occurrenceAt": "0001-01-01T00:30:00.000Z",
+        "nextScheduledAt": "0001-01-01T00:31:00.000Z"
+      }
+    },
+    {
+      "name": "cron boundary 9999-12-31T23:00:00Z UTC",
+      "kind": "cron",
+      "selector": {
+        "expression": "* * * * *",
+        "time_zone": "UTC"
+      },
+      "now": "9999-12-31T23:00:00Z",
+      "decision": "9999-12-31T23:59:59.999Z",
+      "expected": {
+        "scheduledAt": "9999-12-31T23:01:00.000Z",
+        "timeZone": "UTC",
+        "expression": "* * * * *"
+      },
+      "occurrence": {
+        "occurrenceAt": "9999-12-31T23:59:00.000Z"
+      }
+    },
+    {
+      "name": "daily boundary 2026-09-16T00:00:00Z Asia/Shanghai",
+      "kind": "daily",
+      "selector": {
+        "time": "23:00:00",
+        "time_zone": "Asia/Shanghai"
+      },
+      "now": "2026-09-16T00:00:00Z",
+      "decision": "2026-09-16T14:30:00Z",
+      "pinned": "2026-09-16T14:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-16T15:00:00.000Z",
+        "time": "23:00:00.000",
+        "timeZone": "Asia/Shanghai"
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-16T14:00:00.000Z",
+        "nextScheduledAt": "2026-09-17T15:00:00.000Z"
+      }
+    },
+    {
+      "name": "weekly boundary 2026-09-14T00:00:00Z UTC",
+      "kind": "weekly",
+      "selector": {
+        "time": "09:00:00",
+        "time_zone": "UTC",
+        "weekdays": [
+          1
+        ]
+      },
+      "now": "2026-09-14T00:00:00Z",
+      "decision": "2026-09-14T13:00:00Z",
+      "pinned": "2026-09-14T12:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-09-14T09:00:00.000Z",
+        "time": "09:00:00.000",
+        "timeZone": "UTC",
+        "weekdays": [
+          1
+        ]
+      },
+      "occurrence": {
+        "occurrenceAt": "2026-09-14T12:00:00.000Z",
+        "nextScheduledAt": "2026-09-21T09:00:00.000Z"
+      }
+    },
+    {
+      "name": "every 0",
+      "kind": "every",
+      "selector": 0,
+      "now": "2026-01-01T00:00:00Z",
+      "code": "frequency_too_high"
+    },
+    {
+      "name": "every 59",
+      "kind": "every",
+      "selector": 59,
+      "now": "2026-01-01T00:00:00Z",
+      "code": "frequency_too_high"
+    },
+    {
+      "name": "every 60",
+      "kind": "every",
+      "selector": 60,
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T00:01:00.000Z"
+      }
+    },
+    {
+      "name": "every 3600",
+      "kind": "every",
+      "selector": 3600,
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T01:00:00.000Z"
+      }
+    },
+    {
+      "name": "every 9007199254740991",
+      "kind": "every",
+      "selector": 9007199254740991,
+      "now": "2026-01-01T00:00:00Z",
+      "code": "time_out_of_range"
+    },
+    {
+      "name": "every 9007199254740992",
+      "kind": "every",
+      "selector": 9007199254740992,
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "after 0",
+      "kind": "after",
+      "selector": 0,
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "after 1",
+      "kind": "after",
+      "selector": 1,
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T00:00:01.000Z"
+      }
+    },
+    {
+      "name": "after 90",
+      "kind": "after",
+      "selector": 90,
+      "now": "2026-01-01T00:00:00Z",
+      "expected": {
+        "scheduledAt": "2026-01-01T00:01:30.000Z"
+      }
+    },
+    {
+      "name": "after 9007199254740991",
+      "kind": "after",
+      "selector": 9007199254740991,
+      "now": "2026-01-01T00:00:00Z",
+      "code": "time_out_of_range"
+    },
+    {
+      "name": "after 9007199254740992",
+      "kind": "after",
+      "selector": 9007199254740992,
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    }
+  ]
+}

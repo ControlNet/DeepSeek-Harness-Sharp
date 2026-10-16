@@ -5,6 +5,7 @@ using System.Text.Json;
 using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Persistence;
+using Dsh.Schedule;
 
 namespace Dsh.Tests;
 
@@ -124,6 +125,24 @@ public sealed class SessionLogCompatibilityTests : IDisposable
     }
 
     [Fact]
+    public void ReaderWithoutSchedulePlugin_PreservesReminderAndUnknownEvents()
+    {
+        using var schedules = new ScheduleService(new Dsh.Runtime.Context());
+        var change = new ScheduleChangePayload(new ScheduleChange(ScheduleOperation.Create,
+            new ScheduleRecord("schedule-compat", "check", "check CI", new ScheduleRule(ScheduleKind.After, DateTimeOffset.UtcNow.AddMinutes(1)))));
+        var id = WriteLog(change);
+        var rewritten = new List<string>();
+
+        var events = LegacyRead(id, rewritten);
+
+        Assert.Equal(UnknownPayloadName, events.Single(item => item.Type == ScheduleChangePayload.EventType).Payload);
+        var restored = rewritten.Select(json => JsonSerializer.Deserialize<SessionEvent>(json, DshJson.Options)!).ToList();
+        var reminder = restored.Single(item => item.Type == ScheduleChangePayload.EventType);
+        Assert.True(reminder.Ignorable);
+        Assert.Equal(change, Assert.IsType<ScheduleChangePayload>(reminder.Data));
+    }
+
+    [Fact]
     public void Header_ParentCallId_RoundTripsAndStaysNullWhenAbsent()
     {
         var parent = NewHeader();
@@ -153,7 +172,7 @@ public sealed class SessionLogCompatibilityTests : IDisposable
         IsSeeded = false,
     };
 
-    private SessionId WriteLog(ProbePayload probe)
+    private SessionId WriteLog(SessionEventPayload probe)
     {
         var header = NewHeader();
         var id = header.Id;
@@ -169,7 +188,7 @@ public sealed class SessionLogCompatibilityTests : IDisposable
     }
 
     /** 在隔离的加载上下文里走持久化读路径，返回每个事件的类型与解出的 payload 类名。 */
-    private List<(string Type, string Payload)> LegacyRead(SessionId id)
+    private List<(string Type, string Payload)> LegacyRead(SessionId id, List<string>? rewritten = null)
     {
         var context = new LegacyHarnessContext();
         try
@@ -192,7 +211,21 @@ public sealed class SessionLogCompatibilityTests : IDisposable
                 using var handle = (IDisposable)open.Invoke(persistence, [legacyId, access])!;
                 var read = core.GetType(typeof(ISessionHandle).FullName!, throwOnError: true)!.GetMethod(nameof(ISessionHandle.Read))!;
                 var events = (IEnumerable)read.Invoke(handle, [0L, null])!;
-                return [.. events.Cast<object>().Select(Describe)];
+                var result = events.Cast<object>().ToList();
+                if (rewritten is not null)
+                {
+                    var converterType = core.GetType(typeof(SessionEventJsonConverter).FullName!, throwOnError: true)!;
+                    var converter = Activator.CreateInstance(converterType)!;
+                    var write = converterType.GetMethod(nameof(SessionEventJsonConverter.Write))!;
+                    foreach (var sessionEvent in result)
+                    {
+                        using var stream = new MemoryStream();
+                        using (var writer = new Utf8JsonWriter(stream))
+                            write.Invoke(converter, [writer, sessionEvent, DshJson.Options]);
+                        rewritten.Add(System.Text.Encoding.UTF8.GetString(stream.ToArray()));
+                    }
+                }
+                return [.. result.Select(Describe)];
             }
         }
         finally

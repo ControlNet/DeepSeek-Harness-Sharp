@@ -17,6 +17,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.10.0" />
     <PackageReference Include="Avalonia.Headless" Version="12.1.4" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1">
       <PrivateAssets>all</PrivateAssets>
@@ -54,6 +55,7 @@
     <None Include="..\..\src\Dsh.Boot\Profiles\Templates\settings.yaml"
           Link="Profiles\Templates\settings.yaml"
           CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="ScheduleUpstreamFixtures.json" LogicalName="Dsh.Tests.ScheduleUpstreamFixtures.json" />
     <!-- Search API responses captured from the real GitHub and Stack Exchange APIs; the engine tests replay them through a local handler. -->
     <None Update="Web\ApiSamples\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
@@ -103,6 +105,7 @@
     <ProjectReference Include="..\..\src\Dsh.E2b\Dsh.E2b.csproj" />
     <ProjectReference Include="..\..\src\Dsh.SessionGraph\Dsh.SessionGraph.csproj" />
     <ProjectReference Include="..\..\src\Dsh.SessionQuery\Dsh.SessionQuery.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.Schedule\Dsh.Schedule.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Inspection\Dsh.Inspection.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Memory\Dsh.Memory.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Pty\Dsh.Pty.csproj" />
