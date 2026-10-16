@@ -379,7 +379,6 @@ public static class PtyDaemonClient
         try
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            deadline.CancelAfter(ConnectTimeout);
             if (OperatingSystem.IsWindows())
             {
                 if (portFile is null)
@@ -391,6 +390,7 @@ public static class PtyDaemonClient
                 var client = new TcpClient();
                 try
                 {
+                    deadline.CancelAfter(ConnectTimeout);
                     await client.ConnectAsync(IPAddress.Loopback, port, deadline.Token);
                 }
                 catch
@@ -407,6 +407,7 @@ public static class PtyDaemonClient
             var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             try
             {
+                deadline.CancelAfter(ConnectTimeout);
                 await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), deadline.Token);
             }
             catch

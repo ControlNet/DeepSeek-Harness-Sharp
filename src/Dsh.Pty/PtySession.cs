@@ -30,6 +30,7 @@ public sealed class PtySession : IDisposable
     private Task? _completion;
     private bool _attached;
     private bool _disposed;
+    private bool _subscriptionsClosed;
     private PtySessionStatus _status = PtySessionStatus.Running;
     private int? _exitCode;
 
@@ -355,10 +356,12 @@ public sealed class PtySession : IDisposable
             new BoundedChannelOptions(256) { FullMode = BoundedChannelFullMode.DropOldest });
         lock (_gate)
         {
-            _subscribers.Add(channel);
             channel.Writer.TryWrite(Snapshot());
-            if (_status == PtySessionStatus.Exited)
+            // Pump EOF and the exit watcher race: once the pump has closed the subscriptions, a late subscriber gets the snapshot on an already-completed stream.
+            if (_subscriptionsClosed || _status == PtySessionStatus.Exited)
                 channel.Writer.TryComplete();
+            else
+                _subscribers.Add(channel);
         }
 
         return new PtySessionSubscription(this, channel);
@@ -376,6 +379,7 @@ public sealed class PtySession : IDisposable
     {
         lock (_gate)
         {
+            _subscriptionsClosed = true;
             foreach (var subscriber in _subscribers)
                 subscriber.Writer.TryComplete();
             _subscribers.Clear();
