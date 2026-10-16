@@ -11,10 +11,23 @@ public static class BrowserLauncher
         {
             if (OperatingSystem.IsWindows())
                 Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-            else if (OperatingSystem.IsMacOS())
-                Process.Start("open", [url]);
             else
-                Process.Start("xdg-open", [url]);
+            {
+                var info = new ProcessStartInfo(OperatingSystem.IsMacOS() ? "open" : "xdg-open")
+                {
+                    ArgumentList = { url },
+                    UseShellExecute = false,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+                var process = Process.Start(info);
+                if (process is null)
+                    return false;
+                process.StandardInput.Close();
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+            }
             return true;
         }
         catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or IOException)

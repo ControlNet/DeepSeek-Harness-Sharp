@@ -42,6 +42,7 @@ public sealed class ShadowGit
     {
         var info = new ProcessStartInfo("git")
         {
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -56,6 +57,7 @@ public sealed class ShadowGit
         using var process = new Process();
         process.StartInfo = info;
         process.Start();
+        process.StandardInput.Close();
         var outputTask = process.StandardOutput.ReadToEndAsync(signal);
         var errorTask = process.StandardError.ReadToEndAsync(signal);
         await process.WaitForExitAsync(signal);
