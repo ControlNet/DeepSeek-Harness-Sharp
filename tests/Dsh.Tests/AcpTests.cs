@@ -11,20 +11,18 @@ namespace Dsh.Tests;
 
 public sealed class AcpTests
 {
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task Initialize_ReturnsAcpProtocolMetadata()
     {
         var input = new StringReader("""
             {"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}
             """);
-        var output = new StringWriter();
+        var output = new JsonRpcLineCapture();
         await using var transport = new JsonRpcLineTransport(input, output);
         var server = new AcpServer(new Dsh.Runtime.Context(), transport);
         transport.RequestHandler = server.HandleRequestAsync;
         transport.Start();
-        await WaitUntilAsync(() => output.ToString().Contains("deepseek-harness-acp"));
-        var line = output.ToString().TrimEnd();
-        using var document = JsonDocument.Parse(line);
+        using var document = await output.NextMessageAsync(TestContext.Current.CancellationToken);
         var result = document.RootElement.GetProperty("result");
         Assert.Equal(1, result.GetProperty("protocolVersion").GetInt32());
         Assert.Equal("deepseek-harness-acp", result.GetProperty("agentInfo").GetProperty("name").GetString());
@@ -97,16 +95,6 @@ public sealed class AcpTests
         Directory.Delete(home, true);
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(2);
-        while (!condition())
-        {
-            if (DateTime.UtcNow >= deadline)
-                throw new TimeoutException("condition was not met before the timeout");
-            await Task.Delay(10);
-        }
-    }
 
     private sealed class RawJsonRpcClient(JsonRpcLineTransport transport)
     {

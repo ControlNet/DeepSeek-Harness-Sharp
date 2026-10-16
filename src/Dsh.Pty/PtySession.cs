@@ -23,13 +23,13 @@ public sealed class PtySession : IDisposable
     private const int ExitDrainMilliseconds = 150;
 
     private readonly CancellationTokenSource _pumpCts = new();
-    private byte[]? _pending;
-    private int _pendingOffset;
+    private readonly PtyOutputReader _outputReader;
     private UnixPtySession? _unix;
     private ConPtySession? _conPty;
     private Process? _process;
     private bool _attached;
     private bool _disposed;
+    private bool _subscriptionsClosed;
     private PtySessionStatus _status = PtySessionStatus.Running;
     private int? _exitCode;
 
@@ -40,6 +40,7 @@ public sealed class PtySession : IDisposable
         Command = startInfo.Command;
         StartedAt = DateTimeOffset.UtcNow;
         _screen = new VtScreen(startInfo.Columns, startInfo.Rows);
+        _outputReader = new PtyOutputReader(_output.Reader);
     }
 
     public PtySessionId Id { get; }
@@ -104,29 +105,8 @@ public sealed class PtySession : IDisposable
      * 读会话输出。数据来自常驻泵而不是后端本身: 泵让"没人 attach"的会话也被持续读走(否则子进程写满 PTY 缓冲就卡住),
      * 同时把最近输出留在回放缓冲里, 供 attach 时先铺屏。
      */
-    public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-    {
-        while (await _output.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            if (_pending is null && _output.Reader.TryRead(out var chunk))
-            {
-                _pending = chunk;
-                _pendingOffset = 0;
-            }
-
-            if (_pending is { } current)
-            {
-                var take = Math.Min(current.Length - _pendingOffset, buffer.Length);
-                current.AsSpan(_pendingOffset, take).CopyTo(buffer.Span);
-                _pendingOffset += take;
-                if (_pendingOffset >= current.Length)
-                    _pending = null;
-                return take;
-            }
-        }
-
-        return 0;
-    }
+    public ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        => _outputReader.ReadAsync(buffer, cancellationToken);
 
     /**
      * attach 时的**状态重建**: 用会话自己的 VT 屏做全量重绘(进备用屏 + 清屏 + 逐行定位输出 + SGR/光标状态),
@@ -347,10 +327,12 @@ public sealed class PtySession : IDisposable
             new BoundedChannelOptions(256) { FullMode = BoundedChannelFullMode.DropOldest });
         lock (_gate)
         {
-            _subscribers.Add(channel);
             channel.Writer.TryWrite(Snapshot());
-            if (_status == PtySessionStatus.Exited)
+            // Pump EOF and the exit watcher race: once the pump has closed the subscriptions, a late subscriber gets the snapshot on an already-completed stream.
+            if (_subscriptionsClosed || _status == PtySessionStatus.Exited)
                 channel.Writer.TryComplete();
+            else
+                _subscribers.Add(channel);
         }
 
         return new PtySessionSubscription(this, channel);
@@ -368,6 +350,7 @@ public sealed class PtySession : IDisposable
     {
         lock (_gate)
         {
+            _subscriptionsClosed = true;
             foreach (var subscriber in _subscribers)
                 subscriber.Writer.TryComplete();
             _subscribers.Clear();

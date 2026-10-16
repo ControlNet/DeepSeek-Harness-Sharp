@@ -72,7 +72,7 @@ public sealed class PtcScriptHostClient
         {
             Argv = [command.Value.FileName, .. command.Value.Arguments],
             Cwd = _cwd,
-            RedirectStandardInput = true,
+            KeepStandardInputOpen = true,
             Signal = signal,
             Stdout = new SubprocessCollect(_outputLimitBytes + FrameSlackBytes, null),
             Stderr = new SubprocessCollect(MaxStderrBytes, null),

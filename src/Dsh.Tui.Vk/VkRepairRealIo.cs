@@ -212,6 +212,7 @@ internal sealed class VkRepairRealIo : IVkRepairIo
         var startInfo = new ProcessStartInfo(fileName)
         {
             Arguments = arguments,
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -225,6 +226,7 @@ internal sealed class VkRepairRealIo : IVkRepairIo
             using var process = Process.Start(startInfo);
             if (process is null)
                 return new VkCommandResult(-1, $"无法启动 {fileName}");
+            process.StandardInput.Close();
             var standardOutput = process.StandardOutput.ReadToEnd();
             var standardError = process.StandardError.ReadToEnd();
             if (!process.WaitForExit(CommandTimeoutMilliseconds))
@@ -264,6 +266,7 @@ internal sealed class VkRepairRealIo : IVkRepairIo
         var display = FindFreeDisplayNumber();
         var startInfo = new ProcessStartInfo(xvfb)
         {
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -279,9 +282,10 @@ internal sealed class VkRepairRealIo : IVkRepairIo
         try
         {
             var process = Process.Start(startInfo);
-            return process is null
-                ? new VkVirtualDisplayStart(null, "无法启动 Xvfb 进程")
-                : new VkVirtualDisplayStart(new VkXvfbDisplay(process, display), "");
+            if (process is null)
+                return new VkVirtualDisplayStart(null, "无法启动 Xvfb 进程");
+            process.StandardInput.Close();
+            return new VkVirtualDisplayStart(new VkXvfbDisplay(process, display), "");
         }
         catch (Exception error)
         {

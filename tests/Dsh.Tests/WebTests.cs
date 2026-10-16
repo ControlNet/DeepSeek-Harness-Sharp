@@ -79,8 +79,12 @@ public class WebTests : IDisposable
         [Fact]
         public void ValidatesQueries()
         {
-            Assert.Equal(["hi"], WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":["hi"]}""").RootElement, 4));
-            Assert.Equal(["one", " two "], WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":["one","one"," two "]}""").RootElement, 4));
+            Assert.Equal(["hi"], WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":["hi"]}""").RootElement, 4).Queries);
+            Assert.Equal(["one", " two "], WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":["one","one"," two "]}""").RootElement, 4).Queries);
+            Assert.Null(WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":["hi"]}""").RootElement, 4).Engine);
+            Assert.Equal("github-repos", WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":["hi"],"engine":" github-repos "}""").RootElement, 4).Engine);
+            Assert.Throws<WebError>(() => WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":["hi"],"engine":" "}""").RootElement, 4));
+            Assert.Throws<WebError>(() => WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":["hi"],"engine":3}""").RootElement, 4));
             Assert.Throws<WebError>(() => WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":[]}""").RootElement, 4));
             Assert.Throws<WebError>(() => WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":["one","two"]}""").RootElement, 1));
             Assert.Throws<WebError>(() => WebSearchTool.ParseSearchArgs(JsonDocument.Parse("""{"queries":["ok"," "]}""").RootElement, 4));
