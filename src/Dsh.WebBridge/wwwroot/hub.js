@@ -220,6 +220,7 @@ export class MachineLink {
   /**
    * Shows a PTY across reconnects; listener.data(bytes, isSnapshot) gets output, where the first output of every attach is a full-screen snapshot.
    * listener.eof() runs when the PTY ends, listener.error(text) when attaching fails.
+   * listener.size() supplies the current viewport size; it is applied before each attachment snapshot, including after reconnect.
    */
   attachTerminal(ptyId, listener) {
     let terminal = this.#terminals.get(ptyId);
@@ -410,12 +411,26 @@ export class MachineLink {
     });
   }
 
-  #attachOnHost(ptyId, terminal) {
+  async #attachOnHost(ptyId, terminal) {
     if (!this.connected)
       return;
-    terminal.snapshotNext = true;
-    this.request('host.pty.attach', { PtyId: ptyId })
-      .catch((error) => terminal.listeners.forEach((listener) => listener.error(describe(error))));
+    const rpc = this.#rpc;
+    const generation = this.#generation;
+    try {
+      const size = terminal.listeners.values().next().value.size?.();
+      if (size !== undefined)
+        await this.resizeTerminal(ptyId, size.columns, size.rows);
+      if (generation !== this.#generation || this.#rpc !== rpc || !this.connected
+          || this.#terminals.get(ptyId) !== terminal || terminal.listeners.size === 0)
+        return;
+      // A snapshot restores the host's scroll region as well as its cells.
+      // Resizing afterwards leaves the already-fitted viewer with the old region.
+      terminal.snapshotNext = true;
+      await this.request('host.pty.attach', { PtyId: ptyId });
+    } catch (error) {
+      if (this.#rpc === rpc && this.#terminals.get(ptyId) === terminal)
+        terminal.listeners.forEach((listener) => listener.error(describe(error)));
+    }
   }
 
   #resume() {

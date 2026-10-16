@@ -95,7 +95,10 @@ export function terminalPanel(machineLink, ptyId) {
   }));
 
   let resizeTimer = null;
+  let detach = null;
   term.onResize(({ cols, rows }) => {
+    if (detach === null)
+      return;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => machineLink.resizeTerminal(ptyId, cols, rows).catch(() => {}), RESIZE_DEBOUNCE_MS);
   });
@@ -106,7 +109,8 @@ export function terminalPanel(machineLink, ptyId) {
       fit.fit();
   }
 
-  const detach = machineLink.attachTerminal(ptyId, {
+  const listener = {
+    size: () => ({ columns: term.cols, rows: term.rows }),
     data: (bytes, snapshot) => {
       if (snapshot)
         term.reset();
@@ -117,7 +121,7 @@ export function terminalPanel(machineLink, ptyId) {
     },
     eof: () => setState('The process has ended.'),
     error: (text) => setState(`Cannot attach: ${text}`),
-  });
+  };
 
   const element = h('div', { className: 'terminal-panel' }, screen, state, keyBar);
   return {
@@ -128,12 +132,15 @@ export function terminalPanel(machineLink, ptyId) {
       term.open(screen);
       fitSafely();
       observer.observe(screen);
+      // Measure first, then let the link resize the PTY before it takes a snapshot.
+      // The same size provider is used when the link reconnects after an offline fit.
+      detach = machineLink.attachTerminal(ptyId, listener);
       term.focus();
     },
     dispose() {
       observer.disconnect();
       clearTimeout(resizeTimer);
-      detach();
+      detach?.();
       term.dispose();
     },
   };

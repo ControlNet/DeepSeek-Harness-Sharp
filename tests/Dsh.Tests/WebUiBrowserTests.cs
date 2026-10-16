@@ -109,6 +109,7 @@ public sealed class WebUiBrowserTests
         await phone.WaitForAsync("document.querySelector('.xterm-rows')", Ct, SessionWait);
         Assert.Equal("flex", await phone.EvaluateAsync("getComputedStyle(document.querySelector('.key-bar')).display", Ct));
         Assert.Equal("true", await phone.EvaluateAsync("String([...document.querySelectorAll('.key-bar .key')].every((key) => key.getBoundingClientRect().height >= 44))", Ct));
+        await AssertTerminalSnapshotFitsAsync(phone, hub.LocalHome);
         // Do not let xterm's opening autofocus hide a broken touch-to-focus path.
         Assert.Equal("false", await phone.EvaluateAsync("""
             (() => {
@@ -124,6 +125,7 @@ public sealed class WebUiBrowserTests
             "String(document.activeElement === document.querySelector('#terminal-screen .xterm-helper-textarea'))", Ct));
         await TypeInTerminalAsync(phone, TestShell.EchoAnswer("phone"), tap: true);
         await WaitForTerminalTextAsync(phone, "phone-42", hub.LocalHome);
+        await TerminalReconnectsAfterOfflineResizeAsync(phone, hub.LocalHome);
         await AssertNoHorizontalScrollAsync(phone);
         await phone.ScreenshotAsync(Path.Combine(Artifacts, "phone-terminal-keybar.png"), Ct);
         await phone.NavigateAsync(new Uri($"{await phone.EvaluateAsync("location.origin", Ct)}/#/"), Ct);
@@ -311,6 +313,43 @@ public sealed class WebUiBrowserTests
         await chrome.PressEnterAsync(Ct);
     }
 
+    /** The real shell's snapshot must use the viewport's geometry and full-height scroll region, not its startup 80x24 geometry. */
+    private static async Task AssertTerminalSnapshotFitsAsync(HeadlessChrome chrome, string home)
+    {
+        await chrome.WaitUntilAsync("document.getElementById('terminal-screen').getAttribute('aria-busy')", "false", Ct, SessionWait);
+        using var state = JsonDocument.Parse(await chrome.EvaluateAsync("""
+            JSON.stringify(window.__terminalDelivery('').terminals.find((terminal) => terminal.attachedToDocument))
+            """, Ct));
+        var terminal = state.RootElement;
+        var sessions = await PtyDaemonClient.ListAsync(PtyDaemonPaths.SocketPath(home),
+            OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile(home) : null, Ct);
+        var session = Assert.Single(sessions.Where(item => item.Id == terminal.GetProperty("ptyId").GetString()));
+        Assert.Equal(terminal.GetProperty("cols").GetInt32(), session.Columns);
+        Assert.Equal(terminal.GetProperty("rows").GetInt32(), session.Rows);
+        Assert.Equal(0, terminal.GetProperty("scrollTop").GetInt32());
+        Assert.Equal(session.Rows - 1, terminal.GetProperty("scrollBottom").GetInt32());
+    }
+
+    /** Real network loss, a phone viewport resize while offline, then the same daemon-backed shell after reconnect. */
+    private static async Task TerminalReconnectsAfterOfflineResizeAsync(HeadlessChrome chrome, string home)
+    {
+        var previousRows = await chrome.EvaluateAsync("String(window.__terminalDelivery('').terminals.find((terminal) => terminal.attachedToDocument).rows)", Ct);
+        var previousParsed = await chrome.EvaluateAsync("String(window.__terminalDelivery('').terminals.find((terminal) => terminal.attachedToDocument).parsed)", Ct);
+        await chrome.SendAsync("Network.enable", "{}", Ct);
+        await chrome.SendAsync("Network.emulateNetworkConditions", """{"offline":true,"latency":0,"downloadThroughput":-1,"uploadThroughput":-1}""", Ct);
+        await chrome.EvaluateAsync($"window.__disconnectMachine({JsonSerializer.Serialize(LocalMachine)})", Ct);
+        await chrome.EmulatePhoneAsync(PhoneWidthPixels, PhoneHeightPixels - 144, Ct);
+        await chrome.WaitForAsync($"window.__terminalDelivery('').terminals.some((terminal) => terminal.attachedToDocument && terminal.rows < {previousRows})", Ct, SessionWait);
+        await chrome.SendAsync("Network.emulateNetworkConditions", """{"offline":false,"latency":0,"downloadThroughput":-1,"uploadThroughput":-1}""", Ct);
+        await chrome.WaitForAsync($$"""
+            window.__terminalDelivery('').peers.filter((peer) => peer.machine === {{JsonSerializer.Serialize(LocalMachine)}}).at(-1)?.output.some((output) => output.chunks > 0)
+              && window.__terminalDelivery('').terminals.some((terminal) => terminal.attachedToDocument && terminal.parsed > {{previousParsed}})
+            """, Ct, SessionWait);
+        await AssertTerminalSnapshotFitsAsync(chrome, home);
+        await TypeInTerminalAsync(chrome, TestShell.EchoAnswer("reconnected"), tap: true);
+        await WaitForTerminalTextAsync(chrome, "reconnected-42", home);
+    }
+
     /** Observe the real RPC and xterm boundaries without replacing the shell, transport or renderer. Never return their raw text. */
     private static async Task RecordTerminalDeliveryAsync(HeadlessChrome chrome)
     {
@@ -322,6 +361,7 @@ public sealed class WebUiBrowserTests
               const terminals = [];
               const byRpc = new WeakMap();
               const byTerminal = new WeakMap();
+              const connections = new Map();
               const stream = () => ({ bytes: 0, chunks: 0, tail: '', decoder: new TextDecoder() });
               const append = (target, bytes) => {
                 target.bytes += bytes.length;
@@ -338,6 +378,7 @@ public sealed class WebUiBrowserTests
                 try {
                   const rpc = await connect.call(this, url);
                   byRpc.set(rpc, peer);
+                  connections.set(peer.machine, rpc);
                   peer.state = 'open';
                   rpc.onClose((event) => { peer.state = 'closed'; peer.closeCode = event.code; });
                   return rpc;
@@ -393,6 +434,11 @@ public sealed class WebUiBrowserTests
                 append(byTerminal.get(this).output, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes);
                 return write.call(this, bytes, callback);
               };
+              window.__disconnectMachine = (machine) => new Promise((resolve) => {
+                const rpc = connections.get(machine);
+                rpc.onClose(() => resolve('closed'));
+                rpc.close();
+              });
               window.__terminalDelivery = (expected) => ({
                 peers: peers.map((peer) => ({
                   machine: peer.machine, state: peer.state, closeCode: peer.closeCode, requests: peer.requests,
@@ -401,14 +447,21 @@ public sealed class WebUiBrowserTests
                 terminals: terminals.map(({ term, screen, output, parsed, renders, sizes }) => {
                   const buffer = term.buffer.active;
                   const lines = Array.from({ length: buffer.length }, (_, row) => buffer.getLine(row).translateToString());
+                  const visibleLines = lines.slice(buffer.viewportY, buffer.viewportY + term.rows);
                   const rect = screen.getBoundingClientRect();
                   return {
                     ptyId: screen.dataset.ptyId, attachedToDocument: screen.isConnected,
                     output: summary(output, expected), parsed, renders, sizes,
                     cols: term.cols, rows: term.rows, bufferType: buffer.type, bufferLines: buffer.length,
                     bufferContainsExpected: lines.some((line) => line.includes(expected)),
+                    expectedBufferRows: lines.flatMap((line, row) => line.includes(expected) ? [row] : []),
+                    visibleContainsExpected: visibleLines.some((line) => line.includes(expected)),
+                    nonblankVisibleLines: visibleLines.filter((line) => line.trim().length > 0).length,
+                    cursorAbsoluteRow: buffer.baseY + buffer.cursorY,
                     nonblankBufferLines: lines.filter((line) => line.trim().length > 0).length,
                     viewportY: buffer.viewportY, baseY: buffer.baseY, cursorX: buffer.cursorX, cursorY: buffer.cursorY,
+                    scrollTop: term._core._bufferService.buffer.scrollTop,
+                    scrollBottom: term._core._bufferService.buffer.scrollBottom,
                     renderedContainsExpected: screen.querySelector('.xterm-rows')?.textContent.includes(expected),
                     renderedRows: screen.querySelector('.xterm-rows')?.children.length,
                     renderPaused: term._core?._renderService?._isPaused,
