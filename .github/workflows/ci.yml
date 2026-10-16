@@ -195,7 +195,6 @@ jobs:
             -class Dsh.Tests.PtyOutputReaderTests
             -class Dsh.Tests.MouseReportPtyTests
             -class Dsh.Tests.TuiOverlayCpuTests
-            -class Dsh.Tests.SubprocessTests
             -class Dsh.Tests.PtySessionSubscriptionTests
             -class Dsh.Tests.ChatWindowKeyBindingTests
             -class Dsh.Tests.ChatWindowPaneTests
