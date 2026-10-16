@@ -40,12 +40,12 @@ public sealed class A2aTests
         private readonly HttpListener _listener = new();
         private readonly CancellationTokenSource _stop = new();
         private readonly IReadOnlyList<string> _script;
-        private readonly TimeSpan _responseDelay;
+        private readonly Task? _responseGate;
 
-        public MockDeepSeekServer(IReadOnlyList<string> script, TimeSpan? responseDelay = null)
+        public MockDeepSeekServer(IReadOnlyList<string> script, Task? responseGate = null)
         {
             _script = script;
-            _responseDelay = responseDelay ?? TimeSpan.Zero;
+            _responseGate = responseGate;
             var probe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
             probe.Start();
             Port = ((IPEndPoint)probe.LocalEndpoint).Port;
@@ -76,8 +76,8 @@ public sealed class A2aTests
                 {
                     using var reader = new StreamReader(context.Request.InputStream);
                     _ = await reader.ReadToEndAsync();
-                    if (_responseDelay > TimeSpan.Zero)
-                        await Task.Delay(_responseDelay, _stop.Token);
+                    if (_responseGate is not null)
+                        await _responseGate.WaitAsync(_stop.Token).ConfigureAwait(false);
                     context.Response.ContentType = "text/event-stream";
                     foreach (var line in _script)
                     {
@@ -214,7 +214,8 @@ public sealed class A2aTests
     public async Task Cancel_RunningTask_ThenNotCancelable()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        using var server = new MockDeepSeekServer(SseTextOnly, TimeSpan.FromSeconds(5));
+        var responseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var server = new MockDeepSeekServer(SseTextOnly, responseGate.Task);
         using var fixture = new A2aFixture(server.BaseUrl);
         using var client = new A2AClient(new Uri(fixture.Endpoint));
 
@@ -326,7 +327,8 @@ public sealed class A2aTests
     public async Task RemoteClient_Cancel()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        using var server = new MockDeepSeekServer(SseTextOnly, TimeSpan.FromSeconds(5));
+        var responseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var server = new MockDeepSeekServer(SseTextOnly, responseGate.Task);
         using var fixture = new A2aFixture(server.BaseUrl);
         var client = new A2aRemoteClient(new Dictionary<string, A2aRemoteSettings>());
 

@@ -318,6 +318,7 @@ internal sealed class TerminalInputReader : ITerminalInputSource
 {
     private const int InterruptedSystemCall = 4;
     private const short PollIn = 0x0001;
+    private const int InterruptedSystemCall = 4;
     private const int FGetFl = 3;
     private const int FSetFl = 4;
 

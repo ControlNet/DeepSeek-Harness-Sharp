@@ -50,17 +50,16 @@ public sealed class RemoteHostCapabilityTests
         Assert.Equal("/", listing.Parent);
         Assert.Contains(listing.Entries, entry => entry is { Name: "sub", IsDirectory: true });
 
-        var events = new List<RemoteEventInfo>();
+        var received = new TaskCompletionSource<RemoteEventInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var subscription = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var pump = Task.Run(async () =>
         {
             await foreach (var item in client.SubscribeAsync(created.Id, 0, subscription.Token))
-                events.Add(item);
+                received.TrySetResult(item);
         }, Ct);
-        await Task.Delay(200, Ct);
         await client.SendMessageAsync(created.Id, "hi", [], Ct);
-        await WaitForAsync(() => events.Count > 0, Ct);
-        Assert.Equal("user:hi", events[0].EventJson);
+        var item = await received.Task.WaitAsync(Ct);
+        Assert.Equal("user:hi", item.EventJson);
         await subscription.CancelAsync();
         try
         {
@@ -188,6 +187,8 @@ public sealed class RemoteHostCapabilityTests
             LastProvider = provider;
             var session = new RemoteSessionInfo($"session-{_sessions.Count + 1}", cwd, "Idle", 0, null, null, 0);
             _sessions[session.Id] = session;
+            // Events are kept from creation on, like a real session log that a subscription from seq 0 replays.
+            _events[session.Id] = Channel.CreateUnbounded<RemoteEventInfo>();
             return Task.FromResult(session);
         }
 
@@ -204,8 +205,7 @@ public sealed class RemoteHostCapabilityTests
 
         public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken)
         {
-            if (_events.TryGetValue(sessionId, out var channel))
-                channel.Writer.TryWrite(new RemoteEventInfo(sessionId, $"user:{text}"));
+            _events[sessionId].Writer.TryWrite(new RemoteEventInfo(sessionId, $"user:{text}"));
             return Task.CompletedTask;
         }
 
@@ -269,10 +269,7 @@ public sealed class RemoteHostCapabilityTests
 
         public async IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
-            var channel = _events.TryGetValue(sessionId, out var existing)
-                ? existing
-                : _events[sessionId] = Channel.CreateUnbounded<RemoteEventInfo>();
-            await foreach (var item in channel.Reader.ReadAllAsync(cancellationToken))
+            await foreach (var item in _events[sessionId].Reader.ReadAllAsync(cancellationToken))
                 yield return item;
         }
 

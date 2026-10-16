@@ -349,8 +349,8 @@ public static class WebSearchDeepseek
             MaxTokens = resolved.MaxTokens,
             MaxUses = resolved.MaxUses,
         };
-        var http = new HttpClient(OutboundProxy.FromContext(ctx).CreateHandler(allowAutoRedirect: false), disposeHandler: true);
-        return web.RegisterSearchProvider(new DeepSeekSearchProvider(() => options, http));
+        var http = SiteSearchHttp.CreateClient(ctx);
+        return new WebDisposable(web.RegisterSearchProvider(new DeepSeekSearchProvider(() => options, http)), http);
     }
 
     private static DeepSeekSearchConfig FromDictionary(IReadOnlyDictionary<string, object?> dict)

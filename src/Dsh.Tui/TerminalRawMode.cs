@@ -250,6 +250,8 @@ public sealed class TerminalRawMode : IDisposable
         _ = Console.TreatControlCAsInput;
         if (Console.IsOutputRedirected)
             return null;
+        // Console 会在进程退出时恢复自己的初始快照; 必须在手工 raw 之前初始化, 避免它把 raw 当成原始状态。
+        _ = Console.TreatControlCAsInput;
         var size = OperatingSystem.IsMacOS() ? MacTermiosSize : LinuxTermiosSize;
         var buffer = Marshal.AllocHGlobal(size);
         try

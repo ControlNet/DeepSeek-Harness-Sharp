@@ -17,8 +17,7 @@ public sealed class PtyRemoteSession : IAsyncDisposable
     private readonly Channel<byte[]> _input = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
     private readonly Task _outputPump;
     private readonly Task _inputPump;
-    private byte[]? _pending;
-    private int _pendingOffset;
+    private readonly PtyOutputReader _outputReader;
     private bool _disposed;
 
     internal PtyRemoteSession(Socket socket, NetworkStream stream, PtyDaemonSessionDto info)
@@ -29,6 +28,7 @@ public sealed class PtyRemoteSession : IAsyncDisposable
         Command = info.Command;
         Columns = info.Columns;
         Rows = info.Rows;
+        _outputReader = new PtyOutputReader(_output.Reader);
         _outputPump = Task.Run(PumpOutputAsync);
         _inputPump = Task.Run(PumpInputAsync);
     }
@@ -63,29 +63,8 @@ public sealed class PtyRemoteSession : IAsyncDisposable
     }
 
     /** 与 PtySession.ReadAsync 同形: 读取输出缓冲(跨调用保留半截块), 供终端窗格的读取泵直接消费。 */
-    public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-    {
-        while (await _output.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            if (_pending is null && _output.Reader.TryRead(out var chunk))
-            {
-                _pending = chunk;
-                _pendingOffset = 0;
-            }
-
-            if (_pending is { } current)
-            {
-                var take = Math.Min(current.Length - _pendingOffset, buffer.Length);
-                current.AsSpan(_pendingOffset, take).CopyTo(buffer.Span);
-                _pendingOffset += take;
-                if (_pendingOffset >= current.Length)
-                    _pending = null;
-                return take;
-            }
-        }
-
-        return 0;
-    }
+    public ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        => _outputReader.ReadAsync(buffer, cancellationToken);
 
     public ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
