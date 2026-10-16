@@ -91,6 +91,31 @@ public sealed class MachineStoreTests : IDisposable
     }
 
     [Theory]
+    [InlineData("")]
+    [InlineData("remoteWorkspaces: null")]
+    [InlineData("remoteWorkspaces: []")]
+    public void LegacyGuiEmptyWorkspaces_AreMigratedWithoutRejectingOptionalConfiguration(string workspaces)
+    {
+        var home = new HarnessHome(_root);
+        File.WriteAllText(home.SettingsFile, $"""
+            plugins:
+              "@deepseek-ai/dsh-gui":
+                theme: light
+                remoteAutoDeploy: false
+                {workspaces}
+            """);
+        var store = new MachineStore(home);
+
+        var imported = store.Load();
+
+        Assert.Empty(imported.Machines);
+        Assert.False(imported.Deploy.AutoDeploy);
+        Assert.NotNull(HarnessSettings.Load(home).Fleet);
+        Assert.Equal(GuiSettings.ThemeLight, new GuiSettings(home).Load().Theme);
+        Assert.Empty(store.Load().Machines);
+    }
+
+    [Theory]
     [InlineData("remoteWorkspaces: invalid")]
     [InlineData("remoteWorkspaces: [invalid]")]
     [InlineData("remoteWorkspaces: [{ name: lab, host: lab.internal }, { name: incomplete }]")]

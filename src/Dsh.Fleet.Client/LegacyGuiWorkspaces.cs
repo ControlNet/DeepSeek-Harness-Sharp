@@ -54,7 +54,7 @@ internal static class LegacyGuiWorkspaces
 
     private static List<MachineSpec> Machines(IReadOnlyDictionary<string, object?> parameters)
     {
-        if (!parameters.TryGetValue(WorkspacesKey, out var workspaces))
+        if (!parameters.TryGetValue(WorkspacesKey, out var workspaces) || workspaces is null)
             return [];
         var items = workspaces as IEnumerable<object?>
             ?? throw new InvalidDataException("legacy remoteWorkspaces must be a list");
