@@ -46,7 +46,7 @@ public sealed class McpService(Context ctx) : Service(ctx, ServiceName), IAsyncD
     public async Task ConnectAsync(IReadOnlyList<McpServerConfig> servers, CancellationToken signal = default)
     {
         foreach (var server in servers)
-            await ConnectOneAsync(server, () => CreateTransport(server), signal);
+            await ConnectOneAsync(server, () => CreateTransport(server, OutboundProxy.FromContext(ctx)), signal);
     }
 
     internal async Task ConnectAsync(McpServerConfig server, IClientTransport transport, CancellationToken signal = default)
@@ -108,7 +108,7 @@ public sealed class McpService(Context ctx) : Service(ctx, ServiceName), IAsyncD
         }
     }
 
-    private static IClientTransport CreateTransport(McpServerConfig server)
+    private static IClientTransport CreateTransport(McpServerConfig server, OutboundProxy proxy)
     {
         if (server.Transport == "stdio")
         {
@@ -126,11 +126,14 @@ public sealed class McpService(Context ctx) : Service(ctx, ServiceName), IAsyncD
         {
             if (string.IsNullOrWhiteSpace(server.Url))
                 throw new ArgumentException($"mcp server \"{server.Name}\" requires a url for {server.Transport} transport");
-            return new HttpClientTransport(new HttpClientTransportOptions
-            {
-                Name = server.Name,
-                Endpoint = new Uri(server.Url),
-            });
+            return new HttpClientTransport(
+                new HttpClientTransportOptions
+                {
+                    Name = server.Name,
+                    Endpoint = new Uri(server.Url),
+                },
+                new HttpClient(proxy.CreateHandler()),
+                ownsHttpClient: true);
         }
 
         throw new ArgumentException($"mcp server \"{server.Name}\" has unsupported transport \"{server.Transport}\"");

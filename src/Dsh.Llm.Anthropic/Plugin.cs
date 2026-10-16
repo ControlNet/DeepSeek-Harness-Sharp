@@ -16,11 +16,11 @@ public sealed class Plugin : IDshPlugin
     {
         var factories = ctx.Get<LlmAdapterFactoryRegistry>(LlmAdapterFactoryRegistry.ServiceName)
             ?? throw new InvalidOperationException("llmAdapterFactories is required for the Anthropic adapter plugin");
-        return factories.Register(Package, new AnthropicAdapterFactory());
+        return factories.Register(Package, new AnthropicAdapterFactory(OutboundProxy.FromContext(ctx)));
     }
 }
 
-internal sealed class AnthropicAdapterFactory : ILlmAdapterFactory
+internal sealed class AnthropicAdapterFactory(OutboundProxy proxy) : ILlmAdapterFactory
 {
     public IReadOnlyList<LlmWireDefinition> Wires { get; } =
     [
@@ -32,5 +32,6 @@ internal sealed class AnthropicAdapterFactory : ILlmAdapterFactory
             provider.ProviderId,
             Endpoint.NormalizeBaseUrl(provider.BaseUrl),
             provider.ApiKey,
-            provider.Models.Select(model => model.Id).ToList());
+            provider.Models.Select(model => model.Id).ToList(),
+            new HttpClient(proxy.CreateHandler()));
 }
