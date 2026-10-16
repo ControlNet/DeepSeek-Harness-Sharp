@@ -211,6 +211,7 @@ jobs:
             -class 'Dsh.Tests.JobsTests*'
             -class Dsh.Tests.Runtime.PluginLifecycleTests
             -class Dsh.Tests.Runtime.PluginSchedulerTests
+            -class Dsh.Tests.Runtime.RuntimePluginTests
             -class Dsh.Tests.Runtime.PluginUnloadTests
             -class Dsh.Tests.AcpTests
             -class Dsh.Tests.LspTests
