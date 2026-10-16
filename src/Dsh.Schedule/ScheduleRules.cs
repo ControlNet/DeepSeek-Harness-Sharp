@@ -73,6 +73,9 @@ public static partial class ScheduleRules
     {
         try
         {
+            // Windows invariant-globalization releases cannot use the runtime's ICU-based IANA mapping.
+            if (OperatingSystem.IsWindows() && TimeZoneConverter.TZConvert.TryIanaToWindows(id, out var windowsId))
+                id = windowsId;
             return TimeZoneInfo.FindSystemTimeZoneById(id);
         }
         catch (Exception error) when (error is TimeZoneNotFoundException or InvalidTimeZoneException)

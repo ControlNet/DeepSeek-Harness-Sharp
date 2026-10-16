@@ -87,7 +87,8 @@ public sealed record ScheduleChangePayload(ScheduleChange Change) : SessionEvent
         => SessionEventCodec.Register<ScheduleChangePayload>(
             EventType,
             static (element, _) => new ScheduleChangePayload(Decode(element)),
-            static (payload, writer, _) => JsonSerializer.Serialize(writer, payload.Change, DshScheduleJsonContext.Default.ScheduleChange));
+            static (payload, writer, _) => JsonSerializer.Serialize(writer, payload.Change, DshScheduleJsonContext.Default.ScheduleChange),
+            ignorable: true);
 
     private static ScheduleChange Decode(JsonElement element)
     {

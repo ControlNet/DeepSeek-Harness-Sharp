@@ -68,6 +68,8 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    - 时区写 `UTC`、IANA 名称(如 `Asia/Shanghai`)或本机时区 id(系统提示里会告诉模型本机时区)。`daily`/`weekly`/`cron` 遇到夏令时跳过的本地时刻会在跳变结束时触发,重复出现的本地时刻只触发一次;`at` 指向不存在的本地时刻会被拒绝,重复时刻取较早的一次。
    - 提醒属于会话:会话关闭后不再触发;恢复该会话时提醒随之恢复,期间错过的一次性提醒补发一次,循环提醒只补发最近错过的那一次。fork 出的会话不继承提醒,子代理不能使用这些工具。`headless` 单次任务在回复结束后即退出,其中设置的提醒不会触发。
    - 提醒不是 goal:提醒消息不算用户输入,不会创建、恢复或完成 goal,也不改变 goal 的自动续跑。
+   - 派发会先推进提醒状态,再排入会话收件箱。删除已派发的提醒不撤回排队消息;用户中断会清空收件箱,已派发的一次性提醒不会重投。禁用定时提醒插件后仍可读取带 `ignorable` 标记的会话事件,重新启用后恢复提醒状态;禁用期间不运行计时器。
+   - Windows 发布档通过内置 IANA/Windows 时区映射读取系统时区规则,不依赖 ICU;Linux/macOS 使用系统 tzdata。实际规则随系统时区数据更新。上述 cron/DST 行为与上游的差异仍在 discussion #9 等待作者决定,不代表已获接受。
 10. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
    - 切换只影响之后的相对路径解析,以及新启动的 shell/终端的默认目录;已经存在的 `bash_persistent` shell 与终端仍停在各自的目录。
    - 写权限根固定为会话的初始目录,不随切换移动:写入权限根之外的文件(`write`/`edit`/`str_replace_editor`)、在权限根之外启动 shell/终端或建 worktree,都会先弹审批,提示「目标路径在权限根之外」;审批策略为 never 时直接拒绝。

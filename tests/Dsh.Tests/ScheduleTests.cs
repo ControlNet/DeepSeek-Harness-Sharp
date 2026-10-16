@@ -116,6 +116,24 @@ public static class ScheduleTests
         }
 
         [Fact]
+        public void Cron_DayAndWeekdayMustBothMatch()
+        {
+            var rule = ScheduleRules.Resolve(new ScheduleTiming.Cron("0 9 16 * 5", "UTC"), Start);
+            Assert.Equal(Utc("2026-10-16T09:00:00Z"), rule.ScheduledAt);
+            Assert.Equal(Utc("2027-04-16T09:00:00Z"), ScheduleRules.Occur(rule, Utc("2026-10-16T09:00:00Z")).NextAt);
+        }
+
+        [Fact]
+        public void Daily_RepeatedLocalTimeFiresOnlyOnce()
+        {
+            var rule = ScheduleRules.Resolve(new ScheduleTiming.Daily("01:30:00", "America/New_York"), Utc("2026-10-31T12:00:00Z"));
+            Assert.Equal(Utc("2026-11-01T05:30:00Z"), rule.ScheduledAt);
+            var occurrence = ScheduleRules.Occur(rule, Utc("2026-11-01T06:45:00Z"));
+            Assert.Equal(Utc("2026-11-01T05:30:00Z"), occurrence.OccurrenceAt);
+            Assert.Equal(Utc("2026-11-02T06:30:00Z"), occurrence.NextAt);
+        }
+
+        [Fact]
         public void Cron_WithoutFutureMatchIsOutOfRange()
             => Assert.Equal(ScheduleErrorCodes.TimeOutOfRange, CodeOf(() => ScheduleRules.Resolve(new ScheduleTiming.Cron("0 0 30 2 *", "UTC"), Start)));
     }
@@ -495,6 +513,62 @@ public static class ScheduleTests
         }
 
         [Fact]
+        public async Task DeleteAfterDispatch_DoesNotRetractQueuedReminder()
+        {
+            using var fixture = new LoopFixture();
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            fixture.Adapter.Then(async () =>
+            {
+                await release.Task;
+                return Text("done");
+            });
+            fixture.Adapter.Then(Text("reminder handled"));
+            var agent = await fixture.Open();
+            var record = fixture.Schedules.Create(agent, "ping", "ping me", new ScheduleTiming.After(30));
+            agent.Followup(MessageFactory.CreateUserText("work"));
+            await fixture.Adapter.FirstRequest.Task.WaitAsync(TurnDeadline, TestContext.Current.CancellationToken);
+            fixture.Time.Advance(TimeSpan.FromSeconds(30));
+
+            Assert.True(fixture.Schedules.Delete(agent, record.Id));
+            release.SetResult();
+            await agent.WhenIdle().WaitAsync(TurnDeadline, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, fixture.Adapter.Requests.Count);
+            Assert.True(CarriesReminder(fixture.Adapter.Requests[1]));
+            Assert.Empty(fixture.Schedules.List(agent));
+        }
+
+        [Fact]
+        public async Task UserInterrupt_DropsQueuedOneShotWithoutRedelivery()
+        {
+            using var fixture = new LoopFixture();
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            fixture.Adapter.Then(async () =>
+            {
+                await release.Task;
+                return Text("cancelled");
+            });
+            fixture.Adapter.Then(Text("new user turn"));
+            var agent = await fixture.Open();
+            fixture.Schedules.Create(agent, "ping", "ping me", new ScheduleTiming.After(30));
+            agent.Followup(MessageFactory.CreateUserText("work"));
+            await fixture.Adapter.FirstRequest.Task.WaitAsync(TurnDeadline, TestContext.Current.CancellationToken);
+            fixture.Time.Advance(TimeSpan.FromSeconds(30));
+            agent.Cancel(new AgentCancelCause.User());
+            release.SetResult();
+            await agent.WhenIdle().WaitAsync(TurnDeadline, TestContext.Current.CancellationToken);
+            fixture.Time.Advance(TimeSpan.FromMinutes(5));
+            agent.Followup(MessageFactory.CreateUserText("continue"));
+            await agent.WhenIdle().WaitAsync(TurnDeadline, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, fixture.Adapter.Requests.Count);
+            Assert.DoesNotContain(fixture.Adapter.Requests, CarriesReminder);
+            Assert.Empty(fixture.Schedules.List(agent));
+            Assert.Single(agent.Session.SnapshotEvents().Where(sessionEvent =>
+                sessionEvent.Data is ScheduleChangePayload { Change.Operation: ScheduleOperation.Dispatch }));
+        }
+
+        [Fact]
         public async Task ReminderTurn_GrantsNoGoalAuthority()
         {
             using var fixture = new LoopFixture();
@@ -517,8 +591,10 @@ public static class ScheduleTests
     {
         private static readonly TimeSpan DeliveryDeadline = TimeSpan.FromSeconds(10);
 
-        [Fact]
-        public async Task ResumedSession_DeliversReminderThatWentOverdueWhileClosed()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ResumedSession_DeliversReminderThatWentOverdueWhileClosed(bool disableBeforeResume)
         {
             var directory = TempTree.CreateDirectory("dsh-schedule-resume");
             var home = Path.Combine(directory, "home");
@@ -534,6 +610,26 @@ public static class ScheduleTests
                     var created = await agents.Create(new CreateAgentOptions(sessionId, directory, new AgentOptions("test", "test-model")), TestContext.Current.CancellationToken);
                     created.Agent.Session.Append(new ScheduleChangePayload(new ScheduleChange(ScheduleOperation.Create, overdue)));
                     await app.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(created.Agent.Session);
+                }
+
+                if (disableBeforeResume)
+                {
+                    await File.WriteAllTextAsync(Path.Combine(home, "settings.yaml"), GuiTestEnvironment.HomeSettings + """
+
+                        plugins:
+                          "@deepseek-ai/dsh-schedule": false
+                          "@deepseek-ai/dsh-tool-schedule": false
+                        """, TestContext.Current.CancellationToken);
+                    using (var disabled = await ConfigBoot.Compose(new HarnessOptions(HarnessHome.Resolve(home), directory)))
+                    {
+                        Assert.Null(disabled.Ctx.Get<ScheduleService>(ScheduleService.ServiceName));
+                        var agents = disabled.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
+                        var resumed = (await agents.Resume(new ResumeAgentOptions(sessionId, new AgentOptions("test", "test-model")), TestContext.Current.CancellationToken)).Agent;
+                        Assert.Single(ScheduleLedger.Of(resumed.Session).Active);
+                        Assert.False(ReminderReachedModel(resumed.Session));
+                        await disabled.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(resumed.Session);
+                    }
+                    await File.WriteAllTextAsync(Path.Combine(home, "settings.yaml"), GuiTestEnvironment.HomeSettings, TestContext.Current.CancellationToken);
                 }
 
                 using (var app = await ConfigBoot.Compose(new HarnessOptions(HarnessHome.Resolve(home), directory)))
