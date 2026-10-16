@@ -41,6 +41,43 @@ public partial class JobsTests : IDisposable
         }
     }
 
+    [Fact(Timeout = 15_000)]
+    public async Task Subprocess_DefaultInput_IsEofAndNotTerminal()
+    {
+        if (!BashProbe.IsAvailable)
+            Assert.Skip("bash 不可用");
+        using var handle = _subprocess.Spawn(new SubprocessSpawnSpec
+        {
+            Argv = ["bash", "-c", "if test -t 0; then exit 21; fi; if IFS= read -r line; then exit 22; fi; printf eof"],
+            Cwd = _tempDir,
+        });
+
+        var outcome = await handle.Done.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, outcome.ExitCode);
+        Assert.Equal("eof", handle.StdoutReader.ReadFrom(0).Text);
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task Subprocess_ExplicitInput_RemainsWritableUntilClosed()
+    {
+        if (!BashProbe.IsAvailable)
+            Assert.Skip("bash 不可用");
+        using var handle = _subprocess.Spawn(new SubprocessSpawnSpec
+        {
+            Argv = ["bash", "-c", "if test -t 0; then exit 21; fi; IFS= read -r line; printf '%s' \"$line\""],
+            Cwd = _tempDir,
+            KeepStandardInputOpen = true,
+        });
+        await handle.StandardInput.WriteLineAsync("pipe-input");
+        handle.StandardInput.Close();
+
+        var outcome = await handle.Done.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, outcome.ExitCode);
+        Assert.Equal("pipe-input", handle.StdoutReader.ReadFrom(0).Text);
+    }
+
     private sealed class FakeAgent : IAgent
     {
         public FakeAgent(Context ctx, string directory, AgentRegistry agents, AgentStatus status = AgentStatus.Idle)

@@ -50,16 +50,16 @@ public sealed class RemoteHostCapabilityTests
         Assert.Equal("/", listing.Parent);
         Assert.Contains(listing.Entries, entry => entry is { Name: "sub", IsDirectory: true });
 
-        var events = new List<RemoteEventInfo>();
+        var received = new TaskCompletionSource<RemoteEventInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var subscription = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var pump = Task.Run(async () =>
         {
             await foreach (var item in client.SubscribeAsync(created.Id, 0, subscription.Token))
-                events.Add(item);
+                received.TrySetResult(item);
         }, Ct);
         await client.SendMessageAsync(created.Id, "hi", [], Ct);
-        await WaitForAsync(() => events.Count > 0, Ct);
-        Assert.Equal("user:hi", events[0].EventJson);
+        var item = await received.Task.WaitAsync(Ct);
+        Assert.Equal("user:hi", item.EventJson);
         await subscription.CancelAsync();
         try
         {
