@@ -3,10 +3,10 @@ using Dsh.Runtime;
 
 namespace Dsh.Interaction;
 
-/** /proxy: 查看本机出口代理; test 按 settings.yaml 做连通性自检(与 GUI 设置页同一自检); reload 把 settings.yaml 应用到当前进程。 */
+/** /proxy: 查看、写回并热更新本机出口; test 与 GUI 共用自检; reload 重新读取 settings.yaml。 */
 public static class ProxyCommand
 {
-    private const string Usage = "usage: /proxy [test [probe-url] | reload]";
+    private const string Usage = "usage: /proxy [set <proxy-url> | clear | test [probe-url] | reload]";
 
     public static IDisposable Register(Context ctx, HarnessHome home)
     {
@@ -14,8 +14,8 @@ public static class ProxyCommand
         return commands.Register(new CommandDefinition
         {
             Name = "proxy",
-            Description = "Show the local outbound proxy; /proxy test checks connectivity, /proxy reload applies settings.yaml",
-            Input = new CommandInputDescriptor("test [probe-url] | reload"),
+            Description = "Show/save the local outbound proxy; test checks connectivity, reload applies settings.yaml",
+            Input = new CommandInputDescriptor("set <proxy-url> | clear | test [probe-url] | reload"),
             Handler = invocation => RunAsync(OutboundProxy.FromContext(ctx), home, invocation),
         });
     }
@@ -30,6 +30,10 @@ public static class ProxyCommand
                 return new CommandResult.Success($"本机出口代理: 当前生效 {proxy.Describe()}; settings.yaml network.outbound_proxy.url: {configured}");
             case ["reload"]:
                 return Reload(proxy, settings);
+            case ["set", var url]:
+                return Save(proxy, home, url);
+            case ["clear"]:
+                return Save(proxy, home, null);
             case ["test", .. var rest] when rest.Length <= 1:
                 settings.ProbeUrl = rest is [var probeUrl] ? probeUrl : settings.ProbeUrl;
                 var result = await OutboundProxyProbe.RunAsync(settings, invocation.Signal);
@@ -37,6 +41,25 @@ public static class ProxyCommand
             default:
                 return new CommandResult.Error(Usage);
         }
+    }
+
+    private static CommandResult Save(OutboundProxy proxy, HarnessHome home, string? url)
+    {
+        var settings = HarnessSettings.Load(home);
+        settings.Network ??= new NetworkSettings();
+        settings.Network.OutboundProxy ??= new OutboundProxySettings();
+        var outbound = settings.Network.OutboundProxy;
+        try
+        {
+            proxy.Configure(url, outbound.Bypass);
+        }
+        catch (ArgumentException error)
+        {
+            return new CommandResult.Error(error.Message);
+        }
+        outbound.Url = url;
+        settings.Save(home);
+        return new CommandResult.Success($"本机出口代理已保存并生效: {proxy.Describe()}");
     }
 
     private static CommandResult Reload(OutboundProxy proxy, OutboundProxySettings settings)
