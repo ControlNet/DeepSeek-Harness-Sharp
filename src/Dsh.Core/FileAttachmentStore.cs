@@ -30,6 +30,14 @@ public sealed class FileAttachmentStore : Service, IAttachmentStore
             ?? throw new ArgumentException("unsupported image format (expected png/jpeg/gif/webp/avif)");
         if (!string.Equals(sniffed, mediaType, StringComparison.OrdinalIgnoreCase))
             mediaType = sniffed;
+        var stored = PutBytes(bytes);
+        return new ImageAttachmentRef(stored.AttachmentId, mediaType, bytes.Length, width, height, name);
+    }
+
+    public StoredAttachment PutBytes(byte[] bytes)
+    {
+        if (bytes.Length == 0)
+            throw new ArgumentException("attachment is empty");
         var id = Convert.ToHexStringLower(SHA256.HashData(bytes));
         var path = PathFor(id);
         if (!File.Exists(path))
@@ -46,7 +54,7 @@ public sealed class FileAttachmentStore : Service, IAttachmentStore
                 File.Delete(temp);
             }
         }
-        return new ImageAttachmentRef(id, mediaType, bytes.Length, width, height, name);
+        return new StoredAttachment(id, path);
     }
 
     public bool TryRead(string attachmentId, out byte[] bytes)

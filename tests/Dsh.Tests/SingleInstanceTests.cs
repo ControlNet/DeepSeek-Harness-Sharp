@@ -3,6 +3,7 @@ using Dsh.Gui.Services;
 namespace Dsh.Tests;
 
 /** 单实例: 第二个实例必须通知第一个实例后自己退出(命名 Mutex 持锁 + 命名管道传"激活窗口")。 */
+[Collection(SerialProcessCollection.Name)]
 public sealed class SingleInstanceTests : IDisposable
 {
     private readonly string _home = Path.Combine(Path.GetTempPath(), "dsh-single-instance", Guid.NewGuid().ToString("N"));

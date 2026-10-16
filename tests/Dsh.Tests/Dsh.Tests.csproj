@@ -45,6 +45,17 @@
     <None Include="..\Dsh.ManagedPluginSample\bin\$(Configuration)\$(TargetFramework)\Dsh.ManagedPluginSample.deps.json"
           Link="Dsh.ManagedPluginSample.deps.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <!-- MCP 资源用例连接的真实 stdio server 进程: 测试经 dotnet 宿主启动这份 dll, 不引用它的类型。 -->
+    <ProjectReference Include="..\Dsh.McpResourceServerSample\Dsh.McpResourceServerSample.csproj" ReferenceOutputAssembly="false" />
+    <None Include="..\Dsh.McpResourceServerSample\bin\$(Configuration)\$(TargetFramework)\Dsh.McpResourceServerSample.dll"
+          Link="Dsh.McpResourceServerSample.dll"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Dsh.McpResourceServerSample\bin\$(Configuration)\$(TargetFramework)\Dsh.McpResourceServerSample.deps.json"
+          Link="Dsh.McpResourceServerSample.deps.json"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Dsh.McpResourceServerSample\bin\$(Configuration)\$(TargetFramework)\Dsh.McpResourceServerSample.runtimeconfig.json"
+          Link="Dsh.McpResourceServerSample.runtimeconfig.json"
+          CopyToOutputDirectory="PreserveNewest" />
     <!--
       发布版 settings.yaml 模板: 内容文件不会穿过传递项目引用(Dsh.Boot 是经 Dsh.Host 间接引用的),
       而 SettingsTemplateTests 校验的正是"随包发布的这份", 所以显式复制, 避免它悄悄缺失。

@@ -8,6 +8,8 @@ namespace Dsh.Tests.Runtime;
 [Collection(SettingsTemplateTests.RegistryCollection)]
 public class PluginUnloadTests
 {
+    private const int CollectionRounds = 60;
+
     [Fact]
     public async Task DynamicPlugin_UnloadCollectsLoadContext()
     {
@@ -16,7 +18,7 @@ public class PluginUnloadTests
         Assert.True(File.Exists(pluginPath), $"plugin assembly not found: {pluginPath}");
         var weak = await LoadActivateUnloadAsync(ctx, pluginPath);
         // 满负载(全量套件并行 + 128 核)下 ALC 回收是 GC 延迟问题, 不是泄漏: 放宽轮数避免假失败
-        Assert.True(PluginUnloader.WaitForCollection(weak, out var report, maxRounds: 60), report);
+        Assert.True(PluginUnloader.WaitForCollection(weak, out var report, maxRounds: CollectionRounds), report);
     }
 
     [Fact]
@@ -31,7 +33,16 @@ public class PluginUnloadTests
     }
 
     [Fact]
-    public void DynamicSchema_UnloadingOverlaysRestoresCompiledSchema()
+    public void DynamicPlugin_UnloadingOverlaysPreservesSchemaAndCollectsContexts()
+    {
+        var (first, second) = UnloadSchemaOverlays();
+        Assert.True(PluginUnloader.WaitForCollection(first, out var firstReport, maxRounds: CollectionRounds), firstReport);
+        Assert.True(PluginUnloader.WaitForCollection(second, out var secondReport, maxRounds: CollectionRounds), secondReport);
+        Assert.Contains(Dsh.Boot.SettingsSchemaCatalog.All(), provider => provider.Package == "@deepseek-ai/dsh-checkpoints");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (WeakReference First, WeakReference Second) UnloadSchemaOverlays()
     {
         const string package = "@deepseek-ai/dsh-checkpoints";
         var original = Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package);
@@ -39,6 +50,8 @@ public class PluginUnloadTests
         var path = Path.Combine(AppContext.BaseDirectory, "Dsh.Checkpoints.dll");
         var firstHost = new PluginHost();
         var first = firstHost.TryLoad(path);
+        WeakReference firstWeak;
+        WeakReference secondWeak;
         try
         {
             var firstSchema = Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package);
@@ -49,12 +62,12 @@ public class PluginUnloadTests
             {
                 var secondSchema = Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package);
                 Assert.NotSame(firstSchema, secondSchema);
-                _ = PluginUnloader.Unload(first.Context!);
+                firstWeak = PluginUnloader.Unload(first.Context!);
                 Assert.Same(secondSchema, Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package));
             }
             finally
             {
-                _ = PluginUnloader.Unload(second.Context!);
+                secondWeak = PluginUnloader.Unload(second.Context!);
             }
         }
         finally
@@ -63,6 +76,7 @@ public class PluginUnloadTests
         }
         Assert.Same(original, Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package));
         Assert.Equal(unaffected, DshPluginSettingsRegistry.All().Where(provider => provider.Package != package));
+        return (firstWeak, secondWeak);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

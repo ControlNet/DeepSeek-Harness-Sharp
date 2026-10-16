@@ -49,8 +49,8 @@ public static class McpToolBridge
             reconnect: version => handle.ReconnectIfVersionAsync(version, signal),
             signal: signal);
 
-    internal static async ValueTask<CallToolResult> CallWithReconnectAsync(
-        Func<ValueTask<CallToolResult>> invoke,
+    internal static async ValueTask<T> CallWithReconnectAsync<T>(
+        Func<ValueTask<T>> invoke,
         Func<long> usedVersion,
         Func<long, Task> reconnect,
         CancellationToken signal)
