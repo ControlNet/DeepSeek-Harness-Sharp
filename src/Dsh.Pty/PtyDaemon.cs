@@ -418,7 +418,7 @@ public sealed class PtyDaemon : IAsyncDisposable
 
                     await WriteResponseAsync(
                         stream,
-                        new PtyDaemonResponse { Ok = true, Snapshot = Encoding.UTF8.GetString(session.Snapshot()) },
+                        new PtyDaemonResponse { Ok = true, Snapshot = request.PlainText ? session.SnapshotText() : Encoding.UTF8.GetString(session.Snapshot()) },
                         cancellationToken);
                     return false;
                 }
@@ -529,7 +529,7 @@ public sealed class PtyDaemon : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var pumpToSocket = PumpSubscriptionToSocketAsync(output, stream, linked.Token);
+        var pumpToSocket = PumpSubscriptionToSocketAsync(output, session, stream, linked.Token);
         var pumpToSession = PumpSocketToSessionAsync(session, stream, linked.Token);
         await Task.WhenAny(pumpToSocket, pumpToSession);
         linked.Cancel();
@@ -553,6 +553,7 @@ public sealed class PtyDaemon : IAsyncDisposable
 
     private static async Task PumpSubscriptionToSocketAsync(
         ChannelReader<byte[]> output,
+        PtySession session,
         NetworkStream stream,
         CancellationToken cancellationToken)
     {
@@ -561,6 +562,7 @@ public sealed class PtyDaemon : IAsyncDisposable
             await stream.WriteAsync(chunk, cancellationToken);
             await stream.FlushAsync(cancellationToken);
         }
+        await session.WaitForExitAsync(cancellationToken);
     }
 
     private static async Task PumpSocketToSessionAsync(PtySession session, NetworkStream stream, CancellationToken cancellationToken)
@@ -582,7 +584,10 @@ public sealed class PtyDaemon : IAsyncDisposable
         {
             var read = await session.ReadAsync(buffer, cancellationToken);
             if (read == 0)
+            {
+                await session.WaitForExitAsync(cancellationToken);
                 return;
+            }
             await stream.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
             await stream.FlushAsync(cancellationToken);
         }

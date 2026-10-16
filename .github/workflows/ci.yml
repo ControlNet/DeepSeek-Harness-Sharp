@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # PR 开态直接解析 merge ref: synchronize 事件载荷的 merge_commit_sha 可能仍指向旧 head。
+          # 开放 PR 检出实时 merge ref；关闭事件与其它事件使用 github.sha。
           ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
 
       - uses: actions/setup-dotnet@v4
@@ -112,10 +112,11 @@ jobs:
           $dll = Get-ChildItem 'C:\ProgramData\chocolatey\lib\sqlite' -Recurse -Filter 'sqlite3.dll' |
             Select-Object -First 1
           if (-not $dll) { throw '未找到 sqlite3.dll' }
-          New-Item -ItemType Directory -Force tests/Dsh.Tests/bin/Debug/net10.0 | Out-Null
-          Copy-Item $dll.FullName 'tests/Dsh.Tests/bin/Debug/net10.0/' -Force
-          Copy-Item $dll.FullName 'DeepSeek-Harness-Sharp/bin/Debug/net10.0/' -Force
-          Write-Host "copied $($dll.FullName)"
+          foreach ($target in @('tests/Dsh.Tests/bin/Debug/net10.0', 'DeepSeek-Harness-Sharp/bin/Debug/net10.0')) {
+            New-Item -ItemType Directory -Force $target | Out-Null
+            Copy-Item $dll.FullName $target -Force
+            Write-Host "copied $($dll.FullName) to $target"
+          }
 
       - name: 启动当前产物的独立 PTY daemon
         shell: bash

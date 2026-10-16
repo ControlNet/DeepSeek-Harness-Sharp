@@ -10,7 +10,6 @@ internal sealed class UnixPtySession : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
     private static readonly TimeSpan TerminateGrace = TimeSpan.FromSeconds(2);
-    private Task? _monitorTask;
     private bool _stopping;
     private bool _disposed;
 
@@ -19,9 +18,10 @@ internal sealed class UnixPtySession : IDisposable
         _pid = pid;
         _handle = handle;
         _stream = stream;
+        Completion = MonitorAsync();
     }
 
-    public event Action<int?>? Exited;
+    public Task<int?> Completion { get; }
 
     public int Pid => _pid;
 
@@ -36,9 +36,7 @@ internal sealed class UnixPtySession : IDisposable
         var handle = new SafeFileHandle(master, ownsHandle: true);
         // 无缓冲:带缓冲的同步 FileStream 会让并发读(输出泵)与写(输入泵)互相阻塞,导致 attach 之后数据无法流动。
         var stream = new FileStream(handle, FileAccess.ReadWrite, 1, isAsync: false);
-        var session = new UnixPtySession(pid, handle, stream);
-        session._monitorTask = session.MonitorAsync();
-        return session;
+        return new UnixPtySession(pid, handle, stream);
     }
 
     public void Resize(int rows, int cols)
@@ -57,8 +55,8 @@ internal sealed class UnixPtySession : IDisposable
         }
 
         UnixPtyNative.Terminate(_pid);
-        var monitor = _monitorTask;
-        if (monitor is not null && await Task.WhenAny(monitor, Task.Delay(TerminateGrace)) != monitor)
+        var monitor = Completion;
+        if (await Task.WhenAny(monitor, Task.Delay(TerminateGrace)) != monitor)
         {
             UnixPtyNative.Kill(_pid);
             // 有界等待: 某些平台/状态下 reap 迟迟不到, 不能无限等(否则调用方挂死); Dispose 会取消 _cts 收尾。
@@ -81,10 +79,9 @@ internal sealed class UnixPtySession : IDisposable
         UnixPtyNative.Kill(_pid);
         _stream.Dispose();
         _handle.Dispose();
-        _monitorTask = null;
     }
 
-    private async Task MonitorAsync()
+    private async Task<int?> MonitorAsync()
     {
         try
         {
@@ -92,8 +89,7 @@ internal sealed class UnixPtySession : IDisposable
             {
                 if (UnixPtyNative.TryWait(_pid, out var exitCode))
                 {
-                    Exited?.Invoke(exitCode);
-                    return;
+                    return exitCode;
                 }
 
                 await Task.Delay(50, _cts.Token);
@@ -102,6 +98,7 @@ internal sealed class UnixPtySession : IDisposable
         catch (OperationCanceledException)
         {
         }
+        return null;
     }
 
     private void ThrowIfDisposed()
