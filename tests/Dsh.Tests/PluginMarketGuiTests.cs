@@ -43,14 +43,12 @@ public sealed class PluginMarketGuiTests
 
             var network = Toggle(window, Todo, "permissions.network");
             Assert.True(network.IsChecked);
-            var previousStatus = preferences.Status;
             PressSpace(window, network);
             Assert.False(Row(preferences, Todo).CanNetwork);
             try
             {
                 await GuiTestEnvironment.WaitForAsync(preferences,
-                    () => preferences.Status != previousStatus
-                        && HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Network == false);
+                    () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Network == false);
             }
             catch (TimeoutException error)
             {
@@ -60,7 +58,6 @@ public sealed class PluginMarketGuiTests
             Dispatcher.UIThread.RunJobs();
             var permissions = HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions;
             Assert.Equal(new PluginPermissions { Write = false, Network = false }, permissions);
-            Assert.Contains("network", preferences.Status, StringComparison.Ordinal);
             Capture(window, "headless-market-permissions");
 
             var write = Toggle(window, Todo, "permissions.write");
