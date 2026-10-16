@@ -64,12 +64,13 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 
    动作名:`newSession`、`sessionMenu`、`detach`、`deleteSessionMenu`、`agentList`、`overview`、`openShell`、`quit`、`splitPane`、`closePane`、`prevSession`、`nextSession`、`focusLeft`/`focusRight`/`focusUp`/`focusDown`、`focusNextPane`、`interrupt`(默认 `Ctrl+C`,连按两次退出)、`promptCommandMenu`(默认 `Ctrl+P`)。按键串的首键必须带 `Ctrl`/`Alt` 或是 F 键(否则会吞掉正常输入);同一按键串绑了多个动作、或一个按键串是另一个的前缀时,启动时记 WARN 日志并让冲突的自定义项回退默认。按下前缀后再按 `Esc` 或未绑定的键即取消。焦点在 shell 窗格时,`interrupt` 与 `promptCommandMenu` 的按键直达 shell,其余动作仍由 DSH 处理。
 9. 会话内定时提醒:直接让模型提醒你即可,例如「30 分钟后提醒我看 CI」「工作日每天 9 点提醒我写日报」。模型用 `schedule_create` / `schedule_list` / `schedule_update` / `schedule_delete` 管理当前会话的提醒;到点后提醒内容作为一条计划消息回到本会话:会话空闲时直接开始新一轮,正在回复时排在当前这一轮之后。
-   - 时间规格(每个提醒选一种):`after_seconds`(N 秒后)、`at`(带时区偏移的 RFC 3339 时刻,或本地日期 + 时间 + 时区)、`every_seconds`(固定间隔,至少 60 秒)、`daily`(每天的本地时间)、`weekly`(每周的 ISO 星期几,周一 1 至周日 7)、`cron`(五段 cron 表达式,按给定时区计算;日期与星期两段都有限定时须同时满足)。
-   - 时区写 `UTC`、IANA 名称(如 `Asia/Shanghai`)或本机时区 id(系统提示里会告诉模型本机时区)。`daily`/`weekly`/`cron` 遇到夏令时跳过的本地时刻会在跳变结束时触发,重复出现的本地时刻只触发一次;`at` 指向不存在的本地时刻会被拒绝,重复时刻取较早的一次。
+   - 时间规格(每个提醒选一种):`after_seconds`(正安全整数秒)、`at`(带偏移的绝对时刻,或本地日期 + 时间 + 时区)、`every_seconds`(安全整数秒,至少 60 秒)、`daily`(每天的本地时间)、`weekly`(每周的 ISO 星期几,周一 1 至周日 7,不可重复)、`cron`(按给定时区计算的五段 Vixie cron)。本地日期严格写 `YYYY-MM-DD`,时间必须包含秒:`HH:mm:ss`,可带 1–3 位小数秒,返回值统一为 `HH:mm:ss.fff`。绝对时刻写 `YYYY-MM-DDTHH:mm:ss[.fff]Z` 或数字偏移 `±HH:mm`,必须使用大写 `T`/`Z`,偏移小时范围 00–23、分钟 00–59,不接受 `-00:00`。日期、时间、表达式和时区均不自动去除首尾空白。
+   - 时区只接受 `UTC` 或有效的多段 IANA 名称(如 `Asia/Shanghai`),不接受 Windows id、固定偏移或空白;系统提示给出的本机建议也会映射为 IANA/UTC,无法映射则建议 `UTC`。`daily`/`weekly`/`cron` 跳过夏令时中不存在的本地时刻,重复时刻只在较早的瞬间触发一次;`at` 指向不存在的本地时刻会被拒绝,重复时刻取较早的一次。
    - 提醒属于会话:会话关闭后不再触发;恢复该会话时提醒随之恢复,期间错过的一次性提醒补发一次,循环提醒只补发最近错过的那一次。fork 出的会话不继承提醒,子代理不能使用这些工具。`headless` 单次任务在回复结束后即退出,其中设置的提醒不会触发。
    - 提醒不是 goal:提醒消息不算用户输入,不会创建、恢复或完成 goal,也不改变 goal 的自动续跑。
    - 派发会先推进提醒状态,再排入会话收件箱。删除已派发的提醒不撤回排队消息;用户中断会清空收件箱,已派发的一次性提醒不会重投。禁用定时提醒插件后仍可读取带 `ignorable` 标记的会话事件,重新启用后恢复提醒状态;禁用期间不运行计时器。
-   - Windows 发布档通过内置 IANA/Windows 时区映射读取系统时区规则,不依赖 ICU;Linux/macOS 使用系统 tzdata。实际规则随系统时区数据更新。上述 cron/DST 行为与上游的差异仍在 discussion #9 等待作者决定,不代表已获接受。
+   - cron 严格限定五段:`分钟 小时 日期 月份 星期`。只接受数字、`*`、升序范围 `a-b`、步进 `*/n` / `a-b/n` 及其逗号列表;步长须为正安全整数,星期日可写 0 或 7。不接受名称、宏、`?`、`L`、`W`、`#`、倒序范围、单值步进 `a/n` 或秒字段。Vixie 的日期/星期 star 标记取决于该字段原文是否以 `*` 开头(包括 `*/n`):任一带 star 标记时两段都须匹配,两段均无 star 标记时任一匹配即可;完整数字范围不等同于 `*`,列表中 `*` 的位置也会影响标记。
+   - 所有平台(包括 Windows invariant-globalization 发布档)均使用 NodaTime 3.3.5 内置 TZDB,不依赖系统 tzdata 或 ICU;时区规则随内置 TZDB 版本更新。别名使用内嵌的 CLDR 47 / ICU 77 canonical-name 映射,保持上游 Intl 的稳定名称(如 `Asia/Kolkata` 规范化为 `Asia/Calcutta`),映射来源和 Unicode 许可随数据一并保留。时间语义严格对齐固定版本[上游调度域实现](https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/86a402200d95fecef4529d969836f1fe13c6cb0d/packages/schedule/schedule/src/domain.ts),测试还包含直接执行该原始模块生成的 106 组黄金数据,覆盖语法、偏移、毫秒、规范化、DST、日期线、固定已提交目标及 UTC 年边界。
 10. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
    - 切换只影响之后的相对路径解析,以及新启动的 shell/终端的默认目录;已经存在的 `bash_persistent` shell 与终端仍停在各自的目录。
    - 写权限根固定为会话的初始目录,不随切换移动:写入权限根之外的文件(`write`/`edit`/`str_replace_editor`)、在权限根之外启动 shell/终端或建 worktree,都会先弹审批,提示「目标路径在权限根之外」;审批策略为 never 时直接拒绝。

@@ -52,6 +52,7 @@
     <None Include="..\..\src\Dsh.Boot\Profiles\Templates\settings.yaml"
           Link="Profiles\Templates\settings.yaml"
           CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="ScheduleUpstreamFixtures.json" LogicalName="Dsh.Tests.ScheduleUpstreamFixtures.json" />
   </ItemGroup>
 
   <ItemGroup>

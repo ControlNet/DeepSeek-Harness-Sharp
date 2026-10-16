@@ -106,6 +106,7 @@ public static class ScheduleErrorCodes
     public const string InvalidSelector = "invalid_selector";
     public const string InvalidRule = "invalid_rule";
     public const string InvalidTimeZone = "invalid_time_zone";
+    public const string CorruptLog = "corrupt_schedule_log";
     public const string NotFuture = "not_future";
     public const string TimeOutOfRange = "time_out_of_range";
     public const string FrequencyTooHigh = "frequency_too_high";

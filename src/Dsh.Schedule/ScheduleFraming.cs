@@ -15,7 +15,7 @@ public static class ScheduleFraming
 {
     public const string ScheduledMessageLine = "This is a scheduled message from the user";
 
-    private const string InstantFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
+    private const string InstantFormat = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'";
 
     private static readonly JsonWriterOptions WriterOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 

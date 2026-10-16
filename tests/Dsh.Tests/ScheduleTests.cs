@@ -51,7 +51,7 @@ public static class ScheduleTests
                 CodeOf(() => ScheduleRules.Resolve(new ScheduleTiming.AtLocal("2026-03-08", "02:30:00", "America/New_York"), now)));
             var overlap = ScheduleRules.Resolve(new ScheduleTiming.AtLocal("2026-11-01", "01:30:00", "America/New_York"), now);
             Assert.Equal(Utc("2026-11-01T05:30:00Z"), overlap.ScheduledAt);
-            var plain = ScheduleRules.Resolve(new ScheduleTiming.AtLocal("2026-10-16", "09:00", "Asia/Shanghai"), Start);
+            var plain = ScheduleRules.Resolve(new ScheduleTiming.AtLocal("2026-10-16", "09:00:00", "Asia/Shanghai"), Start);
             Assert.Equal(Utc("2026-10-16T01:00:00Z"), plain.ScheduledAt);
             Assert.Equal(
                 ScheduleErrorCodes.InvalidTimeZone,
@@ -73,8 +73,8 @@ public static class ScheduleTests
         [Fact]
         public void Daily_FollowsLocalTimeInItsZone()
         {
-            var rule = ScheduleRules.Resolve(new ScheduleTiming.Daily("23:00", "Asia/Shanghai"), Utc("2026-10-15T15:30:00Z"));
-            Assert.Equal("23:00:00", rule.Time);
+            var rule = ScheduleRules.Resolve(new ScheduleTiming.Daily("23:00:00", "Asia/Shanghai"), Utc("2026-10-15T15:30:00Z"));
+            Assert.Equal("23:00:00.000", rule.Time);
             Assert.Equal(Utc("2026-10-16T15:00:00Z"), rule.ScheduledAt);
 
             var occurrence = ScheduleRules.Occur(rule, Utc("2026-10-19T00:00:00Z"));
@@ -84,10 +84,10 @@ public static class ScheduleTests
         }
 
         [Fact]
-        public void Daily_LocalTimeSkippedByDaylightSavingFiresAtEndOfJump()
+        public void Daily_LocalTimeSkippedByDaylightSavingSkipsThatDate()
         {
             var rule = ScheduleRules.Resolve(new ScheduleTiming.Daily("02:30:00", "America/New_York"), Utc("2026-03-07T12:00:00Z"));
-            Assert.Equal(Utc("2026-03-08T07:00:00Z"), rule.ScheduledAt);
+            Assert.Equal(Utc("2026-03-09T06:30:00Z"), rule.ScheduledAt);
         }
 
         [Fact]
@@ -116,11 +116,11 @@ public static class ScheduleTests
         }
 
         [Fact]
-        public void Cron_DayAndWeekdayMustBothMatch()
+        public void Cron_RestrictedDayAndWeekdayUseVixieOr()
         {
             var rule = ScheduleRules.Resolve(new ScheduleTiming.Cron("0 9 16 * 5", "UTC"), Start);
             Assert.Equal(Utc("2026-10-16T09:00:00Z"), rule.ScheduledAt);
-            Assert.Equal(Utc("2027-04-16T09:00:00Z"), ScheduleRules.Occur(rule, Utc("2026-10-16T09:00:00Z")).NextAt);
+            Assert.Equal(Utc("2026-10-23T09:00:00Z"), ScheduleRules.Occur(rule, Utc("2026-10-16T09:00:00Z")).NextAt);
         }
 
         [Fact]
@@ -236,7 +236,7 @@ public static class ScheduleTests
             var created = await harness.Call(agent, "schedule_create", """{ "title": "部署检查", "prompt": "查看部署日志", "after_seconds": 60 }""");
             var id = created.GetProperty("id").GetString()!;
             Assert.Equal("scheduled", created.GetProperty("state").GetString());
-            Assert.Equal("2026-10-15T08:01:00Z", created.GetProperty("scheduledAt").GetString());
+            Assert.Equal("2026-10-15T08:01:00.000Z", created.GetProperty("scheduledAt").GetString());
 
             harness.Time.Advance(TimeSpan.FromSeconds(59));
             Assert.Empty(agent.Followups);
@@ -246,7 +246,7 @@ public static class ScheduleTests
             var source = Assert.IsType<PluginMessageSource>(message.Source);
             Assert.Equal(ScheduleService.MessagePlugin, source.Plugin);
             Assert.Equal(
-                $"[SCHEDULE REMINDER]\n{ScheduleFraming.ScheduledMessageLine}\nschedule_id_json: \"{id}\"\noccurrence_at: 2026-10-15T08:01:00Z\nreminder_prompt_json: \"查看部署日志\"",
+                $"[SCHEDULE REMINDER]\n{ScheduleFraming.ScheduledMessageLine}\nschedule_id_json: \"{id}\"\noccurrence_at: 2026-10-15T08:01:00.000Z\nreminder_prompt_json: \"查看部署日志\"",
                 TextOf(message));
             Assert.Equal(0, (await harness.Call(agent, "schedule_list", "{}")).GetArrayLength());
             var update = await harness.Call(agent, "schedule_update", $$"""{ "id": "{{id}}", "prompt": "again" }""");
@@ -274,10 +274,10 @@ public static class ScheduleTests
             var text = TextOf(message);
             Assert.StartsWith($"[SCHEDULE REMINDER BATCH]\n{ScheduleFraming.ScheduledMessageLine}\nreminders_json: ", text);
             var batch = JsonDocument.Parse(text[(text.IndexOf("reminders_json: ", StringComparison.Ordinal) + "reminders_json: ".Length)..]).RootElement;
-            Assert.Equal(["2026-10-15T08:02:00Z", "2026-10-15T08:02:00Z"], batch.EnumerateArray().Select(item => item.GetProperty("occurrence_at").GetString()));
+            Assert.Equal(["2026-10-15T08:02:00.000Z", "2026-10-15T08:02:00.000Z"], batch.EnumerateArray().Select(item => item.GetProperty("occurrence_at").GetString()));
             var list = await harness.Call(resumed, "schedule_list", "{}");
             Assert.Equal(
-                ["2026-10-15T08:03:00Z", "2026-10-16T08:02:00Z"],
+                ["2026-10-15T08:03:00.000Z", "2026-10-16T08:02:00.000Z"],
                 list.EnumerateArray().Select(view => view.GetProperty("scheduledAt").GetString()));
         }
 

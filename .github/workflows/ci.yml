@@ -152,7 +152,7 @@ jobs:
           $runtime.runtimeOptions.configProperties['System.Globalization.Invariant'] = $true
           $config = Join-Path $env:RUNNER_TEMP 'schedule-invariant.runtimeconfig.json'
           $runtime | ConvertTo-Json -Depth 20 | Set-Content $config
-          dotnet exec --runtimeconfig $config tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.dll -noColor -class 'Dsh.Tests.ScheduleTests+Rules' -failSkips
+          dotnet exec --runtimeconfig $config tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.dll -noColor -class 'Dsh.Tests.ScheduleTests+Rules' -class 'Dsh.Tests.ScheduleClockCompatibilityTests' -class 'Dsh.Tests.ScheduleCronCompatibilityTests' -class 'Dsh.Tests.ScheduleToolCompatibilityTests' -class 'Dsh.Tests.ScheduleUpstreamReferenceTests' -failSkips
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 原生遏制回归（NativeGuardTests，${{ matrix.native-cc }}，跳过即失败）

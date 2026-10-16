@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
-using Cronos;
+using NodaTime;
+using NodaTime.TimeZones;
 using Dsh.Llm;
 
 namespace Dsh.Schedule;
@@ -28,62 +29,122 @@ public abstract record ScheduleTiming
 }
 
 /**
- * Turns timing selectors into rules with a committed UTC target, and advances due rules.
- * Daily, weekly and cron rules are evaluated by Cronos in their explicit time zone:
- * a local time skipped by a daylight-saving jump fires at the end of the jump, and a repeated local time fires once.
+ * The upstream numeric-cron and local-calendar contract. Calendar matching uses
+ * Gregorian dates; timezone transitions are resolved at the actual UTC instant.
  */
 public static partial class ScheduleRules
 {
     public const long MinEverySeconds = 60;
+    private const long MaxSafeInteger = 9_007_199_254_740_991;
+    private const long DayMilliseconds = 86_400_000;
+    private const long GregorianCycleDays = 146_097;
+    private static readonly LocalDate CalendarAnchor = new(2000, 1, 1);
+    private static readonly long AnchorDay = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds() / DayMilliseconds;
+    private static readonly long Minimum = DateTimeOffset.MinValue.ToUnixTimeMilliseconds();
+    private static readonly long Maximum = DateTimeOffset.MaxValue.ToUnixTimeMilliseconds();
+    private static readonly long ZoneMinimum = Instant.MinValue.ToUnixTimeMilliseconds();
+    private static readonly Dictionary<string, string> ZoneIds = LoadZoneIds();
 
-    private const int IsoMonday = 1;
-    private const int IsoSunday = 7;
-    private const string DateFormat = "yyyy-MM-dd";
-    private const string StoredTimeFormat = "HH:mm:ss";
-    private static readonly string[] TimeFormats = ["HH:mm:ss", "HH:mm"];
+    [GeneratedRegex(@"^(?<date>[0-9]{4}-[0-9]{2}-[0-9]{2})T(?<time>[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,3})?)(?:Z|(?<sign>[+-])(?<hour>[0-9]{2}):(?<minute>[0-9]{2}))$")]
+    private static partial Regex OffsetInstant();
 
-    [GeneratedRegex("""^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$""")]
-    private static partial Regex Rfc3339WithOffset();
+    [GeneratedRegex(@"^(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?:\.(?<fraction>[0-9]{1,3}))?$")]
+    private static partial Regex ClockTime();
 
-    public static ScheduleRule Resolve(ScheduleTiming timing, DateTimeOffset now) => timing switch
+    [GeneratedRegex(@"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")]
+    private static partial Regex LocalDateText();
+
+    [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)+$")]
+    private static partial Regex IanaZone();
+
+    public static string HostTimeZone
     {
-        ScheduleTiming.After { Seconds: <= 0 } => throw new HarnessException("after_seconds must be a positive integer", ScheduleErrorCodes.InvalidRule),
-        ScheduleTiming.After after => new ScheduleRule(ScheduleKind.After, Later(now, after.Seconds), AfterSeconds: after.Seconds),
-        ScheduleTiming.AtInstant at => Absolute(ParseInstant(at.Text), now),
-        ScheduleTiming.AtLocal at => Absolute(ResolveLocal(at), now),
-        ScheduleTiming.Every { Seconds: < MinEverySeconds } => throw new HarnessException(
-            $"every_seconds must be at least {MinEverySeconds}", ScheduleErrorCodes.FrequencyTooHigh),
-        ScheduleTiming.Every every => new ScheduleRule(ScheduleKind.Every, Later(now, every.Seconds), EverySeconds: every.Seconds),
-        ScheduleTiming.Daily daily => WallClock(new ScheduleRule(ScheduleKind.Daily, now, Time: NormalizeTime(daily.Time), TimeZone: daily.TimeZone), now),
-        ScheduleTiming.Weekly weekly => WallClock(new ScheduleRule(
-            ScheduleKind.Weekly, now, Time: NormalizeTime(weekly.Time), TimeZone: weekly.TimeZone, Weekdays: NormalizeWeekdays(weekly.Weekdays)), now),
-        ScheduleTiming.Cron cron => WallClock(new ScheduleRule(ScheduleKind.Cron, now, TimeZone: cron.TimeZone, Expression: cron.Expression.Trim()), now),
-        _ => throw new ArgumentOutOfRangeException(nameof(timing)),
-    };
-
-    /** The occurrence a due rule delivers: one-shots end; recurring rules deliver only their latest missed occurrence. */
-    public static ScheduleOccurrence Occur(ScheduleRule rule, DateTimeOffset now) => rule.Kind switch
-    {
-        ScheduleKind.After or ScheduleKind.At => new ScheduleOccurrence(rule.ScheduledAt, null),
-        ScheduleKind.Every => EveryOccurrence(rule, now),
-        _ => WallClockOccurrence(rule, now),
-    };
-
-    public static TimeZoneInfo Zone(string id)
-    {
-        try
+        get
         {
-            // Windows invariant-globalization releases cannot use the runtime's ICU-based IANA mapping.
-            if (OperatingSystem.IsWindows() && TimeZoneConverter.TZConvert.TryIanaToWindows(id, out var windowsId))
-                id = windowsId;
-            return TimeZoneInfo.FindSystemTimeZoneById(id);
+            var id = TimeZoneInfo.Local.Id;
+            if (ZoneIds.TryGetValue(id, out var canonical))
+                return canonical;
+            return TzdbDateTimeZoneSource.Default.WindowsToTzdbIds.TryGetValue(id, out var iana)
+                && ZoneIds.TryGetValue(iana, out canonical) ? canonical : "UTC";
         }
-        catch (Exception error) when (error is TimeZoneNotFoundException or InvalidTimeZoneException)
+    }
+
+    public static ScheduleRule Resolve(ScheduleTiming timing, DateTimeOffset now)
+    {
+        now = DateTimeOffset.FromUnixTimeMilliseconds(now.ToUnixTimeMilliseconds());
+        return timing switch
         {
-            throw new HarnessException(
-                $"unknown time zone \"{id}\"; use UTC, an IANA Area/Location name, or the host zone \"{TimeZoneInfo.Local.Id}\"",
-                ScheduleErrorCodes.InvalidTimeZone);
+            ScheduleTiming.After after => new ScheduleRule(ScheduleKind.After, Later(now, after.Seconds), AfterSeconds: after.Seconds),
+            ScheduleTiming.AtInstant at => Absolute(ParseInstant(at.Text), now),
+            ScheduleTiming.AtLocal at => Absolute(ParseLocal(at), now),
+            ScheduleTiming.Every { Seconds: > MaxSafeInteger or < -MaxSafeInteger } => throw new HarnessException(
+                "every_seconds must be a safe integer", ScheduleErrorCodes.InvalidRule),
+            ScheduleTiming.Every { Seconds: < MinEverySeconds } => throw new HarnessException(
+                $"every_seconds must be at least {MinEverySeconds}", ScheduleErrorCodes.FrequencyTooHigh),
+            ScheduleTiming.Every every => new ScheduleRule(ScheduleKind.Every, Later(now, every.Seconds), EverySeconds: every.Seconds),
+            ScheduleTiming.Daily daily => WallClock(new ScheduleRule(ScheduleKind.Daily, now, Time: daily.Time, TimeZone: daily.TimeZone), now),
+            ScheduleTiming.Weekly weekly => WallClock(new ScheduleRule(
+                ScheduleKind.Weekly, now, Time: weekly.Time, TimeZone: weekly.TimeZone, Weekdays: weekly.Weekdays), now),
+            ScheduleTiming.Cron cron => WallClock(new ScheduleRule(ScheduleKind.Cron, now, TimeZone: cron.TimeZone, Expression: cron.Expression), now),
+            _ => throw new ArgumentOutOfRangeException(nameof(timing)),
+        };
+    }
+
+    /** Decisions select the latest due occurrence, not an accumulated backlog. */
+    public static ScheduleOccurrence Occur(ScheduleRule rule, DateTimeOffset now)
+    {
+        now = DateTimeOffset.FromUnixTimeMilliseconds(now.ToUnixTimeMilliseconds());
+        if (now < rule.ScheduledAt)
+            throw new HarnessException("dispatch cannot precede the committed scheduledAt", ScheduleErrorCodes.CorruptLog);
+        return rule.Kind switch
+        {
+            ScheduleKind.After or ScheduleKind.At => new ScheduleOccurrence(rule.ScheduledAt, null),
+            ScheduleKind.Every => EveryOccurrence(rule, now),
+            _ => WallClockOccurrence(rule, now),
+        };
+    }
+
+    public static DateTimeZone Zone(string id)
+    {
+        if ((id == "UTC" || IanaZone().IsMatch(id)) && ZoneIds.TryGetValue(id, out var canonical))
+            return CanonicalZone(canonical);
+        throw new HarnessException("time_zone must be UTC or a valid IANA Area/Location name", ScheduleErrorCodes.InvalidTimeZone);
+    }
+
+    private static DateTimeZone CanonicalZone(string id)
+        => id is "Etc/UTC" or "Etc/GMT" or "UTC" ? DateTimeZone.Utc : DateTimeZoneProviders.Tzdb[id];
+
+    private static Dictionary<string, string> LoadZoneIds()
+    {
+        using var stream = typeof(ScheduleRules).Assembly.GetManifestResourceStream("Dsh.Schedule.ScheduleTimeZones.tsv")
+            ?? throw new InvalidOperationException("The bundled timezone aliases are missing.");
+        using var reader = new StreamReader(stream);
+        var zones = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        while (reader.ReadLine() is { } line)
+        {
+            if (line.Length == 0 || line[0] == '#')
+                continue;
+            var separator = line.IndexOf('\t');
+            zones.Add(line[..separator], line[(separator + 1)..]);
         }
+        return zones;
+    }
+
+    private static ScheduleRule WallClock(ScheduleRule rule, DateTimeOffset now)
+    {
+        var cron = rule.Kind == ScheduleKind.Cron ? ScheduleCron.Parse(rule.Expression!) : null;
+        var time = cron is null ? ParseTime(rule.Time!) : default;
+        var zone = Zone(rule.TimeZone!);
+        rule = rule with
+        {
+            Time = cron is null ? FormatTime(time) : null,
+            TimeZone = ZoneIds[rule.TimeZone!],
+            Weekdays = rule.Kind == ScheduleKind.Weekly ? NormalizeWeekdays(rule.Weekdays!) : null,
+            Expression = cron?.Expression,
+        };
+        var next = FindTarget(rule, cron, time, zone, now.ToUnixTimeMilliseconds(), forward: true)
+            ?? throw new HarnessException("the rule has no future four-digit-year occurrence", ScheduleErrorCodes.TimeOutOfRange);
+        return rule with { ScheduledAt = DateTimeOffset.FromUnixTimeMilliseconds(next) };
     }
 
     private static ScheduleOccurrence EveryOccurrence(ScheduleRule rule, DateTimeOffset now)
@@ -91,88 +152,192 @@ public static partial class ScheduleRules
         var interval = TimeSpan.FromSeconds(rule.EverySeconds!.Value);
         var missed = (now - rule.ScheduledAt).Ticks / interval.Ticks;
         var occurrence = rule.ScheduledAt + TimeSpan.FromTicks(missed * interval.Ticks);
-        DateTimeOffset? next = DateTimeOffset.MaxValue - occurrence > interval ? occurrence + interval : null;
+        DateTimeOffset? next = DateTimeOffset.FromUnixTimeMilliseconds(Maximum) - occurrence >= interval ? occurrence + interval : null;
         return new ScheduleOccurrence(occurrence, next);
     }
 
     private static ScheduleOccurrence WallClockOccurrence(ScheduleRule rule, DateTimeOffset now)
     {
-        var cron = CronOf(rule);
+        var cron = rule.Kind == ScheduleKind.Cron ? ScheduleCron.Parse(rule.Expression!) : null;
+        var time = cron is null ? ParseTime(rule.Time!) : default;
         var zone = Zone(rule.TimeZone!);
-        var latest = cron.GetPreviousOccurrence(now, zone, inclusive: true);
-        var occurrence = latest > rule.ScheduledAt ? latest.Value.ToUniversalTime() : rule.ScheduledAt;
-        return new ScheduleOccurrence(occurrence, cron.GetNextOccurrence(now, zone)?.ToUniversalTime());
+        var decision = now.ToUnixTimeMilliseconds();
+        var latest = FindTarget(rule, cron, time, zone, decision, forward: false);
+        var occurrence = Math.Max(latest ?? Minimum, rule.ScheduledAt.ToUnixTimeMilliseconds());
+        // Daily/weekly rules consume a local date; a pinned target must not repeat that date.
+        long? afterDay = cron is null ? LocalDay(occurrence, zone) : null;
+        var next = FindTarget(rule, cron, time, zone, decision, forward: true, afterDay);
+        return new ScheduleOccurrence(DateTimeOffset.FromUnixTimeMilliseconds(occurrence),
+            next is { } target ? DateTimeOffset.FromUnixTimeMilliseconds(target) : null);
     }
 
-    private static ScheduleRule WallClock(ScheduleRule rule, DateTimeOffset now)
+    private static long? FindTarget(
+        ScheduleRule rule, ScheduleCron? cron, LocalTime clock, DateTimeZone zone, long decision, bool forward, long? afterDay = null)
     {
-        var next = CronOf(rule).GetNextOccurrence(now, Zone(rule.TimeZone!))
-            ?? throw new HarnessException("the rule has no future occurrence", ScheduleErrorCodes.TimeOutOfRange);
-        return rule with { ScheduledAt = next.ToUniversalTime() };
-    }
-
-    private static CronExpression CronOf(ScheduleRule rule)
-    {
-        if (rule.Kind == ScheduleKind.Cron)
+        var localDecision = decision + OffsetMilliseconds(zone.GetUtcOffset(Instant.FromUnixTimeMilliseconds(decision)));
+        var decisionDay = FloorDay(localDecision);
+        var firstDay = forward ? decisionDay : FloorDay(decision) + 1;
+        if (afterDay is { } delivered && firstDay <= delivered)
+            firstDay = delivered + 1;
+        var lastDay = forward
+            ? Math.Min(firstDay + GregorianCycleDays, FloorDay(Maximum) + 1)
+            : Math.Max(firstDay - GregorianCycleDays, LocalDay(Minimum, zone));
+        var times = cron is null ? 1 : cron.Hours.Length * cron.Minutes.Length;
+        var floorClock = localDecision - decisionDay * DayMilliseconds;
+        for (var day = firstDay; forward ? day <= lastDay : day >= lastDay; day += forward ? 1 : -1)
         {
-            return CronExpression.TryParse(rule.Expression!, CronFormat.Standard, out var parsed)
-                ? parsed
-                : throw new HarnessException(
-                    $"invalid cron expression \"{rule.Expression}\"; expected five fields: minute hour day-of-month month day-of-week",
-                    ScheduleErrorCodes.InvalidRule);
+            var date = CalendarDate(day);
+            if (cron is not null ? !cron.Matches(date)
+                : rule.Kind == ScheduleKind.Weekly && !rule.Weekdays!.Contains((int)date.DayOfWeek))
+                continue;
+            if (!forward)
+            {
+                long? earliest = null;
+                for (var index = 0; index < times && earliest is null; index++)
+                    earliest = LocalInstant(day, TimeAt(cron, clock, index), zone);
+                if (earliest > decision)
+                    continue;
+            }
+            for (var index = forward ? 0 : times - 1; forward ? index < times : index >= 0; index += forward ? 1 : -1)
+            {
+                var time = TimeAt(cron, clock, index);
+                if (forward && day == decisionDay && time.TickOfDay / TimeSpan.TicksPerMillisecond < floorClock)
+                    continue;
+                var candidate = LocalInstant(day, time, zone);
+                if (candidate is not { } instant || instant < Minimum || instant > Maximum)
+                    continue;
+                if (forward ? instant > decision : instant <= decision)
+                    return instant;
+            }
         }
-        var time = ParseTime(rule.Time!);
-        var weekdays = rule.Weekdays is { } days ? string.Join(',', days.Select(day => day % IsoSunday)) : "*";
-        return CronExpression.Parse($"{time.Second} {time.Minute} {time.Hour} * * {weekdays}", CronFormat.IncludeSeconds);
+        return null;
     }
 
-    private static ScheduleRule Absolute(DateTimeOffset target, DateTimeOffset now)
-        => target > now
-            ? new ScheduleRule(ScheduleKind.At, target.ToUniversalTime())
-            : throw new HarnessException($"target {target:O} is not in the future", ScheduleErrorCodes.NotFuture);
+    private static LocalTime TimeAt(ScheduleCron? cron, LocalTime clock, int index)
+        => cron is null ? clock : new LocalTime(cron.Hours[index / cron.Minutes.Length], cron.Minutes[index % cron.Minutes.Length]);
 
-    private static DateTimeOffset ParseInstant(string text)
+    // Gregorian month/day/weekday repeat every 400 years. Matching in an equivalent
+    // cycle also supports local year 0/10000 at the four-digit UTC boundary. Only the
+    // calendar is shifted: timezone offsets always come from the actual instant.
+    private static LocalDate CalendarDate(long localDay)
+        => CalendarAnchor.PlusDays((int)(((localDay - AnchorDay) % GregorianCycleDays + GregorianCycleDays) % GregorianCycleDays));
+
+    private static long FloorDay(long milliseconds)
+        => Math.DivRem(milliseconds, DayMilliseconds, out var remainder) - (remainder < 0 ? 1 : 0);
+
+    private static long LocalDay(long instant, DateTimeZone zone)
+        => FloorDay(instant + OffsetMilliseconds(zone.GetUtcOffset(Instant.FromUnixTimeMilliseconds(instant))));
+
+    private static long OffsetMilliseconds(Offset offset) => offset.ToTimeSpan().Ticks / TimeSpan.TicksPerMillisecond;
+
+    /** Map a wall clock by actual zone intervals: a gap has no candidate; the first interval wins an overlap. */
+    private static long? LocalInstant(long day, LocalTime time, DateTimeZone zone)
     {
-        if (Rfc3339WithOffset().IsMatch(text)
-            && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out var instant))
-            return instant;
-        throw new HarnessException(
-            $"at \"{text}\" must be an RFC 3339 date-time with an offset, for example 2026-01-02T09:00:00+08:00",
-            ScheduleErrorCodes.InvalidRule);
+        var local = day * DayMilliseconds + time.TickOfDay / TimeSpan.TicksPerMillisecond;
+        var cursor = Instant.FromUnixTimeMilliseconds(Math.Clamp(local - DayMilliseconds, ZoneMinimum, Maximum));
+        var ceiling = Instant.FromUnixTimeMilliseconds(Math.Clamp(local + DayMilliseconds, ZoneMinimum, Maximum));
+        while (true)
+        {
+            var interval = zone.GetZoneInterval(cursor);
+            var candidate = local - OffsetMilliseconds(interval.WallOffset);
+            if ((!interval.HasStart || candidate >= interval.Start.ToUnixTimeMilliseconds())
+                && (!interval.HasEnd || candidate < interval.End.ToUnixTimeMilliseconds()))
+                return candidate;
+            if (!interval.HasEnd || interval.End > ceiling)
+                return null;
+            cursor = interval.End;
+        }
     }
 
-    private static DateTimeOffset ResolveLocal(ScheduleTiming.AtLocal at)
+    private static ScheduleRule Absolute(long target, DateTimeOffset now)
     {
-        if (!DateOnly.TryParseExact(at.Date, DateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
-            throw new HarnessException($"at.date \"{at.Date}\" must be {DateFormat}", ScheduleErrorCodes.InvalidRule);
+        if (target < Minimum || target > Maximum)
+            throw new HarnessException("the target must be a four-digit-year UTC instant", ScheduleErrorCodes.TimeOutOfRange);
+        return target > now.ToUnixTimeMilliseconds()
+            ? new ScheduleRule(ScheduleKind.At, DateTimeOffset.FromUnixTimeMilliseconds(target))
+            : throw new HarnessException("the target must be strictly in the future", ScheduleErrorCodes.NotFuture);
+    }
+
+    private static long ParseInstant(string text)
+    {
+        var match = OffsetInstant().Match(text);
+        if (!match.Success)
+            throw new HarnessException("at requires YYYY-MM-DDTHH:mm:ss, optional 1-3 fractional digits and Z or a numeric offset", ScheduleErrorCodes.InvalidRule);
+        var date = ParseDate(match.Groups["date"].Value);
+        var time = ParseTime(match.Groups["time"].Value);
+        var local = new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero).ToUnixTimeMilliseconds()
+            + time.TickOfDay / TimeSpan.TicksPerMillisecond;
+        if (!match.Groups["sign"].Success)
+            return local;
+        var hour = int.Parse(match.Groups["hour"].Value, CultureInfo.InvariantCulture);
+        var minute = int.Parse(match.Groups["minute"].Value, CultureInfo.InvariantCulture);
+        var negative = match.Groups["sign"].Value == "-";
+        if (hour > 23 || minute > 59 || negative && hour == 0 && minute == 0)
+            throw new HarnessException("at has an invalid numeric offset", ScheduleErrorCodes.InvalidRule);
+        return local - (negative ? -1 : 1) * (hour * 60L + minute) * 60_000;
+    }
+
+    private static long ParseLocal(ScheduleTiming.AtLocal at)
+    {
+        var date = ParseDate(at.Date);
+        var time = ParseTime(at.Time);
         var zone = Zone(at.TimeZone);
-        var local = date.ToDateTime(ParseTime(at.Time));
-        if (zone.IsInvalidTime(local))
-            throw new HarnessException($"{at.Date} {at.Time} does not exist in {at.TimeZone}", ScheduleErrorCodes.InvalidRule);
-        var offset = zone.IsAmbiguousTime(local) ? zone.GetAmbiguousTimeOffsets(local).Max() : zone.GetUtcOffset(local);
-        return new DateTimeOffset(local, offset);
+        var day = new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero).ToUnixTimeMilliseconds() / DayMilliseconds;
+        return LocalInstant(day, time, zone)
+            ?? throw new HarnessException("the local at time does not exist in the selected time zone", ScheduleErrorCodes.InvalidRule);
     }
 
-    private static TimeOnly ParseTime(string text)
-        => TimeOnly.TryParseExact(text, TimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time)
-            ? time
-            : throw new HarnessException($"time \"{text}\" must be {StoredTimeFormat}", ScheduleErrorCodes.InvalidRule);
+    private static DateOnly ParseDate(string text)
+        => LocalDateText().IsMatch(text)
+            && DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
+                ? date : throw new HarnessException("date must be a real YYYY-MM-DD calendar date", ScheduleErrorCodes.InvalidRule);
 
-    private static string NormalizeTime(string text) => ParseTime(text).ToString(StoredTimeFormat, CultureInfo.InvariantCulture);
+    private static LocalTime ParseTime(string text)
+    {
+        var match = ClockTime().Match(text);
+        if (match.Success)
+        {
+            var hour = int.Parse(match.Groups["hour"].ValueSpan, CultureInfo.InvariantCulture);
+            var minute = int.Parse(match.Groups["minute"].ValueSpan, CultureInfo.InvariantCulture);
+            var second = int.Parse(match.Groups["second"].ValueSpan, CultureInfo.InvariantCulture);
+            if (hour <= 23 && minute <= 59 && second <= 59)
+            {
+                var fraction = match.Groups["fraction"].ValueSpan;
+                var millisecond = fraction.Length == 0 ? 0 : int.Parse(fraction, CultureInfo.InvariantCulture) * (fraction.Length == 1 ? 100 : fraction.Length == 2 ? 10 : 1);
+                return new LocalTime(hour, minute, second, millisecond);
+            }
+        }
+        throw new HarnessException("time requires HH:mm:ss with optional 1-3 fractional digits", ScheduleErrorCodes.InvalidRule);
+    }
+
+    private static string FormatTime(LocalTime time)
+        => string.Create(CultureInfo.InvariantCulture, $"{time.Hour:00}:{time.Minute:00}:{time.Second:00}.{time.Millisecond:000}");
 
     private static IReadOnlyList<int> NormalizeWeekdays(IReadOnlyList<int> weekdays)
     {
-        if (weekdays.Count == 0 || weekdays.Any(day => day is < IsoMonday or > IsoSunday) || weekdays.Distinct().Count() != weekdays.Count)
+        var mask = 0;
+        foreach (var day in weekdays)
         {
-            throw new HarnessException(
-                "weekly.weekdays must list ISO weekdays, Monday 1 through Sunday 7, without repetitions",
-                ScheduleErrorCodes.InvalidRule);
+            if (day is < 1 or > 7 || (mask & (1 << day)) != 0)
+                throw new HarnessException("weekly.weekdays must contain unique ISO weekdays 1 through 7", ScheduleErrorCodes.InvalidRule);
+            mask |= 1 << day;
         }
-        return [.. weekdays.Order()];
+        if (mask == 0)
+            throw new HarnessException("weekly.weekdays must not be empty", ScheduleErrorCodes.InvalidRule);
+        var normalized = new int[weekdays.Count];
+        var index = 0;
+        for (var day = 1; day <= 7; day++)
+            if ((mask & (1 << day)) != 0)
+                normalized[index++] = day;
+        return normalized;
     }
 
     private static DateTimeOffset Later(DateTimeOffset now, long seconds)
-        => seconds < (DateTimeOffset.MaxValue - now).TotalSeconds
-            ? now.AddSeconds(seconds)
-            : throw new HarnessException("the target time is out of range", ScheduleErrorCodes.TimeOutOfRange);
+    {
+        if (seconds <= 0 || seconds > MaxSafeInteger)
+            throw new HarnessException("seconds must be a positive safe integer", ScheduleErrorCodes.InvalidRule);
+        if (seconds > (Maximum - now.ToUnixTimeMilliseconds()) / 1000)
+            throw new HarnessException("the target time is out of range", ScheduleErrorCodes.TimeOutOfRange);
+        return now.AddSeconds(seconds);
+    }
 }

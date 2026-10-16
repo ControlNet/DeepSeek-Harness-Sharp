@@ -24,8 +24,8 @@ public static class ScheduleTools
     private const string CreateDescription =
         "Create a reminder in the current session that delivers prompt back to this session when it becomes due. "
         + "Supply exactly one timing parameter: after_seconds, at, every_seconds, daily, weekly, or cron. "
-        + "Daily, weekly, and cron times follow their time zone: a local time skipped by a daylight-saving jump fires at the end of the jump, "
-        + "and a repeated local time fires once. When the session is resumed after being closed, an overdue one-shot is delivered once "
+        + "Local times that do not exist in the zone are skipped; repeated local times fire once, at the earlier instant. "
+        + "When the session is resumed after being closed, an overdue one-shot is delivered once "
         + "and a recurring reminder delivers only its latest missed occurrence.";
 
     private const string ListDescription = "List the active reminders in the current session.";
@@ -45,12 +45,16 @@ public static class ScheduleTools
 
     private static readonly string[] CreateSelectors = [AfterSeconds, At, EverySeconds, Daily, Weekly, Cron];
     private static readonly string[] UpdateSelectors = [At, EverySeconds, Daily, Weekly, Cron];
+    private static readonly string[] AtFields = ["date", "time", "time_zone"];
+    private static readonly string[] DailyFields = ["time", "time_zone"];
+    private static readonly string[] WeeklyFields = ["time", "time_zone", "weekdays"];
+    private static readonly string[] CronFields = ["expression", "time_zone"];
 
     private static readonly JsonSerializerOptions RelaxedJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private const string SelectorProperties = """
         "every_seconds": {
-          "type": "integer",
+          "type": "number",
           "description": "Fixed-rate interval in whole seconds, at least 60, aligned to the time it is saved."
         },
         "daily": {
@@ -59,8 +63,8 @@ public static class ScheduleTools
           "required": ["time", "time_zone"],
           "description": "Every day at a local time.",
           "properties": {
-            "time": { "type": "string", "description": "HH:mm:ss, for example 23:00:00." },
-            "time_zone": { "type": "string", "description": "UTC, an IANA Area/Location name such as Asia/Shanghai, or the host zone named in the system prompt." }
+            "time": { "type": "string", "description": "HH:mm:ss with optional 1-3 fractional digits, for example 23:00:00.125." },
+            "time_zone": { "type": "string", "description": "UTC or IANA Area/Location, for example Asia/Shanghai." }
           }
         },
         "weekly": {
@@ -69,8 +73,8 @@ public static class ScheduleTools
           "required": ["time", "time_zone", "weekdays"],
           "description": "On the given weekdays at a local time.",
           "properties": {
-            "time": { "type": "string", "description": "HH:mm:ss, for example 09:00:00." },
-            "time_zone": { "type": "string", "description": "UTC, an IANA Area/Location name such as Asia/Shanghai, or the host zone named in the system prompt." },
+            "time": { "type": "string", "description": "HH:mm:ss with optional 1-3 fractional digits, for example 09:00:00.125." },
+            "time_zone": { "type": "string", "description": "UTC or IANA Area/Location, for example Asia/Shanghai." },
             "weekdays": { "type": "array", "items": { "type": "integer" }, "description": "ISO weekdays, Monday 1 through Sunday 7, without repetitions." }
           }
         },
@@ -78,17 +82,17 @@ public static class ScheduleTools
           "type": "object",
           "additionalProperties": false,
           "required": ["expression", "time_zone"],
-          "description": "Five-field cron expression in a time zone.",
+          "description": "Five-field Vixie cron expression in a time zone.",
           "properties": {
             "expression": {
               "type": "string",
-              "description": "minute hour day-of-month month day-of-week, for example \"*/15 9-17 * * 1-5\". Day and month names, L, W and # are accepted. When both day fields are restricted, a date must match both."
+              "description": "minute hour day-of-month month day-of-week, for example \"*/15 9-17 * * 1-5\". Numeric values, *, ascending ranges, */n, a-b/n, and comma-separated lists only; no names, macros, ?, L, W, #, or seconds field. If either day field starts with *, both day fields must match; otherwise either may match."
             },
-            "time_zone": { "type": "string", "description": "UTC, an IANA Area/Location name such as Asia/Shanghai, or the host zone named in the system prompt." }
+            "time_zone": { "type": "string", "description": "UTC or IANA Area/Location, for example Asia/Shanghai." }
           }
         },
         "at": {
-          "description": "Absolute one-shot target: an RFC 3339 date-time with offset, or a local date, time, and time_zone. A local time that does not exist in the zone is rejected; a repeated local time uses the earlier instant.",
+          "description": "Absolute one-shot target: YYYY-MM-DDTHH:mm:ss with optional 1-3 fractional digits and uppercase Z or a numeric offset +/-HH:mm (00-23 hours, 00-59 minutes; not -00:00), or a local date, time, and time_zone. A local time that does not exist in the zone is rejected; a repeated local time uses the earlier instant.",
           "oneOf": [
             { "type": "string" },
             {
@@ -97,8 +101,8 @@ public static class ScheduleTools
               "required": ["date", "time", "time_zone"],
               "properties": {
                 "date": { "type": "string", "description": "yyyy-MM-dd" },
-                "time": { "type": "string", "description": "HH:mm:ss" },
-                "time_zone": { "type": "string" }
+                "time": { "type": "string", "description": "HH:mm:ss with optional 1-3 fractional digits." },
+                "time_zone": { "type": "string", "description": "UTC or IANA Area/Location, for example Asia/Shanghai." }
               }
             }
           ]
@@ -136,7 +140,7 @@ public static class ScheduleTools
         var schedules = ctx.Get<ScheduleService>(ScheduleService.ServiceName)
             ?? throw new InvalidOperationException("tool-schedule requires the schedules service");
         return new RegistrationBundle(
-            systemPrompt.Section(new PromptSection(SectionName, _ => Guidance(TimeZoneInfo.Local.Id), After: [GoalSectionName])),
+            systemPrompt.Section(new PromptSection(SectionName, _ => Guidance(ScheduleRules.HostTimeZone), After: [GoalSectionName])),
             tools.Register(CreateTool(schedules)),
             tools.Register(ListTool(schedules)),
             tools.Register(UpdateTool(schedules)),
@@ -148,7 +152,9 @@ public static class ScheduleTools
             + "session as a scheduled message: it starts a new turn when the session is idle, and otherwise waits until the current turn ends. "
             + "Reminders belong to this session: they run only while the session is open, come back when it is resumed, and are not "
             + "copied into forks or subagents. Use after_seconds for relative delays. at, daily, weekly, and cron need an explicit time "
-            + $"zone; the host's local time zone is \"{hostZone}\". A reminder is not a goal: it never creates, resumes, or completes one.";
+            + $"zone: UTC or an IANA Area/Location name; the host's suggested time zone is \"{hostZone}\". "
+            + "Clock times require HH:mm:ss with optional 1-3 fractional digits. Nonexistent recurring local times are skipped; "
+            + "repeated local times fire once, at the earlier instant. A reminder is not a goal: it never creates, resumes, or completes one.";
 
     private static ToolDefinition CreateTool(ScheduleService schedules)
         => new()
@@ -163,7 +169,7 @@ public static class ScheduleTools
                   "properties": {
                     "prompt": { "type": "string", "description": "Reminder content to deliver when the target becomes due." },
                     "title": { "type": "string", "description": {{JsonValue.Create(TitleDescription).ToJsonString()}} },
-                    "after_seconds": { "type": "integer", "description": "Delay in whole seconds." },
+                    "after_seconds": { "type": "number", "description": "Delay in whole seconds." },
                     {{SelectorProperties}}
                   }
                 }
@@ -298,24 +304,75 @@ public static class ScheduleTools
 
     private static ScheduleTiming? Timing(JsonElement args, string[] selectors)
     {
-        var present = selectors
-            .Where(name => args.TryGetProperty(name, out var value) && value.ValueKind != JsonValueKind.Null)
-            .ToList();
-        if (present.Count > 1)
-            throw Selector($"supply at most one timing parameter, got {string.Join(", ", present)}");
-        return present is [var name] ? ParseTiming(name, args.GetProperty(name)) : null;
+        if (args.ValueKind != JsonValueKind.Object)
+            throw Selector("schedule timing parameters must be an object");
+        foreach (var property in args.EnumerateObject())
+        {
+            if (property.Name is not ("title" or "prompt")
+                && !(selectors == UpdateSelectors && property.Name == "id")
+                && !selectors.Contains(property.Name))
+                throw Selector("unsupported schedule timing parameter");
+        }
+        string? selected = null;
+        foreach (var name in selectors)
+        {
+            if (!args.TryGetProperty(name, out _))
+                continue;
+            if (selected is not null)
+                throw Selector("supply at most one timing parameter");
+            selected = name;
+        }
+        return selected is null ? null : ParseTiming(selected, args.GetProperty(selected));
     }
 
-    private static ScheduleTiming ParseTiming(string name, JsonElement value) => name switch
+    private static ScheduleTiming ParseTiming(string name, JsonElement value)
     {
-        AfterSeconds => new ScheduleTiming.After(Seconds(value, name)),
-        EverySeconds => new ScheduleTiming.Every(Seconds(value, name)),
-        At when value.ValueKind == JsonValueKind.String => new ScheduleTiming.AtInstant(value.GetString()!),
-        At => new ScheduleTiming.AtLocal(Field(value, name, "date"), Field(value, name, "time"), Field(value, name, "time_zone")),
-        Daily => new ScheduleTiming.Daily(Field(value, name, "time"), Field(value, name, "time_zone")),
-        Weekly => new ScheduleTiming.Weekly(Field(value, name, "time"), Field(value, name, "time_zone"), Weekdays(value)),
-        _ => new ScheduleTiming.Cron(Field(value, name, "expression"), Field(value, name, "time_zone")),
-    };
+        if (name == AfterSeconds)
+            return new ScheduleTiming.After(Seconds(value, name));
+        if (name == EverySeconds)
+            return new ScheduleTiming.Every(Seconds(value, name));
+        if (name == At && value.ValueKind == JsonValueKind.String)
+            return new ScheduleTiming.AtInstant(value.GetString()!);
+
+        string[] fields = name switch
+        {
+            At => AtFields,
+            Daily => DailyFields,
+            Weekly => WeeklyFields,
+            _ => CronFields,
+        };
+        if (!HasExactFields(value, fields))
+            throw new HarnessException($"{name} must contain exactly {string.Join(", ", fields)}", ScheduleErrorCodes.InvalidRule);
+
+        // Validate rule-field kinds before the zone kind, as the upstream selector decoders do.
+        var primary = Field(value, name, name == Cron ? "expression" : name == At ? "date" : "time");
+        var time = name == At ? Field(value, name, "time") : primary;
+        var zone = Field(value, name, "time_zone");
+        return name switch
+        {
+            At => new ScheduleTiming.AtLocal(primary, time, zone),
+            Daily => new ScheduleTiming.Daily(time, zone),
+            Weekly => new ScheduleTiming.Weekly(time, zone, Weekdays(value)),
+            _ => new ScheduleTiming.Cron(primary, zone),
+        };
+    }
+
+    private static bool HasExactFields(JsonElement value, string[] fields)
+    {
+        if (value.ValueKind != JsonValueKind.Object)
+            return false;
+        foreach (var field in fields)
+        {
+            if (!value.TryGetProperty(field, out _))
+                return false;
+        }
+        foreach (var property in value.EnumerateObject())
+        {
+            if (!fields.Contains(property.Name))
+                return false;
+        }
+        return true;
+    }
 
     private static long Seconds(JsonElement value, string name)
         => value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number)
@@ -326,14 +383,23 @@ public static class ScheduleTools
     private static string Field(JsonElement value, string selector, string field)
         => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(field, out var element) && element.ValueKind == JsonValueKind.String
             ? element.GetString()!
-            : throw new HarnessException($"{selector}.{field} must be a string", ScheduleErrorCodes.InvalidRule);
+            : throw new HarnessException($"{selector}.{field} must be a string",
+                field == "time_zone" ? ScheduleErrorCodes.InvalidTimeZone : ScheduleErrorCodes.InvalidRule);
 
     private static IReadOnlyList<int> Weekdays(JsonElement value)
     {
-        if (!value.TryGetProperty("weekdays", out var days) || days.ValueKind != JsonValueKind.Array
-            || days.EnumerateArray().Any(day => !day.TryGetInt32(out _)))
-            throw new HarnessException("weekly.weekdays must be an array of integers", ScheduleErrorCodes.InvalidRule);
-        return [.. days.EnumerateArray().Select(day => day.GetInt32())];
+        if (!value.TryGetProperty("weekdays", out var days) || days.ValueKind != JsonValueKind.Array)
+            throw new HarnessException("weekly.weekdays must be an array of ISO weekday integers from 1 through 7", ScheduleErrorCodes.InvalidRule);
+        var weekdays = new int[days.GetArrayLength()];
+        var index = 0;
+        foreach (var day in days.EnumerateArray())
+        {
+            if (day.ValueKind != JsonValueKind.Number || !day.TryGetDouble(out var number)
+                || !double.IsInteger(number) || number is < 1 or > 7)
+                throw new HarnessException("weekly.weekdays must be an array of ISO weekday integers from 1 through 7", ScheduleErrorCodes.InvalidRule);
+            weekdays[index++] = (int)number;
+        }
+        return weekdays;
     }
 
     private static string Id(JsonElement args)
