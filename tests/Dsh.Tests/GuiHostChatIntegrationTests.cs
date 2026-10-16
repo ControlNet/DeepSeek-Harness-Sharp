@@ -55,7 +55,7 @@ public sealed class GuiHostChatIntegrationTests
             Assert.Empty(viewModel.Attachments);
             snapshot = await observer.GetSessionSnapshotAsync(id, Ct);
             var user = Assert.Single(snapshot.Events.Select(item => DshJson.Deserialize<SessionEvent>(item.EventJson)?.Data)
-                .OfType<UserMessagePayload>(), item => item.Message.Content.OfType<TextBlock>().Any(text => text.Text == "ordinary local chat"));
+                .OfType<UserMessagePayload>(), item => item.Message.Content.OfType<Dsh.Llm.TextBlock>().Any(text => text.Text == "ordinary local chat"));
             Assert.Contains(user.Message.Content, block => block is ImageBlock { Attachment.Width: 3, Attachment.Height: 2 });
             Assert.Equal(before, agents.List().Count);
         });
@@ -212,7 +212,7 @@ public sealed class GuiHostChatIntegrationTests
                     () => viewModel.Messages.Any(message => message.Kind == MessageKind.User && message.Text == "typed through the ordinary composer"));
                 var snapshot = await observer.GetSessionSnapshotAsync(viewModel.CurrentSessionId.Value, Ct);
                 Assert.Contains(snapshot.Events, item => DshJson.Deserialize<SessionEvent>(item.EventJson)?.Data is UserMessagePayload user
-                    && user.Message.Content.OfType<TextBlock>().Any(block => block.Text == "typed through the ordinary composer"));
+                    && user.Message.Content.OfType<Dsh.Llm.TextBlock>().Any(block => block.Text == "typed through the ordinary composer"));
             }
             finally
             {
