@@ -144,8 +144,7 @@ public static class PtyDaemonClient
     {
         if (!OperatingSystem.IsWindows())
         {
-            if (!UnixPtyNative.TryReadWindowSize(1, out columns, out rows))
-                UnixPtyNative.TryReadWindowSize(0, out columns, out rows);
+            (columns, rows) = UnixPtyNative.ReadWindowSize(1) ?? UnixPtyNative.ReadWindowSize(0) ?? (0, 0);
             return rows >= 4 && columns >= 20;
         }
         if (Console.IsOutputRedirected)
