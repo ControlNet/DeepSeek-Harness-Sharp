@@ -446,7 +446,7 @@ public class AgentLoopIntegrationTests
     public async Task McpResource_LargeText_IsSpilledWithTheFileThatHoldsItAll()
     {
         var requests = new List<string>();
-        using var server = new MockDeepSeekServer(body =>
+        await using var server = await MockDeepSeekServer.StartAsync(body =>
         {
             requests.Add(body);
             return requests.Count == 1
