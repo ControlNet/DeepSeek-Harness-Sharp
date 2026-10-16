@@ -5,6 +5,7 @@ using Dsh.Runtime;
 
 namespace Dsh.Tests.Runtime;
 
+[Collection(SettingsTemplateTests.RegistryCollection)]
 public class PluginUnloadTests
 {
     [Fact]
@@ -27,6 +28,41 @@ public class PluginUnloadTests
         Assert.Equal(ActivationState.Disposed, activation.State);
         foreach (var name in provided)
             Assert.Null(ctx.Get(name, strict: false));
+    }
+
+    [Fact]
+    public void DynamicSchema_UnloadingOverlaysRestoresCompiledSchema()
+    {
+        const string package = "@deepseek-ai/dsh-checkpoints";
+        var original = Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package);
+        var unaffected = DshPluginSettingsRegistry.All().Where(provider => provider.Package != package).ToArray();
+        var path = Path.Combine(AppContext.BaseDirectory, "Dsh.Checkpoints.dll");
+        var firstHost = new PluginHost();
+        var first = firstHost.TryLoad(path);
+        try
+        {
+            var firstSchema = Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package);
+            Assert.NotSame(original, firstSchema);
+            var secondHost = new PluginHost();
+            var second = secondHost.TryLoad(path);
+            try
+            {
+                var secondSchema = Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package);
+                Assert.NotSame(firstSchema, secondSchema);
+                _ = PluginUnloader.Unload(first.Context!);
+                Assert.Same(secondSchema, Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package));
+            }
+            finally
+            {
+                _ = PluginUnloader.Unload(second.Context!);
+            }
+        }
+        finally
+        {
+            _ = PluginUnloader.Unload(first.Context!);
+        }
+        Assert.Same(original, Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package));
+        Assert.Equal(unaffected, DshPluginSettingsRegistry.All().Where(provider => provider.Package != package));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
