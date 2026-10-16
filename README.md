@@ -74,7 +74,7 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    - 提醒不是 goal:提醒消息不算用户输入,不会创建、恢复或完成 goal,也不改变 goal 的自动续跑。
    - 派发会先推进提醒状态,再排入会话收件箱。删除已派发的提醒不撤回排队消息;用户中断会清空收件箱,已派发的一次性提醒不会重投。禁用定时提醒插件后仍可读取带 `ignorable` 标记的会话事件,重新启用后恢复提醒状态;禁用期间不运行计时器。
    - cron 严格限定五段:`分钟 小时 日期 月份 星期`。只接受数字、`*`、升序范围 `a-b`、步进 `*/n` / `a-b/n` 及其逗号列表;步长须为正安全整数,星期日可写 0 或 7。不接受名称、宏、`?`、`L`、`W`、`#`、倒序范围、单值步进 `a/n` 或秒字段。Vixie 的日期/星期 star 标记取决于该字段原文是否以 `*` 开头(包括 `*/n`):任一带 star 标记时两段都须匹配,两段均无 star 标记时任一匹配即可;完整数字范围不等同于 `*`,列表中 `*` 的位置也会影响标记。
-   - 所有平台(包括 Windows invariant-globalization 发布档)均使用 NodaTime 3.3.5 内置 TZDB,不依赖系统 tzdata 或 ICU;时区规则随内置 TZDB 版本更新。别名使用内嵌的 CLDR 47 / ICU 77 canonical-name 映射,保持上游 Intl 的稳定名称(如 `Asia/Kolkata` 规范化为 `Asia/Calcutta`),映射来源和 Unicode 许可随数据一并保留。时间语义严格对齐固定版本[上游调度域实现](https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/86a402200d95fecef4529d969836f1fe13c6cb0d/packages/schedule/schedule/src/domain.ts),测试还包含直接执行该原始模块生成的 106 组黄金数据,覆盖语法、偏移、毫秒、规范化、DST、日期线、固定已提交目标及 UTC 年边界。
+   - 所有平台(包括 Windows invariant-globalization 发布档)均使用 NodaTime 3.3.5 内置 TZDB,不依赖系统 tzdata 或 ICU;时区规则随内置 TZDB 版本更新。别名使用内嵌的 CLDR 47 / ICU 77 canonical-name 映射,保持上游 Intl 的稳定名称(如 `Asia/Kolkata` 规范化为 `Asia/Calcutta`),映射来源和 Unicode 许可随数据一并保留。时间语义严格对齐固定版本[上游调度域实现](https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/86a402200d95fecef4529d969836f1fe13c6cb0d/packages/schedule/schedule/src/domain.ts),测试还包含直接执行该原始模块生成的 112 组黄金数据,覆盖语法、偏移、毫秒、规范化、DST、日期线、固定已提交目标及 UTC 年边界。
 10. 网页搜索引擎:`web_search` 工具的 `engine` 参数选择搜索引擎,同一次调用里的所有查询都发给这个引擎;不填 `engine` 时走通用网页搜索。系统提示词会列出当前可用的引擎,每条搜索结果都标明回答它的引擎及其局限(只搜了哪类对象、限流额度)。
 
    | 引擎 | 插件包 | 搜索范围 | 凭据参数 | 未配置凭据时的限制 |

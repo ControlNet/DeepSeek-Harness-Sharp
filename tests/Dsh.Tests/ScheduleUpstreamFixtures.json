@@ -619,6 +619,57 @@
       "code": "time_out_of_range"
     },
     {
+      "name": "invalid clock final \"\\n\"",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00\n",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid at final \"\\n\"",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00Z\n",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock final \"\\r\\n\"",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00\r\n",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid at final \"\\r\\n\"",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00Z\r\n",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid clock final \" \"",
+      "kind": "daily",
+      "selector": {
+        "time": "09:00:00 ",
+        "time_zone": "UTC"
+      },
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
+      "name": "invalid at final \" \"",
+      "kind": "at",
+      "selector": "2026-01-02T00:00:00Z ",
+      "now": "2026-01-01T00:00:00Z",
+      "code": "invalid_rule"
+    },
+    {
       "name": "cron 30,10,20 * * * *",
       "kind": "cron",
       "selector": {

@@ -45,16 +45,16 @@ public static partial class ScheduleRules
     private static readonly long ZoneMinimum = Instant.MinValue.ToUnixTimeMilliseconds();
     private static readonly Dictionary<string, string> ZoneIds = LoadZoneIds();
 
-    [GeneratedRegex(@"^(?<date>[0-9]{4}-[0-9]{2}-[0-9]{2})T(?<time>[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,3})?)(?:Z|(?<sign>[+-])(?<hour>[0-9]{2}):(?<minute>[0-9]{2}))$")]
+    [GeneratedRegex(@"^(?<date>[0-9]{4}-[0-9]{2}-[0-9]{2})T(?<time>[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,3})?)(?:Z|(?<sign>[+-])(?<hour>[0-9]{2}):(?<minute>[0-9]{2}))\z")]
     private static partial Regex OffsetInstant();
 
-    [GeneratedRegex(@"^(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?:\.(?<fraction>[0-9]{1,3}))?$")]
+    [GeneratedRegex(@"^(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?:\.(?<fraction>[0-9]{1,3}))?\z")]
     private static partial Regex ClockTime();
 
-    [GeneratedRegex(@"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")]
+    [GeneratedRegex(@"^[0-9]{4}-[0-9]{2}-[0-9]{2}\z")]
     private static partial Regex LocalDateText();
 
-    [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)+$")]
+    [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)+\z")]
     private static partial Regex IanaZone();
 
     public static string HostTimeZone
