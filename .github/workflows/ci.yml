@@ -151,6 +151,15 @@ jobs:
           cat "$HOME_DIR/daemon.log"
           exit 1
 
+      - name: 固定 Unix TUI raw 回归（macOS 独立阶段，八轮不减少）
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests -noColor \
+            -class Dsh.Tests.TuiRawModeEndToEndTests \
+            -trait- "Category=LlmSmoke"
+
       - name: 运行测试（排除 GpuStress / OnlyGpu / LlmSmoke / RenderBench）
         shell: bash
         run: |
@@ -167,10 +176,10 @@ jobs:
             -trait- "Category=OnlyGpu"
             -trait- "Category=LlmSmoke"
             -trait- "Category=RenderBench")
-          # macOS 串行执行: PTY 主端读在 macOS 上会阻塞调用线程, 并行调度下会拖死线程池而挂死;
-          # 串行执行全部用例通过(约 90s)。看门狗兜底, 避免未来回归时卡满 job 超时(25 分钟)。
+          # macOS 保持串行；八轮 raw 回归沿原探针的独立阶段执行，不重复计入主 quick。
+          # 主 quick 的 600s 看门狗、各测试原预算及整个 job 的 25 分钟限制均不变。
           if [ "$RUNNER_OS" = "macOS" ]; then
-            ARGS+=(-parallel none)
+            ARGS+=(-parallel none -class- Dsh.Tests.TuiRawModeEndToEndTests)
             echo "运行: ${ARGS[*]}"
             "${ARGS[@]}" &
             TESTPID=$!
