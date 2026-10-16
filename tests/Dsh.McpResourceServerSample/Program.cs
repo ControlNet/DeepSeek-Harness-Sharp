@@ -114,7 +114,9 @@ public static class Program
             }
         }
         await using var server = McpServer.Create(new StdioServerTransport("resource-sample"), options);
-        await server.RunAsync();
+        var running = server.RunAsync();
+        await Console.Error.WriteLineAsync("MCP_RESOURCE_SAMPLE_READY");
+        await running;
     }
 
     private static McpServerResourceCollection Resources()
