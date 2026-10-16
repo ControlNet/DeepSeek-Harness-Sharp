@@ -99,26 +99,32 @@ internal sealed class ConPtySession : IDisposable
             // Children inherit "ignore Ctrl+C" (set for processes started in a new process group, as the GitHub runner starts its steps), and then Ctrl+C typed into the terminal stopped nothing.
             // The attribute is per process, so normal Ctrl+C processing is restored here, as the Unix spawn restores default signal handling.
             SetConsoleCtrlHandler(IntPtr.Zero, false);
-            var (savedInput, savedOutput, savedError) = ParkStdHandles();
             ProcessInformation processInfo;
-            try
+            // The standard handles are process-wide. Keep parking, child creation and
+            // restoration atomic so another session cannot restore handles mid-launch
+            // or save the parked handles and leave the parent with null handles.
+            lock (StdHandleGate)
             {
-                if (!CreateProcess(
-                        null,
-                        commandLine,
-                        IntPtr.Zero,
-                        IntPtr.Zero,
-                        false,
-                        flags,
-                        environment,
-                        info.WorkingDirectory,
-                        ref startupInfo,
-                        out processInfo))
-                    throw new InvalidOperationException($"CreateProcess failed: {Marshal.GetLastWin32Error()}");
-            }
-            finally
-            {
-                RestoreStdHandles(savedInput, savedOutput, savedError);
+                var (savedInput, savedOutput, savedError) = ParkStdHandles();
+                try
+                {
+                    if (!CreateProcess(
+                            null,
+                            commandLine,
+                            IntPtr.Zero,
+                            IntPtr.Zero,
+                            false,
+                            flags,
+                            environment,
+                            info.WorkingDirectory,
+                            ref startupInfo,
+                            out processInfo))
+                        throw new InvalidOperationException($"CreateProcess failed: {Marshal.GetLastWin32Error()}");
+                }
+                finally
+                {
+                    RestoreStdHandles(savedInput, savedOutput, savedError);
+                }
             }
 
             var input = new FileStream(inputWrite, FileAccess.Write, 4096, isAsync: false);
@@ -231,6 +237,8 @@ internal sealed class ConPtySession : IDisposable
         public int dwProcessId;
         public int dwThreadId;
     }
+
+    private static readonly Lock StdHandleGate = new();
 
     private static (IntPtr Input, IntPtr Output, IntPtr Error) ParkStdHandles()
     {

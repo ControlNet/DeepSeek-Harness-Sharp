@@ -39,7 +39,7 @@ internal static class RealHostProcesses
         return root;
     }
 
-    public static Process StartHost(string executable, string root)
+    public static Process StartHost(string executable, string root, Action<string>? output = null)
     {
         var info = new ProcessStartInfo(executable, ["host", "serve"])
         {
@@ -50,8 +50,16 @@ internal static class RealHostProcesses
         };
         info.Environment[HomeVariable] = root;
         var process = Process.Start(info) ?? throw new InvalidOperationException("failed to start dsharp host serve");
-        process.OutputDataReceived += (_, _) => { };
-        process.ErrorDataReceived += (_, _) => { };
+        process.OutputDataReceived += (_, args) =>
+        {
+            if (args.Data is { } line)
+                output?.Invoke($"host {process.Id} stdout: {line}");
+        };
+        process.ErrorDataReceived += (_, args) =>
+        {
+            if (args.Data is { } line)
+                output?.Invoke($"host {process.Id} stderr: {line}");
+        };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         return process;

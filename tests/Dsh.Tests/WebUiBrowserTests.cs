@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Dsh.AgentAdapters;
 using Dsh.Fleet;
+using Dsh.Pty;
 using Xunit.Sdk;
 
 namespace Dsh.Tests;
@@ -117,12 +118,12 @@ public sealed class WebUiBrowserTests
             """, Ct));
         // Ctrl+C goes in only once the shell runs the wait, so it cannot reach the shell before the wait starts.
         await TypeInTerminalAsync(phone, TestShell.Sequence(TestShell.EchoAnswer("busy"), TestShell.Wait(120)), tap: true);
-        await WaitForTerminalTextAsync(phone, "busy-42");
+        await WaitForTerminalTextAsync(phone, "busy-42", hub.LocalHome);
         await phone.TapAsync(".key-bar .key[aria-label='Ctrl+C']", Ct);
         Assert.Equal("true", await phone.EvaluateAsync(
             "String(document.activeElement === document.querySelector('#terminal-screen .xterm-helper-textarea'))", Ct));
         await TypeInTerminalAsync(phone, TestShell.EchoAnswer("phone"), tap: true);
-        await WaitForTerminalTextAsync(phone, "phone-42");
+        await WaitForTerminalTextAsync(phone, "phone-42", hub.LocalHome);
         await AssertNoHorizontalScrollAsync(phone);
         await phone.ScreenshotAsync(Path.Combine(Artifacts, "phone-terminal-keybar.png"), Ct);
         await phone.NavigateAsync(new Uri($"{await phone.EvaluateAsync("location.origin", Ct)}/#/"), Ct);
@@ -161,7 +162,7 @@ public sealed class WebUiBrowserTests
         await StartSessionThroughFormAsync(chrome, SecondMachine, AgentKinds.Terminal, TestShell.CommandLine, project, prompt: null);
         await chrome.WaitForAsync("document.querySelector('.xterm-rows')", Ct, SessionWait);
         await TypeInTerminalAsync(chrome, TestShell.EchoAnswer("web"), tap: false);
-        await WaitForTerminalTextAsync(chrome, "web-42");
+        await WaitForTerminalTextAsync(chrome, "web-42", project);
         await chrome.ScreenshotAsync(Path.Combine(Artifacts, "terminal-session.png"), Ct);
     }
 
@@ -308,8 +309,8 @@ public sealed class WebUiBrowserTests
         await chrome.PressEnterAsync(Ct);
     }
 
-    /** A failure shows what the terminal does show. */
-    private static async Task WaitForTerminalTextAsync(HeadlessChrome chrome, string expected)
+    /** Compare the rendered terminal with the original daemon when a real command does not return. */
+    private static async Task WaitForTerminalTextAsync(HeadlessChrome chrome, string expected, string home)
     {
         try
         {
@@ -317,7 +318,38 @@ public sealed class WebUiBrowserTests
         }
         catch (XunitException error)
         {
-            Assert.Fail($"{error.Message}; terminal: {await chrome.EvaluateAsync("document.querySelector('.xterm-rows').textContent", Ct)}");
+            var browser = await chrome.EvaluateAsync("""
+                JSON.stringify({
+                  rows: document.querySelector('.xterm-rows').textContent,
+                  state: document.getElementById('terminal-state').textContent,
+                  ptyId: document.getElementById('terminal-screen').dataset.ptyId
+                })
+                """, Ct);
+            string daemon;
+            try
+            {
+                var ptyId = await chrome.EvaluateAsync("document.getElementById('terminal-screen').dataset.ptyId", Ct);
+                var socket = PtyDaemonPaths.SocketPath(home);
+                var port = OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile(home) : null;
+                var sessions = await PtyDaemonClient.ListAsync(socket, port, Ct);
+                var snapshot = await PtyDaemonClient.SnapshotAsync(ptyId, socket, port, Ct);
+                daemon = JsonSerializer.Serialize(new
+                {
+                    sessions = sessions.Select(session => new { session.Id, session.Pid, session.Status, session.ExitCode }),
+                    containsExpected = snapshot.Contains(expected, StringComparison.Ordinal),
+                    snapshot,
+                });
+            }
+            catch (Exception diagnosticError)
+            {
+                daemon = diagnosticError.GetType().Name;
+            }
+            var message = $"{error.Message}; browser: {browser}; daemon: {daemon}"
+                .Replace(home, "<test-home>", StringComparison.OrdinalIgnoreCase)
+                .Replace(home.Replace('\\', '/'), "<test-home>", StringComparison.OrdinalIgnoreCase);
+            if (!string.IsNullOrEmpty(Environment.UserName))
+                message = message.Replace(Environment.UserName, "<user>", StringComparison.OrdinalIgnoreCase);
+            Assert.Fail(message);
         }
     }
 

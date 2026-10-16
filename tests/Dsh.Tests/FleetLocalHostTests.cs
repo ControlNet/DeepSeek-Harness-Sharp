@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using Dsh.Fleet;
@@ -55,11 +56,12 @@ public sealed class FleetLocalHostTests
         try
         {
             Process? host = null;
+            var hostOutput = new ConcurrentQueue<string>();
             var options = FleetConnectionTests.TestOptions with
             {
                 StartLocalHost = (_, _) =>
                 {
-                    host = RealHostProcesses.StartHost(executable, home);
+                    host = RealHostProcesses.StartHost(executable, home, hostOutput.Enqueue);
                     return Task.CompletedTask;
                 },
             };
@@ -73,10 +75,42 @@ public sealed class FleetLocalHostTests
             var ptyId = await StartShellAsync(connection, home);
             await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session is { Kind: HostSessionKinds.Terminal } && session.SessionId == ptyId));
 
-            var states = FleetConnectionTests.RecordStates(connection);
+            var previousLease = await connection.WaitConnectedAsync(Ct);
+            var reconnecting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var states = new ConcurrentQueue<string>();
+            // Subscribe before the kill, and publish both transitions through synchronized barriers.
+            connection.StateChanged += changed =>
+            {
+                states.Enqueue($"{changed.State}: {changed.Detail}");
+                if (changed.State == MachineConnectionState.Reconnecting)
+                    reconnecting.TrySetResult();
+                else if (changed.State == MachineConnectionState.Connected && reconnecting.Task.IsCompleted)
+                    recovered.TrySetResult();
+            };
             first.Kill();
-            await FleetConnectionTests.WaitForAsync(() => states.Contains(MachineConnectionState.Reconnecting) && connection.State == MachineConnectionState.Connected);
+            try
+            {
+                await FleetConnectionTests.WaitForAsync(() => recovered.Task.IsCompleted && connection.State == MachineConnectionState.Connected);
+            }
+            catch (OperationCanceledException)
+            {
+                var diagnostic = $"Host recovery failed; connection {connection.State} ({connection.Detail}); "
+                    + $"previous lease cancelled={previousLease.Lifetime.IsCancellationRequested}; "
+                    + $"first process {first.Id} exited={first.HasExited}; "
+                    + $"latest process {host?.Id} exited={host?.HasExited}; "
+                    + $"states: {string.Join(" -> ", states)}; host output:{Environment.NewLine}"
+                    + string.Join(Environment.NewLine, hostOutput);
+                diagnostic = diagnostic.Replace(home, "<test-home>", StringComparison.OrdinalIgnoreCase);
+                var userHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                if (userHome.Length > 0)
+                    diagnostic = diagnostic.Replace(userHome, "<user-home>", StringComparison.OrdinalIgnoreCase);
+                Assert.Fail(diagnostic);
+            }
+            Assert.True(previousLease.Lifetime.IsCancellationRequested);
+            Assert.True(first.HasExited);
             Assert.NotSame(first, host);
+            Assert.False(Assert.IsType<Process>(host).HasExited);
             await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session.SessionId == ptyId));
         }
         finally

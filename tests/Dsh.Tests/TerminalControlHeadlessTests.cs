@@ -121,7 +121,9 @@ public sealed class TerminalControlHeadlessTests
             window.KeyPress(Key.Q, RawInputModifiers.Control, PhysicalKey.Q, "q");
             window.KeyPress(Key.OemComma, RawInputModifiers.Control, PhysicalKey.None, ",");
             window.KeyPress(Key.C, RawInputModifiers.Control, PhysicalKey.C, "c");
-            await WaitForLineAsync(session, line => line.Contains("02 0b 0e 31 00 1b 17 11 2c 03", StringComparison.Ordinal));
+            string[] expectedBytes = ["02", "0b", "0e", "31", "00", "1b", "17", "11", "2c", "03"];
+            await WaitForLineAsync(session, line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+                .TakeLast(expectedBytes.Length).SequenceEqual(expectedBytes));
             Assert.True(window.IsVisible);
             Assert.Equal(sidebar, viewModel.IsSidebarVisible);
             Assert.Equal(page, viewModel.IsDashboardPage);
