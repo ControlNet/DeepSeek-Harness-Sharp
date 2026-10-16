@@ -328,8 +328,27 @@ public sealed class McpResourceToolsTests(McpResourceServerFixture fixture) : IC
         try
         {
             await using var ending = new McpResourceServerFixture { ServerArguments = [mode, Path.Combine(markerHome, "ended")] };
+            using var listener = new ActivityListener
+            {
+                ShouldListenTo = source => source.Name == "Experimental.ModelContextProtocol",
+                Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+                ActivityStopped = activity =>
+                {
+                    ending.Ctx.LoggerFor("mcp-fixture").Info(
+                        $"{activity.Kind} {activity.OperationName}: {activity.Status} {activity.StatusDescription}; {activity.Duration.TotalMilliseconds} ms; {string.Join(", ", activity.Tags)}; {string.Join("; ", activity.Events.Select(item => $"{item.Name}: {string.Join(", ", item.Tags)}"))}");
+                },
+            };
+            ActivitySource.AddActivityListener(listener);
             await ending.InitializeAsync();
-            AssertSucceeded(await ending.Execute("mcp_res_end_listen", "{}"));
+            var endListen = await ending.Execute("mcp_res_end_listen", "{}");
+            if (endListen.IsError)
+                Assert.Fail($"""
+                    {(endListen is ToolExecutionResult.Failure failure ? failure.Error.Message : TextOf(endListen))}
+                    MCP status: {JsonSerializer.Serialize(ending.Service.Status())}
+                    Registered tools: {string.Join(", ", ending.Tools.Schemas().Select(schema => schema.Name))}
+                    SDK/runtime log:
+                    {string.Join('\n', ending.Ctx.Logger.Buffer.Select(message => $"{message.Name}: {message.Text}"))}
+                    """);
             var deadline = DateTime.UtcNow + NotificationDeadline;
             while (ending.Service.Status().Single(status => status.Name == "res").Error is null && DateTime.UtcNow < deadline)
                 await Task.Delay(PollInterval, TestContext.Current.CancellationToken);
