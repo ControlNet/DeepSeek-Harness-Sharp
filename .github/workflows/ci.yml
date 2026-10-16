@@ -168,7 +168,8 @@ jobs:
             -class Dsh.Tests.RemoteHostTests
             -class Dsh.Tests.FrameCodecTests
             -class Dsh.Tests.PluginTemplateTests
-            -class Dsh.Tests.SettingsTemplateTests)
+            -class Dsh.Tests.SettingsTemplateTests
+            -class Dsh.Tests.ExportSessionLogTests)
           if [ "$RUNNER_OS" = "macOS" ]; then
             ARGS+=(-parallel none)
           fi
