@@ -41,11 +41,24 @@ public class PtyHostTests
         var session = await host.StartAsync(new PtyStartInfo
         {
             FileName = "/bin/sh",
-            Arguments = ["-c", "sleep 5"],
+            Arguments = ["-c", "read line; stty size"],
         }, cancellationToken: TestContext.Current.CancellationToken);
 
         session.Resize(30, 120);
         Assert.Equal(PtySessionStatus.Running, session.Status);
+        await session.WriteAsync("\n"u8.ToArray(), TestContext.Current.CancellationToken);
+
+        // 以子进程自己报告的窗口尺寸为准: Darwin arm64 上 ioctl 曾读到垃圾 winsize 而不报错。
+        var buffer = new byte[4096];
+        var output = new StringBuilder();
+        while (!output.ToString().Contains("30 120"))
+        {
+            var read = await session.ReadAsync(buffer, TestContext.Current.CancellationToken);
+            if (read == 0)
+                break;
+            output.Append(Encoding.UTF8.GetString(buffer, 0, read));
+        }
+        Assert.Contains("30 120", output.ToString());
 
         await host.StopAsync(session.Id.ToString());
     }

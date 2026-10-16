@@ -12,7 +12,7 @@ public sealed record SessionProjectionDefinition<TState>(
     Func<TState, SessionEvent, TState> Apply);
 
 // `ctx.sessionProjections`:按键注册的会话投影单元表,注册按 key 引用计数共享。
-// 单元格惰性建立(对内存日志做全量 fold),随后由 `session/event` 逐事件推进。
+// 单元格惰性建立(对内存日志做全量 fold),随后由 `session/event` 逐事件推进;会话截断时丢弃单元格。
 public sealed class SessionProjectionRegistry : Service
 {
     public const string ServiceName = "sessionProjections";
@@ -24,6 +24,7 @@ public sealed class SessionProjectionRegistry : Service
         public int Refs { get; set; }
         public abstract object? StateOf(Session session);
         public abstract void Drive(Session session, SessionEvent sessionEvent);
+        public abstract void Forget(Session session);
     }
 
     private sealed class Registration<TState>(SessionProjectionDefinition<TState> definition) : Registration
@@ -94,6 +95,8 @@ public sealed class SessionProjectionRegistry : Service
             cell.State = definition.Apply(cell.State, sessionEvent);
             cell.ObservedSeq = sessionEvent.Seq;
         }
+
+        public override void Forget(Session session) => _cells.Remove(session);
     }
 
     private readonly Dictionary<string, Registration> _registrations = [];
@@ -103,6 +106,12 @@ public sealed class SessionProjectionRegistry : Service
         ctx.On<SessionEventNotification>(notification =>
         {
             Drive(notification.Session, notification.Event);
+        }, new EventOptions { Global = true });
+        // 截断后 seq 会复用: 旧单元格的 ObservedSeq 越过新日志末尾, 必须丢弃, 下次读取或推进时按截断后的日志重建。
+        ctx.On<SessionTruncateNotification>(notification =>
+        {
+            foreach (var registration in _registrations.Values)
+                registration.Forget(notification.Session);
         }, new EventOptions { Global = true });
     }
 

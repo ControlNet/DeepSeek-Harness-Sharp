@@ -210,11 +210,7 @@ public static class GpuCatalog
             : new Dictionary<string, object?>(StringComparer.Ordinal);
         gpu["adapter"] = adapter;
         parameters["gpu"] = gpu;
-        settings.Plugins[GpuSettingsPackage] = new PluginSetting
-        {
-            Enabled = existing?.Enabled ?? true,
-            Parameters = parameters,
-        };
+        settings.Plugins[GpuSettingsPackage] = (existing ?? new PluginSetting()) with { Parameters = parameters };
         settings.SavePlugins(home);
     }
 

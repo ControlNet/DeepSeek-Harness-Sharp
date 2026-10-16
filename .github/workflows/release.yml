@@ -64,6 +64,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
+        # 原生库(guard 与 fault probe)的 C 编译器驱动, 经 -p:DshNativeCompiler 交给 PluginGuard.props。
+        # Windows 主构建用发布所用的 MSVC(cl), 再用 clang-cl 重建并重跑原生遏制回归。
+        include:
+          - os: windows-latest
+            native-cc: cl
+            native-cc-alt: clang-cl
+          - os: ubuntu-latest
+            native-cc: clang
+          - os: macos-latest
+            native-cc: clang
     steps:
       - uses: actions/checkout@v4
 
@@ -83,8 +93,31 @@ jobs:
             bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
           fi
 
-      - name: 编译测试工程（Debug，含插件夹具）
-        run: dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
+      - name: 检查 C 工具链（Clang/LLVM；Windows 另需 MSVC）
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            if ! command -v clang-cl >/dev/null 2>&1; then
+              choco install llvm --no-progress -y
+              echo 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+              export PATH="/c/Program Files/LLVM/bin:$PATH"
+            fi
+            clang-cl --version
+            "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' \
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'Common7\Tools\VsDevCmd.bat'
+          else
+            if ! command -v clang >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends clang
+            fi
+            clang --version
+          fi
+
+      - name: 编译测试工程（Debug，含插件夹具与 fault probe）
+        run: >
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
+          -p:DshNativeCompiler=${{ matrix.native-cc }}
 
       - name: 安装 sqlite3（Windows；SQLitePCLRaw.provider.sqlite3 需要系统 sqlite3.dll）
         if: runner.os == 'Windows'
@@ -119,6 +152,27 @@ jobs:
           echo "运行: ${ARGS[*]}"
           "${ARGS[@]}"
 
+      - name: 原生遏制回归（NativeGuardTests，${{ matrix.native-cc }}，跳过即失败）
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ ! -x "$EXE" ]; then
+            EXE="$EXE.exe"
+          fi
+          "$EXE" -noColor -class Dsh.Tests.NativeGuardTests -failSkips
+
+      - name: 换用 ${{ matrix.native-cc-alt }} 重建原生库并重跑原生遏制回归
+        if: matrix.native-cc-alt != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo \
+            -p:DshNativeCompiler=${{ matrix.native-cc-alt }} "-flp:verbosity=normal;logfile=native-alt.log"
+          # 构建日志里的编译命令证明 guard 与 probe 确由替换后的驱动重建。
+          grep -E '${{ matrix.native-cc-alt }} /nologo' native-alt.log
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -class Dsh.Tests.NativeGuardTests -failSkips
+
   build:
     name: 构建 ${{ matrix.flavor }} / ${{ matrix.rid }}
     needs: [prepare, test]
@@ -131,22 +185,27 @@ jobs:
             rid: win-x64
             flavor: jit
             archive: dsharp-win-x64.zip
+            native-cc: cl
           - os: windows-latest
             rid: win-x64
             flavor: aot
             archive: dsharp-win-x64-aot.zip
+            native-cc: cl
           - os: ubuntu-latest
             rid: linux-x64
             flavor: jit
             archive: dsharp-linux-x64.tar.gz
+            native-cc: clang
           - os: ubuntu-latest
             rid: linux-x64
             flavor: aot
             archive: dsharp-linux-x64-aot.tar.gz
+            native-cc: clang
           - os: macos-latest
             rid: osx-arm64
             flavor: jit
             archive: dsharp-osx-arm64.tar.gz
+            native-cc: clang
     steps:
       - uses: actions/checkout@v4
 
@@ -166,8 +225,8 @@ jobs:
             bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
           fi
 
-      - name: 安装 AOT 工具链（Linux）
-        if: matrix.rid == 'linux-x64' && matrix.flavor == 'aot'
+      - name: 安装 Clang/LLVM 工具链（Linux；原生库与 AOT 链接共用）
+        if: matrix.rid == 'linux-x64'
         shell: bash
         run: |
           set -euo pipefail
@@ -180,22 +239,24 @@ jobs:
           FLAVOR: ${{ matrix.flavor }}
           RID: ${{ matrix.rid }}
           TAG: ${{ needs.prepare.outputs.tag }}
+          NATIVE_CC: ${{ matrix.native-cc }}
         run: |
           set -euo pipefail
           # 程序集版本随 tag: 远端部署判据比较的就是它, 必须与发布的 tag 一致。
           VERSION="${TAG#v}"
-          AOT_ARGS=""
+          PUBLISH_ARGS="-p:DshNativeCompiler=$NATIVE_CC"
           if [ "$FLAVOR" = "aot" ]; then
-            AOT_ARGS="-p:PublishAot=true"
+            # AOT 产物附带 fault probe, 供在目标机上回归 guard 的遏制。
+            PUBLISH_ARGS="$PUBLISH_ARGS -p:PublishAot=true -p:DshShipFaultProbe=true"
           fi
           # 不指定 PublishDir，使用默认发布目录，避免 bash/Windows 路径转换问题。
           # DebugType=none：发布档不需要调试符号（AOT 的 pdb 单独就有数百 MB）。
           dotnet publish DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj \
-            -c Release -r "$RID" $AOT_ARGS \
+            -c Release -r "$RID" $PUBLISH_ARGS \
             -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none \
             --nologo -v m
           # GUI 启动器一并发布并叠加进主产物。
-          dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r "$RID" $AOT_ARGS \
+          dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r "$RID" $PUBLISH_ARGS \
             -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none --nologo -v m
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
           GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
@@ -207,10 +268,15 @@ jobs:
           rm -rf "$STAGE"
           mkdir -p "$STAGE/plugins"
           cp -R "$PUB/." "$STAGE/"
+          NATIVES=(dsh_plugin_guard)
           if [ "$FLAVOR" = "aot" ]; then
             # 结构特征判别是否真的 AOT：JIT 发布同样会产出 apphost，光看文件存在拦不住。
             bash scripts/assert-aot-output.sh "$STAGE"
+            NATIVES+=(dsh_fault_probe)
           fi
+          for NATIVE in "${NATIVES[@]}"; do
+            ls "$STAGE" | grep -E "^(lib)?$NATIVE\.(dll|so|dylib)$" || { echo "::error::产物缺少 $NATIVE"; exit 1; }
+          done
           # 调试旁文件不进产物（AOT 的 .pdb/.dbg 动辄数百 MB）。
           rm -f "$STAGE"/*.pdb "$STAGE"/*.dbg
           echo "staging 文件数: $(find "$STAGE" -type f | wc -l)"

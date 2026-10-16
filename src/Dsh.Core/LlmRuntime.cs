@@ -33,6 +33,8 @@ public sealed class LlmRuntime : Service
 
     private sealed record Registration(LlmAdapter Adapter, LlmProviderInfo Provider, ResolvedRetryPolicy RetryPolicy);
 
+    private sealed record PreparedDispatch(Registration Registration, PreparedAdapterCall AdapterCall, LlmResolvedModelInfo ModelInfo);
+
     private readonly Dictionary<string, Registration> _adapters = [];
     private readonly LlmStreamLimits _streamLimits;
 
@@ -121,7 +123,7 @@ public sealed class LlmRuntime : Service
                 if (!options.ToCallConfig().Equals(resolved))
                     throw new LlmException(new LlmFailure("prepared LLM call config changed before adapter dispatch", "INVALID_PREPARED_CALL"));
                 dispatched = true;
-                return StreamViaWaterfall(options, registration, adapterCall);
+                return StreamViaWaterfall(options, new PreparedDispatch(registration, adapterCall, modelInfo));
             },
             modelInfo.SystemPromptUpdate));
     }
@@ -156,12 +158,9 @@ public sealed class LlmRuntime : Service
     }
 
     public IAsyncEnumerable<StreamChunk> Stream(GenerateOptions options)
-        => StreamViaWaterfall(options, null, null);
+        => StreamViaWaterfall(options, null);
 
-    private async IAsyncEnumerable<StreamChunk> StreamViaWaterfall(
-        GenerateOptions options,
-        Registration? registration,
-        PreparedAdapterCall? adapterCall)
+    private async IAsyncEnumerable<StreamChunk> StreamViaWaterfall(GenerateOptions options, PreparedDispatch? prepared)
     {
         // 看门狗统一包在所有适配器外层: 用可自我取消的令牌驱动适配器, 超时/用户取消都能中止底层请求。
         using var watchdog = _streamLimits.Enabled ? new StreamWatchdog(_streamLimits, options.Cancellation) : null;
@@ -169,7 +168,7 @@ public sealed class LlmRuntime : Service
         if (watchdog is not null && AgentLoopRequestMarker.IsMarked(options))
             AgentLoopRequestMarker.Mark(effective);
         var result = await Ctx.Events.Waterfall(Ctx, new LlmStreamNotification(effective),
-            () => new ValueTask<object?>(AdapterStream(effective, registration, adapterCall)));
+            () => new ValueTask<object?>(AdapterStream(effective, prepared)));
         if (result is not IAsyncEnumerable<StreamChunk> stream)
             throw new LlmException(new LlmFailure("llm/stream waterfall returned no stream", "INVALID_STREAM"));
         var guarded = watchdog is null ? stream : watchdog.Guard(stream);
@@ -177,18 +176,17 @@ public sealed class LlmRuntime : Service
             yield return chunk;
     }
 
-    private async IAsyncEnumerable<StreamChunk> AdapterStream(
-        GenerateOptions options,
-        Registration? prepared,
-        PreparedAdapterCall? adapterCall)
+    private async IAsyncEnumerable<StreamChunk> AdapterStream(GenerateOptions options, PreparedDispatch? prepared)
     {
         IAsyncEnumerator<StreamChunk>? iterator = null;
         StreamChunk? openFailure = null;
         try
         {
-            var registration = prepared ?? RegistrationFor(options.Provider);
-            var dispatch = adapterCall?.Stream ?? registration.Adapter.Stream;
-            iterator = dispatch(options, options.Cancellation).GetAsyncEnumerator(options.Cancellation);
+            var registration = prepared?.Registration ?? RegistrationFor(options.Provider);
+            var dispatch = prepared?.AdapterCall.Stream ?? registration.Adapter.Stream;
+            var modelInfo = prepared?.ModelInfo ?? registration.Adapter.ResolveModel(options.Model);
+            var request = TextOnlyImages.Project(options, modelInfo?.InputModalities);
+            iterator = dispatch(request, options.Cancellation).GetAsyncEnumerator(options.Cancellation);
         }
         catch (Exception error)
         {
