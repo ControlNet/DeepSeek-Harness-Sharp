@@ -101,8 +101,9 @@ public sealed class ProjectMemoryTests
 
         Assert.True(Encoding.UTF8.GetByteCount(result) <= 512 + 32);
         Assert.Contains("## Corrections", result);
+        Assert.Contains("- c1 :: keep me", result);
         Assert.Contains("… (truncated)", result);
-        Assert.DoesNotContain("f29", result);
+        Assert.DoesNotContain("- f29 ::", result);
     }
 
     [Fact]
