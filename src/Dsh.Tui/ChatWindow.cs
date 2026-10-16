@@ -1120,6 +1120,8 @@ public sealed class ChatWindow : IDisposable
             var info = new ProcessStartInfo("git")
             {
                 WorkingDirectory = cwd,
+                // 后台查询不得继承终端: Unix .NET 会为继承标准流的子进程切回 canonical。
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -1134,6 +1136,7 @@ public sealed class ChatWindow : IDisposable
             using var process = Process.Start(info);
             if (process is null)
                 return null;
+            process.StandardInput.Close();
             var output = process.StandardOutput.ReadToEnd();
             process.StandardError.ReadToEnd();
             if (!process.WaitForExit(3000))

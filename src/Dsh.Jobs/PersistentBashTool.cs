@@ -194,7 +194,7 @@ public static class PersistentBashTool
                 Env = ShellEnvironment.NonInteractiveOverrides,
                 Stdout = new SubprocessCollect(Math.Max(64 * 1024, resolved.MaxOutputChars * 4), null),
                 Stderr = new SubprocessCollect(64 * 1024, null),
-                RedirectStandardInput = true,
+                KeepStandardInputOpen = true,
             });
             var shell = new PersistentShell { Handle = handle, Cursor = 0 };
             shells.Set(owner, shell);
