@@ -32,6 +32,7 @@ internal sealed class UnixRawModeTerminal : IDisposable
     private readonly BinaryWriter _writer;
     private readonly byte[] _buffer = new byte[65536];
     private bool _disposed;
+    private int _frameEndPrefix;
 
     private UnixRawModeTerminal(Process process, string home)
     {
@@ -45,6 +46,7 @@ internal sealed class UnixRawModeTerminal : IDisposable
     public VtScreen Screen { get; } = new(140, 40);
     public int InitialMode { get; private set; }
     public int Mode { get; private set; }
+    public bool HasRenderedFrame { get; private set; }
 
     public static UnixRawModeTerminal Start(bool copyRealConfiguration)
     {
@@ -107,6 +109,20 @@ internal sealed class UnixRawModeTerminal : IDisposable
         var bytes = _buffer.AsSpan(0, count);
         _reader.BaseStream.ReadExactly(bytes);
         Screen.Feed(bytes);
+        if (!HasRenderedFrame)
+        {
+            // DECSYNC commits the first real frame; entering the alternate screen happens before that draw.
+            ReadOnlySpan<byte> frameEnd = "\u001b[?2026l"u8;
+            foreach (var value in bytes)
+            {
+                _frameEndPrefix = value == frameEnd[_frameEndPrefix]
+                    ? _frameEndPrefix + 1
+                    : value == frameEnd[0] ? 1 : 0;
+                if (_frameEndPrefix != frameEnd.Length) continue;
+                HasRenderedFrame = true;
+                break;
+            }
+        }
     }
 
     public void Write(string text)

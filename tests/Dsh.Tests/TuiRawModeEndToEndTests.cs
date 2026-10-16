@@ -100,8 +100,8 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
         public void WaitForRawInput()
         {
             Assert.Equal(7, terminal.InitialMode); // ICANON, ECHO and ISIG before the real executable takes ownership.
-            WaitFor(() => terminal.Screen.IsAlternateScreen && terminal.Mode == 0,
-                TimeSpan.FromSeconds(90), "The built real CLI did not take ownership of the terminal input.");
+            WaitFor(() => terminal.Screen.IsAlternateScreen && terminal.Mode == 0 && terminal.HasRenderedFrame,
+                TimeSpan.FromSeconds(90), "The built real CLI did not render its input after taking ownership of the terminal.");
             Assert.True(_rawSeen, "The real CLI never entered raw mode.");
             Assert.Equal(0, terminal.Mode);
         }
@@ -140,7 +140,7 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
                 WaitUntil(() => length == 1
                     ? InputEquals(emptyInput)
                     : InputContains(remaining) && !InputContains(oldPrefix),
-                    deadline, "Backspace did not remove exactly one unsent input character.");
+                    deadline, $"Backspace did not remove exactly one unsent input character (previous length {length}).");
             }
         }
 
