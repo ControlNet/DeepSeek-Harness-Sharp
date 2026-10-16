@@ -10,6 +10,7 @@ internal static class UnixPtyNative
 {
     /** TIOCSWINSZ 随平台不同: Linux 0x5414, Darwin 0x80087467(_IOW('t', 103, struct winsize))。 */
     private static readonly ulong Tiocswinsz = OperatingSystem.IsMacOS() ? 0x80087467UL : 0x5414UL;
+    private static readonly ulong Tiocgwinsz = OperatingSystem.IsMacOS() ? 0x40087468UL : 0x5413UL;
     private static readonly ulong Fioclex = OperatingSystem.IsMacOS() ? 0x20006601UL : 0x5451UL;
     private static readonly Lock SpawnGate = new();
     private const int Sigterm = 15;
@@ -169,6 +170,18 @@ internal static class UnixPtyNative
     {
         if (error != 0)
             throw new Win32Exception(error, $"{operation} failed");
+    }
+
+    /** Read the descriptor's current kernel geometry; Console caches it until a terminal signal arrives. */
+    public static bool TryReadWindowSize(int descriptor, out int columns, out int rows)
+    {
+        var size = new Winsize();
+        var result = VariadicArgumentsOnStack
+            ? ioctlAfterRegisters(descriptor, Tiocgwinsz, 0, 0, 0, 0, 0, 0, ref size)
+            : ioctl(descriptor, Tiocgwinsz, ref size);
+        columns = size.WsCol;
+        rows = size.WsRow;
+        return result == 0;
     }
 
     public static void Resize(SafeFileHandle master, int rows, int cols)
