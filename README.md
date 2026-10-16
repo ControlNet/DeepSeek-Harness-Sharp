@@ -75,7 +75,12 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    - `wsl`:仅 Windows 提供,在 WSL 发行版里执行 `bash -lc <命令>`;`distro` 参数选择发行版,缺省用 WSL 的默认发行版。未安装 WSL 或没有发行版时返回 wsl.exe 自身的提示与非零退出码;连 `wsl.exe` 都不存在时直接报错并给出安装方法(`wsl.exe --install`)。
    - 每个工具都是独立插件(`@deepseek-ai/dsh-tool-bash`、`dsh-tool-pwsh`、`dsh-tool-bash-persistent`、`dsh-tool-pwsh-persistent`、`dsh-tool-powershell`、`dsh-tool-wsl`),可用 `/plugins disable <包>` 单独关闭。
    - `safety.blacklist` 里的 shell 规则按方言生效:`bash:<命令>`(或 `bash_persistent:`、`wsl:`)同时拦截 `bash`、`bash_persistent`、`wsl`;`pwsh:<命令>`(或 `pwsh_persistent:`、`powershell:`)同时拦截 `pwsh`、`pwsh_persistent`、`powershell`。
-10. 网页搜索引擎:`web_search` 工具的 `engine` 参数选择搜索引擎,同一次调用里的所有查询都发给这个引擎;不填 `engine` 时走通用网页搜索。系统提示词会列出当前可用的引擎,每条搜索结果都标明回答它的引擎及其局限(只搜了哪类对象、限流额度)。
+10. MCP 资源:`settings.yaml` 的 `mcp:` 段配置了 MCP 服务器时,模型可用 `list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource` 三个工具读取服务器暴露的资源,`server` 参数填 `mcp:` 段里的服务器名。
+   - 文本资源直接返回;超过工具结果落盘阈值(`storage.tool_results.max_bytes`,缺省 64 KiB)时只保留头尾,全文写入 `<home>/tool-results/` 下的文件并在结果里给出路径,模型可用 `read` 分段读取。
+   - 二进制资源存入内容寻址附件库(`<home>/attachments/`),结果给出附件 id、本地路径与字节数;图片可再用 `read_image` 查看。
+   - 列表工具不带 `cursor` 时取回全部分页,带 `cursor` 时只取该页并返回 `nextCursor`;只有不带 `cursor` 的完整列举才清除对应列表的变更提醒,资源列表与模板列表分别记账,列举其中一个不会清除另一个的提醒。资源模板(如 `notes://{name}`)需由模型填好变量后交给 `read_mcp_resource`。
+   - 服务器未声明 resources 能力时三个工具直接报错说明;服务器推送资源列表变更后,模型会在下一次请求时收到提示并重新列举。旧协议接收会话通知,`2026-07-28` 起仅监听列表变更,不订阅单个资源内容。监听在活连接中结束或失败会显示错误,下一次 MCP 调用沿现有单次重连路径恢复,不会静默丢失后续通知。`/mcp` 会标出声明了 resources 的服务器。
+11. 网页搜索引擎:`web_search` 工具的 `engine` 参数选择搜索引擎,同一次调用里的所有查询都发给这个引擎;不填 `engine` 时走通用网页搜索。系统提示词会列出当前可用的引擎,每条搜索结果都标明回答它的引擎及其局限(只搜了哪类对象、限流额度)。
 
    | 引擎 | 插件包 | 搜索范围 | 凭据参数 | 未配置凭据时的限制 |
    | --- | --- | --- | --- | --- |
@@ -119,7 +124,7 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    入口与限制依据:[百度搜索 API](https://ai.baidu.com/ai-doc/AppBuilder/pmaxd1hvy)、[Google 当前可用范围与停服说明](https://developers.google.com/custom-search/v1/overview)、[Bing API 退役公告](https://learn.microsoft.com/en-us/lifecycle/announcements/bing-search-api-retirement)、[Bing 公共 RSS](https://www.bing.com/search?q=dotnet&format=rss)、[DuckDuckGo HTML](https://html.duckduckgo.com/html/?q=dotnet)。
    注意 `/plugins disable|enable` 会丢弃该插件的参数,重新启用后需要再写一次凭据与地区配置。
 
-11. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
+12. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
    - 切换只影响之后的相对路径解析(包括 shell 的相对 `workdir`),以及新启动的 shell/终端的默认目录;已经存在的 `bash_persistent` / `pwsh_persistent` shell 与终端仍停在各自的目录。
    - 写权限根固定为会话的初始目录,不随切换移动:写入权限根之外的文件(`write`/`edit`/`str_replace_editor`)、在权限根之外启动 shell/终端或建 worktree,都会先弹审批,提示「目标路径在权限根之外」;审批策略为 never 时直接拒绝。
    - 两者分别对应插件 `@deepseek-ai/dsh-tool-working-directory` 与 `@deepseek-ai/dsh-tool-worktree`,可用 `/plugins disable` 关闭。

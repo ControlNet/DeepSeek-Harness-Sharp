@@ -27,15 +27,26 @@ public sealed record McpServerConfig(
     }
 }
 
-public sealed record McpServerStatus(string Name, string Transport, bool Connected, int ToolCount, string? Error = null);
+public sealed record McpServerStatus(
+    string Name,
+    string Transport,
+    bool Connected,
+    int ToolCount,
+    string? Error = null,
+    bool Resources = false,
+    long ResourceListChanges = 0);
 
-/** 常驻 MCP 服务:进程存活期内保持与各 server 的连接,并把每个 MCP 工具注册为 agent 原生工具。 */
+/**
+ * 常驻 MCP 服务:进程存活期内保持与各 server 的连接,并把每个 MCP 工具注册为 agent 原生工具。
+ * 至少有一个 server 在册时, 另注册按 server 名取资源的三个共享资源工具。
+ */
 public sealed class McpService(Context ctx) : Service(ctx, ServiceName), IAsyncDisposable
 {
     public const string ServiceName = "mcp";
 
     private readonly List<Connection> _connections = [];
     private readonly Lock _gate = new();
+    private IReadOnlyList<IDisposable> _resourceTools = [];
 
     public IReadOnlyList<McpServerStatus> Status()
     {
@@ -43,10 +54,16 @@ public sealed class McpService(Context ctx) : Service(ctx, ServiceName), IAsyncD
             return _connections.Select(connection => connection.Handle.Status).ToList();
     }
 
+    internal IReadOnlyList<McpServerHandle> Handles()
+    {
+        lock (_gate)
+            return _connections.Select(connection => connection.Handle).ToList();
+    }
+
     public async Task ConnectAsync(IReadOnlyList<McpServerConfig> servers, CancellationToken signal = default)
     {
         foreach (var server in servers)
-            await ConnectOneAsync(server, () => CreateTransport(server, OutboundProxy.FromContext(ctx)), signal);
+            await ConnectOneAsync(server, () => CreateTransport(server, OutboundProxy.FromContext(Ctx)), signal);
     }
 
     internal async Task ConnectAsync(McpServerConfig server, IClientTransport transport, CancellationToken signal = default)
@@ -88,8 +105,14 @@ public sealed class McpService(Context ctx) : Service(ctx, ServiceName), IAsyncD
 
     private void Track(Connection connection)
     {
+        bool first;
         lock (_gate)
+        {
+            first = _connections.Count == 0;
             _connections.Add(connection);
+        }
+        if (first)
+            _resourceTools = McpResourceTools.Register(Ctx, this);
     }
 
     private async Task DisconnectAllAsync()
@@ -100,6 +123,8 @@ public sealed class McpService(Context ctx) : Service(ctx, ServiceName), IAsyncD
             connections = [.. _connections];
             _connections.Clear();
         }
+        foreach (var registration in Interlocked.Exchange(ref _resourceTools, []))
+            registration.Dispose();
         foreach (var connection in connections)
         {
             foreach (var registration in connection.Registrations)
