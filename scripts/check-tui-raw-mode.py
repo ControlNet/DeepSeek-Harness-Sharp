@@ -141,6 +141,19 @@ def run(args, index):
         return {"run": index, "before": before, "timeline": timeline, "after": after,
                 "input_probes": 3, "exit_code": 0, "termios_restored": True,
                 "llm_smoke": args.llm_smoke and index == 0}
+    except Exception:
+        # Only terminal metadata is safe to publish; never print the screen, configuration or exec arguments.
+        current = termios.tcgetattr(slave)
+        changed = {str(i): [repr(before_value), repr(after_value)]
+                   for i, (before_value, after_value) in enumerate(zip(original, current))
+                   if before_value != after_value}
+        print(json.dumps({"run": index, "failure_timeline": timeline,
+                          "termios_differences": changed, "exit_sent": exit_sent}), flush=True)
+        if args.strace:
+            for line in (args.output / f"trace-{index}.txt").read_text().splitlines():
+                if "TCSETS" in line or "exit_group(" in line:
+                    print(line, flush=True)
+        raise
     finally:
         if status is None:
             os.killpg(pid, signal.SIGKILL)
