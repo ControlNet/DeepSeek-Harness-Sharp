@@ -10,4 +10,12 @@ public static class ShellEnvironment
         ["PAGER"] = "cat",
         ["GIT_PAGER"] = "cat",
     };
+
+    /**
+     * Prefix for every PowerShell command line: pins UTF-8 output and silences progress records.
+     * Windows PowerShell 5.1 writes the OEM code page by default, so non-ASCII output is garbled without it.
+     * Redirected 5.1 processes serialize progress records to stderr as CLIXML noise.
+     */
+    public const string PowerShellPreamble =
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); $ProgressPreference = 'SilentlyContinue'; ";
 }

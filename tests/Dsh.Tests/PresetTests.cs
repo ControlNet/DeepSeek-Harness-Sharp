@@ -33,7 +33,7 @@ public class PresetTests
             Presets = PresetController.Register(Ctx);
         }
 
-        private static ToolDefinition EchoTool(string name)
+        public static ToolDefinition EchoTool(string name)
             => new()
             {
                 Name = name,
@@ -134,6 +134,18 @@ public class PresetTests
         Assert.NotNull(harness.Tools.Get("bash", agent.ScopeKey));
         Assert.Null(harness.Tools.Get("read", agent.ScopeKey));
         Assert.NotNull(agent.Injected);
+    }
+
+    [Fact]
+    public void Set_Minimal_Keeps_Every_Registered_Shell_Tool()
+    {
+        var harness = new Harness();
+        harness.Tools.Register(Harness.EchoTool("pwsh_persistent"));
+        harness.Tools.Register(Harness.EchoTool("wsl"));
+        var agent = new FakeAgent(harness.Ctx);
+        Assert.IsType<CommandResult.Success>(harness.Presets.Set(agent, "minimal"));
+        var names = harness.Tools.Schemas(agent.ScopeKey).Select(tool => tool.Name).Order().ToList();
+        Assert.Equal(["bash", "pwsh_persistent", "wsl"], names);
     }
 
     [Fact]

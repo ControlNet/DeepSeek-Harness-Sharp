@@ -29,6 +29,9 @@ public sealed class DefaultCompositionTests
             Assert.NotNull(tools);
             Assert.NotNull(tools.Get("ide_history"));
             Assert.NotNull(tools.Get("todo_write"));
+            Assert.NotNull(tools.Get("pwsh_persistent"));
+            Assert.Equal(OperatingSystem.IsWindows(), tools.Get("powershell") is not null);
+            Assert.Equal(OperatingSystem.IsWindows(), tools.Get("wsl") is not null);
             Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-goal")?.State);
             Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-tool-goal")?.State);
             Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-schedule")?.State);
