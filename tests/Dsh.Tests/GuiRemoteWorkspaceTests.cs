@@ -10,6 +10,7 @@ using Avalonia.VisualTree;
 using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
+using Dsh.Runtime;
 
 namespace Dsh.Tests;
 
@@ -310,7 +311,7 @@ public sealed class GuiRemoteWorkspaceTests
             var workspace = new SshWorkspace(spec.Name, spec.Host, spec.Port, spec.User, spec.Auth, RemotePath: spec.RemotePath, Password: spec.Password);
             var result = await RemoteDsharpInstaller.EnsureAsync(
                 workspace,
-                new RemoteDsharpInstaller.Options("https://example.invalid", "latest", null),
+                new RemoteDsharpInstaller.Options("https://example.invalid", "latest", new OutboundProxy()),
                 null,
                 TestContext.Current.CancellationToken,
                 (_, _, _) => Task.FromResult(tarPath));

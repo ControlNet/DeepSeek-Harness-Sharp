@@ -39,7 +39,7 @@ public sealed class E2bRuntime : Service
     public E2bRuntime(Context ctx, E2bRuntimeConfig config, HttpClient? http = null) : base(ctx, ServiceName)
     {
         _config = config;
-        var client = http ?? new HttpClient();
+        var client = http ?? new HttpClient(OutboundProxy.FromContext(ctx).CreateHandler());
         if (!string.IsNullOrWhiteSpace(config.ResolveApiKey()))
             client.DefaultRequestHeaders.TryAddWithoutValidation("X-API-KEY", config.ResolveApiKey());
         _client = new E2bClient(client, config.BaseUrl);

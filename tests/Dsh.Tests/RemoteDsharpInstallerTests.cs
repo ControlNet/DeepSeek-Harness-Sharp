@@ -1,3 +1,4 @@
+using Dsh.Runtime;
 using Dsh.Gui.Services;
 
 namespace Dsh.Tests;
@@ -27,14 +28,14 @@ public sealed class RemoteDsharpInstallerTests
     [Fact]
     public void Asset_Url_Uses_Latest_By_Default()
     {
-        var options = new RemoteDsharpInstaller.Options("https://host/releases", "latest", null);
+        var options = new RemoteDsharpInstaller.Options("https://host/releases", "latest", new OutboundProxy());
         Assert.Equal("https://host/releases/latest/download/dsharp-linux-x64.tar.gz", RemoteDsharpInstaller.AssetUrl(options, "linux-x64"));
     }
 
     [Fact]
     public void Asset_Url_Uses_Tag_For_Pinned_Version()
     {
-        var options = new RemoteDsharpInstaller.Options("https://host/releases/", "1.2.3", null);
+        var options = new RemoteDsharpInstaller.Options("https://host/releases/", "1.2.3", new OutboundProxy());
         Assert.Equal("https://host/releases/download/v1.2.3/dsharp-linux-x64.tar.gz", RemoteDsharpInstaller.AssetUrl(options, "linux-x64"));
         Assert.Equal("https://host/releases/download/v1.2.3/dsharp-osx-arm64.tar.gz", RemoteDsharpInstaller.AssetUrl(options with { Version = "v1.2.3" }, "osx-arm64"));
     }
@@ -42,7 +43,7 @@ public sealed class RemoteDsharpInstallerTests
     [Fact]
     public void Server_Download_Script_Uses_Curl_Then_Wget()
     {
-        var options = new RemoteDsharpInstaller.Options("https://host/releases", "latest", null);
+        var options = new RemoteDsharpInstaller.Options("https://host/releases", "latest", new OutboundProxy());
         var script = RemoteDsharpInstaller.BuildServerDownloadScript(options, "linux-x64");
         Assert.Contains("command -v curl", script);
         Assert.Contains("command -v wget", script);
@@ -59,7 +60,7 @@ public sealed class RemoteDsharpInstallerTests
     [Fact]
     public void Server_Download_Script_Passes_Remote_Proxy()
     {
-        var options = new RemoteDsharpInstaller.Options("https://host/releases", "latest", null, "server", "http://proxy.local:8080");
+        var options = new RemoteDsharpInstaller.Options("https://host/releases", "latest", new OutboundProxy(), "server", "http://proxy.local:8080");
         var script = RemoteDsharpInstaller.BuildServerDownloadScript(options, "linux-x64");
         Assert.Contains("-x 'http://proxy.local:8080'", script);
         // wget 分支也必须带上代理, 否则只有 wget 的远端会直连失败。

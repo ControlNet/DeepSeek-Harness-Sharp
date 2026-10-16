@@ -9,7 +9,6 @@ namespace Dsh.Interaction;
 
 public static class ProviderCommand
 {
-    private static readonly HttpClient ModelHttpClient = new();
     private static readonly JsonSerializerOptions ModelJsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -32,7 +31,7 @@ public static class ProviderCommand
                 {
                     "list" => Task.FromResult<CommandResult>(new CommandResult.Success(ListProviders(ctx, home))),
                     "remove" when tokens.Length >= 2 => RemoveProvider(ctx, home, tokens[1]),
-                    "catalog" => ListCatalog(home, tokens[1..], invocation.Signal),
+                    "catalog" => ListCatalog(home, OutboundProxy.FromContext(ctx), tokens[1..], invocation.Signal),
                     "add" => AddProvider(ctx, home, tokens[1..]),
                     _ => Task.FromResult<CommandResult>(new CommandResult.Error(Usage)),
                 };
@@ -48,7 +47,7 @@ public static class ProviderCommand
     private const int CatalogPageSize = 25;
 
     /** models.dev 目录: 列出可一键参考的 provider(族/风格/baseUrl/key 环境变量); query 按 id/显示名子串过滤, refresh 强制联网刷新。 */
-    private static async Task<CommandResult> ListCatalog(HarnessHome home, string[] args, CancellationToken signal)
+    private static async Task<CommandResult> ListCatalog(HarnessHome home, OutboundProxy proxy, string[] args, CancellationToken signal)
     {
         var refresh = false;
         var all = false;
@@ -81,7 +80,7 @@ public static class ProviderCommand
             query = query.Length == 0 ? token : $"{query} {token}";
         }
 
-        var snapshot = await ProviderCatalog.LoadAsync(home, refresh, signal);
+        var snapshot = await ProviderCatalog.LoadAsync(home, proxy, refresh, signal);
         var source = snapshot.Providers.Count == 0
             ? "无目录"
             : snapshot.FetchedAt is { } fetchedAt
@@ -177,7 +176,7 @@ public static class ProviderCommand
         var settings = HarnessSettings.Load(home);
         if (settings.Providers.ContainsKey(name))
             return new CommandResult.Error($"provider \"{name}\" already exists");
-        var (models, error) = await DeclareModelsAsync(home, name, baseUrl, apiKey, modelIds);
+        var (models, error) = await DeclareModelsAsync(home, OutboundProxy.FromContext(ctx), name, baseUrl, apiKey, modelIds);
         if (error is { Length: > 0 })
             return new CommandResult.Error(error);
         var effective = ProviderCatalog.EffectiveModels(name, baseUrl, models.Keys);
@@ -209,6 +208,7 @@ public static class ProviderCommand
      */
     private static async Task<(Dictionary<string, ProviderModelSettings> Models, string? Error)> DeclareModelsAsync(
         HarnessHome home,
+        OutboundProxy proxy,
         string name,
         string baseUrl,
         string apiKey,
@@ -229,7 +229,7 @@ public static class ProviderCommand
         {
             try
             {
-                ids = [.. (await FetchModelsAsync(baseUrl, apiKey)).Keys];
+                ids = [.. (await FetchModelsAsync(proxy, baseUrl, apiKey)).Keys];
             }
             catch (Exception failure)
             {
@@ -251,12 +251,13 @@ public static class ProviderCommand
         return (models, null);
     }
 
-    private static async Task<Dictionary<string, ProviderModelSettings>> FetchModelsAsync(string baseUrl, string apiKey)
+    private static async Task<Dictionary<string, ProviderModelSettings>> FetchModelsAsync(OutboundProxy proxy, string baseUrl, string apiKey)
     {
+        using var http = new HttpClient(proxy.CreateHandler());
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl.TrimEnd('/')}/models");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        using var response = await ModelHttpClient.SendAsync(request);
+        using var response = await http.SendAsync(request);
         if (!response.IsSuccessStatusCode)
         {
             var raw = await response.Content.ReadAsStringAsync();
