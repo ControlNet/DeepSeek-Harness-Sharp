@@ -215,6 +215,7 @@ jobs:
             -class Dsh.Tests.Runtime.RuntimePluginTests
             -class Dsh.Tests.Runtime.PluginUnloadTests
             -class Dsh.Tests.AcpTests
+            -class Dsh.Tests.AcpClientTests
             -class Dsh.Tests.LspTests
             -class Dsh.Tests.SdkTests
             -class Dsh.Tests.Mcp.McpResourceToolsTests
