@@ -365,7 +365,7 @@ public sealed class OutboundProxyGuiTests
     {
         await using var proxy = new TestForwardProxy();
         using var environment = GuiTestEnvironment.CreateBlocking();
-        var window = new MainWindow(environment.App, environment.Agent);
+        var window = new MainWindow(environment.App, await environment.OpenChatAsync());
         var preferences = window.ViewModel!.Preferences;
         window.Show();
         Dispatcher.UIThread.RunJobs();

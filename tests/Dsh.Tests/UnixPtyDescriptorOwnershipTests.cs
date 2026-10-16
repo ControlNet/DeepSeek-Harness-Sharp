@@ -85,6 +85,7 @@ public sealed class UnixPtyDescriptorOwnershipTests
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
             return;
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
 
         using var file = File.Open("/dev/null", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
         var descriptor = (int)file.SafeFileHandle.DangerousGetHandle();
@@ -111,6 +112,7 @@ public sealed class UnixPtyDescriptorOwnershipTests
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
             return;
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
 
         var warm = OpenPty();
         using (new SafeFileHandle((IntPtr)warm.Master, ownsHandle: true))
