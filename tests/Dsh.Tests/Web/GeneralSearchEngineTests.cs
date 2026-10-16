@@ -161,8 +161,7 @@ public sealed class GeneralSearchEngineTests
     [InlineData("deepseek-official", "api.deepseek.com")]
     public async Task EverySearchPlugin_UsesSharedOutboundProxy(string engine, string host)
     {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        var signal = TestContext.Current.CancellationToken;
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var proxy = new OutboundProxy();
@@ -178,13 +177,16 @@ public sealed class GeneralSearchEngineTests
             "deepseek-official" => WebSearchDeepseek.Apply(ctx, settings),
             _ => WebSearchGeneral.Apply(ctx, engine, settings),
         };
-        var search = web.Search(new WebSearchRequest("q", Engine: engine), deadline.Token);
-        using var client = await listener.AcceptTcpClientAsync(deadline.Token);
+        var accepted = listener.AcceptTcpClientAsync(signal).AsTask();
+        var search = web.Search(new WebSearchRequest("q", Engine: engine), signal);
+        Assert.Same(accepted, await Task.WhenAny(accepted, search));
+        using var client = await accepted;
         await using var stream = client.GetStream();
         using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
-        var line = await reader.ReadLineAsync(deadline.Token);
-        Assert.Equal($"CONNECT {host}:443 HTTP/1.1", line);
-        await stream.WriteAsync("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"u8.ToArray(), deadline.Token);
+        var received = reader.ReadLineAsync(signal).AsTask();
+        Assert.Same(received, await Task.WhenAny(received, search));
+        Assert.Equal($"CONNECT {host}:443 HTTP/1.1", await received);
+        await stream.WriteAsync("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"u8.ToArray(), signal);
         var error = await Assert.ThrowsAsync<WebError>(() => search);
         Assert.Equal(WebErrorCodes.ProviderError, error.Code);
     }
