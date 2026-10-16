@@ -201,15 +201,13 @@ internal static class UnixPtyNative
     }
 
     /** Read the descriptor's current kernel geometry; Console caches it until a terminal signal arrives. */
-    public static bool TryReadWindowSize(int descriptor, out int columns, out int rows)
+    public static (int Columns, int Rows)? ReadWindowSize(int descriptor)
     {
         var size = new Winsize();
         var result = VariadicArgumentsOnStack
             ? ioctlAfterRegisters(descriptor, Tiocgwinsz, 0, 0, 0, 0, 0, 0, ref size)
             : ioctl(descriptor, Tiocgwinsz, ref size);
-        columns = size.WsCol;
-        rows = size.WsRow;
-        return result == 0;
+        return result == 0 ? (size.WsCol, size.WsRow) : null;
     }
 
     public static void Resize(SafeFileHandle master, int rows, int cols)
