@@ -16,11 +16,11 @@ public sealed class Plugin : IDshPlugin
     {
         var factories = ctx.Get<LlmAdapterFactoryRegistry>(LlmAdapterFactoryRegistry.ServiceName)
             ?? throw new InvalidOperationException("llmAdapterFactories is required for the OpenAI adapter plugin");
-        return factories.Register(Package, new OpenAiAdapterFactory());
+        return factories.Register(Package, new OpenAiAdapterFactory(OutboundProxy.FromContext(ctx)));
     }
 }
 
-internal sealed class OpenAiAdapterFactory : ILlmAdapterFactory
+internal sealed class OpenAiAdapterFactory(OutboundProxy proxy) : ILlmAdapterFactory
 {
     public IReadOnlyList<LlmWireDefinition> Wires { get; } =
     [
@@ -33,5 +33,6 @@ internal sealed class OpenAiAdapterFactory : ILlmAdapterFactory
             Endpoint.NormalizeBaseUrl(provider.BaseUrl),
             provider.ApiKey,
             provider.Models,
+            new HttpClient(new FinishReasonNormalizingHandler(proxy.CreateHandler())),
             useResponses: string.Equals(provider.ApiStyle, ProviderApiStyles.Responses, StringComparison.OrdinalIgnoreCase));
 }

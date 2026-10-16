@@ -1,9 +1,10 @@
 using Dsh.Boot;
+using Dsh.Runtime;
 
 namespace Dsh.Gui.Services;
 
 /** Shared settings-file mutations without a slash command; session commands run through HostChatSession. */
-public sealed class SettingsFacade(HarnessHome home)
+public sealed class SettingsFacade(Context ctx, HarnessHome home)
 {
     public event Action? Changed;
 
@@ -19,6 +20,17 @@ public sealed class SettingsFacade(HarnessHome home)
             AutoApprove = autoApprove,
             Blacklist = [.. blacklist],
         };
+        settings.Save(home);
+        Changed?.Invoke();
+    }
+
+    /** 本机出口代理: 先应用到当前进程(非法地址在此抛出, 不落盘), 再写回 network 段; 全部留空时删除该段。 */
+    public void UpdateOutboundProxy(OutboundProxySettings proxy)
+    {
+        OutboundProxy.FromContext(ctx).Configure(proxy.Url, proxy.Bypass);
+        var settings = Load();
+        var empty = proxy.Url is null && proxy.Bypass.Count == 0 && proxy.ProbeUrl is null;
+        settings.Network = empty ? null : new NetworkSettings { OutboundProxy = proxy };
         settings.Save(home);
         Changed?.Invoke();
     }

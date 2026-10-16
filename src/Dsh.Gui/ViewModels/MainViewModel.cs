@@ -80,7 +80,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Subagents = new SubagentPanelViewModel(chat);
         Subagents.Changed += PopulateSubagentCards;
         Subagents.Failed += SetStatus;
-        _settings = new SettingsFacade(app.Home);
+        _settings = new SettingsFacade(_ctx, app.Home);
         _catalog = new SessionCatalog(_ctx, chat.Fleet);
         Gui = new GuiSettings(app.Home);
         var snapshot = Gui.Load();

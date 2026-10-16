@@ -48,9 +48,10 @@ skills:
 # 全局规则
 rules: []
 
-# 本机统一 HTTP 出口由 network.outbound_proxy 配置；fleet.deploy.serverProxy 只用于远端下载部署包。
+# 本机统一 HTTP 出口由 network.outbound_proxy 配置；fleet.deploy.serverProxy 只用于远端下载部署包，不设置远端机器的一般网络出口。
+# outbound_proxy 是本机出口代理:web_search/web_fetch、LLM 请求、models.dev 目录、MCP(HTTP)、A2A、账号、E2B 与本机下载远端 dsharp 都经它访问外网。
 # url 留空(或不写本段)跟随系统代理;支持 http/https/socks4/socks4a/socks5,可带 user:pass@(日志与报错会脱敏)。
-# bypass 是直连的主机(含子域),回环地址、不带点的主机名与私网 IP 总是直连;probe_url 是连接探测地址。
+# bypass 是直连的主机(含子域),回环地址、不带点的主机名与私网 IP 总是直连;probe_url 是 GUI 设置页与 /proxy test 自检的探测地址。
 # network:
 #   outbound_proxy:
 #     url: http://127.0.0.1:7890
@@ -75,6 +76,7 @@ rules: []
 #     autoDeploy: false      # 默认 true: 连接前在远端安装/升级 dsharp
 #     releaseVersion: latest
 #     via: auto              # auto | client | server
+#     serverProxy: http://127.0.0.1:7890  # 仅供远端 curl/wget 下载部署包，在远端解析；留空跟随远端自身代理或直连。
 
 # 插件沙箱开关:默认 false;关闭时插件的装载与运行方式不变。
 # 单个插件的读/写/网络权限写在 plugins."<包名>".permissions(见下方插件段说明);权限的强制执行随插件沙箱提供。

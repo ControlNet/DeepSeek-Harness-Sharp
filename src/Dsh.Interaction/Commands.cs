@@ -67,6 +67,16 @@ public static class CommandMenuCatalog
                     ArgumentSchemas: [new CommandArgumentSchema("provider", "select", "Provider name")]),
             ],
         },
+        "proxy" => descriptor with
+        {
+            Subcommands =
+            [
+                new CommandDescriptor("test", "Check the local outbound proxy against the probe URL (optional URL argument)"),
+                new CommandDescriptor("reload", "Apply network.outbound_proxy from settings.yaml to this process"),
+                new CommandDescriptor("set", "Save a proxy URL and apply it to existing clients"),
+                new CommandDescriptor("clear", "Clear the proxy URL and follow the system proxy"),
+            ],
+        },
         "model" => descriptor with
         {
             MenuSchema = new CommandMenuSchema("Model", "provider/model"),

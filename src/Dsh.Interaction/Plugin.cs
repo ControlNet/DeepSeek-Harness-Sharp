@@ -50,6 +50,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
             ModelCommand.Register(ctx, options.Home),
             ReasoningCommand.Register(ctx),
             ProviderCommand.Register(ctx, options.Home),
+            ProxyCommand.Register(ctx, options.Home),
             MemoryCommand.Register(ctx),
             PluginCommand.Register(ctx, catalog),
             SafetyCommandGuard.Register(ctx, settings.Safety),
