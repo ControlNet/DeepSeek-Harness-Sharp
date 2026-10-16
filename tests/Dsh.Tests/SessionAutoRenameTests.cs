@@ -145,7 +145,7 @@ public class SessionAutoRenameTests
             await Task.Delay(25, TestContext.Current.CancellationToken);
     }
 
-    /** 组合体的后台 worker 可能仍持有工作区文件句柄, 清理失败不掩盖断言结果。 */
+    /** 工作区检查点会产生 Git 只读对象; 先清属性, 再沿原预算等待后台句柄释放。 */
     private static void DeleteTempDir(string root)
     {
         for (var attempt = 0; attempt < 10; attempt++)
@@ -154,6 +154,8 @@ public class SessionAutoRenameTests
             {
                 if (!Directory.Exists(root))
                     return;
+                foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+                    File.SetAttributes(file, FileAttributes.Normal);
                 Directory.Delete(root, true);
                 return;
             }
