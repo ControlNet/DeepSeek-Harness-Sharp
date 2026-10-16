@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Mcp;
 using Dsh.Runtime;
+using ModelContextProtocol.Protocol;
 
 namespace Dsh.Tests.Mcp;
 
@@ -321,12 +323,36 @@ public sealed class McpResourceToolsTests(McpResourceServerFixture fixture) : IC
     [InlineData(true)]
     public async Task NotificationDuringListing_IsNotConsumedEvenWhenTheListingFails(bool fail)
     {
+        var marker = Guid.NewGuid().ToString("N");
+        using var scenario = new Activity(nameof(NotificationDuringListing_IsNotConsumedEvenWhenTheListingFails))
+            .AddBaggage("test.mcp.listing", marker).Start();
+        string? connectionId = null;
+        var consumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "Experimental.ModelContextProtocol",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity =>
+            {
+                var session = activity.GetTagItem("mcp.session.id") as string;
+                if (activity.Kind == ActivityKind.Client && activity.OperationName == RequestMethods.ResourcesList
+                    && activity.GetBaggageItem("test.mcp.listing") == marker)
+                    Volatile.Write(ref connectionId, session);
+                if (activity.Kind == ActivityKind.Server && activity.OperationName == NotificationMethods.ResourceListChangedNotification
+                    && session is not null && session == Volatile.Read(ref connectionId))
+                    consumed.TrySetResult();
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
         await using var racing = new McpResourceServerFixture { ServerArguments = ["--listing-race"] };
         await racing.InitializeAsync();
         AssertSucceeded(await racing.Execute(McpResourceTools.ListResourcesName, """{ "server": "res" }"""));
+        Assert.NotNull(Volatile.Read(ref connectionId));
         AssertSucceeded(await racing.Execute("mcp_res_change_during_listing", fail ? """{ "fail": true }""" : """{ "fail": false }"""));
         var listing = await racing.Execute(McpResourceTools.ListResourcesName, """{ "server": "res" }""");
         Assert.Equal(fail, listing.IsError);
+        // The SDK dispatches responses independently; its incoming span stops after all notification handlers complete.
+        await consumed.Task.WaitAsync(NotificationDeadline, TestContext.Current.CancellationToken);
         Assert.Contains("resource list changed on res", await racing.SectionText());
         Assert.Contains("resource template list changed on res", await racing.SectionText());
         AssertSucceeded(await racing.Execute(McpResourceTools.ListResourcesName, """{ "server": "res" }"""));
