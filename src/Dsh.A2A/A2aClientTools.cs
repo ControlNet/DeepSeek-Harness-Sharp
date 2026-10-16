@@ -12,7 +12,7 @@ namespace Dsh.A2A;
  * 出站 A2A 客户端工具: 让 DSH agent 作为 A2A Client 调用远端 agent。
  * A2A 是 client-server: 只做 Server 的实现之间不会自己产生会话, 这组工具补的正是 DSH 缺的 Client 角色。
  */
-public sealed class A2aClientTools(IReadOnlyDictionary<string, A2aRemoteSettings> remotes)
+public sealed class A2aClientTools(IReadOnlyDictionary<string, A2aRemoteSettings> remotes, OutboundProxy proxy)
 {
     public const string Card = "a2a_card";
     public const string Send = "a2a_send";
@@ -31,7 +31,7 @@ public sealed class A2aClientTools(IReadOnlyDictionary<string, A2aRemoteSettings
         + "a2a_card discovers the agent, a2a_send submits a message (optionally waits for a terminal task), "
         + "a2a_get/a2a_list poll, a2a_cancel cancels.";
 
-    private readonly A2aRemoteClient _client = new(remotes);
+    private readonly A2aRemoteClient _client = new(remotes, proxy);
 
     public IDisposable Register(Context ctx)
     {

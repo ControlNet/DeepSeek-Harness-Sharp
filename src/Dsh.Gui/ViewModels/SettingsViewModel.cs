@@ -22,11 +22,12 @@ public enum SettingsSection
     Storage,
     Plugins,
     Shortcuts,
+    Network,
     Remote,
     About,
 }
 
-/** 设置页状态: 九个分页共用一份草稿, 写入分别落在 GUI 插件参数段与 harness 设置上。 */
+/** 设置页状态: 各分页共用一份草稿, 写入分别落在 GUI 插件参数段与 harness 设置上。 */
 public sealed partial class SettingsViewModel : ObservableObject
 {
     private const string CompactionPackage = "@deepseek-ai/dsh-compaction";
@@ -83,6 +84,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         new(SettingsSection.Storage, "会话与存储"),
         new(SettingsSection.Plugins, "插件与 MCP"),
         new(SettingsSection.Shortcuts, "快捷键"),
+        new(SettingsSection.Network, "网络"),
         new(SettingsSection.Remote, "远程"),
         new(SettingsSection.About, "关于"),
     ];
@@ -153,6 +155,9 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     private bool _isShortcutsSection;
+
+    [ObservableProperty]
+    private bool _isNetworkSection;
 
     [ObservableProperty]
     private bool _isRemoteSection;
@@ -602,6 +607,58 @@ public sealed partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task OpenConfigFolderAsync() => Status = await DesktopIntegration.OpenPathAsync(Path.GetDirectoryName(ConfigPath) ?? _home.Root);
 
+    /** 本机出口代理草稿: 保存写回 settings.yaml 的 network.outbound_proxy, 自检直接用草稿(不必先保存)。 */
+    [ObservableProperty]
+    private string _outboundProxyUrl = "";
+
+    [ObservableProperty]
+    private string _outboundProxyBypassText = "";
+
+    [ObservableProperty]
+    private string _outboundProxyProbeUrl = "";
+
+    [ObservableProperty]
+    private string _proxyCheckResult = "";
+
+    public string OutboundProxyProbePlaceholder { get; } = $"留空 = {OutboundProxySettings.DefaultProbeUrl}";
+
+    private OutboundProxySettings DraftOutboundProxy() => new()
+    {
+        Url = string.IsNullOrWhiteSpace(OutboundProxyUrl) ? null : OutboundProxyUrl.Trim(),
+        Bypass = [.. OutboundProxyBypassText.Split(['\n', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        ProbeUrl = string.IsNullOrWhiteSpace(OutboundProxyProbeUrl) ? null : OutboundProxyProbeUrl.Trim(),
+    };
+
+    private void LoadNetwork()
+    {
+        var proxy = _facade.Load().Network?.OutboundProxy;
+        OutboundProxyUrl = proxy?.Url ?? "";
+        OutboundProxyBypassText = string.Join(Environment.NewLine, proxy?.Bypass ?? []);
+        OutboundProxyProbeUrl = proxy?.ProbeUrl ?? "";
+        ProxyCheckResult = "";
+    }
+
+    [RelayCommand]
+    private void SaveNetwork()
+    {
+        try
+        {
+            _facade.UpdateOutboundProxy(DraftOutboundProxy());
+            Status = $"本机出口代理已保存并生效: {OutboundProxy.FromContext(_ctx).Describe()}";
+        }
+        catch (ArgumentException error)
+        {
+            Status = error.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task CheckProxyAsync()
+    {
+        ProxyCheckResult = "正在自检…";
+        ProxyCheckResult = (await OutboundProxyProbe.RunAsync(DraftOutboundProxy(), CancellationToken.None)).Message;
+    }
+
     public ObservableCollection<SshWorkspaceRowViewModel> RemoteWorkspaces { get; } = [];
 
     /** 右下角气泡回调(由 MainViewModel 注入): (标题, 正文, 是否错误)。 */
@@ -620,9 +677,6 @@ public sealed partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _remoteReleaseVersion = GuiSettings.DefaultReleaseVersion;
 
-    [ObservableProperty]
-    private string _remoteDownloadProxy = "";
-
     /** 下载位置: auto(先远端后本地)/client(仅本地下发)/server(仅远端直下)。 */
     [ObservableProperty]
     private string _remoteDownloadVia = "auto";
@@ -635,7 +689,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         => new(
             RemoteReleaseBaseUrl,
             RemoteReleaseVersion,
-            string.IsNullOrWhiteSpace(RemoteDownloadProxy) ? null : RemoteDownloadProxy,
+            OutboundProxy.FromContext(_ctx),
             string.IsNullOrWhiteSpace(RemoteDownloadVia) ? "auto" : RemoteDownloadVia,
             string.IsNullOrWhiteSpace(RemoteServerProxy) ? null : RemoteServerProxy);
 
@@ -686,7 +740,6 @@ public sealed partial class SettingsViewModel : ObservableObject
             RemoteAutoDeploy = RemoteAutoDeploy,
             RemoteReleaseBaseUrl = RemoteReleaseBaseUrl,
             RemoteReleaseVersion = RemoteReleaseVersion,
-            RemoteDownloadProxy = RemoteDownloadProxy,
             RemoteDownloadVia = RemoteDownloadVia,
             RemoteServerProxy = RemoteServerProxy,
         });
@@ -699,7 +752,6 @@ public sealed partial class SettingsViewModel : ObservableObject
         RemoteAutoDeploy = snapshot.RemoteAutoDeploy;
         RemoteReleaseBaseUrl = snapshot.RemoteReleaseBaseUrl;
         RemoteReleaseVersion = snapshot.RemoteReleaseVersion;
-        RemoteDownloadProxy = snapshot.RemoteDownloadProxy;
         RemoteDownloadVia = snapshot.RemoteDownloadVia;
         RemoteServerProxy = snapshot.RemoteServerProxy;
         RemoteWorkspaces.Clear();
@@ -775,12 +827,15 @@ public sealed partial class SettingsViewModel : ObservableObject
         IsStorageSection = Section == SettingsSection.Storage;
         IsPluginsSection = Section == SettingsSection.Plugins;
         IsShortcutsSection = Section == SettingsSection.Shortcuts;
+        IsNetworkSection = Section == SettingsSection.Network;
         IsRemoteSection = Section == SettingsSection.Remote;
         IsAboutSection = Section == SettingsSection.About;
         if (Section == SettingsSection.Model)
             LoadHarnessSettings();
         if (Section == SettingsSection.Plugins)
             LoadPluginRows();
+        if (Section == SettingsSection.Network)
+            LoadNetwork();
         if (Section == SettingsSection.Account)
             _ = Account.RefreshAsync();
     }
