@@ -156,8 +156,6 @@ public class PtyHostTests
                 FileName = "cmd.exe",
                 Arguments = ["/d", "/q", "/v:on"],
             });
-            var exited = new TaskCompletionSource<int?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            session.Exited += exitCode => exited.TrySetResult(exitCode);
             try
             {
                 // The answer is computed by this shell, not present in its banner
@@ -169,7 +167,7 @@ public class PtyHostTests
                 Assert.Contains(expected, received);
                 Assert.DoesNotContain($"conpty-{1 - index}-{43 - index}", received);
                 await session.Input.WriteAsync(Encoding.UTF8.GetBytes($"exit {index + 3}\r"), cancellation.Token);
-                Assert.Equal(index + 3, await exited.Task.WaitAsync(cancellation.Token));
+                Assert.Equal(index + 3, await session.Completion.WaitAsync(cancellation.Token));
             }
             finally
             {
