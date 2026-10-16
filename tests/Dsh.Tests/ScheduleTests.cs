@@ -564,8 +564,8 @@ public static class ScheduleTests
             Assert.Equal(2, fixture.Adapter.Requests.Count);
             Assert.DoesNotContain(fixture.Adapter.Requests, CarriesReminder);
             Assert.Empty(fixture.Schedules.List(agent));
-            Assert.Single(agent.Session.SnapshotEvents().Where(sessionEvent =>
-                sessionEvent.Data is ScheduleChangePayload { Change.Operation: ScheduleOperation.Dispatch }));
+            Assert.Single(agent.Session.SnapshotEvents(), sessionEvent =>
+                sessionEvent.Data is ScheduleChangePayload { Change.Operation: ScheduleOperation.Dispatch });
         }
 
         [Fact]

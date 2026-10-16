@@ -108,8 +108,8 @@ public sealed class RealLlmTurnSmokeTests
                 await Task.Delay(TimeSpan.FromMilliseconds(50), TestContext.Current.CancellationToken);
             await agent.WhenIdle().WaitAsync(TimeSpan.FromSeconds(90), TestContext.Current.CancellationToken);
             var events = agent.Session.SnapshotEvents();
-            Assert.Single(events.Where(sessionEvent => sessionEvent.Data is ScheduleChangePayload { Change.Operation: ScheduleOperation.Dispatch }));
-            Assert.Single(events.Where(sessionEvent => sessionEvent.Data is UserMessagePayload { Message.Source: PluginMessageSource { Plugin: ScheduleService.MessagePlugin } }));
+            Assert.Single(events, sessionEvent => sessionEvent.Data is ScheduleChangePayload { Change.Operation: ScheduleOperation.Dispatch });
+            Assert.Single(events, sessionEvent => sessionEvent.Data is UserMessagePayload { Message.Source: PluginMessageSource { Plugin: ScheduleService.MessagePlugin } });
             Assert.Contains(events.Select(sessionEvent => sessionEvent.Data).OfType<AssistantMessagePayload>(),
                 payload => payload.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains("SCHEDULE_SMOKE_OK", StringComparison.Ordinal)));
             Assert.Empty(ScheduleLedger.Of(agent.Session).Active);
@@ -120,8 +120,8 @@ public sealed class RealLlmTurnSmokeTests
             var resumed = (await agents.Resume(new ResumeAgentOptions(sessionId, agentOptions), TestContext.Current.CancellationToken)).Agent;
             await resumed.WhenIdle().WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             Assert.Empty(ScheduleLedger.Of(resumed.Session).Active);
-            Assert.Single(resumed.Session.SnapshotEvents().Where(sessionEvent =>
-                sessionEvent.Data is ScheduleChangePayload { Change.Operation: ScheduleOperation.Dispatch }));
+            Assert.Single(resumed.Session.SnapshotEvents(), sessionEvent =>
+                sessionEvent.Data is ScheduleChangePayload { Change.Operation: ScheduleOperation.Dispatch });
         }
         finally
         {
