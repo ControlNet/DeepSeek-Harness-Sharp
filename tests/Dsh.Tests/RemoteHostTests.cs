@@ -61,6 +61,38 @@ public sealed class RemoteHostTests
         Assert.Contains("version", hello.Mismatch!, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact(Timeout = 30000)]
+    public async Task DecisionsArrivingBeforeEnumerationAreRetained()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var socket = new TcpClient();
+        var accept = listener.AcceptTcpClientAsync(Ct);
+        await socket.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, Ct);
+        using var accepted = await accept;
+        await using var peer = new JsonRpcPeer(accepted.GetStream());
+        peer.RequestHandler = (message, _) => ValueTask.FromResult<JsonElement?>(
+            message.Method == HostProtocol.MethodHello
+                ? JsonSerializer.SerializeToElement(new HostHelloResponse(true, HostProtocol.Version, "test", null), HostProtocolJsonContext.Default.HostHelloResponse)
+                : JsonSerializer.SerializeToElement(1L, HostProtocolJsonContext.Default.Int64));
+        peer.Start();
+        await using var client = await RemoteHostClient.ConnectAsync(socket.GetStream(), cancellationToken: Ct);
+        var approval = new RemoteApprovalRequest("approval", "session", "bash", null, "allow?");
+        var question = new RemoteQuestionRequest("question", "session", []);
+        await peer.NotifyAsync(HostProtocol.NotificationApproval,
+            JsonSerializer.SerializeToElement(approval, HostProtocolJsonContext.Default.RemoteApprovalRequest), Ct);
+        await peer.NotifyAsync(HostProtocol.NotificationQuestion,
+            JsonSerializer.SerializeToElement(question, HostProtocolJsonContext.Default.RemoteQuestionRequest), Ct);
+        // The ping reply follows both notifications on the same TCP stream, so both have arrived before enumeration begins.
+        await client.PingAsync(Ct);
+        await using var approvals = client.ApprovalsAsync(Ct).GetAsyncEnumerator(Ct);
+        Assert.True(await approvals.MoveNextAsync());
+        Assert.Equal(approval, approvals.Current);
+        await using var questions = client.QuestionsAsync(Ct).GetAsyncEnumerator(Ct);
+        Assert.True(await questions.MoveNextAsync());
+        Assert.Equal(question.RequestId, questions.Current.RequestId);
+    }
+
     /** 一对经 TCP loopback 相连的 host server / client。 */
     private sealed class HostFixture : IAsyncDisposable
     {

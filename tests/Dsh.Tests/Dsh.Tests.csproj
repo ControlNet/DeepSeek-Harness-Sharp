@@ -37,6 +37,7 @@
       因此产物文件用下面的 None 显式复制。
     -->
     <ProjectReference Include="..\Dsh.ManagedPluginSample\Dsh.ManagedPluginSample.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\templates\managed-plugin\DshPluginTemplate.csproj" ReferenceOutputAssembly="false" />
     <!-- 让 /plugins add 走与真实插件相同的 dll + deps 闭包路径。 -->
     <None Include="..\Dsh.ManagedPluginSample\bin\$(Configuration)\$(TargetFramework)\Dsh.ManagedPluginSample.dll"
           Link="Dsh.ManagedPluginSample.dll"

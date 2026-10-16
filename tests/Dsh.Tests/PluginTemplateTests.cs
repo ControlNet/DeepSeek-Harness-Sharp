@@ -24,6 +24,7 @@ public sealed class PluginTemplateTests
         var loaded = host.TryLoad(pluginPath);
         try
         {
+            Assert.Contains(DshPluginSettingsRegistry.All(), provider => provider.Package == "@example/dsh-plugin-template");
             Assert.Contains("@example/dsh-plugin-template", loaded.Packages);
 
             var ctx = new Context();
@@ -40,6 +41,8 @@ public sealed class PluginTemplateTests
         {
             loaded.Context?.Unload();
         }
+        Assert.DoesNotContain(DshPluginSettingsRegistry.All(), provider => provider.Package == "@example/dsh-plugin-template");
+        Assert.Null(Dsh.Boot.SettingsTemplate.Verify(Dsh.Boot.SettingsTemplate.DefaultPath));
     }
 
     /** 模板声明了 ConfigType: 参数段被绑定成 TemplateConfig, 拼错字段在激活期 WARN。 */
@@ -76,5 +79,7 @@ public sealed class PluginTemplateTests
         {
             loaded.Context?.Unload();
         }
+        Assert.DoesNotContain(DshPluginSettingsRegistry.All(), provider => provider.Package == "@example/dsh-plugin-template");
+        Assert.Null(Dsh.Boot.SettingsTemplate.Verify(Dsh.Boot.SettingsTemplate.DefaultPath));
     }
 }
