@@ -56,20 +56,31 @@ public sealed class TokenMeter : Service, IDisposable
     }
 
     private readonly ConditionalWeakTable<Session, ReplayState> _states = new();
-    private readonly Func<bool> _listener;
+    private readonly Func<bool>[] _listeners;
 
     public TokenMeter(Context ctx) : base(ctx, ServiceName)
     {
-        _listener = ctx.On<SessionEventNotification>(notification =>
-        {
-            if (_states.TryGetValue(notification.Session, out _))
-                Sync(notification.Session);
-        }, new EventOptions { Global = true });
+        _listeners =
+        [
+            ctx.On<SessionEventNotification>(notification =>
+            {
+                if (_states.TryGetValue(notification.Session, out _))
+                    Sync(notification.Session);
+            }, new EventOptions { Global = true }),
+            // 截断后 seq 会复用, ConsumedEvents 越过新日志末尾会让后续事件被跳过; 丢弃回放状态, 下次测量从截断后的日志重放。
+            ctx.On<SessionTruncateNotification>(
+                notification => _states.Remove(notification.Session),
+                new EventOptions { Global = true }),
+        ];
     }
 
     public static TokenMeter Register(Context ctx) => new(ctx);
 
-    public void Dispose() => _listener();
+    public void Dispose()
+    {
+        foreach (var unsubscribe in _listeners)
+            unsubscribe();
+    }
 
     public int EstimateMessage(Llm.Message message) => TokenEstimate.EstimateMessage(message);
 

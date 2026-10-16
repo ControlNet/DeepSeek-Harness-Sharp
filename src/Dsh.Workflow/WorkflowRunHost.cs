@@ -111,7 +111,7 @@ public sealed class WorkflowRunHost : IWorkflowRun
         _result.TrySetResult(result);
     }
 
-    public sealed class SubagentChildPort(ISubagentService subagents, string provider, IAgent parent, CancellationTokenSource controller) : IChildPort
+    public sealed class SubagentChildPort(ISubagentService subagents, string provider, IAgent parent, ToolCallId? parentCallId, CancellationTokenSource controller) : IChildPort
     {
         public async Task<IChildHandle> StartAsync(ChildStartRequest request)
         {
@@ -119,6 +119,7 @@ public sealed class WorkflowRunHost : IWorkflowRun
             {
                 Prompt = [new TextBlock(request.Prompt)],
                 Parent = parent,
+                ParentCallId = parentCallId,
                 Signal = controller.Token,
                 OutputSchema = request.Schema is null ? null : ToJsonObject(request.Schema),
                 AgentOptions = request.Provider is null && request.Model is null

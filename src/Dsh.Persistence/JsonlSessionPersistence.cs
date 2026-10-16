@@ -141,54 +141,15 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
                 return new SessionPersistenceSnapshot { Header = pending.Header, Revision = pending.Revision, InheritedEventCount = pending.InheritedEventCount };
         }
         var path = FindLog(id);
-        if (path is null) return null;
-        string? first;
-        try
-        {
-            first = ReadFirstLineAny(path);
-        }
-        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
-        {
-            return null;
-        }
-        if (first is null) return null;
-        SessionStorageMetadata? stored;
-        try
-        {
-            stored = SessionLogHeader.ParseHeader(first);
-        }
-        catch (SessionFormatUnsupportedException error)
-        {
-            throw new SessionFormatUnsupportedException($"{error.Message} (raw log: {path})", new SessionLocation(ArtifactKind, path));
-        }
-        if (stored is null) return null;
-        AssertStoredIdentity(path, stored.Meta, id);
-        var info = new FileInfo(path);
-        info.Refresh();
-        if (!info.Exists) return null;
-        return new SessionPersistenceSnapshot
-        {
-            Header = stored.Meta,
-            Revision = FileRevision(info),
-            SizeBytes = info.Length,
-            InheritedEventCount = stored.InheritedEventCount,
-        };
+        return path is null ? null : ReadLogSnapshot(path, id);
     }
 
     public IReadOnlyList<SessionPersistenceSnapshot> List()
     {
         List<KeyValuePair<SessionId, PendingSession>> pending;
         lock (_trackerGate) pending = [.. _pending];
-        var snapshots = new List<SessionPersistenceSnapshot>();
-        var listed = new HashSet<SessionId>();
-        foreach (var (meta, path) in ListArtifacts())
-        {
-            var info = new FileInfo(path);
-            info.Refresh();
-            if (!info.Exists) continue;
-            listed.Add(meta.Id);
-            snapshots.Add(new SessionPersistenceSnapshot { Header = meta, Revision = FileRevision(info), SizeBytes = info.Length });
-        }
+        var snapshots = ListStoredSnapshots();
+        var listed = snapshots.Select(snapshot => snapshot.Header.Id).ToHashSet();
         foreach (var (id, entry) in pending)
             if (!listed.Contains(id))
                 snapshots.Add(new SessionPersistenceSnapshot { Header = entry.Header, Revision = entry.Revision, InheritedEventCount = entry.InheritedEventCount });
@@ -617,9 +578,9 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
         return matches.Count == 0 ? null : matches[0];
     }
 
-    private List<(SessionHeader Meta, string Path)> ListArtifacts()
+    private List<SessionPersistenceSnapshot> ListStoredSnapshots()
     {
-        var artifacts = new List<(SessionHeader, string)>();
+        var snapshots = new List<SessionPersistenceSnapshot>();
         var ids = new HashSet<SessionId>();
         foreach (var project in ListProjectDirs())
         {
@@ -629,25 +590,58 @@ public sealed class JsonlSessionPersistence : ISessionPersistence, IDisposable
                 if (ExistsFile(opposite)) throw EncodingMismatch(opposite);
                 var path = Path.Join(dir, $"session{JsonlLayout.LogSuffix(_compression)}");
                 if (!ExistsFile(path)) continue;
-                var first = ReadFirstLineAny(path);
-                if (first is null) continue;
-                SessionHeader? meta;
+                SessionPersistenceSnapshot? snapshot;
                 try
                 {
-                    meta = SessionLogHeader.ParseHeader(first)?.Meta;
+                    snapshot = ReadLogSnapshot(path, null);
                 }
                 catch (SessionFormatUnsupportedException)
                 {
                     continue;
                 }
-                if (meta is null) continue;
-                AssertStoredIdentity(path, meta, null);
-                if (!ids.Add(meta.Id))
-                    throw new InvalidDataException($"duplicate JSONL session id \"{meta.Id}\" appears in multiple project directories");
-                artifacts.Add((meta, path));
+                if (snapshot is null) continue;
+                if (!ids.Add(snapshot.Header.Id))
+                    throw new InvalidDataException($"duplicate JSONL session id \"{snapshot.Header.Id}\" appears in multiple project directories");
+                snapshots.Add(snapshot);
             }
         }
-        return artifacts;
+        return snapshots;
+    }
+
+    /** Stat and List both build stored snapshots here, reading only the log's header line or frame. */
+    private SessionPersistenceSnapshot? ReadLogSnapshot(string path, SessionId? expectedId)
+    {
+        string? first;
+        try
+        {
+            first = ReadFirstLineAny(path);
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
+        }
+        if (first is null) return null;
+        SessionStorageMetadata? stored;
+        try
+        {
+            stored = SessionLogHeader.ParseHeader(first);
+        }
+        catch (SessionFormatUnsupportedException error)
+        {
+            throw new SessionFormatUnsupportedException($"{error.Message} (raw log: {path})", new SessionLocation(ArtifactKind, path));
+        }
+        if (stored is null) return null;
+        AssertStoredIdentity(path, stored.Meta, expectedId);
+        var info = new FileInfo(path);
+        info.Refresh();
+        if (!info.Exists) return null;
+        return new SessionPersistenceSnapshot
+        {
+            Header = stored.Meta,
+            Revision = FileRevision(info),
+            SizeBytes = info.Length,
+            InheritedEventCount = stored.InheritedEventCount,
+        };
     }
 
     private List<string> ListProjectDirs()

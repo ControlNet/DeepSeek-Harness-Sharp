@@ -11,6 +11,7 @@ global_default_model: deepseek-official/deepseek-v4-flash
 compaction_model: deepseek-official/deepseek-v4-flash
 
 # 子代理默认模型，格式为 provider/model
+# subagent 工具调用与插件参数 agentOptions 都未指定 provider/model 时使用；该 provider 需已配置 key，删掉此项则子代理跟随当前会话模型。
 subagent:
   default_model: deepseek-official/deepseek-v4-flash
 
@@ -57,8 +58,15 @@ rules: []
 #     bypass: [api.deepseek.com]
 #     probe_url: https://www.gstatic.com/generate_204
 
-# 插件开关:true/false 或 {enabled: true, ...插件参数}
-# 插件发现即启用;只有这里显式禁用的插件才会关闭。/plugins 命令会改写本段。
+# 插件沙箱开关:默认 false;关闭时插件的装载与运行方式不变。
+# 单个插件的读/写/网络权限写在 plugins."<包名>".permissions(见下方插件段说明);权限的强制执行随插件沙箱提供。
+sandbox:
+  enabled: false
+
+# 插件开关:true/false 或 {enabled: true, permissions: {...}, ...插件参数}
+# 插件发现即启用;只有这里显式禁用的插件才会关闭。/plugins 命令会改写本段(GUI 插件市场同样写这里)。
+# permissions 是与 enabled 并列的保留键,不会作为参数交给插件:read/write/network 三项布尔值,未写的项与未写 permissions 时均为允许;
+# /plugins ban_write <包名> 与 /plugins enable_write <包名> 切换 write;enable/disable 保留 permissions,remove 连同参数一并清除。
 # 项目记忆 @deepseek-ai/dsh-memory 默认关闭,用 /memory on 开启;
 # 参数:file(记忆文件路径)、backend(file|mongo)、capture(回合末自动捕获,默认 true)、mongo(connectionString/database/collection/key)。
 # 快照恢复点 @deepseek-ai/dsh-checkpoints 默认关闭,改 true 开启;参数:max_points、keep_days。
@@ -75,10 +83,16 @@ plugins:
   "@deepseek-ai/dsh-memory": false
   "@deepseek-ai/dsh-toon": false
   "@deepseek-ai/dsh-checkpoints": false
-  # 下面两段是示例, 默认不打开:
+  # 下面三段是示例, 默认不打开:
   # "@deepseek-ai/dsh-ide-history":
   #   timeline: true    # 支持IDE(JetBrains/VSCode)历史记录进入timestamp fork/revert/jump时间线，默认为false
   #   timeline_limit: 30
+  # "@acme/foo":
+  #   enabled: true
+  #   permissions:
+  #     read: true
+  #     write: false
+  #     network: true
   # "@deepseek-ai/dsh-tui":
   #   highlightColor: "#7fd1ff"
   #   dividerColor: BrightBlack
@@ -160,11 +174,17 @@ plugins:
 #     url:  # http://、https://、socks4://、socks4a://、socks5:// 代理 URL, 可带 user:pass@; 留空跟随系统代理
 #     bypass:  # 不走代理的主机(含其子域), 只在 url 非空时生效; 回环地址、不带点的主机名与私网 IP 始终直连
 #     probe_url:  # 连通性自检的探测地址; 留空用 https://www.gstatic.com/generate_204
+# sandbox:  # 映射(见子项)
+#   enabled:  # Plugin sandbox switch; false (the default) keeps plugin loading and execution unchanged.
 # plugins:  # 映射(见子项)
 #   enabled: true
 #   parameters:  # 映射(见子项)
+#   permissions:  # Reserved key beside enabled with read/write/network booleans; null (key omitted) allows everything.
+#     read: true
+#     write: true
+#     network: true
 #
-# 插件参数(plugins."<包名>": {enabled, ...参数}; 未列出的插件发现即启用):
+# 插件参数(plugins."<包名>": {enabled, permissions, ...参数}; 未列出的插件发现即启用):
 #
 # @deepseek-ai/dsh-account:
 #   platformOrigin:

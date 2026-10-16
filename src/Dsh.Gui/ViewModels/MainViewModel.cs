@@ -56,7 +56,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly DispatcherBridge<SessionEvent> _events;
     private readonly List<Func<bool>> _unsubscribers = [];
     private readonly List<MessageViewModel> _lastUserMessages = [];
-    private Session? _renamedSession;
+    private Session? _observedSession;
     private IReadOnlyList<string> _skillNames = [];
     private readonly Dictionary<string, string> _contentMatches = new(StringComparer.Ordinal);
     private readonly Dictionary<ToolCallId, (string Name, string Arguments)> _pendingToolCalls = [];
@@ -118,6 +118,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public SettingsViewModel Preferences { get; }
 
     public SubagentPanelViewModel Subagents { get; }
+
+    public DeliverablesViewModel Deliverables { get; } = new();
 
     public ObservableCollection<WorkspaceGroupViewModel> Workspaces { get; } = [];
 
@@ -763,6 +765,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Page = AppPage.Chat;
         Tab = ChatTab.Conversation;
         Messages.Clear();
+        Deliverables.Reset(canOpen: false);
         _renderedSeq = 0;
         _openAssistant = null;
         _openReasoning = null;
@@ -800,6 +803,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 {
                     transcript.Apply(sessionEvent, Messages);
                     transcript.Flush();
+                    Deliverables.Observe(sessionEvent);
                 });
             }
         }
@@ -1373,6 +1377,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
+    private async Task OpenDeliverable(DeliverableItemViewModel? item)
+    {
+        if (item is null)
+            return;
+        StatusText = File.Exists(item.Path)
+            ? await DesktopIntegration.OpenPathAsync(item.Path)
+            : $"文件已不存在: {item.Path}";
+    }
+
+    [RelayCommand]
+    private void CopyDeliverablePath(DeliverableItemViewModel? item)
+    {
+        if (item is null)
+            return;
+        CopyRequested?.Invoke(item.Path);
+        StatusText = $"已复制路径: {item.Path}";
+    }
+
+    [RelayCommand]
     private void CopyMessage(MessageViewModel? message)
     {
         if (message is { } value)
@@ -1549,8 +1572,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         foreach (var unsubscribe in _unsubscribers)
             unsubscribe();
         _unsubscribers.Clear();
-        if (_renamedSession is not null)
-            _renamedSession.Renamed -= OnSessionRenamed;
+        if (_observedSession is not null)
+        {
+            _observedSession.Renamed -= OnSessionRenamed;
+            _observedSession.Truncated -= OnSessionTruncated;
+        }
     }
 
     /** 文件选择由视图提供(Avalonia 对话框需要 TopLevel), 未接视图时返回空。 */
@@ -1762,6 +1788,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         });
     }
 
+    /** 截断后的新事件从 eventCount 重新编号, 渲染游标随之回退, 交付物清单丢弃被截掉的声明。 */
+    private void OnSessionTruncated(Session session, long eventCount)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_disposed || !ReferenceEquals(session, _agent.Session))
+                return;
+            _renderedSeq = Math.Min(_renderedSeq, eventCount);
+            Deliverables.TruncateTo(eventCount);
+        });
+    }
+
     private void OnComposerPropertyChanged(object? sender, PropertyChangedEventArgs args)
     {
         if (args.PropertyName == nameof(ComposerViewModel.Input))
@@ -1932,12 +1970,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         TraceItems.Clear();
         TraceView.Clear();
         _lastUserMessages.Clear();
+        Deliverables.Reset(canOpen: true);
         Page = AppPage.Chat;
         SessionTitle = agent.Session.Header.Title ?? agent.Id.Value;
-        if (_renamedSession is not null)
-            _renamedSession.Renamed -= OnSessionRenamed;
-        _renamedSession = agent.Session;
+        if (_observedSession is not null)
+        {
+            _observedSession.Renamed -= OnSessionRenamed;
+            _observedSession.Truncated -= OnSessionTruncated;
+        }
+        _observedSession = agent.Session;
         agent.Session.Renamed += OnSessionRenamed;
+        agent.Session.Truncated += OnSessionTruncated;
         ApplyEvents(agent.Session.SnapshotEvents());
         IsBusy = agent.Status == AgentStatus.Running;
         RefreshMode();
@@ -2093,6 +2136,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 break;
             case ApprovalPolicyPayload:
                 RefreshPermissionLabel();
+                break;
+            case DeliverablesPresentedPayload presented:
+                Deliverables.Observe(sessionEvent);
+                AddTrace(sessionEvent.Seq, TraceKind.Tool, $"交付物 {presented.Files.Count} 个", string.Join('\n', presented.Files.Select(file => file.Path)));
                 break;
         }
     }

@@ -48,12 +48,13 @@ public static class PwshTool
                         + "5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; "
                         + "\"git status\" → \"Show working tree status\"; \"Get-Process\" → \"List running processes\"."),
                     ["timeoutMs"] = ToolSchemas.NumberParam("Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry."),
-                    ["workdir"] = ToolSchemas.StringParam("Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."),
+                    ["workdir"] = ToolSchemas.StringParam("Working directory for this command. Defaults to the session working directory; a relative path is resolved against it."),
                     ["envs"] = ToolSchemas.StringMapParam("Environment variables to set for this command (object of string values). `DSH_*` keys are ignored."),
                 },
                 "command"),
             Output = new ToolOutputDefinition(BashTool.OutputSchemaShared, (_, value) => Render(value)),
             Execute = (args, exec) => Execute(args, exec, subprocess, resolved),
+            WriteTargets = (args, exec) => [BashTool.WorkdirOf(BashTool.WorkdirArgument(args), exec, resolved)],
         });
         return new CompositeDisposable(section, registration);
     }
@@ -64,9 +65,7 @@ public static class PwshTool
         double? timeoutMsArg = args.TryGetProperty("timeoutMs", out var timeoutElement) && timeoutElement.ValueKind == JsonValueKind.Number
             ? timeoutElement.GetDouble()
             : null;
-        var workdirArg = args.TryGetProperty("workdir", out var workdirElement) && workdirElement.ValueKind == JsonValueKind.String
-            ? workdirElement.GetString()
-            : null;
+        var workdirArg = BashTool.WorkdirArgument(args);
         var envs = BashTool.ReadEnvs(args);
         if (command.Trim().Length == 0)
             throw new ArgumentException("invalid command: expected a non-empty string");

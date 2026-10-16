@@ -259,6 +259,25 @@ public sealed class ChatWindowTranscriptTests : IDisposable
         Assert.Contains("minimal - deepseek-official - deepseek-v4-flash", DrawFrame(chat));
     }
 
+    /** present 成功后的交付物事件在会话流里渲染为卡片: 绝对路径可直接复制, 并提示 /deliverables 打开; 历史回放同样出现一次。 */
+    [Fact]
+    public async Task DeliverablesPresented_Renders_Copyable_Paths_And_Open_Hint()
+    {
+        var (ctx, agent, home) = await CreateAgent();
+        var report = Path.Combine(Path.GetPathRoot(_homeDir)!, "out", "report.docx");
+        agent.Session.Append(new TurnStartPayload(1));
+        agent.Session.Append(new DeliverablesPresentedPayload(1, ToolCallId.Create("call-present"), [new PresentedFile(report, "季度报告")]));
+        agent.Session.Append(new TurnEndPayload(1, new TurnEndReason.Completed()));
+
+        using var chat = new ChatWindow(ctx, agent, home);
+        chat.DrainUi();
+
+        var frame = DrawFrame(chat);
+        Assert.Equal(1, Count(frame, "[交付物]"));
+        Assert.Equal(1, Count(frame, $"{report} - 季度报告"));
+        Assert.Contains(TranscriptRenderer.DeliverablesHint, frame);
+    }
+
     private async Task<(Context Ctx, AgentLoopAgent Agent, HarnessHome Home)> CreateAgent()
     {
         var ctx = new Context();

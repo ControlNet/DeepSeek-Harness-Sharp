@@ -12,8 +12,9 @@ public static class PluginCommand
         return commands.Register(new CommandDefinition
         {
             Name = "plugins",
-            Description = "List, add, remove, disable, or enable DSH plugin modules",
-            Input = new CommandInputDescriptor("list | add <pkg|path> | remove <pkg> [--force] | disable <pkg> | enable <pkg>"),
+            Description = "List, add, remove, disable, or enable DSH plugin modules and set their write permission",
+            Input = new CommandInputDescriptor($"list | add <pkg|path> | {PackageOps}"),
+            Subcommands = MenuSubcommands,
             Handler = invocation =>
             {
                 var tokens = invocation.RawInput.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -58,17 +59,48 @@ public static class PluginCommand
                         return RunAsync(manager.DisableAsync(tokens[1]));
                     case "enable" when tokens.Length > 1:
                         return RunAsync(manager.EnableAsync(tokens[1]));
+                    case BanWrite or EnableWrite when tokens.Length > 1:
+                        return Task.FromResult<CommandResult>(new CommandResult.Success(
+                            manager.SetPermission(tokens[1], PluginPermission.Write, allowed: tokens[0] == EnableWrite)));
                     default:
                         return Task.FromResult<CommandResult>(
-                            new CommandResult.Error("usage: /plugins list | doctor | add <pkg|path> | remove <pkg> [--force] | disable <pkg> | enable <pkg>"));
+                            new CommandResult.Error($"usage: /plugins list | doctor | add <pkg|path> | {PackageOps}"));
                 }
             },
         });
     }
 
+    private const string BanWrite = "ban_write";
+    private const string EnableWrite = "enable_write";
+    private const string PackageOps = $"remove <pkg> [--force] | disable <pkg> | enable <pkg> | {BanWrite} <pkg> | {EnableWrite} <pkg>";
+
     private static string Ops => RuntimeFeature.IsDynamicCodeSupported
-        ? "ops: list | doctor | add <pkg|path> | remove <pkg> [--force] | disable <pkg> | enable <pkg>"
-        : "ops: list | doctor | add <native library path> | remove <pkg> [--force] | disable <pkg> | enable <pkg>";
+        ? $"ops: list | doctor | add <pkg|path> | {PackageOps}"
+        : $"ops: list | doctor | add <native library path> | {PackageOps}";
+
+    /** The command overlay's subcommand menu; the package argument is completed from the plugin manager by the front end. */
+    private static IReadOnlyList<CommandDescriptor> MenuSubcommands
+    {
+        get
+        {
+            var package = new CommandArgumentSchema(PackageArgument, "select", "Plugin package", Required: true);
+            return
+            [
+                new CommandDescriptor("list", "List plugins and their state"),
+                new CommandDescriptor("doctor", "Explain skipped or failed plugin artifacts"),
+                new CommandDescriptor("add", "Install a plugin by package name or library path",
+                    ArgumentSchemas: [new CommandArgumentSchema("package-or-path", "text", "Package name or plugin library path", Required: true)]),
+                new CommandDescriptor("remove", "Uninstall a plugin", ArgumentSchemas: [package]),
+                new CommandDescriptor("disable", "Disable a plugin", ArgumentSchemas: [package]),
+                new CommandDescriptor("enable", "Enable a plugin", ArgumentSchemas: [package]),
+                new CommandDescriptor(BanWrite, "Deny a plugin write access (permissions.write: false)", ArgumentSchemas: [package]),
+                new CommandDescriptor(EnableWrite, "Allow a plugin write access (permissions.write: true)", ArgumentSchemas: [package]),
+            ];
+        }
+    }
+
+    /** Argument schema name whose candidates are the installed plugin packages. */
+    public const string PackageArgument = "package";
 
     private static async Task<CommandResult> RunAsync(Task<string> operation)
     {

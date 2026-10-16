@@ -217,7 +217,7 @@ public static class TerminalTools
                   "properties": {
                     "type": { "type": "string", "description": "Registered terminal backend type, usually \"shell\"." },
                     "name": { "type": "string", "description": "Optional owner-local display name such as \"main\" or \"gdb\"." },
-                    "cwd": { "type": "string", "description": "Initial working directory. Defaults to the deployment workspace root." }
+                    "cwd": { "type": "string", "description": "Initial working directory. Defaults to the session working directory; a relative path resolves against it." }
                   }
                 }
                 """),
@@ -234,11 +234,9 @@ public static class TerminalTools
                 var name = args.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String
                     ? nameElement.GetString()
                     : null;
-                var cwd = args.TryGetProperty("cwd", out var cwdElement) && cwdElement.ValueKind == JsonValueKind.String
-                    ? cwdElement.GetString()
-                    : null;
-                return await terminals.Spawn(RequireAgent(exec.Agent), new TerminalSpawnRequest(type, name, cwd), exec.Signal);
+                return await terminals.Spawn(RequireAgent(exec.Agent), new TerminalSpawnRequest(type, name, SpawnDirectory(args, exec)), exec.Signal);
             },
+            WriteTargets = (args, exec) => [SpawnDirectory(args, exec)],
         }));
 
         var sendDescription = enableRunInBackground
@@ -456,6 +454,18 @@ public static class TerminalTools
 
     private static IAgent RequireAgent(IAgent? agent)
         => agent ?? throw new InvalidOperationException("terminal tools require an initiating agent");
+
+    /** The directory a new terminal starts in: the cwd argument resolved against the session working directory. */
+    private static string SpawnDirectory(JsonElement args, ToolRunContext exec)
+    {
+        var baseDirectory = exec.Agent?.Session.WorkingDirectory ?? Environment.CurrentDirectory;
+        return args.ValueKind == JsonValueKind.Object
+               && args.TryGetProperty("cwd", out var cwd)
+               && cwd.ValueKind == JsonValueKind.String
+               && cwd.GetString() is { Length: > 0 } requested
+            ? Path.GetFullPath(requested, baseDirectory)
+            : baseDirectory;
+    }
 
     private static TerminalSessionId SessionId(JsonElement args)
     {

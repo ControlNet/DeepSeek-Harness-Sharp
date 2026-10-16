@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using Dsh.Plugins;
 
 namespace Dsh.Boot;
 
@@ -107,21 +108,35 @@ internal static partial class SettingsDocument
     {
         var builder = new StringBuilder(PluginsHeader);
         foreach (var (name, setting) in plugins)
+            RenderPlugin(builder, name, setting);
+        return builder.ToString();
+    }
+
+    /** A bare boolean when the entry only carries enabled; otherwise the {enabled, permissions, ...parameters} mapping. */
+    private static void RenderPlugin(StringBuilder builder, string name, PluginSetting setting)
+    {
+        if (setting.Parameters.Count == 0 && setting.Permissions is null)
         {
-            if (setting.Parameters.Count == 0)
+            builder.Append('\n').Append(Indent).Append(Quote(name)).Append(": ").Append(Bool(setting.Enabled));
+            return;
+        }
+        const string entryIndent = Indent + Indent;
+        builder.Append('\n').Append(Indent).Append(Quote(name)).Append(':');
+        builder.Append('\n').Append(entryIndent).Append(PluginSetting.EnabledKey).Append(": ").Append(Bool(setting.Enabled));
+        if (setting.Permissions is { } permissions)
+        {
+            builder.Append('\n').Append(entryIndent).Append(PluginSetting.PermissionsKey).Append(':');
+            foreach (var permission in Enum.GetValues<PluginPermission>())
             {
-                builder.Append('\n').Append(Indent).Append(Quote(name)).Append(": ").Append(Bool(setting.Enabled));
-                continue;
-            }
-            builder.Append('\n').Append(Indent).Append(Quote(name)).Append(':');
-            builder.Append('\n').Append(Indent).Append(Indent).Append("enabled: ").Append(Bool(setting.Enabled));
-            foreach (var (key, value) in setting.Parameters)
-            {
-                builder.Append('\n').Append(Indent).Append(Indent).Append(FormatKey(key)).Append(':');
-                RenderValue(builder, value, Indent + Indent + Indent);
+                builder.Append('\n').Append(entryIndent).Append(Indent).Append(PluginPermissions.KeyOf(permission))
+                    .Append(": ").Append(Bool(permissions.Allows(permission)));
             }
         }
-        return builder.ToString();
+        foreach (var (key, value) in setting.Parameters)
+        {
+            builder.Append('\n').Append(entryIndent).Append(FormatKey(key)).Append(':');
+            RenderValue(builder, value, entryIndent + Indent);
+        }
     }
 
     /** 嵌套 mapping/list 逐层展开(插件参数可以带 gpu/window 这类子段), 标量走 FormatScalar。 */

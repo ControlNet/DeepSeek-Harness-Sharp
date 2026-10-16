@@ -191,6 +191,7 @@ public static class Surface
         private readonly Func<IReadOnlyList<SessionEvent>> _logProvider;
         private readonly long _baseSeq;
         private readonly FoldState _state = new();
+        private readonly List<SurfaceFoldReplacement> _replacements = [];
         private long _lastProcessedSeq;
         private (SessionEvent Event, long ExpectedSeq, Plan? Plan)? _pendingPlan;
 
@@ -232,6 +233,18 @@ public static class Surface
             }
         }
 
+        /** 迄今折叠过的全部 replace, 按日志顺序; 与 Fold 的 Replacements 一致。 */
+        public IReadOnlyList<SurfaceFoldReplacement> Replacements
+        {
+            get
+            {
+                var log = _logProvider();
+                if (_lastProcessedSeq < _baseSeq + log.Count - 1)
+                    ProcessDelta(log);
+                return _replacements;
+            }
+        }
+
         private void ProcessDelta(IReadOnlyList<SessionEvent> log)
         {
             var tailSeq = _baseSeq + log.Count - 1;
@@ -240,14 +253,11 @@ public static class Surface
                 var index = (int)(seq - _baseSeq);
                 var sessionEvent = log[index];
                 var pending = _pendingPlan;
-                if (pending is { } plan && ReferenceEquals(plan.Event, sessionEvent) && plan.ExpectedSeq == seq)
-                {
-                    ApplyPlan(_state, plan.Plan);
-                }
-                else
-                {
-                    ApplyPlan(_state, PlanSurfaceEvent(_state, sessionEvent, seq, log, _baseSeq));
-                }
+                var replacement = pending is { } plan && ReferenceEquals(plan.Event, sessionEvent) && plan.ExpectedSeq == seq
+                    ? ApplyPlan(_state, plan.Plan)
+                    : ApplyPlan(_state, PlanSurfaceEvent(_state, sessionEvent, seq, log, _baseSeq));
+                if (replacement is not null)
+                    _replacements.Add(replacement);
                 if (pending is not null && pending.Value.ExpectedSeq <= seq)
                     _pendingPlan = null;
                 _lastProcessedSeq = seq;

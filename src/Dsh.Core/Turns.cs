@@ -161,6 +161,8 @@ public sealed record SessionHeader
     public string? Cwd { get; init; }
     public string? Title { get; init; }
     public SessionId? ParentSession { get; init; }
+    /** 产生本会话的父会话工具调用 id（子代理会话）；旧日志没有该字段。 */
+    public ToolCallId? ParentCallId { get; init; }
     public required bool IsSeeded { get; init; }
     public string? Origin { get; init; }
     public int? DelegationDepth { get; init; }
@@ -192,6 +194,8 @@ public sealed record SessionHeader
             throw new JsonException("session header delegationDepth must be a non-negative safe integer");
         if (RootSession is not null && ParentSession is null)
             throw new JsonException("session header rootSession requires parentSession");
+        if (ParentCallId is not null && ParentSession is null)
+            throw new JsonException("session header parentCallId requires parentSession");
         if (SubagentProvider is not null && Origin != "subagent")
             throw new JsonException("session header subagentProvider requires origin \"subagent\"");
         if (SubagentMode is not null && SubagentProvider is null)

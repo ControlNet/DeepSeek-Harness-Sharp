@@ -39,5 +39,13 @@ internal static class PtcCodecRegistration
     {
         SessionEventCodec.Register<PtcDispatchStartPayload>(PtcEvents.DispatchStart);
         SessionEventCodec.Register<PtcDispatchPayload>(PtcEvents.Dispatch);
+        SessionEventRelations.Register<PtcDispatchStartPayload>(
+            PtcEvents.DispatchStart,
+            payload => [new SessionEventRelation.Opens(Dispatch(payload.RunId, payload.CallId))]);
+        SessionEventRelations.Register<PtcDispatchPayload>(
+            PtcEvents.Dispatch,
+            payload => [new SessionEventRelation.RefersTo(Dispatch(payload.RunId, payload.CallId), SessionEventEdgeKind.Completes)]);
     }
+
+    private static SessionEventCorrelation Dispatch(string runId, string callId) => new(PtcEvents.DispatchStart, $"{runId}/{callId}");
 }

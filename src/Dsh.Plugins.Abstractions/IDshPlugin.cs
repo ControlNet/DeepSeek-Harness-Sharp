@@ -20,6 +20,14 @@ public interface IDshPlugin
 /** 一个被杀掉/跳过/装载失败的插件制品与原因,供宿主逐文件 WARN、/plugins list 失败分组与 doctor。 */
 public sealed record PluginSkip(string File, string Reason);
 
+/** A capability a plugin may be granted under plugins."<package>".permissions in settings.yaml. */
+public enum PluginPermission
+{
+    Read,
+    Write,
+    Network,
+}
+
 public interface IPluginManager
 {
     IReadOnlyList<string> PackageNames { get; }
@@ -36,4 +44,7 @@ public interface IPluginManager
     Task<string> DisableAsync(string package);
 
     Task<string> EnableAsync(string package);
+
+    /** Writes plugins."<package>".permissions.<permission> back to settings.yaml and returns a status line. */
+    string SetPermission(string package, PluginPermission permission, bool allowed);
 }
