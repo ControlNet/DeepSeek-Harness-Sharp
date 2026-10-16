@@ -248,6 +248,8 @@ public sealed class PluginScheduler
 
     private async Task PumpAfterAsync(Task previous)
     {
+        // Enqueue owns _sync while publishing this task; never enter activation/user code inline under that lock.
+        await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         await previous.ConfigureAwait(false);
         try
         {
