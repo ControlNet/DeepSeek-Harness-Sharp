@@ -35,13 +35,15 @@ public sealed class OutboundProxySmokeTests
     }
 
     [Fact(Explicit = true)]
-    public async Task RealLlm_ExistingClientSwitchesToSavedProxy_AndCompletesTurn()
+    public async Task RealLlm_SavedProxyRoutesConfiguredProvider_AndCompletesTurn()
     {
         var configuredHome = HarnessHome.Resolve();
         var settings = HarnessSettings.Load(configuredHome);
-        const string providerId = "deepseek-official";
-        const string modelId = "deepseek-v4-flash";
-        Assert.True(settings.Providers.TryGetValue(providerId, out var provider) && !string.IsNullOrWhiteSpace(provider.Options?.ApiKey), "Real smoke requires the configured deepseek-official provider.");
+        var model = (settings.GlobalDefaultModel ?? "").Split('/', 2);
+        Assert.True(model.Length == 2, "Real smoke requires a configured default provider/model.");
+        var providerId = model[0];
+        var modelId = model[1];
+        Assert.True(settings.Providers.ContainsKey(providerId), "Real smoke requires the configured default provider.");
         var directory = TempTree.CreateDirectory("outbound-proxy-real-llm");
         try
         {
