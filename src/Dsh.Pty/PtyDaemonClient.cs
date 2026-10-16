@@ -65,14 +65,11 @@ public static class PtyDaemonClient
     {
         var socketPath = PtyDaemonPaths.SocketPath();
         var portFile = OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile() : null;
-        await TryResizeToClientAsync(id, socketPath, portFile, cancellationToken);
+        await TryResizeToConsoleAsync(id, socketPath, portFile, cancellationToken);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var sizeWatch = WatchConsoleSizeAsync(id, socketPath, portFile, stop.Token);
         try
         {
-            var socketPath = PtyDaemonPaths.SocketPath();
-            var portFile = OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile() : null;
-            await TryResizeToConsoleAsync(id, socketPath, portFile, cancellationToken);
             var input = ConsoleInput.OpenForRead();
             if (!OperatingSystem.IsWindows())
             {
