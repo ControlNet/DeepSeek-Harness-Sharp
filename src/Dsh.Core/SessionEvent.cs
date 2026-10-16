@@ -38,6 +38,7 @@ public static class SessionEventCodec
         Register<RequestContextPayload>(SessionEventTypes.RequestContext);
         Register<SessionEndSeedPayload>(SessionEventTypes.SessionEndSeed);
         Register<InboxSplicePayload>(SessionEventTypes.AgentInboxSpliced);
+        Register<WorkingDirectoryChangedPayload>(SessionEventTypes.WorkingDirectoryChange);
         Register<UserMessagePayload>(SessionEventTypes.UserMessage,
             (element, options) => new UserMessagePayload(
                 DshJson.Deserialize<UserMessage>(element)

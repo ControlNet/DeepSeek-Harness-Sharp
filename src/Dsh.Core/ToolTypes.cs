@@ -19,6 +19,12 @@ public sealed class ToolDefinition
     public Func<ToolExecution, ToolExecutionResult, IReadOnlyList<ContentBlock>?>? FinalizeContent { get; init; }
     public long? TimeoutMs { get; init; }
     public Func<JsonElement, bool>? IsConcurrencySafe { get; init; }
+
+    /**
+     * Absolute paths a call writes, including the directory a newly started process runs in.
+     * A target outside the session's write permission root turns the call into an approval request.
+     */
+    public Func<JsonElement, ToolRunContext, IReadOnlyList<string>>? WriteTargets { get; init; }
 }
 
 public abstract record PreToolDecision

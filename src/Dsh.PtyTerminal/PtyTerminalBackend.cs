@@ -14,7 +14,7 @@ public sealed class PtyTerminalBackend(ResolvedPtyTerminalConfig config) : Termi
     public async Task<TerminalBackendSession> Spawn(TerminalBackendSpawnSpec spec)
     {
         spec.Signal.ThrowIfCancellationRequested();
-        var cwd = spec.Cwd ?? spec.Owner.Session.Header.Cwd ?? Environment.CurrentDirectory;
+        var cwd = spec.Cwd ?? spec.Owner.Session.WorkingDirectory ?? Environment.CurrentDirectory;
         var startInfo = new PtyStartInfo
         {
             FileName = config.Command,
