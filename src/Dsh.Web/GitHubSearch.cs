@@ -149,7 +149,7 @@ public static class WebSearchGitHub
         };
         var web = ctx.Get<WebRuntime>(WebRuntime.ServiceName)
             ?? throw new InvalidOperationException("web service is not registered");
-        var http = SiteSearchHttp.CreateClient();
+        var http = SiteSearchHttp.CreateClient(ctx);
         var resolved = string.IsNullOrWhiteSpace(token) ? null : token.Trim();
         return new WebDisposable(
             web.RegisterSearchProvider(new GitHubRepositorySearchProvider(resolved, http)),

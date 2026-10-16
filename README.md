@@ -71,8 +71,14 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    | `github-repos` | `@deepseek-ai/dsh-web-search-github` | GitHub 仓库的名称、描述与 topic(查询里加 `in:readme` 可搜 README) | `token`(可选) | 每 IP 每分钟 10 次(配置后 30 次) |
    | `github-code` | `@deepseek-ai/dsh-web-search-github` | GitHub 默认分支上的文件内容 | `token`(必填) | 不可用(配置后每分钟 10 次) |
    | `stackoverflow` | `@deepseek-ai/dsh-web-search-stackoverflow` | Stack Overflow 的问题(标题、正文、标签) | `key`(可选,在 stackapps.com 注册应用获得) | 每 IP 每天 300 次(配置后 10000 次) |
+   | `baidu` | `@deepseek-ai/dsh-web-search-baidu` | 百度全网网页引用(千帆/AppBuilder `baidu_search_v2`) | `apiKey`(AppBuilder API Key,需开通搜索) | 不可用;额度和计费以控制台为准 |
+   | `google` | `@deepseek-ai/dsh-web-search-google` | Google Programmable Search Engine 配置的语料 | `apiKey` 与 `searchEngineId`(cx),均必填 | 不可用;仅既有 API 客户可用,2027-01-01 停服 |
+   | `bing` | `@deepseek-ai/dsh-web-search-bing` | Bing 公共 RSS 入口的首屏结果 | 无;可配 `market`(默认不传,由站点选择地区) | 无公开自动调用额度/SLA,可能限流或封禁 |
+   | `duckduckgo` | `@deepseek-ai/dsh-web-search-duckduckgo` | DuckDuckGo 公共 HTML 入口的首屏链接与标题 | 无;可配 `region`(默认 `wt-wt`) | 无公开自动调用额度/SLA,可能要求人工验证 |
 
-   GitHub 与 Stack Overflow 引擎默认开启,各自在 `plugins:` 段写 `false` 即单独关闭;凭据只从 `settings.yaml` 读取,不会写进日志或错误信息(日志另对 GitHub token 做脱敏):
+   各引擎插件独立发现并启用,各自在 `plugins:` 段写 `false` 即单独关闭;缺凭据的引擎不进入可用列表,显式调用时给出配置项提示。
+   新增的四个引擎都是 named-only,不会抢占默认 DeepSeek 搜索;也可在 `plugins."@deepseek-ai/dsh-web".searchProvider` 显式设为默认。
+   凭据只从 `settings.yaml` 读取,错误只展示不含查询串的端点;请求、凭据与原始响应不会写入搜索日志:
 
    ```yaml
    plugins:
@@ -81,9 +87,26 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
      "@deepseek-ai/dsh-web-search-stackoverflow":
        key: <Stack Exchange key>      # 可选; 提高每日配额
      # "@deepseek-ai/dsh-web-search-stackoverflow": false   # 单独关闭 Stack Overflow 引擎
+     "@deepseek-ai/dsh-web-search-baidu":
+       apiKey: <AppBuilder API Key>
+     "@deepseek-ai/dsh-web-search-google":
+       apiKey: <Google API key>       # 仅既有 Custom Search JSON API 客户
+       searchEngineId: <cx>
+     "@deepseek-ai/dsh-web-search-bing":
+       market: zh-CN
+     "@deepseek-ai/dsh-web-search-duckduckgo":
+       region: cn-zh
+     # "@deepseek-ai/dsh-web-search-duckduckgo": false
    ```
 
-   注意 `/plugins disable|enable` 会丢弃该插件的参数,重新启用后需要再写一次 `token`/`key`。
+   传输、代理与错误语义由所有站点引擎共享:统一读取 `network.outbound_proxy.url`/`bypass`,不另建绕过代理的 handler;代理在当前进程共享,修改后后续请求使用新路由。
+   HTTP 429/配额错误返回 `WEB_PROVIDER_ERROR`,保留 `Retry-After` 提示;人工验证、重定向及无法识别的响应也报错,不伪装成“没有结果”,不自动换引擎。
+   百度最多取 50 条网页引用;Google 每次最多 10 条、只能访问前 100 条,默认每天 100 次免费请求,开通计费后最高每天 10000 次,具体范围由 cx 决定。
+   Bing RSS 不是已于 2025-08-11 退役的 Azure Bing Search API,没有总数或翻页保证,结果相关性可能与交互网页不同;其 RSS 条款限制个人非商业 RSS 阅读用途,其他用途需 Microsoft 许可。
+   DuckDuckGo 不提供完整网页搜索的公开 JSON API,这里使用非 JavaScript HTML 入口而不是只有百科摘要的 Instant Answer API;遇到站点验证需人工处理或由用户选择其他引擎,不会自动解验证码。
+   入口与限制依据:[百度搜索 API](https://ai.baidu.com/ai-doc/AppBuilder/pmaxd1hvy)、[Google 当前可用范围与停服说明](https://developers.google.com/custom-search/v1/overview)、[Bing API 退役公告](https://learn.microsoft.com/en-us/lifecycle/announcements/bing-search-api-retirement)、[Bing 公共 RSS](https://www.bing.com/search?q=dotnet&format=rss)、[DuckDuckGo HTML](https://html.duckduckgo.com/html/?q=dotnet)。
+   注意 `/plugins disable|enable` 会丢弃该插件的参数,重新启用后需要再写一次凭据与地区配置。
+
 10. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
    - 切换只影响之后的相对路径解析,以及新启动的 shell/终端的默认目录;已经存在的 `bash_persistent` shell 与终端仍停在各自的目录。
    - 写权限根固定为会话的初始目录,不随切换移动:写入权限根之外的文件(`write`/`edit`/`str_replace_editor`)、在权限根之外启动 shell/终端或建 worktree,都会先弹审批,提示「目标路径在权限根之外」;审批策略为 never 时直接拒绝。

@@ -118,7 +118,7 @@ public static class WebSearchStackOverflow
         };
         var web = ctx.Get<WebRuntime>(WebRuntime.ServiceName)
             ?? throw new InvalidOperationException("web service is not registered");
-        var http = SiteSearchHttp.CreateClient();
+        var http = SiteSearchHttp.CreateClient(ctx);
         var resolved = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
         return new WebDisposable(web.RegisterSearchProvider(new StackOverflowSearchProvider(resolved, http)), http);
     }

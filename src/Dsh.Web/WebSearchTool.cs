@@ -53,7 +53,7 @@ public static class WebSearchTool
                         ["items"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "string" },
                         ["description"] = $"Required search queries; accepts 1–{maxQueries} items and merges their results.",
                     },
-                    ["engine"] = WebToolSchemas.StringParam("Optional search engine id applied to every query, for example github-repos, github-code or stackoverflow; omit it for general web search."),
+                    ["engine"] = WebToolSchemas.StringParam("Optional search engine id applied to every query, for example baidu, google, bing, duckduckgo, github-repos, github-code or stackoverflow; omit it for the default general web search."),
                 },
                 "queries"),
             TimeoutMs = timeoutMs,
