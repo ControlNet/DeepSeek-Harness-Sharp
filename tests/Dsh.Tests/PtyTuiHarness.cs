@@ -41,7 +41,7 @@ internal sealed class PtyTuiHarness : IDisposable
         var executable = FindTuiExecutable();
         if (executable is null)
             return null;
-        var realHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh");
+        var realHome = HarnessHome.Default().Root;
         if (!File.Exists(Path.Combine(realHome, "settings.yaml")))
             Assert.Skip($"环境缺少 {realHome}/settings.yaml, 无法启动 dsharp");
         var home = PrepareIsolatedHome(realHome);
