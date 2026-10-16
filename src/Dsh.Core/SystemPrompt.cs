@@ -71,6 +71,7 @@ public static class PromptSpine
         "tool:web_search",
         "tool:web_fetch",
         "tool:session_search",
+        "tool:present",
         "tool:compact",
         "tool:goal",
         "tool:e2b_run",

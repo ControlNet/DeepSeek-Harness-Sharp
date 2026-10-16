@@ -145,6 +145,34 @@ public sealed class MainViewModelTests
         await PumpUntilAsync(() => !node.IsRunning);
     });
 
+    /** 交付物清单: 打开会话时从日志回放, 之后跟随新声明与会话截断。 */
+    [Fact]
+    public async Task Deliverables_ReplayFromLog_ThenFollowLiveEventsAndTruncation() => await HeadlessGui.RunAsync(async () =>
+    {
+        var environment = GuiTestEnvironment.CreateBlocking();
+        using var environmentScope = environment;
+        var session = environment.Agent.Session;
+        var report = Path.Combine(session.Header.Cwd!, "report.docx");
+        var data = Path.Combine(session.Header.Cwd!, "data.xlsx");
+        await File.WriteAllTextAsync(report, "report", TestContext.Current.CancellationToken);
+        session.Append(new DeliverablesPresentedPayload(1, ToolCallId.Create("call-1"), [new PresentedFile(report, "报告")]));
+        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+
+        var replayed = Assert.Single(viewModel.Deliverables.Items);
+        Assert.Equal((report, "报告", true), (replayed.Path, replayed.Description, replayed.Exists));
+        Assert.Equal("1", viewModel.Deliverables.Badge);
+        Assert.Contains(viewModel.TraceItems, item => item.Title == "交付物 1 个");
+
+        var cut = session.Seq;
+        session.Append(new DeliverablesPresentedPayload(1, ToolCallId.Create("call-2"), [new PresentedFile(data)]));
+        await PumpUntilAsync(() => viewModel.Deliverables.Items.Count == 2);
+        Assert.False(viewModel.Deliverables.Items[1].Exists);
+
+        Assert.True(session.TryTruncateTo(cut));
+        await PumpUntilAsync(() => viewModel.Deliverables.Items.Count == 1);
+        Assert.Equal(report, Assert.Single(viewModel.Deliverables.Items).Path);
+    });
+
     /** 后台线程发出的事件要等 dispatcher 追上才反映到视图模型, 因此在 headless UI 线程上轮询排空。 */
     private static async Task PumpUntilAsync(Func<bool> condition)
     {
