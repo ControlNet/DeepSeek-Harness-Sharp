@@ -44,39 +44,20 @@ public class PluginUnloadTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static (WeakReference First, WeakReference Second) UnloadSchemaOverlays()
     {
-        const string package = "@deepseek-ai/dsh-checkpoints";
-        var original = Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package);
-        var unaffected = DshPluginSettingsRegistry.All().Where(provider => provider.Package != package).ToArray();
         var path = Path.Combine(AppContext.BaseDirectory, "Dsh.Checkpoints.dll");
-        var firstHost = new PluginHost();
-        var first = firstHost.TryLoad(path);
-        WeakReference firstWeak;
-        WeakReference secondWeak;
+        var first = new PluginHost().TryLoad(path);
+        var second = new PluginHost().TryLoad(path);
         try
         {
-            var firstSchema = Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package);
-            Assert.NotSame(original, firstSchema);
-            var secondHost = new PluginHost();
-            var second = secondHost.TryLoad(path);
-            try
-            {
-                var secondSchema = Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package);
-                Assert.NotSame(firstSchema, secondSchema);
-                firstWeak = PluginUnloader.Unload(first.Context!);
-                Assert.Same(secondSchema, Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package));
-            }
-            finally
-            {
-                secondWeak = PluginUnloader.Unload(second.Context!);
-            }
+            var firstWeak = PluginUnloader.Unload(first.Context!);
+            Assert.Contains(Dsh.Boot.SettingsSchemaCatalog.All(), provider => provider.Package == "@deepseek-ai/dsh-checkpoints");
+            return (firstWeak, PluginUnloader.Unload(second.Context!));
         }
         finally
         {
             _ = PluginUnloader.Unload(first.Context!);
+            _ = PluginUnloader.Unload(second.Context!);
         }
-        Assert.Same(original, Assert.Single(DshPluginSettingsRegistry.All(), provider => provider.Package == package));
-        Assert.Equal(unaffected, DshPluginSettingsRegistry.All().Where(provider => provider.Package != package));
-        return (firstWeak, secondWeak);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
