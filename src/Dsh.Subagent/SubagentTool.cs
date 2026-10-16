@@ -249,6 +249,7 @@ public static class SubagentTool
             Label = args.GetProperty("description").GetString(),
             Prompt = [new TextBlock(args.GetProperty("prompt").GetString() ?? "")],
             Parent = parent,
+            ParentCallId = exec.CallId,
             Signal = exec.Signal,
             AgentOptions = agentOptions,
             Persona = config.Persona,

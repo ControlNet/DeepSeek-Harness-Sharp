@@ -226,6 +226,7 @@ public static class ToolRalph
             SubagentProvider = config.SubagentProvider,
             MaxTotalAgents = checked((int)maxRounds),
             Parent = parent,
+            ParentCallId = exec.CallId,
             Signal = exec.Signal,
         });
         var abortRegistration = exec.Signal.Register(() => run.Cancel("parent step aborted"));

@@ -193,6 +193,7 @@ public sealed class Session
                 Seq = _count,
                 Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Data = payload,
+                Ignorable = SessionEventCodec.IsIgnorable(payload.Type),
                 SurfaceOp = surfaceOp,
                 SourceEventSeqs = sourceEventSeqs,
             };

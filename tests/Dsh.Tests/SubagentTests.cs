@@ -187,6 +187,7 @@ public class SubagentTests
         Assert.Equal("subagent", child.Header.Origin);
         Assert.Equal(1, child.Header.DelegationDepth);
         Assert.Equal(parent.Id, child.Header.ParentSession);
+        Assert.Equal(ToolCallId.Create("call-sub-1"), child.Header.ParentCallId);
         Assert.False(child.Header.IsSeeded);
         Assert.Equal(parent.Id, child.Header.RootSession);
         Assert.Equal("spawn", child.Header.SubagentProvider);
@@ -363,7 +364,9 @@ public class SubagentTests
         var inner = fixture.ChildOf(outer.Id, depth: 2);
         Assert.NotNull(inner);
         Assert.Equal(2, inner.Header.DelegationDepth);
+        Assert.Equal(ToolCallId.Create("call-sub-1"), outer.Header.ParentCallId);
         Assert.Equal(outer.Id, inner.Header.ParentSession);
+        Assert.Equal(ToolCallId.Create("call-sub-2"), inner.Header.ParentCallId);
         Assert.Equal(parent.Id, inner.Header.RootSession);
 
         var result = await fixture.Tools.Execute(new ToolExecutionInput
