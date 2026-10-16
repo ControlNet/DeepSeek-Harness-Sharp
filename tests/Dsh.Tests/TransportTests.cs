@@ -119,8 +119,10 @@ public sealed class JsonRpcPeerTests
         Assert.Equal("pong", result.Value.GetProperty("echo").GetString());
     }
 
-    [Fact]
-    public async Task SlowRequest_DoesNotBlockOtherRequestsOrResponses()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SlowRequest_DoesNotBlockOtherRequestsOrResponses(bool synchronousPrelude)
     {
         await using var fixture = await DuplexFixture.CreateAsync(Ct);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -130,22 +132,43 @@ public sealed class JsonRpcPeerTests
             if (message.Method == "slow")
             {
                 entered.TrySetResult();
-                await release.Task.WaitAsync(token);
+                if (synchronousPrelude)
+                    release.Task.WaitAsync(token).GetAwaiter().GetResult();
+                else
+                    await release.Task.WaitAsync(token);
             }
             return Parse("""{"ok":true}""");
         };
         fixture.Client.RequestHandler = async (_, token) =>
             await fixture.Client.RequestAsync("nested", cancellationToken: token);
+        var notifications = new List<int>();
+        var notified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Server.NotificationReceived += message =>
+        {
+            notifications.Add(message.Params!.Value.GetProperty("seq").GetInt32());
+            if (notifications.Count == 3)
+                notified.TrySetResult();
+        };
 
         var slow = fixture.Client.RequestAsync("slow", cancellationToken: Ct);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
-        var ping = await fixture.Client.RequestAsync("ping", cancellationToken: Ct).WaitAsync(TimeSpan.FromSeconds(5), Ct);
-        Assert.True(ping!.Value.GetProperty("ok").GetBoolean());
-        Assert.False(slow.IsCompleted);
-        var nested = await fixture.Server.RequestAsync("question", cancellationToken: Ct).WaitAsync(TimeSpan.FromSeconds(5), Ct);
-        Assert.True(nested!.Value.GetProperty("ok").GetBoolean());
-        Assert.False(slow.IsCompleted);
-        release.TrySetResult();
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+            var ping = await fixture.Client.RequestAsync("ping", cancellationToken: Ct).WaitAsync(TimeSpan.FromSeconds(5), Ct);
+            Assert.True(ping!.Value.GetProperty("ok").GetBoolean());
+            Assert.False(slow.IsCompleted);
+            var nested = await fixture.Server.RequestAsync("question", cancellationToken: Ct).WaitAsync(TimeSpan.FromSeconds(5), Ct);
+            Assert.True(nested!.Value.GetProperty("ok").GetBoolean());
+            for (var sequence = 0; sequence < 3; sequence++)
+                await fixture.Client.NotifyAsync("ordered", Parse($"{{\"seq\":{sequence}}}"), Ct);
+            await notified.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+            Assert.Equal([0, 1, 2], notifications);
+            Assert.False(slow.IsCompleted);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
         Assert.True((await slow)!.Value.GetProperty("ok").GetBoolean());
     }
 

@@ -216,6 +216,10 @@ public sealed class JsonRpcPeer : IAsyncDisposable
 
         if (message.IsRequest && message.Id is { } requestId)
         {
+            // A handler's synchronous prelude must not occupy the frame reader either.
+            await Task.Yield();
+            if (cancellationToken.IsCancellationRequested)
+                return;
             var response = new JsonRpcMessage { Id = requestId };
             try
             {
