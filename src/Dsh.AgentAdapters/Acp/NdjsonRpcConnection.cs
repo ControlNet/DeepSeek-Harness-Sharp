@@ -101,11 +101,11 @@ public sealed class NdjsonRpcConnection : IAsyncDisposable
         _closed.TrySetResult(failure);
     }
 
-    /** Lines that are not JSON-RPC objects (agents occasionally print stray text to stdout) are ignored. */
+    /** Invalid JSON ends the connection, failing pending calls instead of silently waiting for a discarded response. */
     private void Dispatch(string line)
     {
-        if (string.IsNullOrWhiteSpace(line) || TryParse(line) is not { } message)
-            return;
+        var message = JsonSerializer.Deserialize(line, JsonRpcJsonContext.Default.JsonRpcMessage)
+            ?? throw new JsonException("the agent sent an empty JSON-RPC message");
         // A message without a method is a response even when its result is JSON null (which deserializes to a missing Result).
         if (message.Method is null)
         {
@@ -151,18 +151,6 @@ public sealed class NdjsonRpcConnection : IAsyncDisposable
 
     private static JsonRpcException MethodNotFound(JsonRpcMessage request)
         => new(JsonRpcPeer.MethodNotFound, $"method not found: {request.Method}");
-
-    private static JsonRpcMessage? TryParse(string line)
-    {
-        try
-        {
-            return JsonSerializer.Deserialize(line, JsonRpcJsonContext.Default.JsonRpcMessage);
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
 
     private void FailPending(Exception failure)
     {

@@ -67,8 +67,9 @@ public sealed class MachineStore(HarnessHome home)
     /** machines.json was the whole list while it existed, so it replaces whatever settings.yaml holds. */
     private FleetConfig ImportLegacyFile()
     {
-        var document = JsonSerializer.Deserialize(File.ReadAllText(LegacyFilePath), FleetJsonContext.Default.LegacyMachineDocument);
-        var config = document is null ? FleetConfig.Empty : new FleetConfig(document.Machines ?? [], document.Deploy ?? new DeploySettings());
+        var document = JsonSerializer.Deserialize(File.ReadAllText(LegacyFilePath), FleetJsonContext.Default.LegacyMachineDocument)
+            ?? throw new JsonException("the legacy fleet configuration must be a JSON object");
+        var config = new FleetConfig(document.Machines ?? [], document.Deploy ?? new DeploySettings());
         Save(config);
         File.Delete(LegacyFilePath);
         return config;

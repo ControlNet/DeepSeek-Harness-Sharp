@@ -135,7 +135,15 @@ public sealed class GitInspector(string directory)
         => (await RunAsync(["hash-object", "-t", "tree", "--stdin"], cancellationToken)).Trim();
 
     private async Task<bool> HasHeadCommitAsync(CancellationToken cancellationToken)
-        => (await GitCommand.RunAsync(Directory, ["rev-parse", "--verify", "-q", "HEAD"], cancellationToken: cancellationToken)).Ok;
+    {
+        var result = await GitCommand.RunAsync(Directory, ["rev-parse", "--verify", "-q", "HEAD"], cancellationToken: cancellationToken);
+        return result.ExitCode switch
+        {
+            0 => true,
+            1 => false,
+            _ => throw new GitCommandException("rev-parse", result.ExitCode, result.Error),
+        };
+    }
 
     private Task<string> RunAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
         => GitCommand.RunCheckedAsync(Directory, arguments, cancellationToken);

@@ -1,5 +1,6 @@
 ﻿using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
 using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
@@ -7,6 +8,57 @@ namespace Dsh.Tests;
 public sealed class RemoteHostPersistenceTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    [Theory(Timeout = 30000)]
+    [InlineData("[")]
+    [InlineData("null")]
+    public async Task InvalidAgentLaunchRegistry_FailsHostStartupWithoutReplacingTheFile(string contents)
+    {
+        var root = RealHostProcesses.CreateHome("invalid-agents");
+        try
+        {
+            var directory = Path.Combine(root, "host");
+            Directory.CreateDirectory(directory);
+            var storePath = Path.Combine(directory, "agents.json");
+            await File.WriteAllTextAsync(storePath, contents, Ct);
+
+            using var host = RealHostProcesses.StartHost(RealHostProcesses.Executable, root);
+            await host.WaitForExitAsync(Ct);
+
+            Assert.NotEqual(0, host.ExitCode);
+            Assert.Equal(contents, await File.ReadAllTextAsync(storePath, Ct));
+        }
+        finally
+        {
+            RealHostProcesses.KillAll(root);
+            TempTree.Delete(root);
+        }
+    }
+
+    [Theory]
+    [InlineData("[")]
+    [InlineData("null")]
+    public async Task InvalidSessionRegistry_FailsWithoutReplacingTheStoredSessions(string contents)
+    {
+        var root = TempTree.CreateDirectory("registry");
+        try
+        {
+            var storePath = Path.Combine(root, "sessions.json");
+            await File.WriteAllTextAsync(storePath, contents, Ct);
+
+            await Assert.ThrowsAsync<JsonException>(async () =>
+            {
+                await using var registry = await HostSessionRegistry.OpenAsync(storePath, new HostPendingDecisions(), Ct);
+            });
+
+            Assert.Equal(contents, await File.ReadAllTextAsync(storePath, Ct));
+            Assert.False(File.Exists($"{storePath}.tmp"));
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
 
     /** 常驻 daemon + stdio 桥: 客户端断开后再接回来, 会话仍在(脱钩/重连)。 */
     [Fact(Timeout = 30000)]

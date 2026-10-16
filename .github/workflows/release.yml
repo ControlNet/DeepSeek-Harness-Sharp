@@ -122,7 +122,16 @@ jobs:
       - name: 安装 sqlite3（Windows；SQLitePCLRaw.provider.sqlite3 需要系统 sqlite3.dll）
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/install-sqlite-runtime.ps1
+        run: |
+          choco install sqlite --no-progress -y
+          $dll = Get-ChildItem 'C:\ProgramData\chocolatey\lib\sqlite' -Recurse -Filter 'sqlite3.dll' |
+            Select-Object -First 1
+          if (-not $dll) { throw '未找到 sqlite3.dll' }
+          foreach ($target in @('tests/Dsh.Tests/bin/Debug/net10.0', 'DeepSeek-Harness-Sharp/bin/Debug/net10.0')) {
+            New-Item -ItemType Directory -Force $target | Out-Null
+            Copy-Item $dll.FullName $target -Force
+            Write-Host "copied $($dll.FullName) to $target"
+          }
 
       - name: 运行测试（排除 GpuStress / OnlyGpu / LlmSmoke / RenderBench）
         shell: bash

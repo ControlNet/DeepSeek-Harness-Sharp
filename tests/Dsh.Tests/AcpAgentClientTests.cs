@@ -144,6 +144,37 @@ public sealed class AcpAgentClientTests : IAsyncDisposable
         Assert.Null(await _client.Closed.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
     }
 
+    [Theory]
+    [InlineData("not-json")]
+    [InlineData("{")]
+    [InlineData("null")]
+    public async Task InvalidAgentOutput_FailsPendingCallsAndReleasesPermissions(string line)
+    {
+        var prompt = _client.PromptAsync("s1", "hello", TestContext.Current.CancellationToken);
+        await AgentReadAsync();
+        await AgentSendAsync(PermissionRequestLine("perm-invalid"));
+        var permission = await _client.PermissionRequests.ReadAsync(TestContext.Current.CancellationToken).AsTask().WaitAsync(StepTimeout, TestContext.Current.CancellationToken);
+
+        await AgentSendAsync(line);
+
+        await Assert.ThrowsAsync<JsonException>(() => prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+        Assert.IsType<JsonException>(await _client.Closed.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+        Assert.Equal(AcpProtocol.OutcomeCancelled, (await permission.Outcome.WaitAsync(StepTimeout, TestContext.Current.CancellationToken)).Outcome);
+        Assert.False(await _client.PermissionRequests.WaitToReadAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task UnknownNotification_DoesNotPreventThePromptResponse()
+    {
+        var prompt = _client.PromptAsync("s1", "hello", TestContext.Current.CancellationToken);
+        var request = await AgentReadAsync();
+        await AgentSendAsync("""{"jsonrpc":"2.0","method":"extension/progress","params":{"sessionId":"s1","stage":"working"}}""");
+        await AgentReplyAsync(request, """{"stopReason":"end_turn"}""");
+
+        Assert.Equal(AcpProtocol.StopEndTurn, await prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+        Assert.False(_client.Closed.IsCompleted);
+    }
+
     private static string PermissionRequestLine(string id)
         => $$$"""{"jsonrpc":"2.0","id":"{{{id}}}","method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"call_1","title":"touch x","kind":"execute","status":"pending"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Reject","kind":"reject_once"}]}}""";
 

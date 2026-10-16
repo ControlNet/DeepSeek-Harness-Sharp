@@ -156,21 +156,21 @@ function gitPanel(body, machineLink, project) {
 async function loadStatus(machineLink, project, status, diff) {
   try {
     const result = await machineLink.request('host.git.status', { ProjectPath: project });
-    const branch = result.Branch ?? {};
+    const branch = result.Branch;
     const tracking = branch.Upstream ? ` → ${branch.Upstream}${branch.Ahead || branch.Behind ? ` (+${branch.Ahead ?? 0} −${branch.Behind ?? 0})` : ''}` : '';
     const section = (title, changes, source) => (changes.length === 0 ? null : h('section', {},
       h('h3', {}, `${title} (${changes.length})`),
       h('ul', { className: 'file-list' }, changes.map((change) => h('li', {},
         h('button', { type: 'button', className: 'file-row', onClick: () => showDiff(machineLink, project, change, source, diff) },
           h('span', { className: `chip change-${(change.Kind ?? 'untracked').toLowerCase()}` }, change.Kind ?? 'New'), change.Path))))));
-    const untracked = (result.Untracked ?? []).map((path) => ({ Path: path }));
+    const untracked = result.Untracked.map((path) => ({ Path: path }));
     mount(status,
       h('p', {}, h('strong', {}, branch.Head ?? `detached ${branch.Oid?.slice(0, 8) ?? ''}`), tracking),
-      section('Conflicted', result.Conflicted ?? [], 'WorkingTree'),
-      section('Staged', result.Staged ?? [], 'Staged'),
-      section('Changed', result.Unstaged ?? [], 'WorkingTree'),
+      section('Conflicted', result.Conflicted, 'WorkingTree'),
+      section('Staged', result.Staged, 'Staged'),
+      section('Changed', result.Unstaged, 'WorkingTree'),
       section('Untracked', untracked, null),
-      [result.Conflicted, result.Staged, result.Unstaged, result.Untracked].every((list) => (list ?? []).length === 0) ? emptyState('Working tree clean.') : null);
+      result.IsClean ? emptyState('Working tree clean.') : null);
   } catch (error) {
     mount(status, h('p', { className: 'error' }, describe(error)));
   }

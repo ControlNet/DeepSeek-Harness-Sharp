@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.Gui.Services;
@@ -89,6 +90,26 @@ public sealed class MachineStoreTests : IDisposable
         Assert.Equal(imported.Machines, new MachineStore(home).Load().Machines);
     }
 
+    [Theory]
+    [InlineData("remoteWorkspaces: invalid")]
+    [InlineData("remoteWorkspaces: [invalid]")]
+    [InlineData("remoteWorkspaces: [{ name: lab, host: lab.internal }, { name: incomplete }]")]
+    public void InvalidLegacyGuiWorkspaces_FailWithoutRemovingTheOriginalConfiguration(string workspaces)
+    {
+        var home = new HarnessHome(_root);
+        var original = $"""
+            plugins:
+              "@deepseek-ai/dsh-gui":
+                theme: light
+                {workspaces}
+            """;
+        File.WriteAllText(home.SettingsFile, original);
+
+        Assert.Throws<InvalidDataException>(() => new MachineStore(home).Load());
+
+        Assert.Equal(original, File.ReadAllText(home.SettingsFile));
+    }
+
     /** 早期版本的 fleet/machines.json: 首次加载时写进 settings.yaml 的 fleet 段并删除该文件。 */
     [Fact]
     public void Machines_Json_Is_Imported_Into_Settings_And_Deleted()
@@ -115,6 +136,24 @@ public sealed class MachineStoreTests : IDisposable
         Assert.Equal((false, DownloadVia.Client), (imported.Deploy.AutoDeploy, imported.Deploy.Via));
         Assert.Equal(imported.Machines, store.Load().Machines);
         Assert.Equal(2, HarnessSettings.Load(home).Fleet!.Machines.Count);
+    }
+
+    [Theory]
+    [InlineData("{")]
+    [InlineData("null")]
+    public void InvalidLegacyMachinesFile_FailsWithoutDeletingItOrChangingSettings(string contents)
+    {
+        var home = new HarnessHome(_root);
+        var store = new MachineStore(home);
+        store.Save(new FleetConfig([MachineSpec.Ssh("keep", "keep.internal", 22, "dev", SshAuth.Agent)], new DeploySettings()));
+        var settingsBefore = File.ReadAllText(home.SettingsFile);
+        Directory.CreateDirectory(Path.GetDirectoryName(store.LegacyFilePath)!);
+        File.WriteAllText(store.LegacyFilePath, contents);
+
+        Assert.Throws<JsonException>(() => store.Load());
+
+        Assert.Equal(contents, File.ReadAllText(store.LegacyFilePath));
+        Assert.Equal(settingsBefore, File.ReadAllText(home.SettingsFile));
     }
 
     /** 只改写 fleet 段: 注释、其它段与 CRLF 换行原样保留; 删掉最后一台机器后文件回到原样。 */

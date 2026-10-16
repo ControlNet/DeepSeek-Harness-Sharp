@@ -51,7 +51,7 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 
    终端 TUI 的后台 Git 面板、检查点和命令工具不继承交互终端输入,刷新或执行命令期间仍可逐键输入。普通命令的标准输入立即收到 EOF;需要持续输入的管道协议(如 `bash_persistent`)单独保持输入管道,交互式 shell 仍使用独立 PTY。窗口调整和子进程退出信号不会被误当作输入结束。正常 `/exit` 会恢复终端行模式、回显和主屏幕。
 
-   Unix 下可用 `python3 scripts/check-tui-raw-mode.py --runs 8 --llm-smoke` 对已构建的 Debug TUI 做真实 PTY 回归(需 Python 3 和可用的模型配置)。它只操作独立 PTY,验证跨后台刷新和窗口调整的输入与正常退出的完整 termios 恢复;Linux 可额外加 `--strace` 诊断,但跟踪会改变信号时序,不能替代无跟踪回归。隔离配置、原始跟踪和结果保存在 `artifacts/raw/regression/`,其中配置与跟踪可能含私密信息,不要上传该目录。
+   Unix 的真实 PTY 输入、窗口调整、正常退出与完整 termios 恢复由 `Dsh.Tests.TuiRawModeEndToEndTests` 固定回归覆盖。可用 `dotnet run --project tests/Dsh.Tests -c Debug -- -class Dsh.Tests.TuiRawModeEndToEndTests -trait- Category=LlmSmoke` 运行无模型用例；在正常 `DSH_HOME` 中配置可用模型后，改用 `-trait Category=LlmSmoke` 执行真实模型回合。测试只操作自己的独立 PTY，不接管当前桌面终端；含凭据的配置与原始日志不可上传。
 3. 插件运维:TUI 内用 `/plugins list|add <包|dll 路径>|remove <包> [--force]|disable <包>|enable <包>|ban_write <包>|enable_write <包>`(输入 `/plugins` 后按 Tab 可从浮层选单选子命令与包名);改动写回 `settings.yaml` 的 `plugins:` 段并保留注释。
 
     `ban_write`/`enable_write` 切换该插件的写权限(`plugins."<包>".permissions.write`),`enable`/`disable` 保留权限设置,`remove` 连同参数与权限一并清除。权限目前只记录在配置里,由后续版本的插件沙箱强制执行。

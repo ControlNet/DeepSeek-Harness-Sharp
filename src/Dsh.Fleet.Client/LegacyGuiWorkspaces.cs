@@ -54,13 +54,17 @@ internal static class LegacyGuiWorkspaces
 
     private static List<MachineSpec> Machines(IReadOnlyDictionary<string, object?> parameters)
     {
-        if (parameters.GetValueOrDefault(WorkspacesKey) is not IEnumerable<object?> items)
+        if (!parameters.TryGetValue(WorkspacesKey, out var workspaces))
             return [];
+        var items = workspaces as IEnumerable<object?>
+            ?? throw new InvalidDataException("legacy remoteWorkspaces must be a list");
         var machines = new List<MachineSpec>();
-        foreach (var map in items.OfType<IReadOnlyDictionary<string, object?>>())
+        foreach (var item in items)
         {
-            if (Text(map, "name") is not { } name || Text(map, "host") is not { } host)
-                continue;
+            var map = item as IReadOnlyDictionary<string, object?>
+                ?? throw new InvalidDataException("each legacy remote workspace must be a mapping");
+            var name = Text(map, "name") ?? throw new InvalidDataException("legacy remote workspace is missing its name");
+            var host = Text(map, "host") ?? throw new InvalidDataException("legacy remote workspace is missing its host");
             machines.Add(new MachineSpec(
                 name,
                 MachineKinds.Ssh,

@@ -65,7 +65,8 @@ internal sealed class ExternalAgentSessions : IAsyncDisposable
     {
         var path = Path.Combine(hostPath, RecordsFileName);
         var records = File.Exists(path)
-            ? JsonSerializer.Deserialize(await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false), AgentLaunchJsonContext.Default.ListAgentLaunchRecord) ?? []
+            ? JsonSerializer.Deserialize(await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false), AgentLaunchJsonContext.Default.ListAgentLaunchRecord)
+                ?? throw new JsonException("the agent launch registry must be a JSON array")
             : [];
         var sessions = new ExternalAgentSessions(hostPath, services, ptys, records);
         foreach (var record in records.Where(record => record.Mode == RemoteAgentModes.Terminal))

@@ -191,15 +191,8 @@ public sealed class HostSessionRegistry : IAsyncDisposable
     {
         if (!File.Exists(storePath))
             return [];
-        try
-        {
-            await using var stream = File.OpenRead(storePath);
-            return await JsonSerializer.DeserializeAsync(stream, HostProtocolJsonContext.Default.IReadOnlyListRemoteHostSession, cancellationToken).ConfigureAwait(false) ?? [];
-        }
-        catch (JsonException)
-        {
-            // 损坏的登记表不阻止 host 启动: 从空表开始, 下一次保存覆盖它。
-            return [];
-        }
+        await using var stream = File.OpenRead(storePath);
+        return await JsonSerializer.DeserializeAsync(stream, HostProtocolJsonContext.Default.IReadOnlyListRemoteHostSession, cancellationToken).ConfigureAwait(false)
+            ?? throw new JsonException("the host session registry must be a JSON array");
     }
 }

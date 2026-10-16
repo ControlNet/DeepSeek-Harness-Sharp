@@ -48,6 +48,17 @@ public sealed class GitInspectTests : IDisposable
     }
 
     [Fact]
+    public async Task Log_InvalidRepositoryFailsInsteadOfReturningEmptyHistory()
+    {
+        var directory = Path.Combine(_repo.Root, "broken");
+        System.IO.Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(Path.Combine(directory, ".git"), "gitdir: missing\n", TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<GitCommandException>(() =>
+            new GitInspector(directory).LogAsync(cancellationToken: TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Status_ReportsAheadAndBehindAgainstUpstream()
     {
         _repo.Commit(("a.txt", "1\n"));

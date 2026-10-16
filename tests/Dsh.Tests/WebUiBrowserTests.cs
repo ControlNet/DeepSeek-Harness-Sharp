@@ -280,7 +280,7 @@ public sealed class WebUiBrowserTests
         await second.ScreenshotAsync(Path.Combine(Artifacts, "notifications-read-in-other-browser.png"), Ct);
     }
 
-    /** Browses the repository, previews a file, and shows the working-tree diff of the changed file. */
+    /** Browses files and a real diff, then restores the file and checks the host's clean status. */
     private static async Task FilesAndGitAsync(HeadlessChrome chrome, string repository)
     {
         var origin = await chrome.EvaluateAsync("location.origin", Ct);
@@ -295,6 +295,13 @@ public sealed class WebUiBrowserTests
         await chrome.ClickAsync("#git-status button.file-row", Ct);
         await chrome.WaitUntilAsync("document.querySelector('#diff-text .diff-line.added')?.textContent", "+changed line\n", Ct);
         await chrome.ScreenshotAsync(Path.Combine(Artifacts, "git-diff.png"), Ct);
+
+        await File.WriteAllTextAsync(Path.Combine(repository, "README.md"), "hello web\n", Ct);
+        await chrome.NavigateAsync(new Uri($"{origin}/#/m/{LocalMachine}/files?path={Uri.EscapeDataString(repository)}"), Ct);
+        await chrome.WaitForAsync("document.querySelector('#file-list .file-row')", Ct);
+        await chrome.NavigateAsync(new Uri($"{origin}/#/m/{LocalMachine}/git?project={Uri.EscapeDataString(repository)}"), Ct);
+        await chrome.WaitForAsync("document.querySelector('#git-status p.empty')", Ct);
+        Assert.Equal("false", await chrome.EvaluateAsync("String(Boolean(document.querySelector('#git-status button.file-row')))", Ct));
     }
 
     /** Fills in and submits the New session form like a user; returns the new session's id from the session page the form opens. */
