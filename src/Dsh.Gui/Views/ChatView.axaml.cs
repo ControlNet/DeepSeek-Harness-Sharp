@@ -3,6 +3,7 @@ using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using CommunityToolkit.Mvvm.Input;
 using Dsh.Gui.ViewModels;
 
 namespace Dsh.Gui.Views;
@@ -23,6 +24,11 @@ public sealed partial class ChatView : UserControl
         InitializeComponent();
         DataContextChanged += OnDataContextChanged;
         MessageList.AddHandler(ScrollViewer.ScrollChangedEvent, OnScrollChanged);
+        PropertyChanged += (_, change) =>
+        {
+            if (change.Property == IsVisibleProperty && IsVisible)
+                FocusComposer();
+        };
     }
 
     private void OnDataContextChanged(object? sender, EventArgs e)
@@ -81,11 +87,13 @@ public sealed partial class ChatView : UserControl
     }
 
     /** 命令先同步执行再关浮层: 关闭会让按钮脱离逻辑树, 依赖 Button.Command 绑定会在 OnClick 后段拿到 null; 命令本身已做轻量化(不重载整份设置)。 */
-    private void OnModelItemClick(object? sender, RoutedEventArgs e)
+    private async void OnModelItemClick(object? sender, RoutedEventArgs e)
     {
-        if (sender is Button { DataContext: ModelListItem item })
-            _viewModel?.SwitchModelCommand.Execute(item.Name);
+        var execution = sender is Button { DataContext: ModelListItem item } && _viewModel is { } viewModel
+            ? ExecuteViewCommandAsync(viewModel, viewModel.SwitchModelCommand, item.Name)
+            : Task.CompletedTask;
         _modelFlyout?.Hide();
+        await execution;
     }
 
     private void OnPresetFlyoutOpened(object? sender, EventArgs e)
@@ -94,22 +102,26 @@ public sealed partial class ChatView : UserControl
     }
 
     /** 命令先同步执行再关浮层, 同 OnModelItemClick。 */
-    private void OnPresetItemClick(object? sender, RoutedEventArgs e)
+    private async void OnPresetItemClick(object? sender, RoutedEventArgs e)
     {
-        if (sender is Button { DataContext: PresetListItem item })
-            _viewModel?.SetPresetCommand.Execute(item.Id);
+        var execution = sender is Button { DataContext: PresetListItem item } && _viewModel is { } viewModel
+            ? ExecuteViewCommandAsync(viewModel, viewModel.SetPresetCommand, item.Id)
+            : Task.CompletedTask;
         _presetFlyout?.Hide();
+        await execution;
     }
 
     private void OnSubagentFlyoutOpened(object? sender, EventArgs e)
         => _subagentFlyout = sender as Flyout;
 
     /** 命令先同步执行再关浮层, 同 OnPresetItemClick: 浮层关闭后按钮脱离逻辑树, Command 绑定会求值为 null。 */
-    private void OnSubagentItemClick(object? sender, RoutedEventArgs e)
+    private async void OnSubagentItemClick(object? sender, RoutedEventArgs e)
     {
-        if (sender is Button { DataContext: SubagentNodeViewModel node })
-            _viewModel?.Subagents.OpenCommand.Execute(node);
+        var execution = sender is Button { DataContext: SubagentNodeViewModel node } && _viewModel is { } viewModel
+            ? ExecuteViewCommandAsync(viewModel, viewModel.Subagents.OpenCommand, node)
+            : Task.CompletedTask;
         _subagentFlyout?.Hide();
+        await execution;
     }
 
     /** 打开浮层时按当前模型重算强度候选: 在线元数据是后台预热的, 打开时刻通常已就绪。 */
@@ -119,12 +131,38 @@ public sealed partial class ChatView : UserControl
         _viewModel?.Preferences.RefreshReasoningEfforts();
     }
 
-    private void OnReasoningItemClick(object? sender, RoutedEventArgs e)
+    private async void OnReasoningItemClick(object? sender, RoutedEventArgs e)
     {
-        if (sender is Button { DataContext: string effort })
-            _viewModel?.SwitchReasoningCommand.Execute(effort);
+        var execution = sender is Button { DataContext: string effort } && _viewModel is { } viewModel
+            ? ExecuteViewCommandAsync(viewModel, viewModel.SwitchReasoningCommand, effort)
+            : Task.CompletedTask;
         _reasoningFlyout?.Hide();
+        await execution;
     }
+
+    /** A detached view has no UI result to apply; active-view failures remain visible rather than escaping async void. */
+    private static async Task ExecuteViewCommandAsync(MainViewModel viewModel, IAsyncRelayCommand command, object? parameter)
+    {
+        try
+        {
+            await command.ExecuteAsync(parameter);
+        }
+        catch (OperationCanceledException) when (viewModel.IsDisposed)
+        {
+            // Closing the GUI cancels its projection, not work already accepted by Host.
+        }
+        catch (Exception error) when (!viewModel.IsDisposed)
+        {
+            viewModel.SetStatus($"操作失败: {error.Message}");
+            viewModel.ShowToast("操作失败", error.Message, true);
+        }
+    }
+
+    private void FocusComposer() => Dispatcher.UIThread.Post(() =>
+    {
+        if (InputBox.IsEffectivelyVisible)
+            InputBox.Focus();
+    }, DispatcherPriority.Input);
 
     private async void OnInputKeyDown(object? sender, KeyEventArgs e)
     {
@@ -164,7 +202,7 @@ public sealed partial class ChatView : UserControl
             return;
         e.Handled = true;
         if (_viewModel.SubmitCommand.CanExecute(null))
-            _viewModel.SubmitCommand.Execute(null);
+            await ExecuteViewCommandAsync(_viewModel, _viewModel.SubmitCommand, null);
     }
 
     /** 剪贴板有图片 -> 转附件; 否则退回把剪贴板文本插到光标处(替代 TextBox 默认粘贴, 以便优先识别图片)。 */
@@ -216,9 +254,11 @@ public sealed partial class ChatView : UserControl
     protected override void OnLoaded(RoutedEventArgs e)
     {
         base.OnLoaded(e);
+        if (_viewModel is null)
+            OnDataContextChanged(this, EventArgs.Empty);
         // TextBox 会先消费 Enter(AcceptsReturn), 必须在隧道阶段拦截。
         InputBox.AddHandler(InputElement.KeyDownEvent, OnInputKeyDown, RoutingStrategies.Tunnel);
-        InputBox.Focus();
+        FocusComposer();
     }
 
     protected override void OnUnloaded(RoutedEventArgs e)

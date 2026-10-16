@@ -149,6 +149,7 @@ dsharp host install-service                            # 在远端把 host 装�
 - `@deepseek-ai/dsh-fleet` 提供机器客户端服务并拥有客户端连接的生命周期，禁用时断开客户端而不终止 Host 会话；可复用连接与部署实现位于 `Dsh.Fleet.Client`，GUI、WebBridge 和 CLI 共用它。
 - `@deepseek-ai/dsh-web-bridge` 拥有 WebUI 入口及桥接服务器生命周期，停用或退出入口会停止监听并删除临时访问凭据；它不是绕过插件装载的静态网页宿主。
 - GUI 本地终端与 SSH 终端都由 Host/PTY daemon 托管；关闭终端页只分离客户端。重接会恢复主屏/备用屏、光标、滚动区域与换行模式，`tmux` 切窗和切 pane 不再共用错误的屏幕保存槽；离线期间最新窗口尺寸在重新 attach 前应用。
+- 终端聚焦时 `Ctrl+B`、`Ctrl+K`、`Esc` 等按键原样送往 PTY，不再被窗口快捷键先行截获；点击终端外的导航区后再使用工作台快捷键。普通 Chat 重新显示或重新挂载时会恢复输入框焦点及事件订阅。
 - 同一 home 只允许一个常驻 Host 持有会话注册表，SSH 自动启动会等待真实监听就绪，避免并发启动用旧注册表替换仍在运行的 PTY。
 - 本机下载发布包使用统一的 `network.outbound_proxy`，不再使用 GUI/Fleet 私有的 `downloadProxy`；旧值不自动迁移，请在统一设置中显式填写。
 - `fleet.deploy.serverProxy` 仅用于在远端下载部署包，不是每台服务器的一般网络出口；SSH 的跳板/代理命令仍配置在机器条目的 `proxy`。

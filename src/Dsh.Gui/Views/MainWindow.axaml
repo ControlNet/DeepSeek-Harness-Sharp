@@ -13,15 +13,6 @@
         FontSize="{DynamicResource FontSize.Body}"
         Background="{DynamicResource Brush.Bg.Window}">
 
-  <Window.KeyBindings>
-    <KeyBinding Gesture="Ctrl+N" Command="{Binding NewSessionCommand}" />
-    <KeyBinding Gesture="Ctrl+OemComma" Command="{Binding ShowSettingsCommand}" />
-    <KeyBinding Gesture="Escape" Command="{Binding GoBackCommand}" />
-    <KeyBinding Gesture="Ctrl+K" Command="{Binding Workspace.Palette.ToggleCommand}" />
-    <KeyBinding Gesture="Ctrl+D1" Command="{Binding ShowConversationCommand}" />
-    <KeyBinding Gesture="Ctrl+D2" Command="{Binding ShowTraceCommand}" />
-    <KeyBinding Gesture="Ctrl+B" Command="{Binding ToggleSidebarCommand}" />
-  </Window.KeyBindings>
 
   <Grid RowDefinitions="Auto,*">
     <Grid Name="TitleBar" Grid.Row="0" ColumnDefinitions="Auto,*,Auto,Auto,Auto"

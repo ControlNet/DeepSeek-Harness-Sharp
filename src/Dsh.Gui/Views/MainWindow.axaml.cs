@@ -1,3 +1,4 @@
+using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -11,6 +12,7 @@ using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
 using Dsh.Gui.Services;
+using Dsh.Gui.Terminal;
 using Dsh.Gui.ViewModels;
 
 namespace Dsh.Gui.Views;
@@ -48,7 +50,7 @@ public sealed partial class MainWindow : Window
         ViewModel.Preferences.PluginFilePicker = PickPluginLibraryAsync;
         ViewModel.Preferences.Applied += ApplyAppearance;
         ViewModel.Preferences.Preview += ApplyPreview;
-        AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
+        AddHandler(KeyDownEvent, OnWorkspaceKeyDown, RoutingStrategies.Bubble);
         Dispatcher.UIThread.UnhandledException += OnDispatcherUnhandledException;
         SetUpTitleBar();
         SetUpTray();
@@ -333,8 +335,31 @@ public sealed partial class MainWindow : Window
             || error.Source?.Contains("Tmds.DBus", StringComparison.Ordinal) == true;
     }
 
-    private void OnPreviewKeyDown(object? sender, KeyEventArgs e)
+    /** Workspace shortcuts run only after focused controls have had their input; PTY keys never become GUI commands. */
+    private void OnWorkspaceKeyDown(object? sender, KeyEventArgs e)
     {
+        if (e.Handled || e.Source is TerminalControl || ViewModel is not { } viewModel)
+            return;
+        ICommand? command = (e.Key, e.KeyModifiers) switch
+        {
+            (Key.N, KeyModifiers.Control) => viewModel.NewSessionCommand,
+            (Key.OemComma, KeyModifiers.Control) => viewModel.ShowSettingsCommand,
+            (Key.Escape, KeyModifiers.None) => viewModel.GoBackCommand,
+            (Key.K, KeyModifiers.Control) => viewModel.Workspace.Palette.ToggleCommand,
+            (Key.D1, KeyModifiers.Control) => viewModel.ShowConversationCommand,
+            (Key.D2, KeyModifiers.Control) => viewModel.ShowTraceCommand,
+            (Key.B, KeyModifiers.Control) => viewModel.ToggleSidebarCommand,
+            _ => null,
+        };
+        if (command is not null)
+        {
+            if (command.CanExecute(null))
+            {
+                e.Handled = true;
+                command.Execute(null);
+            }
+            return;
+        }
         if (!e.KeyModifiers.HasFlag(KeyModifiers.Control))
             return;
         if (e.Key == Key.W)

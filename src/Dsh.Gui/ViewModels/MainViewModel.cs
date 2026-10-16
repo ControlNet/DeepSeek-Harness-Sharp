@@ -129,6 +129,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public HarnessHome Home { get; }
 
     public Context Context => _ctx;
+    internal bool IsDisposed => _disposed;
 
     public GuiSettings Gui { get; }
 

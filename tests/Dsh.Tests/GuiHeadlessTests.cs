@@ -282,6 +282,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
             var item = ((ItemsControl)flyout.Content!).GetVisualDescendants().OfType<Button>()
                 .First(button => button.DataContext is PresetListItem { Id: "minimal" });
             item.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await viewModel.SetPresetCommand.ExecutionTask!;
 
             await GuiTestEnvironment.WaitForAsync(viewModel, () => viewModel.PresetLabel == "极简");
 

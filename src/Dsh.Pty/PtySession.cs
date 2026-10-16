@@ -109,37 +109,42 @@ public sealed class PtySession : IDisposable, ITerminalConnection
      */
     public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
-        while (await _output.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        if (buffer.IsEmpty)
+            return 0;
+        // A partial chunk is already readable even when the channel is empty
+        // (or completed). Waiting on the channel first strands its remainder.
+        while (_pending is null)
         {
-            if (_pending is null && _output.Reader.TryRead(out var chunk))
+            if (_output.Reader.TryRead(out var chunk))
             {
                 _pending = chunk;
                 _pendingOffset = 0;
             }
-
-            if (_pending is { } current)
+            else if (!await _output.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                var take = Math.Min(current.Length - _pendingOffset, buffer.Length);
-                current.AsSpan(_pendingOffset, take).CopyTo(buffer.Span);
-                _pendingOffset += take;
-                if (_pendingOffset >= current.Length)
-                    _pending = null;
-                return take;
+                return 0;
             }
         }
 
-        return 0;
+        var take = Math.Min(_pending.Length - _pendingOffset, buffer.Length);
+        _pending.AsSpan(_pendingOffset, take).CopyTo(buffer.Span);
+        _pendingOffset += take;
+        if (_pendingOffset >= _pending.Length)
+            _pending = null;
+        return take;
     }
 
-    /** 当前 VT 状态的完整重建: 主/备用屏、光标、画笔和输入模式均与之后的原始输出一致。 */
     /** 丢掉尚在输出队列里的历史字节: 新 proxy attach 时先清空, 否则早先的 detach 标记会让它立刻退出。 */
     public void DrainPendingOutput()
     {
+        _pending = null;
+        _pendingOffset = 0;
         while (_output.Reader.TryRead(out _))
         {
         }
     }
 
+    /** 当前 VT 状态的完整重建: 主/备用屏、光标、画笔和输入模式均与之后的原始输出一致。 */
     public byte[] Snapshot()
     {
         lock (_gate)

@@ -1,8 +1,14 @@
+using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Input;
+using Avalonia.Input.Raw;
+using Avalonia.VisualTree;
 using Avalonia.Threading;
 using Dsh.Core;
 using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
+using Dsh.Gui.Views;
 using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.RemoteHost;
@@ -71,7 +77,8 @@ public sealed class GuiHostChatIntegrationTests
             {
                 id = viewModel.CurrentSessionId.Value;
                 var agent = (AgentLoopAgent)host.Environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(SessionId.Create(id))!;
-                waiting = RemoteHostMultiClientTests.RaiseApprovalAsync(host, agent, "bash");
+                // Host work must not capture the GUI dispatcher that this test deliberately detaches.
+                waiting = Task.Run(() => RemoteHostMultiClientTests.RaiseApprovalAsync(host, agent, "bash"), Ct);
                 await GuiTestEnvironment.WaitForAsync(viewModel.Workspace.Notifications.Pending,
                     () => viewModel.Workspace.Notifications.Pending.Any(item => item.SessionId == id));
             }
@@ -158,9 +165,59 @@ public sealed class GuiHostChatIntegrationTests
             Assert.True(dialog.IsApproval);
             var request = Assert.Single((await observer.ListPendingAsync(Ct)).Approvals, item => item.SessionId == viewModel.CurrentSessionId.Value);
             Assert.True(await observer.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct));
-            Assert.Null(await GuiTestEnvironment.PumpAsync(closed.Task.WaitAsync(TimeSpan.FromSeconds(20), Ct)));
+            Assert.Equal(ApprovalOutcome.Cancelled, await GuiTestEnvironment.PumpAsync(closed.Task.WaitAsync(TimeSpan.FromSeconds(20), Ct)));
             Assert.Equal(ApprovalOutcome.AllowedOnce, await waiting.WaitAsync(TimeSpan.FromSeconds(20), Ct));
             Assert.False(await observer.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct));
+        });
+    }
+
+    [Fact(Timeout = 120000)]
+    public async Task KeyboardComposer_RebindsAfterReattach_AndSendsOrdinaryChatToHost()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("gkeys", TestContext.Current.CancellationToken);
+        using var gui = await GuiTestEnvironment.CreateAsync();
+        var observer = await host.ConnectAsync("keyboard-observer", Ct);
+        await HeadlessGui.RunAsync(async () =>
+        {
+            await using var fleet = Fleet(host, gui);
+            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Model, Ct);
+            var preferences = new GuiSettings(gui.App.Home);
+            preferences.Save(preferences.Load() with { CloseAction = GuiSettings.CloseQuit });
+            var window = new MainWindow(gui.App, chat);
+            try
+            {
+                window.Show();
+                var viewModel = window.ViewModel!;
+                Assert.True(viewModel.IsDashboardPage);
+                viewModel.ShowChatCommand.Execute(null);
+                Dispatcher.UIThread.RunJobs();
+                var view = Assert.Single(window.GetVisualDescendants().OfType<ChatView>());
+                var parent = Assert.IsType<Grid>(view.Parent);
+                var index = parent.Children.IndexOf(view);
+                // Keep DataContext unchanged across unload/reload to exercise rebinding, not a context-change workaround.
+                view.DataContext = viewModel;
+                parent.Children.Remove(view);
+                Dispatcher.UIThread.RunJobs();
+                parent.Children.Insert(index, view);
+                Dispatcher.UIThread.RunJobs();
+                var input = view.FindControl<TextBox>("InputBox")!;
+                Assert.True(input.IsEffectivelyVisible);
+                Assert.True(input.Focus());
+                window.KeyTextInput("typed through the ordinary composer");
+                Assert.Equal("typed through the ordinary composer", viewModel.Composer.Input);
+                window.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null);
+                if (viewModel.SubmitCommand.ExecutionTask is { } submission)
+                    await GuiTestEnvironment.PumpAsync(submission);
+                await GuiTestEnvironment.WaitForAsync(viewModel.Messages,
+                    () => viewModel.Messages.Any(message => message.Kind == MessageKind.User && message.Text == "typed through the ordinary composer"));
+                var snapshot = await observer.GetSessionSnapshotAsync(viewModel.CurrentSessionId.Value, Ct);
+                Assert.Contains(snapshot.Events, item => DshJson.Deserialize<SessionEvent>(item.EventJson)?.Data is UserMessagePayload user
+                    && user.Message.Content.OfType<TextBlock>().Any(block => block.Text == "typed through the ordinary composer"));
+            }
+            finally
+            {
+                window.Close();
+            }
         });
     }
 

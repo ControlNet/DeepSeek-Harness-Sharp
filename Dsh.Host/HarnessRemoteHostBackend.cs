@@ -157,10 +157,10 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
     public Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken)
     {
         var id = SessionId.Create(sessionId);
+        var persistence = Persistence ?? throw new InvalidOperationException("session persistence is unavailable");
         if (Registry.Get(id) is { } agent)
             agent.Session.Rename(title);
-        else
-            (Persistence ?? throw new InvalidOperationException("session persistence is unavailable")).Rename(id, title);
+        persistence.Rename(id, title);
         Sessions.SetTitle(sessionId, title);
         return Task.CompletedTask;
     }

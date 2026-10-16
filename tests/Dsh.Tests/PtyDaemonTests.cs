@@ -93,6 +93,39 @@ public class PtyDaemonTests
         Assert.Contains("GOT:hello", text);
     }
 
+    [Fact(Timeout = 30000)]
+    public async Task Host_Read_SmallBuffers_DrainsPendingChunk_WhileChildWaitsForInput()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        using var host = new PtyHost();
+        using var session = await host.StartAsync(new PtyStartInfo
+        {
+            FileName = "/bin/sh",
+            Arguments = ["-c", "printf READY; read line; printf DONE"],
+        }, cancellationToken: TestContext.Current.CancellationToken);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(4));
+        Assert.Equal(0, await session.ReadAsync(Memory<byte>.Empty, deadline.Token));
+        var buffer = new byte[1];
+        var text = new System.Text.StringBuilder();
+        while (text.Length < "READY".Length)
+        {
+            Assert.Equal(1, await session.ReadAsync(buffer, deadline.Token));
+            text.Append((char)buffer[0]);
+        }
+        Assert.Equal("READY", text.ToString());
+        await session.WriteAsync("\n"u8.ToArray(), deadline.Token);
+        while (!text.ToString().Contains("DONE", StringComparison.Ordinal))
+        {
+            var count = await session.ReadAsync(buffer, deadline.Token);
+            if (count == 0)
+                break;
+            text.Append((char)buffer[0]);
+        }
+        Assert.Contains("DONE", text.ToString());
+    }
+
     private static async Task<string> ReadUntilAsync(PtySession session, string marker, TimeSpan timeout)
     {
         var text = new System.Text.StringBuilder();

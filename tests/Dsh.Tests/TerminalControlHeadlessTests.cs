@@ -8,6 +8,7 @@ using Avalonia.Threading;
 using Dsh.Fleet;
 using Dsh.RemoteHost;
 using Dsh.Gui.Terminal;
+using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
 
@@ -77,6 +78,68 @@ public sealed class TerminalControlHeadlessTests
 
         await WaitForLineAsync(session, line => line == "after-42");
         await pty.StopAsync();
+    });
+
+    [Fact]
+    public async Task MainWindow_Shortcuts_Yield_To_Focused_Terminal_But_Work_Elsewhere() => await HeadlessGui.RunAsync(async () =>
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        using var environment = await GuiTestEnvironment.CreateAsync();
+        var preferences = new GuiSettings(environment.App.Home);
+        preferences.Save(preferences.Load() with { CloseAction = GuiSettings.CloseQuit });
+        var window = new MainWindow(environment.App, await environment.OpenChatAsync());
+        using var host = new PtyHost();
+        var pty = await host.StartAsync(new PtyStartInfo
+        {
+            FileName = "/bin/sh",
+            Arguments = ["-c", "stty raw -echo; printf READY; dd bs=1 count=10 2>/dev/null | od -An -tx1"],
+        }, cancellationToken: TestContext.Current.CancellationToken);
+        await using var session = new TerminalSession(pty, new TerminalSize(80, 24));
+        session.Start();
+        var terminal = new TerminalControl { Session = session };
+        window.Content = terminal;
+        try
+        {
+            window.Show();
+            Assert.True(terminal.Focus());
+            Dispatcher.UIThread.RunJobs();
+            await WaitForLineAsync(session, line => line.Contains("READY", StringComparison.Ordinal));
+            var viewModel = window.ViewModel!;
+            var sidebar = viewModel.IsSidebarVisible;
+            var page = viewModel.IsDashboardPage;
+
+            // These are terminal input, including tmux's prefix and shell/vim
+            // controls, not workspace navigation or application shutdown.
+            window.KeyPress(Key.B, RawInputModifiers.Control, PhysicalKey.B, "b");
+            window.KeyPress(Key.K, RawInputModifiers.Control, PhysicalKey.K, "k");
+            window.KeyPress(Key.N, RawInputModifiers.Control, PhysicalKey.N, "n");
+            window.KeyPress(Key.D1, RawInputModifiers.Control, PhysicalKey.None, "1");
+            window.KeyPress(Key.D2, RawInputModifiers.Control, PhysicalKey.None, "2");
+            window.KeyPress(Key.Escape, RawInputModifiers.None, PhysicalKey.Escape, null);
+            window.KeyPress(Key.W, RawInputModifiers.Control, PhysicalKey.W, "w");
+            window.KeyPress(Key.Q, RawInputModifiers.Control, PhysicalKey.Q, "q");
+            window.KeyPress(Key.OemComma, RawInputModifiers.Control, PhysicalKey.None, ",");
+            window.KeyPress(Key.C, RawInputModifiers.Control, PhysicalKey.C, "c");
+            await WaitForLineAsync(session, line => line.Contains("02 0b 0e 31 00 1b 17 11 2c 03", StringComparison.Ordinal));
+            Assert.True(window.IsVisible);
+            Assert.Equal(sidebar, viewModel.IsSidebarVisible);
+            Assert.Equal(page, viewModel.IsDashboardPage);
+            Assert.False(viewModel.Workspace.Palette.IsOpen);
+            Assert.False(viewModel.IsSettingsPage);
+
+            var button = new Button { Content = "Workspace focus" };
+            window.Content = button;
+            Assert.True(button.Focus());
+            window.KeyPress(Key.B, RawInputModifiers.Control, PhysicalKey.B, "b");
+            Assert.Equal(!sidebar, viewModel.IsSidebarVisible);
+            window.KeyPress(Key.K, RawInputModifiers.Control, PhysicalKey.K, "k");
+            Assert.True(viewModel.Workspace.Palette.IsOpen);
+        }
+        finally
+        {
+            window.Close();
+        }
     });
 
     [Fact]

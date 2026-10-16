@@ -6,6 +6,7 @@ using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Fleet;
 using Dsh.Gui.Services;
+using Dsh.Interaction;
 using Dsh.Host;
 using Dsh.RemoteHost;
 
@@ -21,6 +22,7 @@ public sealed class GuiTestEnvironment : IDisposable
     private FleetWorkspace? _fleet;
     private CancellationTokenSource? _listenerCancellation;
     private Task? _listener;
+    private IDisposable? _testProvider;
 
     private GuiTestEnvironment(string directory, HarnessApp app, AgentLoopAgent agent)
     {
@@ -93,6 +95,17 @@ public sealed class GuiTestEnvironment : IDisposable
             await store.Flush(session);
         if (_backend is null)
         {
+            if (!App.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName)!.ListProviders().Any(provider => provider.Id == "test"))
+            {
+                var registration = ProviderRegistrar.RegisterProvider(App.Ctx, new HarnessOptions(App.Home), "test",
+                    new ProviderSettings
+                    {
+                        Type = ProviderTypes.OpenAiCompatible,
+                        Options = new ProviderOptions { BaseUrl = "http://127.0.0.1:1/v1", ApiKey = "test" },
+                        Models = new() { ["test-model"] = new ProviderModelSettings() },
+                    }, isDefault: false);
+                _testProvider = registration.Handle ?? throw new InvalidOperationException(registration.Error);
+            }
             _backend = await HarnessRemoteHostBackend.CreateAsync(App, HostPtyDaemonForTests.Unused, TestContext.Current.CancellationToken);
             _listenerCancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             _listener = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(
@@ -199,6 +212,8 @@ public sealed class GuiTestEnvironment : IDisposable
         }
         if (_backend is not null)
             await _backend.DisposeAsync().ConfigureAwait(false);
+        _testProvider?.Dispose();
+        _testProvider = null;
         _fleet = null;
         _backend = null;
         _listenerCancellation = null;
