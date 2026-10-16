@@ -117,8 +117,34 @@ public sealed class WebUiBrowserTests
               return String(document.activeElement === document.querySelector('#terminal-screen .xterm-helper-textarea'));
             })()
             """, Ct));
+        // Hold the first real input write until Enter has been dispatched. An
+        // unordered sender lets Enter reach the real shell before the command.
+        await phone.EvaluateAsync("""
+            (async () => {
+              const { MachineLink } = await import('/hub.js');
+              const write = MachineLink.prototype.writeTerminal;
+              let first = true, following = Promise.resolve(), release;
+              const held = new Promise((resolve) => { release = resolve; });
+              MachineLink.prototype.writeTerminal = function (...args) {
+                if (first) {
+                  first = false;
+                  return held.then(() => write.apply(this, args));
+                }
+                return following = write.apply(this, args);
+              };
+              window.__releaseTerminalInput = async () => {
+                try { await following; }
+                finally {
+                  MachineLink.prototype.writeTerminal = write;
+                  release();
+                }
+              };
+              return '';
+            })()
+            """, Ct);
         // Ctrl+C goes in only once the shell runs the wait, so it cannot reach the shell before the wait starts.
         await TypeInTerminalAsync(phone, TestShell.Sequence(TestShell.EchoAnswer("busy"), TestShell.Wait(120)), tap: true);
+        await phone.EvaluateAsync("window.__releaseTerminalInput().then(() => '')", Ct);
         await WaitForTerminalTextAsync(phone, "busy-42", hub.LocalHome);
         await phone.TapAsync(".key-bar .key[aria-label='Ctrl+C']", Ct);
         Assert.Equal("true", await phone.EvaluateAsync(

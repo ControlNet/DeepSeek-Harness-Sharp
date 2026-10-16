@@ -52,7 +52,20 @@ export function terminalPanel(machineLink, ptyId) {
   let ctrlArmed = false;
   const ctrlButton = h('button', { type: 'button', className: 'key', 'aria-pressed': 'false' }, 'Ctrl');
 
-  const send = (data) => machineLink.writeTerminal(ptyId, data).catch((error) => setState(`Input not delivered: ${describe(error)}`));
+  // RPC calls are concurrent; bytes of this one PTY's input stream are not.
+  // This panel's immutable target also keeps queued input on its original
+  // session when navigation replaces the panel before a write finishes.
+  let input = Promise.resolve();
+  const send = (data) => {
+    const write = input.then(() => machineLink.writeTerminal(ptyId, data));
+    input = write;
+    write.catch((error) => {
+      setState(`Input not delivered: ${describe(error)}`);
+      // Drop a queued suffix after a failed prefix, without replaying it.
+      if (input === write)
+        input = Promise.resolve();
+    });
+  };
   const setState = (text) => {
     state.textContent = text;
     state.hidden = text.length === 0;
