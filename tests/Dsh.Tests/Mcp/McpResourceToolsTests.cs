@@ -33,7 +33,7 @@ public sealed class McpResourceServerFixture : IAsyncLifetime
     {
         var dotnetRoot = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", ".."));
         var muxer = Path.Combine(dotnetRoot, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
-        var dll = Path.Combine(AppContext.BaseDirectory, SampleDll);
+        var dll = Path.Combine(AppContext.BaseDirectory, "mcp-resource-server", SampleDll);
         return new McpServerConfig(name, "stdio", muxer, withResources ? [dll, .. arguments] : [dll, NoResourcesFlag, .. arguments]);
     }
 
