@@ -468,7 +468,7 @@ public class AgentLoopIntegrationTests
             fixture.Ctx.SetOwn("dshHomePath", home);
             _ = new ToolResultSpill(fixture.Ctx);
             await using var mcp = new Dsh.Mcp.McpService(fixture.Ctx);
-            await mcp.ConnectAsync([Mcp.McpResourceServerFixture.ServerConfig("res")], TestContext.Current.CancellationToken);
+            await Mcp.McpResourceServerFixture.ConnectAsync(mcp, Mcp.McpResourceServerFixture.ServerConfig("res"));
             var handle = await fixture.Agents.Create(new CreateAgentOptions(
                 SessionId.Create($"session-mcp-spill-{Guid.NewGuid():N}"),
                 home,
