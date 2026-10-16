@@ -29,7 +29,7 @@ public static class Program
         var options = new McpServerOptions
         {
             ServerInfo = new Implementation { Name = "resource-sample", Version = "1.0" },
-            ProtocolVersion = args.Contains("--legacy") ? "2025-11-25" : null,
+            ProtocolVersion = args.Contains("--legacy") ? "2025-11-25" : "2026-07-28",
         };
         if (args.Contains(NoResourcesFlag))
         {

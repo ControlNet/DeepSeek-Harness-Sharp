@@ -69,6 +69,7 @@ public sealed class McpResourceServerFixture : IAsyncLifetime
     }
 }
 
+[Collection(SerialProcessCollection.Name)]
 public sealed class McpResourceToolsTests(McpResourceServerFixture fixture) : IClassFixture<McpResourceServerFixture>
 {
     private const string GuideText = "# Guide\nResource text served by the sample MCP server.";
