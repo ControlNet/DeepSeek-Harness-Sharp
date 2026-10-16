@@ -107,7 +107,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
     private async Task<string> DetachAsync(string package, bool force)
     {
         var (weak, leaked) = await UnloadAsync(package, force, reclaim: IsManaged(package), removeRegistration: true);
-        Persist(package, new PluginSetting { Enabled = false });
+        Persist(package, _ => new PluginSetting { Enabled = false });
         if (leaked)
             _leaked.Add(package);
         if (weak is null)
@@ -160,7 +160,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
                 return $"plugin {trimmed} disabled with timeout; effects may still be running (leaked)";
             }
         }
-        Persist(trimmed, new PluginSetting { Enabled = false });
+        Persist(trimmed, existing => Toggled(existing, enabled: false));
         return $"plugin {trimmed} disabled (removed from settings.yaml)";
     }
 
@@ -171,10 +171,25 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
             return "usage: /plugins enable <package>";
         if (!IsKnown(trimmed))
             return $"plugin package not found: {trimmed}";
-        Persist(trimmed, new PluginSetting { Enabled = true });
+        Persist(trimmed, existing => Toggled(existing, enabled: true));
         if (_composition.Root.Scheduler.Find(trimmed) is not null)
             return $"plugin {trimmed} enabled (already active)";
         return await ActivateAsync(trimmed);
+    }
+
+    public string SetPermission(string package, PluginPermission permission, bool allowed)
+    {
+        var trimmed = package.Trim();
+        var key = PluginPermissions.KeyOf(permission);
+        if (trimmed.Length == 0)
+            return $"usage: /plugins {(allowed ? "enable" : "ban")}_{key} <package>";
+        if (!IsKnown(trimmed))
+            return $"plugin package not found: {trimmed}";
+        Persist(trimmed, existing => (existing ?? new PluginSetting()) with
+        {
+            Permissions = (existing?.Permissions ?? PluginPermissions.AllAllowed).With(permission, allowed),
+        });
+        return $"plugin {trimmed} {key} permission {(allowed ? "allowed" : "denied")} (written to settings.yaml)";
     }
 
     private static bool IsLibraryPath(string spec)
@@ -280,7 +295,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
         var activation = await _composition.AddAsync(definition!);
         if (activation.State == ActivationState.Active)
         {
-            Persist(package, new PluginSetting { Enabled = true });
+            Persist(package, existing => Toggled(existing, enabled: true));
             return $"plugin {package} activated";
         }
         return $"plugin {package} failed to activate: {activation.Error}";
@@ -358,11 +373,20 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
             + "可用 `dotnet-dump analyze <pid>` 执行 `!dumpheap -type LoaderAllocator` 与 `!gcroot <addr>` 排查");
     }
 
-    private void Persist(string package, PluginSetting setting)
+    /**
+     * Rewrites one plugins entry from the file's current state: GUI and TUI settings pages save plugin parameters straight to disk, so the in-memory copy may be stale.
+     */
+    private void Persist(string package, Func<PluginSetting?, PluginSetting> update)
     {
-        _settings.Plugins[package] = setting;
+        var plugins = HarnessSettings.Load(_home).Plugins;
+        plugins[package] = update(plugins.GetValueOrDefault(package));
+        _settings.Plugins = plugins;
         _settings.SavePlugins(_home);
     }
+
+    /** enable/disable resets plugin parameters but keeps the permission grants. */
+    private static PluginSetting Toggled(PluginSetting? existing, bool enabled)
+        => new() { Enabled = enabled, Permissions = existing?.Permissions };
 
     public void Dispose()
     {

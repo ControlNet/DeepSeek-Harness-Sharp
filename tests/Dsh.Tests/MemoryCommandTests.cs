@@ -219,6 +219,8 @@ public sealed class MemoryCommandTests
             Calls.Add($"enable:{package}");
             return Task.FromResult("enabled");
         }
+
+        public string SetPermission(string package, PluginPermission permission, bool allowed) => "";
     }
 
     private sealed class FakeAgent : IAgent

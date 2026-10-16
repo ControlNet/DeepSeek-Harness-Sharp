@@ -14,6 +14,8 @@ namespace Dsh.Tests;
 public class SubagentTests
 {
     private static readonly TimeSpan RunCompletionTimeout = TimeSpan.FromSeconds(30);
+    private const string ToolSubagentPackage = "@deepseek-ai/dsh-tool-subagent";
+    private const string AlternateDefaultRoute = "alt-provider/alt-fast";
 
     private sealed class ScriptedAdapter : LlmAdapter
     {
@@ -76,7 +78,9 @@ public class SubagentTests
         public SubagentFixture(
             IEnumerable<Func<GenerateOptions, IReadOnlyList<StreamChunk>>> script,
             SubagentToolConfig? toolConfig = null,
-            IReadOnlyList<string>? models = null)
+            IReadOnlyList<string>? models = null,
+            HarnessHome? home = null,
+            object? pluginConfig = null)
         {
             Ctx = new Context();
             Sessions = new SessionStore(Ctx);
@@ -91,7 +95,11 @@ public class SubagentTests
             Llm.RegisterAdapter(["test-provider"], Adapter);
             _spawn = SubagentInProcessProviders.RegisterSpawn(Ctx);
             _fork = SubagentInProcessProviders.RegisterFork(Ctx);
-            _tool = SubagentTool.Apply(Ctx, toolConfig ?? new SubagentToolConfig { Provider = "spawn" });
+            if (home is not null)
+                Ctx.SetOwn("harnessOptions", new HarnessOptions(home));
+            _tool = home is null
+                ? SubagentTool.Apply(Ctx, toolConfig ?? new SubagentToolConfig { Provider = "spawn" })
+                : new Dsh.Subagent.Plugin(ToolSubagentPackage).Apply(Ctx, pluginConfig);
             _control = SubagentControlTools.ApplyListAgents(Ctx);
             _models = SubagentModelsTool.Apply(Ctx);
         }
@@ -179,6 +187,7 @@ public class SubagentTests
         Assert.Equal("subagent", child.Header.Origin);
         Assert.Equal(1, child.Header.DelegationDepth);
         Assert.Equal(parent.Id, child.Header.ParentSession);
+        Assert.Equal(ToolCallId.Create("call-sub-1"), child.Header.ParentCallId);
         Assert.False(child.Header.IsSeeded);
         Assert.Equal(parent.Id, child.Header.RootSession);
         Assert.Equal("spawn", child.Header.SubagentProvider);
@@ -355,7 +364,9 @@ public class SubagentTests
         var inner = fixture.ChildOf(outer.Id, depth: 2);
         Assert.NotNull(inner);
         Assert.Equal(2, inner.Header.DelegationDepth);
+        Assert.Equal(ToolCallId.Create("call-sub-1"), outer.Header.ParentCallId);
         Assert.Equal(outer.Id, inner.Header.ParentSession);
+        Assert.Equal(ToolCallId.Create("call-sub-2"), inner.Header.ParentCallId);
         Assert.Equal(parent.Id, inner.Header.RootSession);
 
         var result = await fixture.Tools.Execute(new ToolExecutionInput
@@ -643,6 +654,58 @@ public class SubagentTests
         Assert.Contains("providers with a configured API key: test-provider", Assert.IsType<ToolExecutionResult.Failure>(filtered).Error.Message);
         Assert.Empty(fixture.Adapter.Requests);
         Assert.Null(fixture.ChildOf(parent.Id));
+    }
+
+    /** Delegates once with settings.yaml `subagent.default_model` set; returns the child's echoed route, or the tool error. */
+    private static async Task<string> DelegateWithSettingsDefault(string defaultModel, object? pluginConfig = null, JsonObject? route = null)
+    {
+        var home = TempTree.CreateDirectory("subagent-default-model");
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(home, "settings.yaml"), $"subagent:\n  default_model: {defaultModel}\n");
+            using var fixture = new SubagentFixture(EchoRoute(1), models: ["test-model"], home: new HarnessHome(home), pluginConfig: pluginConfig);
+            var alternate = new ScriptedAdapter("alt-provider", EchoRoute(1), ["alt-fast", "vendor/alt-nested"]);
+            using var registration = fixture.Llm.RegisterAdapter(["alt-provider"], alternate);
+            var parent = await fixture.CreateParent($"session-parent-default-model-{Guid.NewGuid():N}");
+            var args = new JsonObject { ["description"] = "default route", ["prompt"] = "report your route" };
+            foreach ((var key, var value) in route ?? [])
+                args[key] = value?.DeepClone();
+            return await ExecuteTool(fixture, "subagent", args, parent) switch
+            {
+                ToolExecutionResult.Success delegated => string.Concat(delegated.Content.OfType<TextBlock>().Select(block => block.Text)),
+                ToolExecutionResult.Failure failure => failure.Error.Message,
+                var other => throw new InvalidOperationException($"unexpected tool result {other}"),
+            };
+        }
+        finally
+        {
+            TempTree.Delete(home);
+        }
+    }
+
+    /** Without route arguments or plugin agentOptions, the child runs on settings.yaml `subagent.default_model` with that model's default effort. */
+    [Fact]
+    public async Task SubagentDefaultModelSetting_RoutesChildWhenCallOmitsRoute()
+        => Assert.Equal("alt-provider/alt-fast/", await DelegateWithSettingsDefault(AlternateDefaultRoute));
+
+    [Fact]
+    public async Task SubagentDefaultModelSetting_YieldsToPluginAgentOptionsAndCallArguments()
+    {
+        var pluginRoute = new Dictionary<string, object?>
+        {
+            ["agentOptions"] = new Dictionary<string, object?> { ["provider"] = "alt-provider", ["model"] = "vendor/alt-nested" },
+        };
+        Assert.Equal("alt-provider/vendor/alt-nested/", await DelegateWithSettingsDefault(AlternateDefaultRoute, pluginRoute));
+        var callRoute = new JsonObject { ["provider"] = "alt-provider", ["model"] = "vendor/alt-nested" };
+        Assert.Equal("alt-provider/vendor/alt-nested/", await DelegateWithSettingsDefault(AlternateDefaultRoute, route: callRoute));
+    }
+
+    [Fact]
+    public async Task SubagentDefaultModelSetting_UnregisteredProviderErrorNamesTheSetting()
+    {
+        var error = await DelegateWithSettingsDefault("keyless-provider/keyless-model");
+        Assert.Contains("keyless-provider", error);
+        Assert.Contains("subagent.default_model", error);
     }
 
     private sealed class NoCredentials : ICredentials

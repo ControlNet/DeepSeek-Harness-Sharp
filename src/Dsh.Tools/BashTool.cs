@@ -92,7 +92,7 @@ public static class BashTool
                 + "5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; "
                 + $"\"git status\" → \"Show working tree status\"; {dialect.DescriptionExample}."),
             ["timeoutMs"] = ToolSchemas.NumberParam("Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry."),
-            ["workdir"] = ToolSchemas.StringParam("Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."),
+            ["workdir"] = ToolSchemas.StringParam("Working directory for this command. Defaults to the session working directory; a relative path is resolved against it."),
             ["envs"] = ToolSchemas.StringMapParam("Environment variables to set for this command (object of string values). `DSH_*` keys are ignored."),
         };
         foreach (var (name, schema) in dialect.ExtraParameters)
@@ -104,6 +104,7 @@ public static class BashTool
             Parameters = ToolSchemas.ObjectSchema(parameters, "command"),
             Output = new ToolOutputDefinition(OutputSchema, (_, value) => Render(value, dialect.ToolName)),
             Execute = (args, exec) => Execute(args, exec, subprocess, config, dialect),
+            WriteTargets = (args, exec) => [WorkdirOf(WorkdirArgument(args), exec, config)],
         });
         return new CompositeDisposable(section, registration);
     }
@@ -150,9 +151,7 @@ public static class BashTool
         double? timeoutMsArg = args.TryGetProperty("timeoutMs", out var timeoutElement) && timeoutElement.ValueKind == JsonValueKind.Number
             ? timeoutElement.GetDouble()
             : null;
-        var workdirArg = args.TryGetProperty("workdir", out var workdirElement) && workdirElement.ValueKind == JsonValueKind.String
-            ? workdirElement.GetString()
-            : null;
+        var workdirArg = WorkdirArgument(args);
         var envs = ReadEnvs(args);
         if (command.Trim().Length == 0)
             throw new ArgumentException("invalid command: expected a non-empty string");
@@ -190,16 +189,29 @@ public static class BashTool
             new BashStreamOutput(stderrRead.Text, stderrRead.Lossy, stderrRead.SpillPath));
     }
 
-    internal static string ResolveWorkdir(string? modelWorkdir, ToolRunContext exec, BashToolConfig config)
+    internal static string? WorkdirArgument(JsonElement args)
+        => args.ValueKind == JsonValueKind.Object
+           && args.TryGetProperty("workdir", out var workdir)
+           && workdir.ValueKind == JsonValueKind.String
+            ? workdir.GetString()
+            : null;
+
+    /** The directory a new shell process starts in; the process may write anywhere below it, so it is also the call's write target. */
+    internal static string WorkdirOf(string? modelWorkdir, ToolRunContext exec, BashToolConfig config)
     {
-        var sessionCwd = exec.Agent?.Session.Header.Cwd;
-        var workdir = modelWorkdir switch
+        var sessionCwd = exec.Agent?.Session.WorkingDirectory;
+        return modelWorkdir switch
         {
             null => sessionCwd ?? config.Cwd ?? Environment.CurrentDirectory,
             _ when Path.IsPathRooted(modelWorkdir) => modelWorkdir,
             _ when sessionCwd is not null => Path.GetFullPath(Path.Combine(sessionCwd, modelWorkdir)),
             _ => Path.GetFullPath(modelWorkdir),
         };
+    }
+
+    internal static string ResolveWorkdir(string? modelWorkdir, ToolRunContext exec, BashToolConfig config)
+    {
+        var workdir = WorkdirOf(modelWorkdir, exec, config);
         if (!Directory.Exists(workdir))
             throw new ArgumentException($"invalid workdir: directory does not exist: {workdir}");
         return workdir;

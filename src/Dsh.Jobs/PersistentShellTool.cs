@@ -128,7 +128,7 @@ internal static class PersistentShellTool
             if (existing is not null)
                 shells.Reset(owner);
             var argv = dialect.StartArgv(CancellationToken.None);
-            var cwd = owner.Session.Header.Cwd ?? Environment.CurrentDirectory;
+            var cwd = owner.Session.WorkingDirectory ?? Environment.CurrentDirectory;
             var handle = subprocess.Spawn(new SubprocessSpawnSpec
             {
                 Argv = argv,
@@ -136,7 +136,7 @@ internal static class PersistentShellTool
                 Env = ShellEnvironment.NonInteractiveOverrides,
                 Stdout = new SubprocessCollect(Math.Max(MinStdoutCaptureBytes, settings.MaxOutputChars * StdoutBytesPerChar), null),
                 Stderr = new SubprocessCollect(StderrCaptureBytes, null),
-                RedirectStandardInput = true,
+                KeepStandardInputOpen = true,
             });
             var shell = new PersistentShell { Handle = handle, Cursor = 0 };
             shells.Set(owner, shell);
@@ -163,6 +163,10 @@ internal static class PersistentShellTool
                 new JsonObject { ["type"] = "string" },
                 (_, value) => [new TextBlock(value.GetString() ?? "")]),
             Execute = (args, exec) => Execute(context, args, exec),
+            // Existing shells retain their own cwd; only a newly started process has a session-derived write target.
+            WriteTargets = (_, exec) => exec.Agent is { } owner && shells.Get(owner) is not { Handle.Done.IsCompleted: false }
+                ? [owner.Session.WorkingDirectory ?? Environment.CurrentDirectory]
+                : [],
         });
 
         return new CompositeDisposable(registration, new ActionDisposable(() => effect.Dispose()), shells);

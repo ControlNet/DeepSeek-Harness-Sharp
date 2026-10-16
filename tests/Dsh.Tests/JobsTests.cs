@@ -482,6 +482,34 @@ public partial class JobsTests : IDisposable
         }
 
         [Fact]
+        public async Task ExistingShell_KeepsItsDirectory_AfterWorkingDirectoryChange()
+        {
+            if (!BashAvailable()) return;
+            Directory.CreateDirectory(Path.Combine(_outer._tempDir, "moved"));
+            var agent = _outer.NewAgent();
+            await Bash(agent, "true");
+
+            SessionWorkingDirectory.Change(agent.Session, "moved");
+            var pwd = await Bash(agent, "pwd");
+
+            Assert.False(pwd.IsError, TextOf(pwd));
+            Assert.DoesNotContain("moved", TextOf(pwd));
+        }
+
+        [Fact]
+        public async Task NewShell_StartsInChangedWorkingDirectory()
+        {
+            if (!BashAvailable()) return;
+            Directory.CreateDirectory(Path.Combine(_outer._tempDir, "moved"));
+            var agent = _outer.NewAgent();
+
+            SessionWorkingDirectory.Change(agent.Session, "moved");
+            var pwd = await Bash(agent, "pwd");
+
+            Assert.Contains("moved", TextOf(pwd));
+        }
+
+        [Fact]
         public async Task LongOutput_IsTruncated()
         {
             var ctx = new Context();
