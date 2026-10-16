@@ -317,6 +317,7 @@ public sealed class TerminalInputParser
 internal sealed class TerminalInputReader : ITerminalInputSource
 {
     private const short PollIn = 0x0001;
+    private const int InterruptedSystemCall = 4;
     private const int FGetFl = 3;
     private const int FSetFl = 4;
 
@@ -393,6 +394,9 @@ internal sealed class TerminalInputReader : ITerminalInputSource
 
             if (ready < 0)
             {
+                // resize/子进程退出信号只中断系统调用, 不是输入流结束。
+                if (Marshal.GetLastWin32Error() == InterruptedSystemCall)
+                    continue;
                 EndOfStream = true;
                 return null;
             }
@@ -407,6 +411,8 @@ internal sealed class TerminalInputReader : ITerminalInputSource
                 continue;
             // 直接 read(2) 读 fd 0: 经 .NET 的 Console 流读 pty 在 Linux 上会阻塞不返回(实测 poll 报可读后流读仍挂住)
             var read = readBytes(StdinFd, _buffer, _buffer.Length);
+            if (read < 0 && Marshal.GetLastWin32Error() == InterruptedSystemCall)
+                continue;
             if (read <= 0)
             {
                 EndOfStream = true;
