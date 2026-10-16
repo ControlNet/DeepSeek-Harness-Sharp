@@ -234,4 +234,16 @@ public sealed class GuiComponentTests
         Assert.All(catalog, choice => Assert.NotNull(choice.Type));
         Assert.All(catalog, choice => Assert.StartsWith(ProviderChoiceViewModel.CatalogPrefix, choice.Display, StringComparison.Ordinal));
     }
+
+    /** Test clock: time moves only when the test advances it. */
+    private sealed class ManualClock : TimeProvider
+    {
+        private long _now;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => _now;
+
+        public void Advance(TimeSpan duration) => _now += duration.Ticks;
+    }
 }

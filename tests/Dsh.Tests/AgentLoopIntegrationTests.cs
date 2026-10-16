@@ -447,6 +447,59 @@ public class AgentLoopIntegrationTests
     }
 
     [Fact]
+    public async Task McpResource_LargeText_IsSpilledWithTheFileThatHoldsItAll()
+    {
+        var requests = new List<string>();
+        using var server = new MockDeepSeekServer(body =>
+        {
+            requests.Add(body);
+            return requests.Count == 1
+                ?
+                [
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_mcp_resource\",\"arguments\":\"{\\\"server\\\":\\\"res\\\",\\\"uri\\\":\\\"docs://large\\\"}\"}}]}}]}",
+                    "",
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
+                    "",
+                    "data: [DONE]",
+                    "",
+                ]
+                : SseTextOnly;
+        });
+        using var fixture = new HarnessFixture(server.BaseUrl);
+        var home = TempTree.CreateDirectory("mcp-spill");
+        try
+        {
+            fixture.Ctx.SetOwn("dshHomePath", home);
+            _ = new ToolResultSpill(fixture.Ctx);
+            await using var mcp = new Dsh.Mcp.McpService(fixture.Ctx);
+            await mcp.ConnectAsync([Mcp.McpResourceServerFixture.ServerConfig("res")], TestContext.Current.CancellationToken);
+            var handle = await fixture.Agents.Create(new CreateAgentOptions(
+                SessionId.Create($"session-mcp-spill-{Guid.NewGuid():N}"),
+                home,
+                new AgentOptions("test-provider", "test-model")), TestContext.Current.CancellationToken);
+            var agent = (AgentLoopAgent)handle.Agent;
+            agent.Followup(MessageFactory.CreateUserText("read the large resource"));
+            await agent.WhenIdle();
+
+            var toolResult = agent.Session.SnapshotEvents().Select(e => e.Data).OfType<ToolResultPayload>().Single();
+            Assert.False(toolResult.Message.Block.IsError, MessageText.Flatten(toolResult.Message.Block.Content));
+            var text = MessageText.Flatten(toolResult.Message.Block.Content);
+            Assert.StartsWith("MCP resource docs://large from server \"res\" (text/plain):\nLARGE-HEAD", text);
+            Assert.EndsWith("LARGE-TAIL", text);
+            var spilled = System.Text.RegularExpressions.Regex.Match(text, @"chars spilled to (.+?) \.\.\.\]").Groups[1].Value;
+            var full = await File.ReadAllTextAsync(spilled, TestContext.Current.CancellationToken);
+            Assert.True(text.Length < full.Length / 10, $"kept {text.Length} of {full.Length} chars");
+            Assert.EndsWith("LARGE-TAIL", full);
+            Assert.Contains(new string('x', 200_000), full);
+            Assert.Contains("chars spilled to", requests[1]);
+        }
+        finally
+        {
+            TempTree.Delete(home);
+        }
+    }
+
+    [Fact]
     public async Task ReadImage_HistoryImage_IsOmittedAfterSwitchingToTextOnlyModel()
     {
         var (agent, requests, _) = await RunReadImageTurn(["text", "image"], async (fixture, readAgent, directory) =>
