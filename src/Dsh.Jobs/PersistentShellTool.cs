@@ -33,6 +33,9 @@ internal static class PersistentShellTool
     private const int StdoutBytesPerChar = 4;
     private const int StderrCaptureBytes = 64 * 1024;
 
+    /** 冷启动不消耗命令执行预算；Git Bash 在 Windows 首次启动时可能需要数秒。 */
+    private static readonly TimeSpan ShellStartupTimeout = TimeSpan.FromSeconds(30);
+
     private sealed record CapturedOutput(string Text, bool Incomplete, int? ExitCode);
 
     private sealed class PersistentShell : IDisposable
@@ -198,8 +201,9 @@ internal static class PersistentShellTool
         var shell = context.GetShell(owner);
         var marker = MakeMarkers(context.Dialect.ShellLabel);
         var wrapped = context.Dialect.WrapCommand(command, marker);
-        using var timeout = new CancellationTokenSource();
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(context.Settings.TimeoutMs));
+        var budget = TimeSpan.FromMilliseconds(context.Settings.TimeoutMs);
+        using var timeout = new CancellationTokenSource(budget > ShellStartupTimeout ? budget : ShellStartupTimeout);
+        var commandStarted = false;
 
         shell.Cursor = shell.Handle.StdoutReader.ReadFrom(shell.Cursor).NextOffset;
         try
@@ -219,6 +223,11 @@ internal static class PersistentShellTool
             var read = shell.Handle.StdoutReader.ReadFrom(shell.Cursor);
             if (CommandOutput(read.Text, marker, read.Lossy) is { } captured)
                 return RenderCaptured(captured, context);
+            if (!commandStarted && read.Text.Contains(marker.Start, StringComparison.Ordinal))
+            {
+                commandStarted = true;
+                timeout.CancelAfter(budget);
+            }
             if (timeout.IsCancellationRequested)
                 return RespondToTimeout(context, owner, PartialOutput(read.Text, marker, read.Lossy));
             if (upstream.IsCancellationRequested)
