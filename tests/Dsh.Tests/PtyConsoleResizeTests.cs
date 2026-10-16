@@ -19,11 +19,12 @@ public sealed class PtyConsoleResizeTests
         if (OperatingSystem.IsWindows())
             Assert.Skip("Unix kernel terminal geometry and SIGWINCH semantics");
 
-        var root = TempTree.CreateSocketDirectory("resize");
+        var root = TempTree.CreateSocketDirectory("rz");
         var socketPath = PtyDaemonPaths.SocketPath(root);
         var cancellationToken = TestContext.Current.CancellationToken;
         try
         {
+            TempTree.AssertFitsMacOsSocketLimit(socketPath);
             await using var daemon = new PtyDaemon(new PtyHost(), socketPath);
             await daemon.StartAsync(cancellationToken);
             var resident = await PtyDaemonClient.StartAsync(new PtyDaemonStartParams
