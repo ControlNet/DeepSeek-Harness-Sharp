@@ -120,6 +120,36 @@ public sealed class JsonRpcPeerTests
     }
 
     [Fact]
+    public async Task SlowRequest_DoesNotBlockOtherRequestsOrResponses()
+    {
+        await using var fixture = await DuplexFixture.CreateAsync(Ct);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Server.RequestHandler = async (message, token) =>
+        {
+            if (message.Method == "slow")
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(token);
+            }
+            return Parse("""{"ok":true}""");
+        };
+        fixture.Client.RequestHandler = async (_, token) =>
+            await fixture.Client.RequestAsync("nested", cancellationToken: token);
+
+        var slow = fixture.Client.RequestAsync("slow", cancellationToken: Ct);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+        var ping = await fixture.Client.RequestAsync("ping", cancellationToken: Ct).WaitAsync(TimeSpan.FromSeconds(5), Ct);
+        Assert.True(ping!.Value.GetProperty("ok").GetBoolean());
+        Assert.False(slow.IsCompleted);
+        var nested = await fixture.Server.RequestAsync("question", cancellationToken: Ct).WaitAsync(TimeSpan.FromSeconds(5), Ct);
+        Assert.True(nested!.Value.GetProperty("ok").GetBoolean());
+        Assert.False(slow.IsCompleted);
+        release.TrySetResult();
+        Assert.True((await slow)!.Value.GetProperty("ok").GetBoolean());
+    }
+
+    [Fact]
     public async Task MissingHandlerReturnsMethodNotFound()
     {
         await using var fixture = await DuplexFixture.CreateAsync(Ct);
@@ -156,14 +186,55 @@ public sealed class JsonRpcPeerTests
     public async Task PendingRequestFailsWhenPeerCloses()
     {
         await using var fixture = await DuplexFixture.CreateAsync(Ct);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.Server.RequestHandler = async (_, token) =>
         {
-            await Task.Delay(Timeout.Infinite, token);
-            return null;
+            entered.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, token);
+                return null;
+            }
+            finally
+            {
+                finished.TrySetResult();
+            }
         };
         var pending = fixture.Client.RequestAsync("hang", cancellationToken: Ct);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
         await fixture.Server.DisposeAsync();
+        await finished.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
         await Assert.ThrowsAnyAsync<Exception>(async () => await pending);
+    }
+
+    [Fact]
+    public async Task ClosingPeer_DoesNotWaitForAHandlerIgnoringCancellation()
+    {
+        await using var fixture = await DuplexFixture.CreateAsync(Ct);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Server.RequestHandler = async (_, _) =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+            finished.TrySetResult();
+            return Parse("""{"ok":true}""");
+        };
+        try
+        {
+            var pending = fixture.Client.RequestAsync("slow", cancellationToken: Ct);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+            await fixture.Server.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5), Ct);
+            Assert.False(finished.Task.IsCompleted);
+            await Assert.ThrowsAnyAsync<Exception>(async () => await pending);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await finished.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+        }
     }
 
     /** Larger than what loopback socket buffers absorb, below the frame limit: the write blocks while the server is not reading. */
@@ -172,23 +243,14 @@ public sealed class JsonRpcPeerTests
     [Fact]
     public async Task CancellingARequestWhileItsFrameIsBeingWritten_KeepsTheConnectionUsable()
     {
-        await using var fixture = await DuplexFixture.CreateAsync(Ct);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        fixture.Server.RequestHandler = async (message, _) =>
-        {
-            if (message.Method == "hold")
-                await release.Task;
-            return Parse("""{"ok":true}""");
-        };
-        var held = fixture.Client.RequestAsync("hold", cancellationToken: Ct);
+        await using var fixture = await DuplexFixture.CreateAsync(Ct, startServer: false);
+        fixture.Server.RequestHandler = (_, _) => ValueTask.FromResult<JsonElement?>(Parse("""{"ok":true}"""));
         using var cancel = CancellationTokenSource.CreateLinkedTokenSource(Ct);
 
         var large = fixture.Client.RequestAsync("large", Parse($"\"{new string('x', BlockingPayloadChars)}\""), cancel.Token);
-        await Task.Delay(TimeSpan.FromMilliseconds(200), Ct);
         await cancel.CancelAsync();
-        release.SetResult();
+        fixture.Server.Start();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => large);
-        await held;
         var after = await fixture.Client.RequestAsync("ping", cancellationToken: Ct).WaitAsync(TimeSpan.FromSeconds(10), Ct);
 
         Assert.True(after!.Value.GetProperty("ok").GetBoolean());
@@ -216,7 +278,7 @@ public sealed class JsonRpcPeerTests
 
         public JsonRpcPeer Server { get; }
 
-        public static async Task<DuplexFixture> CreateAsync(CancellationToken cancellationToken)
+        public static async Task<DuplexFixture> CreateAsync(CancellationToken cancellationToken, bool startServer = true)
         {
             var listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
@@ -229,7 +291,8 @@ public sealed class JsonRpcPeerTests
             var clientPeer = new JsonRpcPeer(client.GetStream());
             var serverPeer = new JsonRpcPeer(server.GetStream());
             clientPeer.Start();
-            serverPeer.Start();
+            if (startServer)
+                serverPeer.Start();
             return new DuplexFixture(listener, client, server, clientPeer, serverPeer);
         }
 

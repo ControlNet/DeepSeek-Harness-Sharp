@@ -42,6 +42,7 @@ public sealed class JsonRpcPeer : IAsyncDisposable
     private long _nextId;
     private int _disposed;
     private Task? _readLoop;
+    private Exception? _requestFailure;
 
     public JsonRpcPeer(Stream stream, int maxFrameBytes = FrameCodec.DefaultMaxFrameBytes)
     {
@@ -136,7 +137,11 @@ public sealed class JsonRpcPeer : IAsyncDisposable
                     break;
                 }
 
-                await DispatchAsync(message, cancellationToken).ConfigureAwait(false);
+                var dispatch = DispatchAsync(message, cancellationToken);
+                if (message.IsRequest && !dispatch.IsCompletedSuccessfully)
+                    _ = ObserveRequestAsync(dispatch);
+                else
+                    await dispatch.ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -148,8 +153,49 @@ public sealed class JsonRpcPeer : IAsyncDisposable
         }
         finally
         {
+            _cts.Cancel();
+            failure = _requestFailure ?? failure;
             FailPending(failure);
             Closed?.Invoke(failure);
+        }
+    }
+
+    /** A slow inbound request must not stop reading replies, notifications or the next request. */
+    private async Task ObserveRequestAsync(ValueTask request)
+    {
+        try
+        {
+            await request.ConfigureAwait(false);
+        }
+        catch (Exception error) when (_cts.IsCancellationRequested
+            && error is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+        }
+        catch (Exception error)
+        {
+            Interlocked.CompareExchange(ref _requestFailure, error, null);
+            try
+            {
+                _cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Disposal may have won the race with this failed response.
+            }
+            await CloseStreamAsync().ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask CloseStreamAsync()
+    {
+        // Closing the stream interrupts reads which do not promptly observe cancellation.
+        try
+        {
+            await _stream.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Preserve the original failure even when closing the stream fails.
         }
     }
 
@@ -189,7 +235,8 @@ public sealed class JsonRpcPeer : IAsyncDisposable
                 response.Error = new JsonRpcError { Code = InternalError, Message = error.Message };
             }
 
-            await SendAsync(response, cancellationToken).ConfigureAwait(false);
+            if (!cancellationToken.IsCancellationRequested)
+                await SendAsync(response, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -208,15 +255,7 @@ public sealed class JsonRpcPeer : IAsyncDisposable
             return;
 
         _cts.Cancel();
-        // 关闭底层流以打断阻塞中的读(Socket/管道读未必及时响应 token 取消)。
-        try
-        {
-            await _stream.DisposeAsync().ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            // 关流失败不影响收尾。
-        }
+        await CloseStreamAsync().ConfigureAwait(false);
 
         if (_readLoop is { } loop)
         {
