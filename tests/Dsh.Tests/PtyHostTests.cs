@@ -5,6 +5,24 @@ namespace Dsh.Tests;
 
 public class PtyHostTests
 {
+    private const int FailureExitCode = 7;
+
+    [Theory(Timeout = 30000)]
+    [InlineData(0)]
+    [InlineData(FailureExitCode)]
+    public async Task ProcessCompletion_PublishesTheActualExitStatus(int exitCode)
+    {
+        using var host = new PtyHost();
+        var session = await host.StartAsync(new PtyStartInfo
+        {
+            FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/sh",
+            Arguments = OperatingSystem.IsWindows() ? ["/d", "/c", $"exit /b {exitCode}"] : ["-c", $"exit {exitCode}"],
+        }, cancellationToken: TestContext.Current.CancellationToken);
+        await session.WaitForExitAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(PtySessionStatus.Exited, session.Status);
+        Assert.Equal(exitCode, session.ExitCode);
+    }
+
     [Fact(Timeout = 30000)]
     public async Task Host_Starts_Lists_Reads_And_Stops()
     {

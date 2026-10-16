@@ -27,6 +27,7 @@ public sealed class PtySession : IDisposable, ITerminalConnection
     private UnixPtySession? _unix;
     private ConPtySession? _conPty;
     private Process? _process;
+    private Task? _completion;
     private bool _attached;
     private bool _disposed;
     private bool _subscriptionsClosed;
@@ -86,18 +87,21 @@ public sealed class PtySession : IDisposable, ITerminalConnection
             _conPty = ConPtySession.TryStart(_startInfo);
             if (_conPty is not null)
             {
-                _conPty.Exited += OnConPtyExited;
+                _completion = ObserveExitAsync(_conPty.Completion);
                 PumpAsync();
                 return;
             }
 
             _process = StartWindowsProcess(_startInfo);
+            _completion = _process.WaitForExitAsync().ContinueWith(
+                _ => OnProcessExited(_process.ExitCode), CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             PumpAsync();
             return;
         }
 
         _unix = UnixPtySession.Start(_startInfo);
-        _unix.Exited += OnUnixExited;
+        _completion = ObserveExitAsync(_unix.Completion);
         PumpAsync();
     }
 
@@ -108,6 +112,9 @@ public sealed class PtySession : IDisposable, ITerminalConnection
     public ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         => _outputReader.ReadAsync(buffer, cancellationToken);
 
+    public Task WaitForExitAsync(CancellationToken cancellationToken = default)
+        => (_completion ?? throw new InvalidOperationException("PTY process has not been started")).WaitAsync(cancellationToken);
+
     /** 丢掉尚在输出队列里的历史字节: 新 proxy attach 时先清空, 否则早先的 detach 标记会让它立刻退出。 */
     public void DrainPendingOutput() => _outputReader.DrainPendingOutput();
 
@@ -117,6 +124,28 @@ public sealed class PtySession : IDisposable, ITerminalConnection
         lock (_gate)
         {
             return Encoding.UTF8.GetBytes(_screen.Snapshot());
+        }
+    }
+
+    public string SnapshotText()
+    {
+        lock (_gate)
+        {
+            var output = new StringBuilder();
+            for (var y = 0; y < _screen.Height; y++)
+            {
+                var row = _screen.Row(y);
+                for (var x = 0; x < row.Length; x++)
+                {
+                    var character = row[x].Character;
+                    if (character != '\0')
+                        output.Append(character);
+                }
+                output.AppendLine();
+            }
+            while (output.Length > 0 && char.IsWhiteSpace(output[output.Length - 1]))
+                output.Length--;
+            return output.ToString();
         }
     }
 
@@ -310,7 +339,6 @@ public sealed class PtySession : IDisposable, ITerminalConnection
         var unix = _unix;
         if (unix is not null)
         {
-            unix.Exited -= OnUnixExited;
             await unix.StopAsync().ConfigureAwait(false);
             lock (_gate)
             {
@@ -324,7 +352,6 @@ public sealed class PtySession : IDisposable, ITerminalConnection
         var conPty = _conPty;
         if (conPty is not null)
         {
-            conPty.Exited -= OnConPtyExited;
             await conPty.StopAsync().ConfigureAwait(false);
             lock (_gate)
             {
@@ -369,13 +396,11 @@ public sealed class PtySession : IDisposable, ITerminalConnection
 
         if (_unix is not null)
         {
-            _unix.Exited -= OnUnixExited;
             _unix.Dispose();
         }
 
         if (_conPty is not null)
         {
-            _conPty.Exited -= OnConPtyExited;
             _conPty.Dispose();
         }
 
@@ -388,7 +413,16 @@ public sealed class PtySession : IDisposable, ITerminalConnection
             return new PtySessionInfo(Id, Command, StartedAt, ProcessId, _status, _exitCode, _attached, _screen.Width, _screen.Height, _startInfo.WantsMouse, _startInfo.Home);
     }
 
-    private void OnUnixExited(int? exitCode)
+    private async Task ObserveExitAsync(Task<int?> completion)
+    {
+        var exitCode = await completion.ConfigureAwait(false);
+        if (_conPty is not null)
+            OnConPtyExited(exitCode);
+        else
+            OnProcessExited(exitCode);
+    }
+
+    private void OnProcessExited(int? exitCode)
     {
         lock (_gate)
         {

@@ -186,7 +186,7 @@ public static class HarnessEntrypoint
             case "register-terminal":
                 return await TerminalEntryRegistration.RegisterAsync(Console.Out);
             case null:
-                return await RunEntrypointAsync(harnessHome, "tui", null, gpu, shell, gpuScreenshot, gpuCard, gpuCapturePlan);
+                return await RunEntrypointAsync(harnessHome, "tui", resumeSessionId, gpu, shell, gpuScreenshot, gpuCard, gpuCapturePlan);
             default:
                 return await BootCli.RunHeadlessAsync(harnessHome, string.Join(' ', positional));
         }

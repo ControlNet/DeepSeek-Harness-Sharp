@@ -22,7 +22,7 @@ public static class ConsoleTunnel
 
     /**
      * Runs tunnel(input, output, token) on the raw terminal until the tunnel ends or the user presses the detach key.
-     * resize(columns, rows, token) is called once with the current size and again whenever it changes.
+     * resize(columns, rows, token) completes once with the current size before the tunnel starts, then runs whenever it changes.
      */
     public static async Task RunAsync(
         Func<Stream, Stream, CancellationToken, Task> tunnel,
@@ -31,9 +31,11 @@ public static class ConsoleTunnel
     {
         ConsoleCodePage.EnsureUtf8();
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (ReadSize() is var (columns, rows))
+            await resize(columns, rows, stop.Token);
         var output = Console.OpenStandardOutput();
         var input = new DetachKeyStream(ConsoleInput.OpenForRead(), stop);
-        var sizeWatch = WatchSizeAsync(resize, stop.Token);
+        var sizeWatch = WatchSizeAsync(resize, stop.Token, reportInitial: false);
         try
         {
             using var raw = PtyRawMode.TryEnable();

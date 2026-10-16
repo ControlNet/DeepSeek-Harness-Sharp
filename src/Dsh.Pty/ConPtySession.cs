@@ -26,10 +26,10 @@ internal sealed class ConPtySession : IDisposable
         Pid = pid;
         _input = input;
         _output = output;
-        Task.Run(MonitorExit);
+        Completion = MonitorExit();
     }
 
-    public event Action<int?>? Exited;
+    public Task<int?> Completion { get; }
 
     public int Pid { get; }
 
@@ -175,13 +175,13 @@ internal sealed class ConPtySession : IDisposable
             CloseHandle(_processHandle);
     }
 
-    private async Task MonitorExit()
+    private async Task<int?> MonitorExit()
     {
         await Task.Run(() => WaitForSingleObject(_processHandle, Infinite)).ConfigureAwait(false);
         int? exitCode = null;
         if (GetExitCodeProcess(_processHandle, out var code))
             exitCode = (int)code;
-        Exited?.Invoke(exitCode);
+        return exitCode;
     }
 
     [StructLayout(LayoutKind.Sequential)]
