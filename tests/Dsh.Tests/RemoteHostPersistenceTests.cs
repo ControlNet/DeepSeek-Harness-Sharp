@@ -14,19 +14,20 @@ public sealed class RemoteHostPersistenceTests
     [InlineData("null")]
     public async Task InvalidAgentLaunchRegistry_FailsHostStartupWithoutReplacingTheFile(string contents)
     {
+        var cancellationToken = TestContext.Current.CancellationToken;
         var root = RealHostProcesses.CreateHome("invalid-agents");
         try
         {
             var directory = Path.Combine(root, "host");
             Directory.CreateDirectory(directory);
             var storePath = Path.Combine(directory, "agents.json");
-            await File.WriteAllTextAsync(storePath, contents, Ct);
+            await File.WriteAllTextAsync(storePath, contents, cancellationToken);
 
             using var host = RealHostProcesses.StartHost(RealHostProcesses.Executable, root);
-            await host.WaitForExitAsync(Ct);
+            await host.WaitForExitAsync(cancellationToken);
 
             Assert.NotEqual(0, host.ExitCode);
-            Assert.Equal(contents, await File.ReadAllTextAsync(storePath, Ct));
+            Assert.Equal(contents, await File.ReadAllTextAsync(storePath, cancellationToken));
         }
         finally
         {

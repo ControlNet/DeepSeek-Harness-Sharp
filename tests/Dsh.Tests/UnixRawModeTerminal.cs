@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Text;
 using Dsh.Boot;
 using Dsh.Pty;
@@ -6,6 +7,8 @@ using Dsh.Pty;
 namespace Dsh.Tests;
 
 /** A private kernel PTY with a native session owner, retained until restored termios has been inspected. */
+[SupportedOSPlatform("linux")]
+[SupportedOSPlatform("macos")]
 internal sealed class UnixRawModeTerminal : IDisposable
 {
     internal const string MainScreenMarker = "DSH-RAW-MAIN-SCREEN";

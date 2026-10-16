@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Llm;
@@ -8,6 +9,8 @@ using Dsh.Tui;
 namespace Dsh.Tests;
 
 /** Real CLI consumers of the kernel terminal, not the daemon/proxy snapshot harness. */
+[SupportedOSPlatform("linux")]
+[SupportedOSPlatform("macos")]
 [Collection(SerialProcessCollection.Name)]
 public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
 {
