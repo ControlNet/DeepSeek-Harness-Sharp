@@ -16,6 +16,7 @@ public sealed class AotJsonCoverageTests
     [
         typeof(TodoWriteResult),
         typeof(TodoCounts),
+        typeof(Dsh.Deliverables.PresentResult),
         typeof(JobOutputResult),
         typeof(JobKillResult),
         typeof(PublicJobSnapshot),

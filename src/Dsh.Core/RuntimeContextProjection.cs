@@ -10,24 +10,19 @@ public sealed class RuntimeContextProjection : IDisposable
     private const string Cleared = "Current runtime context: none. Earlier runtime-context snapshots no longer apply.";
 
     private (long Seq, string? Text)? _retained;
-    private bool _neverExisted = true;
+    private bool _neverExisted;
     private readonly Func<bool> _unsubscribe;
+    private readonly Func<bool> _unsubscribeTruncate;
 
     public RuntimeContextProjection(Context ctx, Session session)
     {
-        var surface = new HashSet<long>(session.SurfaceManager.Nodes);
-        for (var index = session.Seq - 1; index >= 0; index--)
+        Rebuild(session);
+        // 截断可能删掉已保留的快照; 不重建的话 Project 仍以为模型看得到它, 截断后的请求就缺了运行时上下文。
+        _unsubscribeTruncate = ctx.On<SessionTruncateNotification>(notification =>
         {
-            if (session.EventAt(index) is not { Data: UserMessagePayload userMessage } sessionEvent
-                || !IsOwned(userMessage.Message))
-                continue;
-            _neverExisted = false;
-            if (surface.Contains(sessionEvent.Seq))
-            {
-                _retained = (sessionEvent.Seq, TextOf(userMessage.Message));
-                break;
-            }
-        }
+            if (ReferenceEquals(notification.Session, session))
+                Rebuild(session);
+        });
         _unsubscribe = ctx.On<SessionEventNotification>(notification =>
         {
             if (!ReferenceEquals(notification.Session, session))
@@ -47,7 +42,30 @@ public sealed class RuntimeContextProjection : IDisposable
         });
     }
 
-    public void Dispose() => _unsubscribe();
+    public void Dispose()
+    {
+        _unsubscribe();
+        _unsubscribeTruncate();
+    }
+
+    private void Rebuild(Session session)
+    {
+        _retained = null;
+        _neverExisted = true;
+        var surface = new HashSet<long>(session.SurfaceManager.Nodes);
+        for (var index = session.Seq - 1; index >= 0; index--)
+        {
+            if (session.EventAt(index) is not { Data: UserMessagePayload userMessage } sessionEvent
+                || !IsOwned(userMessage.Message))
+                continue;
+            _neverExisted = false;
+            if (surface.Contains(sessionEvent.Seq))
+            {
+                _retained = (sessionEvent.Seq, TextOf(userMessage.Message));
+                break;
+            }
+        }
+    }
 
     private static bool IsOwned(UserMessage message)
         => message.Source is PluginMessageSource { Plugin: Source };

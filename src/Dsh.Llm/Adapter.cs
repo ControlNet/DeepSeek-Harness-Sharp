@@ -50,12 +50,17 @@ public class GenerateOptions
     public IReadOnlyDictionary<string, byte[]>? Attachments { get; init; }
 
     /** 复制请求并替换取消令牌(看门狗需要用一个可自己取消的令牌驱动适配器)。 */
-    public GenerateOptions WithCancellation(CancellationToken cancellationToken) => new()
+    public GenerateOptions WithCancellation(CancellationToken cancellationToken) => Copy(Messages, cancellationToken);
+
+    /** Copies the request with request-time messages, such as a projection for the target model. */
+    public GenerateOptions WithMessages(IReadOnlyList<Message> messages) => Copy(messages, Cancellation);
+
+    private GenerateOptions Copy(IReadOnlyList<Message> messages, CancellationToken cancellationToken) => new()
     {
         Provider = Provider,
         Model = Model,
         ReasoningEffort = ReasoningEffort,
-        Messages = Messages,
+        Messages = messages,
         System = System,
         Tools = Tools,
         Temperature = Temperature,

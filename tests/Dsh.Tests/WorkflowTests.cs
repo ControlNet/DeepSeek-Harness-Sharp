@@ -210,6 +210,11 @@ public class WorkflowTests
             .ToList();
         Assert.Contains("tool-workflow/run-start", recordTypes);
         Assert.Contains("tool-workflow/run-end", recordTypes);
+        var children = fixture.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.List()
+            .Where(session => session.Header.ParentSession == parent.Id)
+            .ToList();
+        Assert.Equal(2, children.Count);
+        Assert.All(children, child => Assert.Equal(ToolCallId.Create("call-workflow"), child.Header.ParentCallId));
     }
 
     [Fact]

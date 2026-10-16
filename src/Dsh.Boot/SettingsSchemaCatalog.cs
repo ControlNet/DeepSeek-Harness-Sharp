@@ -36,7 +36,7 @@ public static class SettingsSchemaCatalog
         if (plugins.Count > 0)
         {
             builder.AppendLine("#");
-            builder.AppendLine("# 插件参数(plugins.\"<包名>\": {enabled, ...参数}; 未列出的插件发现即启用):");
+            builder.AppendLine("# 插件参数(plugins.\"<包名>\": {enabled, permissions, ...参数}; 未列出的插件发现即启用):");
         }
         foreach (var plugin in plugins)
         {

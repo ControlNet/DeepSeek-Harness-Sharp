@@ -155,7 +155,7 @@ public static class GlobTool
                     ["pattern"] = ToolSchemas.StringParam(
                         "Glob pattern to match file paths against (e.g. \"**/*.ts\", \"src/**/*.test.js\"). "
                         + "A pattern with no \"/\" matches the basename at any depth, so \"*\" and \"*.ts\" both search the whole tree; include a separator to anchor the depth."),
-                    ["path"] = ToolSchemas.StringParam("Directory to search in. Defaults to the session workspace; a relative path resolves against it."),
+                    ["path"] = ToolSchemas.StringParam("Directory to search in. Defaults to the session working directory; a relative path resolves against it."),
                 },
                 "pattern"),
             TimeoutMs = resolved.TimeoutMs,
@@ -192,7 +192,7 @@ public static class GlobTool
             : null;
         if (pathArg is not null && pathArg.Trim().Length == 0)
             throw new ArgumentException("path must be a non-empty string when given");
-        var sessionCwd = exec.Agent?.Session.Header.Cwd;
+        var sessionCwd = exec.Agent?.Session.WorkingDirectory;
         var workdir = sessionCwd ?? Environment.CurrentDirectory;
         var root = pathArg is null
             ? workdir
@@ -260,7 +260,7 @@ public static class GrepTool
                 new Dictionary<string, System.Text.Json.Nodes.JsonObject>
                 {
                     ["pattern"] = ToolSchemas.StringParam("Regular expression to search for (ripgrep syntax)."),
-                    ["path"] = ToolSchemas.StringParam("File or directory to search. Defaults to the session workspace; a relative path resolves against it."),
+                    ["path"] = ToolSchemas.StringParam("File or directory to search. Defaults to the session working directory; a relative path resolves against it."),
                     ["include"] = ToolSchemas.StringParam("One glob filter for which files to search (e.g. \"*.ts\", \"*.{js,jsx}\"). Not a list; negation is not supported."),
                 },
                 "pattern"),
@@ -339,7 +339,7 @@ public static class GrepTool
         {
             throw new HarnessException($"grep pattern rejected: {error.Message}", "SEARCH_INVALID_PATTERN", error);
         }
-        var sessionCwd = exec.Agent?.Session.Header.Cwd;
+        var sessionCwd = exec.Agent?.Session.WorkingDirectory;
         var workdir = sessionCwd ?? Environment.CurrentDirectory;
         var root = pathArg is null
             ? workdir

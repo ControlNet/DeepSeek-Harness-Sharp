@@ -501,6 +501,29 @@ public class SessionPersistenceTests : IDisposable
     [Theory]
     [InlineData(JsonlCompression.None)]
     [InlineData(JsonlCompression.Zstd)]
+    public void List_ForkedSession_ReportsInheritedEventCountLikeStat(JsonlCompression compression)
+    {
+        var root = NewRoot();
+        using var persistence = new JsonlSessionPersistence(root, compression: compression);
+        var source = BuildSourceSession(TestCwd);
+        using (var handle = persistence.Create(source.Header))
+            handle.Append(source.SnapshotEvents());
+        const long forkPoint = 3;
+
+        var forkId = SessionFork.Fork(persistence, source, forkPoint, "fork", TestCwd);
+
+        var forkSnapshot = persistence.Stat(forkId);
+        Assert.NotNull(forkSnapshot);
+        Assert.True(File.Exists(LogPathOf(root, forkSnapshot.Header, compression)));
+        Assert.Equal(forkPoint, forkSnapshot.InheritedEventCount);
+        var listed = persistence.List().ToDictionary(snapshot => snapshot.Header.Id);
+        Assert.Equal(forkSnapshot.InheritedEventCount, listed[forkId].InheritedEventCount);
+        Assert.Equal(0, listed[source.Header.Id].InheritedEventCount);
+    }
+
+    [Theory]
+    [InlineData(JsonlCompression.None)]
+    [InlineData(JsonlCompression.Zstd)]
     public void Delete_RemovesFileAndClosesHandles(JsonlCompression compression)
     {
         var root = NewRoot();

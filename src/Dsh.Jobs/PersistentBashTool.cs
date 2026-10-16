@@ -186,7 +186,7 @@ public static class PersistentBashTool
             if (existing is not null)
                 shells.Reset(owner, "persistent bash shell exited");
             var shellPath = resolver.Resolve(CancellationToken.None);
-            var cwd = owner.Session.Header.Cwd ?? Environment.CurrentDirectory;
+            var cwd = owner.Session.WorkingDirectory ?? Environment.CurrentDirectory;
             var handle = subprocess.Spawn(new SubprocessSpawnSpec
             {
                 Argv = [shellPath],
@@ -242,6 +242,10 @@ public static class PersistentBashTool
                     queue.Release();
                 }
             },
+            // Only a call that starts a new shell has a known directory; a live shell keeps whatever directory it is in.
+            WriteTargets = (_, exec) => exec.Agent is { } owner && shells.Get(owner) is not { Handle.Done.IsCompleted: false }
+                ? [owner.Session.WorkingDirectory ?? Environment.CurrentDirectory]
+                : [],
         });
 
         return new CompositeDisposable(registration, new ActionDisposable(() => effect.Dispose()), shells);

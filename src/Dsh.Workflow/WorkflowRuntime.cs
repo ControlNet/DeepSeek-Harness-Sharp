@@ -11,6 +11,8 @@ public sealed record WorkflowStartRequest
     public string? SubagentProvider { get; init; }
     public int? MaxTotalAgents { get; init; }
     public required IAgent Parent { get; init; }
+    /** 启动本次工作流的父会话工具调用；工作流派生的子代理会话把它记为 parentCallId。 */
+    public ToolCallId? ParentCallId { get; init; }
     public CancellationToken Signal { get; init; }
 }
 

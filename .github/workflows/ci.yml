@@ -2,10 +2,11 @@ name: 构建校验
 
 # 不创建任何 Release；发布由 release.yml 在打 tag 时负责。
 # 触发与分工（本仓库 push 居多、PR 很少：约 170 个 commit 只有 1 个 merged PR）：
-#   - push 到 master / PR 的 open|sync|reopen：跑测试 + JIT 发布校验；
-#   - PR 被 merge（closed 且 merged=true）：在 merge 提交上再跑 AOT 构建；
+#   - push 到 master：跑测试 + JIT 发布校验；
+#   - PR 的 open|sync|reopen：跑测试 + JIT 发布校验 + AOT 构建（原生插件与 guard 走 AOT 产物，PR 阶段就要校验）；
+#   - PR 被 merge（closed 且 merged=true）：在 merge 提交上再跑一遍；
 #   - 手动 workflow_dispatch：aot 开关决定是否跑 AOT。
-# 也就是说：直接 push 不会跑 AOT，AOT 只出现在"真的合入"与手动触发这两处。
+# 也就是说：直接 push 不会跑 AOT，AOT 出现在 PR、合入与手动触发三处。
 on:
   push:
     branches: [master]
@@ -37,6 +38,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
+        # 原生库(guard 与 fault probe)的 C 编译器驱动, 经 -p:DshNativeCompiler 交给 PluginGuard.props。
+        # Windows 主构建用发布所用的 MSVC(cl), 再用 clang-cl 重建并重跑原生遏制回归。
+        include:
+          - os: windows-latest
+            native-cc: cl
+            native-cc-alt: clang-cl
+          - os: ubuntu-latest
+            native-cc: clang
+          - os: macos-latest
+            native-cc: clang
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,8 +70,31 @@ jobs:
             bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
           fi
 
-      - name: 编译测试工程（Debug，含插件夹具）
-        run: dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
+      - name: 检查 C 工具链（Clang/LLVM；Windows 另需 MSVC）
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            if ! command -v clang-cl >/dev/null 2>&1; then
+              choco install llvm --no-progress -y
+              echo 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+              export PATH="/c/Program Files/LLVM/bin:$PATH"
+            fi
+            clang-cl --version
+            "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' \
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'Common7\Tools\VsDevCmd.bat'
+          else
+            if ! command -v clang >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends clang
+            fi
+            clang --version
+          fi
+
+      - name: 编译测试工程（Debug，含插件夹具与 fault probe）
+        run: >
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
+          -p:DshNativeCompiler=${{ matrix.native-cc }}
 
       - name: 安装 sqlite3（Windows；SQLitePCLRaw.provider.sqlite3 需要系统 sqlite3.dll）
         if: runner.os == 'Windows'
@@ -111,6 +145,27 @@ jobs:
           echo "运行: ${ARGS[*]}"
           "${ARGS[@]}"
 
+      - name: 原生遏制回归（NativeGuardTests，${{ matrix.native-cc }}，跳过即失败）
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ ! -x "$EXE" ]; then
+            EXE="$EXE.exe"
+          fi
+          "$EXE" -noColor -class Dsh.Tests.NativeGuardTests -failSkips
+
+      - name: 换用 ${{ matrix.native-cc-alt }} 重建原生库并重跑原生遏制回归
+        if: matrix.native-cc-alt != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo \
+            -p:DshNativeCompiler=${{ matrix.native-cc-alt }} "-flp:verbosity=normal;logfile=native-alt.log"
+          # 构建日志里的编译命令证明 guard 与 probe 确由替换后的驱动重建。
+          grep -E '${{ matrix.native-cc-alt }} /nologo' native-alt.log
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -class Dsh.Tests.NativeGuardTests -failSkips
+
   build:
     name: 发布校验（${{ matrix.os }}，JIT）
     if: ${{ github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true }}
@@ -121,10 +176,13 @@ jobs:
         include:
           - os: windows-latest
             rid: win-x64
+            native-cc: cl
           - os: ubuntu-latest
             rid: linux-x64
+            native-cc: clang
           - os: macos-latest
             rid: osx-arm64
+            native-cc: clang
     steps:
       - uses: actions/checkout@v4
         with:
@@ -151,6 +209,7 @@ jobs:
           dotnet publish DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj
           -c Release -r ${{ matrix.rid }}
           -p:DebugSymbols=false -p:DebugType=none
+          -p:DshNativeCompiler=${{ matrix.native-cc }}
           --nologo -v m
 
       - name: GUI 启动器 JIT 发布校验（dsh-gui）
@@ -158,7 +217,15 @@ jobs:
           dotnet publish DshGuiHost/DshGuiHost.csproj
           -c Release -r ${{ matrix.rid }}
           -p:DebugSymbols=false -p:DebugType=none
+          -p:DshNativeCompiler=${{ matrix.native-cc }}
           --nologo -v m
+
+      - name: 校验发布产物含原生故障遏制库
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/${{ matrix.rid }}/publish"
+          ls "$PUB" | grep -E '^(lib)?dsh_plugin_guard\.(dll|so|dylib)$' || { echo "::error::发布产物缺少 dsh_plugin_guard"; exit 1; }
 
       - name: GUI 主线程冒烟（macOS）
         # 无显示环境不保证能起窗口: 只断言 GUI 不再在子线程初始化 Avalonia(尽力而为)。
@@ -187,10 +254,10 @@ jobs:
 
   aot:
     name: AOT 构建（${{ matrix.rid }}）
-    # 独立流水线：只在这两处跑——PR 被 merge（在 merge 提交上），或手动 dispatch 且 aot=true。
-    # 直接 push 到 master 不跑（本仓库 push 居多，AOT 只跟"真的合入"绑定）。
+    # 独立流水线：PR 的 open|sync|reopen 与被 merge 时（在 merge 提交上）跑，或手动 dispatch 且 aot=true。
+    # 直接 push 到 master 不跑（本仓库 push 居多）。
     # 不依赖 test：AOT 是独立校验，test 未过也不应阻止 AOT 构建或手动触发。
-    if: ${{ (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && inputs.aot) }}
+    if: ${{ (github.event_name == 'pull_request' && (github.event.action != 'closed' || github.event.pull_request.merged == true)) || (github.event_name == 'workflow_dispatch' && inputs.aot) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
@@ -199,8 +266,10 @@ jobs:
         include:
           - os: windows-latest
             rid: win-x64
+            native-cc: cl
           - os: ubuntu-latest
             rid: linux-x64
+            native-cc: clang
     steps:
       - uses: actions/checkout@v4
         with:
@@ -234,16 +303,19 @@ jobs:
         shell: bash
         env:
           RID: ${{ matrix.rid }}
+          NATIVE_CC: ${{ matrix.native-cc }}
         run: |
           set -euo pipefail
+          # 原生库由 PluginGuard.props 构建; AOT 产物附带 fault probe, 供在目标机上回归 guard 的遏制。
+          NATIVE_ARGS=(-p:DshNativeCompiler="$NATIVE_CC" -p:DshShipFaultProbe=true)
           dotnet publish DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj \
             -c Release -r "$RID" -p:PublishAot=true \
-            -p:DebugSymbols=false -p:DebugType=none \
+            -p:DebugSymbols=false -p:DebugType=none "${NATIVE_ARGS[@]}" \
             --nologo -v m
           # GUI 启动器一并 AOT 发布并叠加进主产物。
           dotnet publish DshGuiHost/DshGuiHost.csproj \
             -c Release -r "$RID" -p:PublishAot=true \
-            -p:DebugSymbols=false -p:DebugType=none \
+            -p:DebugSymbols=false -p:DebugType=none "${NATIVE_ARGS[@]}" \
             --nologo -v m
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
           GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
@@ -252,6 +324,9 @@ jobs:
           rm -f "$PUB"/dsh-gui*.pdb "$PUB"/dsh-gui*.dbg
           # 结构特征判别是否真的 AOT（JIT 发布同样会产出 apphost，光看文件存在拦不住）。
           bash scripts/assert-aot-output.sh "$PUB"
+          for NATIVE in dsh_plugin_guard dsh_fault_probe; do
+            ls "$PUB" | grep -E "^(lib)?$NATIVE\.(dll|so|dylib)$" || { echo "::error::AOT 产物缺少 $NATIVE"; exit 1; }
+          done
           # 调试旁文件不进产物（AOT 的 .pdb/.dbg 动辄数百 MB）。
           rm -f "$PUB"/*.pdb "$PUB"/*.dbg
           mkdir -p "$PUB/plugins"
@@ -277,3 +352,32 @@ jobs:
           path: DeepSeek-Harness-Sharp/bin/Release/net10.0/${{ matrix.rid }}/publish
           if-no-files-found: error
           retention-days: 7
+
+      - name: 用 AOT 产物里的 guard 与 probe 回归原生遏制（Linux 另跑 AOT 插件 ABI 端到端）
+        shell: bash
+        env:
+          RID: ${{ matrix.rid }}
+          NATIVE_CC: ${{ matrix.native-cc }}
+        run: |
+          set -euo pipefail
+          PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
+          BIN="tests/Dsh.Tests/bin/Debug/net10.0"
+          CLASSES=(-class Dsh.Tests.NativeGuardTests)
+          if [ "$RID" = "linux-x64" ]; then
+            # NativeAOT 发布的样例插件(NativeLib=Shared), 由 NativePluginAbiTests 经 guard 装载并调用。
+            dotnet publish tests/Dsh.NativePluginSample -c Release --nologo -v m
+            CLASSES+=(-class Dsh.Tests.NativePluginAbiTests)
+          fi
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo -v m -p:DshNativeCompiler="$NATIVE_CC"
+          # 测试宿主是 JIT 进程, 把它旁边的 guard 与 probe 换成 AOT 产物里随发布附带的那两份。
+          for NATIVE in dsh_plugin_guard dsh_fault_probe; do
+            FILE="$(ls "$PUB" | grep -E "^(lib)?$NATIVE\.(dll|so|dylib)$")"
+            cp "$PUB/$FILE" "$BIN/$FILE"
+            cmp "$PUB/$FILE" "$BIN/$FILE"
+            echo "回归使用 AOT 产物: $PUB/$FILE"
+          done
+          EXE="$BIN/Dsh.Tests"
+          if [ ! -x "$EXE" ]; then
+            EXE="$EXE.exe"
+          fi
+          "$EXE" -noColor "${CLASSES[@]}" -failSkips

@@ -64,11 +64,14 @@ public static class PromptSpine
         "tool:edit",
         "tool:glob",
         "tool:grep",
+        "tool:working_directory",
+        "tool:create_worktree",
         "tool:jobs",
         "tool:pty",
         "tool:web_search",
         "tool:web_fetch",
         "tool:session_search",
+        "tool:present",
         "tool:compact",
         "tool:goal",
         "tool:e2b_run",
@@ -83,6 +86,7 @@ public static class PromptSpine
     [
         "memory:project",
         "approval:policy",
+        "working-directory",
         "subagent:delegation",
         "board:coordination",
     ];
