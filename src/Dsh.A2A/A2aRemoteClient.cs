@@ -1,5 +1,6 @@
 using A2A;
 using Dsh.Boot;
+using Dsh.Runtime;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using A2AMessage = A2A.Message;
@@ -29,12 +30,13 @@ public sealed record A2aCardResult(
  * target 是配置里的 remote 名, 或绝对 http(s) URL; URL 解析为基地址, 再从 agent card 取 JSON-RPC 端点。
  * A2A 是 client-server, 只做 Server 的实现之间不会自己产生会话, 这个类补的正是 DSH 缺的 Client 角色。
  */
-public sealed class A2aRemoteClient(IReadOnlyDictionary<string, A2aRemoteSettings> remotes)
+public sealed class A2aRemoteClient(IReadOnlyDictionary<string, A2aRemoteSettings> remotes, OutboundProxy? proxy = null)
 {
     private const int PollIntervalMs = 300;
     private const string ProtocolVersionHeader = "A2A-Version";
 
     private readonly IReadOnlyDictionary<string, A2aRemoteSettings> _remotes = remotes;
+    private readonly OutboundProxy _proxy = proxy ?? new OutboundProxy();
 
     public async Task<A2aCardResult> CardAsync(string target, CancellationToken cancellationToken)
     {
@@ -115,7 +117,7 @@ public sealed class A2aRemoteClient(IReadOnlyDictionary<string, A2aRemoteSetting
     {
         var (baseUri, headers) = Resolve(target);
         AgentCard card;
-        using (var cardHttp = new HttpClient { Timeout = Timeout.InfiniteTimeSpan })
+        using (var cardHttp = new HttpClient(_proxy.CreateHandler()) { Timeout = Timeout.InfiniteTimeSpan })
         {
             Apply(cardHttp, headers);
             card = await FetchCardAsync(baseUri, cardHttp, cancellationToken);
@@ -125,7 +127,7 @@ public sealed class A2aRemoteClient(IReadOnlyDictionary<string, A2aRemoteSetting
         if (!rpcHeaders.ContainsKey(ProtocolVersionHeader)
             && card.SupportedInterfaces.FirstOrDefault()?.ProtocolVersion is { Length: > 0 } version)
             rpcHeaders[ProtocolVersionHeader] = version;
-        var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        var http = new HttpClient(_proxy.CreateHandler()) { Timeout = Timeout.InfiniteTimeSpan };
         Apply(http, rpcHeaders);
         var rpc = card.SupportedInterfaces.FirstOrDefault()?.Url;
         var rpcUri = string.IsNullOrWhiteSpace(rpc) ? baseUri : new Uri(rpc);
