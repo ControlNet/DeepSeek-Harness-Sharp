@@ -1,16 +1,21 @@
-using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Dsh.Llm;
 
 namespace Dsh.Gui.ViewModels;
 
-/** 底部状态行的统计: 轮/步、LLM 耗时、首 token 延迟、tok/s、缓存命中与累计 token。 */
-public sealed partial class TokenStatsViewModel : ObservableObject
+/**
+ * 底部状态行的统计: 轮/步、LLM 耗时、首 token 延迟、tok/s、缓存命中与累计 token。
+ * The clock is injectable so elapsed-time rules can be checked without depending on how fast the machine runs.
+ */
+public sealed partial class TokenStatsViewModel(TimeProvider clock) : ObservableObject
 {
     public const string Empty = "—";
     private const double MinimumMeasurableSeconds = 0.1;
 
-    private readonly Stopwatch _requestWatch = new();
+    /** Start timestamp of the running request; null when no request is being timed. */
+    private long? _requestStartedAt;
+    /** Duration of the last finished request, reported while no request runs. */
+    private TimeSpan _finishedElapsed;
     private bool _firstTokenSeen;
     private double _inputTokens;
     private double _outputTokens;
@@ -34,12 +39,21 @@ public sealed partial class TokenStatsViewModel : ObservableObject
     [ObservableProperty]
     private string _totals = Empty;
 
+    public TokenStatsViewModel()
+        : this(TimeProvider.System)
+    {
+    }
+
+    private TimeSpan RequestElapsed
+        => _requestStartedAt is { } startedAt ? clock.GetElapsedTime(startedAt) : _finishedElapsed;
+
     public void Reset()
     {
         _inputTokens = 0;
         _outputTokens = 0;
         _cacheReadTokens = 0;
-        _requestWatch.Reset();
+        _requestStartedAt = null;
+        _finishedElapsed = TimeSpan.Zero;
         _firstTokenSeen = false;
         Rounds = Empty;
         Latency = Empty;
@@ -55,23 +69,25 @@ public sealed partial class TokenStatsViewModel : ObservableObject
     public void RequestStarted()
     {
         _firstTokenSeen = false;
-        _requestWatch.Restart();
+        _finishedElapsed = TimeSpan.Zero;
+        _requestStartedAt = clock.GetTimestamp();
     }
 
     public void FirstTokenArrived()
     {
-        if (_firstTokenSeen || !_requestWatch.IsRunning)
+        if (_firstTokenSeen || _requestStartedAt is null)
             return;
         _firstTokenSeen = true;
-        FirstToken = $"首 token {_requestWatch.Elapsed.TotalSeconds:0.0}s";
+        FirstToken = $"首 token {RequestElapsed.TotalSeconds:0.0}s";
     }
 
     public void RequestFinished()
     {
-        if (!_requestWatch.IsRunning)
+        if (_requestStartedAt is null)
             return;
-        var seconds = _requestWatch.Elapsed.TotalSeconds;
-        _requestWatch.Stop();
+        _finishedElapsed = RequestElapsed;
+        _requestStartedAt = null;
+        var seconds = _finishedElapsed.TotalSeconds;
         if (seconds >= MinimumMeasurableSeconds)
             Latency = $"LLM {seconds:0.0}s";
     }
@@ -88,7 +104,7 @@ public sealed partial class TokenStatsViewModel : ObservableObject
         Cache = _inputTokens > 0
             ? $"缓存命中 {_cacheReadTokens / _inputTokens * 100:0}%"
             : Empty;
-        var seconds = _requestWatch.Elapsed.TotalSeconds;
+        var seconds = RequestElapsed.TotalSeconds;
         // 重放历史会话时事件是瞬间连发的, 这种耗时算出来的 tok/s 没有意义。
         if (usage.OutputTokens > 0 && seconds >= MinimumMeasurableSeconds)
             TokensPerSecond = $"{usage.OutputTokens / seconds:0.0} tok/s";
