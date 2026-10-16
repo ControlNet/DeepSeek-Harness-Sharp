@@ -44,7 +44,7 @@ public class PtyDaemonTests
             var started = await PtyDaemonClient.StartAsync(new PtyDaemonStartParams
             {
                 FileName = "/bin/sh",
-                Arguments = ["-c", "sleep 5"],
+                Arguments = ["-c", "read line"],
             }, socketPath, null, TestContext.Current.CancellationToken);
 
             var info = Assert.Single(await PtyDaemonClient.ListAsync(socketPath, null, TestContext.Current.CancellationToken));
