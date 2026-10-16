@@ -385,12 +385,6 @@ public sealed class PtyDaemon : IAsyncDisposable
                         return false;
                     }
 
-                    if (session.Status == PtySessionStatus.Exited)
-                    {
-                        await WriteResponseAsync(stream, new PtyDaemonResponse { Ok = false, Error = $"PTY session {id} has exited" }, cancellationToken);
-                        return false;
-                    }
-
                     // 窗格级订阅: 不排空历史、不改 attached 状态, 与独占 attach 并行存在。
                     using var subscription = session.Subscribe();
                     await WriteResponseAsync(stream, new PtyDaemonResponse { Ok = true, Session = ToDto(session.ToInfo()) }, cancellationToken);

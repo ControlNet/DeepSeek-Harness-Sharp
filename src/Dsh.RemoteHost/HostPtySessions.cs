@@ -142,7 +142,7 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
         registry.MarkExited(ptyId, null);
     }
 
-    /** 为一个连接开订阅: 订阅失败(不存在/已退出)在这里抛出, 成功后的流首帧是整屏快照, 以 Eof 结束。 */
+    /** 连接已有 PTY: 首帧是整屏快照, 已退出会话在快照后以 Eof 结束; 不存在则在订阅时失败。 */
     public async Task<IAsyncEnumerable<RemotePtyOutput>> AttachAsync(string ptyId, CancellationToken cancellationToken)
     {
         var session = await PtyDaemonClient.SubscribeAsync(ptyId, daemon.SocketPath, daemon.PortFile, cancellationToken).ConfigureAwait(false);
