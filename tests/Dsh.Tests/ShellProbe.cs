@@ -2,21 +2,24 @@
 
 namespace Dsh.Tests;
 
-/** bash 可用性探测：WSL/Git Bash 无响应时让依赖外部 shell 的用例跳过而不是挂死。结果进程级缓存。 */
-internal static class BashProbe
+/** 外部 shell 可用性探测：WSL/Git Bash/pwsh 缺失或无响应时让依赖它的用例跳过而不是挂死。结果进程级缓存。 */
+internal static class ShellProbe
 {
     private const int ProbeTimeoutMs = 5000;
 
-    private static readonly Lazy<bool> Available = new(Probe);
+    private static readonly Lazy<bool> BashAvailable = new(() => Probe("bash", "-c \"exit 0\""));
+    private static readonly Lazy<bool> PwshAvailable = new(() => Probe("pwsh", "-NoLogo -NoProfile -NonInteractive -Command exit 0"));
 
-    public static bool IsAvailable => Available.Value;
+    public static bool Bash => BashAvailable.Value;
 
-    private static bool Probe()
+    public static bool Pwsh => PwshAvailable.Value;
+
+    private static bool Probe(string executable, string arguments)
     {
         Process? process = null;
         try
         {
-            process = Process.Start(new ProcessStartInfo("bash", "-c \"exit 0\"")
+            process = Process.Start(new ProcessStartInfo(executable, arguments)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

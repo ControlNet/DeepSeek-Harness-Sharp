@@ -9,6 +9,20 @@ public enum ShellDialect
     PowerShell,
 }
 
+/** Model-visible shell tools by name, with the dialect their `command` argument is written in. */
+public static class ShellToolDialects
+{
+    public static IReadOnlyDictionary<string, ShellDialect> ByToolName { get; } = new Dictionary<string, ShellDialect>(StringComparer.Ordinal)
+    {
+        ["bash"] = ShellDialect.Posix,
+        ["bash_persistent"] = ShellDialect.Posix,
+        ["wsl"] = ShellDialect.Posix,
+        ["pwsh"] = ShellDialect.PowerShell,
+        ["pwsh_persistent"] = ShellDialect.PowerShell,
+        ["powershell"] = ShellDialect.PowerShell,
+    };
+}
+
 /**
  * Best-effort splitter that turns a command line into the simple commands it would run, each as a list of unquoted words.
  * It splits on control operators (; & | newline and parentheses) and also scans command substitutions and quoted multi-word arguments (bash -c, eval, ssh ...) as nested command lines.

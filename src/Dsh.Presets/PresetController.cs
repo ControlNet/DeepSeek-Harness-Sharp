@@ -24,8 +24,6 @@ public sealed class PresetController : Service
     private const string CreativeNotReady =
         "创造模式依赖运行时检查与插件管理工具（Dsh.Inspection），当前未就绪";
 
-    private static readonly string[] ShellToolNames = ["bash", "pwsh"];
-
     private sealed class EffectHolder
     {
         public List<IDisposable> Effects = [];
@@ -135,11 +133,11 @@ public sealed class PresetController : Service
         }
         if (preset != InteractionPreset.Minimal)
             return;
-        var shell = ShellToolNames.Where(name => tools.Get(name) is not null).ToList();
+        var shell = ShellToolDialects.ByToolName.Keys.Where(name => tools.Get(name) is not null).ToList();
         if (shell.Count == 0)
         {
             throw new InvalidOperationException(
-                "minimal preset requires a registered persistent shell tool (bash/pwsh), but neither is registered");
+                $"minimal preset requires a registered shell tool ({string.Join('/', ShellToolDialects.ByToolName.Keys)}), but none is registered");
         }
         holder.Effects.Add(systemPrompt.Section(
             PromptSection.Literal(SystemPrompt.PersonaSection, MinimalPersona, complete: true),
@@ -171,7 +169,7 @@ public sealed class PresetController : Service
         var text = preset switch
         {
             InteractionPreset.Minimal =>
-                "The user switched this session to the minimal preset: bare assistant persona; only the persistent shell tool is available.",
+                "The user switched this session to the minimal preset: bare assistant persona; only the shell tools are available.",
             InteractionPreset.Ptc =>
                 "The user switched this session to the ptc preset: only run_code is callable directly; call other tools from inside run_code programs.",
             InteractionPreset.Creative =>

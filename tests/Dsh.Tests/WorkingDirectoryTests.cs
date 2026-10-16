@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Dsh.Core;
 using Dsh.Interaction;
+using Dsh.Jobs;
 using Dsh.Llm;
 using Dsh.Runtime;
 using Dsh.Tools;
@@ -9,6 +10,7 @@ using Dsh.Tools;
 namespace Dsh.Tests;
 
 /** working_directory / create_worktree: the session directory moves, the write permission root (header cwd) does not. */
+[Collection(SerialProcessCollection.Name)]
 public sealed class WorkingDirectoryTests : IDisposable
 {
     private readonly Context _ctx = new();
@@ -25,6 +27,11 @@ public sealed class WorkingDirectoryTests : IDisposable
         ReadTool.Register(_ctx);
         WriteTool.Register(_ctx);
         BashTool.Register(_ctx);
+        PwshTool.Register(_ctx);
+        WindowsPowerShellTool.Register(_ctx);
+        WslTool.Register(_ctx);
+        PersistentBashTool.Register(_ctx);
+        PersistentPwshTool.Register(_ctx);
         WorkingDirectoryTool.Register(_ctx);
         WorktreeTool.Register(_ctx);
         _root = TempTree.CreateDirectory("wd-root");
@@ -34,6 +41,7 @@ public sealed class WorkingDirectoryTests : IDisposable
 
     public void Dispose()
     {
+        _ctx.Get<SubprocessService>(SubprocessService.ServiceName)!.Dispose();
         TempTree.Delete(_root);
         TempTree.Delete(_outside);
     }
@@ -107,7 +115,7 @@ public sealed class WorkingDirectoryTests : IDisposable
     [Fact]
     public async Task NewBashProcess_StartsInChangedDirectory()
     {
-        if (!BashProbe.IsAvailable)
+        if (!ShellProbe.Bash)
             Assert.Skip("bash 不可用(WSL/Git Bash 无响应), 跳过依赖外部 shell 的用例");
         Directory.CreateDirectory(Path.Combine(_root, "sub"));
         await File.WriteAllTextAsync(Path.Combine(_root, "sub", "marker.txt"), "", TestContext.Current.CancellationToken);
@@ -117,6 +125,106 @@ public sealed class WorkingDirectoryTests : IDisposable
 
         Assert.False(result.IsError, TextOf(result));
         Assert.Contains("marker.txt", TextOf(result));
+    }
+
+    [Theory]
+    [InlineData("pwsh")]
+    [InlineData("powershell")]
+    [InlineData("bash_persistent")]
+    [InlineData("pwsh_persistent")]
+    public async Task NewShell_StartsInChangedDirectory(string tool)
+    {
+        RequireShell(tool);
+        Directory.CreateDirectory(Path.Combine(_root, "sub"));
+        await File.WriteAllTextAsync(Path.Combine(_root, "sub", "marker.txt"), "", TestContext.Current.CancellationToken);
+        await Cd("sub");
+
+        var result = await Execute(tool, new { command = tool == "bash_persistent" ? "ls" : "Get-ChildItem -Name" });
+
+        Assert.False(result.IsError, TextOf(result));
+        Assert.Contains("marker.txt", TextOf(result));
+        Assert.Equal(_root, _agent.Session.Header.Cwd);
+    }
+
+    [Theory]
+    [InlineData("bash")]
+    [InlineData("pwsh")]
+    [InlineData("powershell")]
+    public async Task RelativeShellWorkdir_ResolvesAgainstChangedDirectory(string tool)
+    {
+        RequireShell(tool);
+        Directory.CreateDirectory(Path.Combine(_root, "sub", "deeper"));
+        await File.WriteAllTextAsync(Path.Combine(_root, "sub", "deeper", "marker.txt"), "", TestContext.Current.CancellationToken);
+        await Cd("sub");
+
+        var result = await Execute(tool, new { command = tool == "bash" ? "ls" : "Get-ChildItem -Name", workdir = "deeper" });
+
+        Assert.False(result.IsError, TextOf(result));
+        Assert.Contains("marker.txt", TextOf(result));
+    }
+
+    [Theory]
+    [InlineData("bash_persistent")]
+    [InlineData("pwsh_persistent")]
+    public async Task ExistingPersistentShell_KeepsItsDirectoryAfterCdOutsideRoot(string tool)
+    {
+        RequireShell(tool);
+        _ = ApprovalService.Register(_ctx);
+        using var answerer = ApprovalAnswerers.DenyAll(_ctx);
+        var initial = await Execute(tool, new { command = "echo started" });
+        Assert.False(initial.IsError, TextOf(initial));
+        await Cd(_outside);
+
+        var result = await Execute(tool, new { command = "echo kept > persistent.txt" });
+
+        Assert.False(result.IsError, TextOf(result));
+        Assert.True(File.Exists(Path.Combine(_root, "persistent.txt")));
+        Assert.False(File.Exists(Path.Combine(_outside, "persistent.txt")));
+        Assert.Empty(Asked());
+    }
+
+    [Theory]
+    [InlineData("bash")]
+    [InlineData("pwsh")]
+    [InlineData("powershell")]
+    [InlineData("wsl")]
+    [InlineData("bash_persistent")]
+    [InlineData("pwsh_persistent")]
+    public async Task OutsideRootShell_RejectsWithoutExecution_ThenRunsAfterApproval(string tool)
+    {
+        RequireShell(tool);
+        _ = ApprovalService.Register(_ctx);
+        await Cd(_outside);
+        using (ApprovalAnswerers.DenyAll(_ctx))
+        {
+            var denied = await Execute(tool, new { command = "echo allowed > shell.txt" });
+            Assert.True(denied.IsError);
+            Assert.False(File.Exists(Path.Combine(_outside, "shell.txt")));
+            Assert.StartsWith(SessionWorkingDirectory.OutsideRootReason, Assert.Single(Asked()).Reason);
+        }
+        using (ApprovalAnswerers.AutoApprove(_ctx))
+        {
+            var approved = await Execute(tool, new { command = "echo allowed > shell.txt" });
+            Assert.False(approved.IsError, TextOf(approved));
+            if (tool == "wsl" && ValueOf(approved).GetProperty("exitCode").GetInt32() != 0)
+                Assert.Skip($"No usable WSL distribution: {TextOf(approved)}");
+            Assert.True(File.Exists(Path.Combine(_outside, "shell.txt")));
+            Assert.Equal(2, Asked().Count);
+            Assert.Equal(_root, _agent.Session.Header.Cwd);
+        }
+    }
+
+    private static void RequireShell(string tool)
+    {
+        if (tool is "powershell" or "wsl")
+        {
+            if (!OperatingSystem.IsWindows())
+                Assert.Skip("Windows-only shell; this host is not Windows");
+            if (tool == "wsl" && !File.Exists(Path.Combine(Environment.SystemDirectory, "wsl.exe")))
+                Assert.Skip("WSL is not installed on this Windows host");
+        }
+        else if (tool.StartsWith("bash", StringComparison.Ordinal) ? !ShellProbe.Bash : !ShellProbe.Pwsh)
+            Assert.Skip($"Required shell for {tool} is unavailable");
     }
 
     [Fact]
