@@ -109,6 +109,10 @@ def run(args, index):
             mark = len(output)
             os.write(master, probe)
             wait_for(lambda: probe in output[mark:], 10, "typed input was not rendered")
+            # Real kernel resize signals must not be mistaken for EOF by poll/read.
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 41, 141, 0, 0))
+            observe()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
                 observe()
@@ -143,12 +147,17 @@ def run(args, index):
                 "llm_smoke": args.llm_smoke and index == 0}
     except Exception:
         # Only terminal metadata is safe to publish; never print the screen, configuration or exec arguments.
+        if status is None:
+            ready, _, _ = select.select([status_read], [], [], 2)
+            if ready:
+                status = struct.unpack("i", os.read(status_read, struct.calcsize("i")))[0]
         current = termios.tcgetattr(slave)
         changed = {str(i): [repr(before_value), repr(after_value)]
                    for i, (before_value, after_value) in enumerate(zip(original, current))
                    if before_value != after_value}
         print(json.dumps({"run": index, "failure_timeline": timeline,
-                          "termios_differences": changed, "exit_sent": exit_sent}), flush=True)
+                          "termios_differences": changed, "exit_sent": exit_sent,
+                          "app_exit_code": os.waitstatus_to_exitcode(status) if status is not None else None}), flush=True)
         if args.strace:
             for line in (args.output / f"trace-{index}.txt").read_text().splitlines():
                 if "TCSETS" in line or "exit_group(" in line:
