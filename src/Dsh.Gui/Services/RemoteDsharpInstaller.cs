@@ -1,5 +1,4 @@
-using System.Collections.Concurrent;
-using System.Net;
+using Dsh.Runtime;
 
 namespace Dsh.Gui.Services;
 
@@ -30,8 +29,11 @@ public static class RemoteDsharpInstaller
         "pkill -f '[h]ost serve' >/dev/null 2>&1 || true; "
         + "rm -f \"$HOME/.dsh/run/host.sock\" \"$HOME/.dsh/run/host.port\" \"$HOME/.dsh/run/host.token\"";
 
-    /** 部署参数(来自 GUI 设置): Release 基址/版本; Proxy=本地下载代理; Via=下载位置(auto|client|server); ServerProxy=远端下载代理(空则用远端自带代理/直连)。 */
-    public sealed record Options(string ReleaseBaseUrl, string Version, string? Proxy, string Via = "auto", string? ServerProxy = null);
+    /** 本机下载整个发布包的超时。 */
+    private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(10);
+
+    /** 部署参数: Release 基址/版本; LocalProxy=本机出口代理(本机下载用, 来自 settings.yaml 的 network.outbound_proxy); Via=下载位置(auto|client|server); ServerProxy=远端下载代理(空则用远端自带代理/直连)。 */
+    public sealed record Options(string ReleaseBaseUrl, string Version, OutboundProxy LocalProxy, string Via = "auto", string? ServerProxy = null);
 
     /** 部署结果: CommandPath 为远端 dsharp 的绝对路径(可交给启动器当 hostCommand)。 */
     public sealed record Result(string CommandPath, bool AlreadyPresent);
@@ -197,23 +199,11 @@ public static class RemoteDsharpInstaller
 
     private static string LastLine(string output) => Lines(output).LastOrDefault() ?? "";
 
-    private static readonly ConcurrentDictionary<string, HttpClient> Clients = new(StringComparer.Ordinal);
-
-    private static HttpClient ClientFor(string? proxy)
-        => Clients.GetOrAdd(proxy ?? "", key =>
-        {
-            var handler = new HttpClientHandler();
-            if (key.Length > 0)
-                handler.Proxy = new WebProxy(key);
-            var client = new HttpClient(handler);
-            client.Timeout = TimeSpan.FromMinutes(10);
-            return client;
-        });
-
     private static async Task<string> DownloadAsync(Options options, string rid, CancellationToken cancellationToken)
     {
         var url = AssetUrl(options, rid);
-        var bytes = await ClientFor(options.Proxy).GetByteArrayAsync(url, cancellationToken).ConfigureAwait(false);
+        using var http = new HttpClient(options.LocalProxy.CreateHandler()) { Timeout = DownloadTimeout };
+        var bytes = await http.GetByteArrayAsync(url, cancellationToken).ConfigureAwait(false);
         var path = Path.Combine(Path.GetTempPath(), $"dsharp-{rid}-{Guid.NewGuid():N}.tar.gz");
         await File.WriteAllBytesAsync(path, bytes, cancellationToken).ConfigureAwait(false);
         return path;

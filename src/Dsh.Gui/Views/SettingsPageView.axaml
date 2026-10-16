@@ -324,6 +324,35 @@
             </Border>
           </StackPanel>
 
+          <StackPanel Spacing="12" IsVisible="{Binding Preferences.IsNetworkSection}">
+            <TextBlock Text="网络" Classes="Title" />
+
+            <Border Background="{DynamicResource Brush.Bg.Card}" CornerRadius="{DynamicResource CornerRadius.Card}" Padding="14">
+              <StackPanel Spacing="8">
+                <TextBlock Text="本机出口代理" FontWeight="SemiBold" />
+                <TextBlock Text="本机发出的 web_search、web_fetch、模型请求、下载远端 dsharp 等出站 HTTP 都经它访问外网；留空跟随系统代理。远程服务器自己的代理不在这里配置。"
+                           Classes="Tertiary" TextWrapping="Wrap" />
+                <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="6">
+                  <TextBlock Text="代理地址" Classes="Tertiary" VerticalAlignment="Center" />
+                  <TextBox Grid.Column="1" Text="{Binding Preferences.OutboundProxyUrl}"
+                           PlaceholderText="留空 = 跟随系统代理；如 http://127.0.0.1:7890、socks5://user:pass@127.0.0.1:1080" />
+                  <TextBlock Grid.Row="1" Text="直连主机" Classes="Tertiary" VerticalAlignment="Top" Margin="0,6,0,0" />
+                  <TextBox Grid.Row="1" Grid.Column="1" AcceptsReturn="True" Height="80" TextWrapping="Wrap"
+                           Text="{Binding Preferences.OutboundProxyBypassText}"
+                           PlaceholderText="每行一个，含子域，如 api.deepseek.com；回环地址与不带点的主机名总是直连" />
+                  <TextBlock Grid.Row="2" Text="探测地址" Classes="Tertiary" VerticalAlignment="Center" />
+                  <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Preferences.OutboundProxyProbeUrl}"
+                           PlaceholderText="{Binding Preferences.OutboundProxyProbePlaceholder}" />
+                </Grid>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Button Classes="Primary" Content="保存" Command="{Binding Preferences.SaveNetworkCommand}" />
+                  <Button Classes="Ghost" Content="连通性自检" Command="{Binding Preferences.CheckProxyCommand}" />
+                </StackPanel>
+                <SelectableTextBlock Text="{Binding Preferences.ProxyCheckResult}" TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
+          </StackPanel>
+
           <StackPanel Spacing="12" IsVisible="{Binding Preferences.IsRemoteSection}">
             <TextBlock Text="远程" Classes="Title" />
 
@@ -401,7 +430,7 @@
                   <TextBlock Grid.Row="1" Text="版本" Classes="Tertiary" VerticalAlignment="Center" />
                   <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Preferences.RemoteReleaseVersion}" PlaceholderText="latest 或 vX.Y.Z" />
                   <TextBlock Grid.Row="2" Text="本地代理" Classes="Tertiary" VerticalAlignment="Center" />
-                  <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Preferences.RemoteDownloadProxy}" PlaceholderText="本机下载用；留空 = 直连" />
+                  <TextBlock Grid.Row="2" Grid.Column="1" Text="本机下载走「网络」页的本机出口代理" Classes="Tertiary" VerticalAlignment="Center" />
                   <TextBlock Grid.Row="3" Text="下载位置" Classes="Tertiary" VerticalAlignment="Center" />
                   <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding Preferences.DownloadViaOptions}"
                             SelectedItem="{Binding Preferences.RemoteDownloadVia}" />

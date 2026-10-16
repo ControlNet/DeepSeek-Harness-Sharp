@@ -269,6 +269,20 @@ safety:
   blacklist: []
 ```
 
+本机出口由 GUI 设置「网络」与 TUI 共用:
+
+```yaml
+network:
+  outbound_proxy:
+    url: socks5://user:pass@127.0.0.1:1080
+    bypass: [api.deepseek.com]
+    probe_url: https://www.gstatic.com/generate_204
+```
+
+`url` 支持 HTTP、HTTPS、SOCKS4/4a/5,留空跟随系统代理;日志与自检脱敏代理凭据。此配置统一本机 HTTP、LLM、web_search/web_fetch、目录查询与发布包下载,不配置远程服务器自己的出口。GUI 保存立即应用到已有客户端的后续请求;TUI `/proxy set <URL>` 写回并热更新,`/proxy clear` 恢复系统代理(保留直连名单与自检地址),手改 settings.yaml 后用 `/proxy reload` 热更新。`/proxy test [URL]` 自检并区分代理连接、认证与目标访问失败。
+
+`web_fetch` 不因配置代理而放宽公网限制:每次请求及重定向均在本机解析并拒绝非公网或混合公网/私网答案;直连钉住已校验地址,经代理则以已校验的 IP 作为 HTTP 绝对 URI、CONNECT 或 SOCKS 的实际目标,同时保留原始 Host、TLS SNI 与正常证书域名校验。代理不再替 `web_fetch` 解析目标域名,因此本机 DNS 不可用时请求明确失败。代理必须支持 IP 目标及原始 Host;拒绝这种路由的代理会报真实访问失败,不会回退到未校验的域名。代理服务器本身是可信传输边界,恶意代理仍可无视所请求的地址(HTTP 无端到端加密,HTTPS 仍校验证书);本机不声称能控制远端 DNS。其他 HTTP 客户端沿用各自的目标策略。
+
 - `plugins:` 支持两种写法:`"@deepseek-ai/dsh-tool-todo": false`(禁用),或带参数的 `"@deepseek-ai/dsh-tool-todo": { enabled: true, ... }`(保存插件参数);插件被发现即启用,这里的禁用项与 `/plugins` 命令是仅有的两个开关来源。
 - 插件权限:`permissions` 是与 `enabled` 并列的保留键(不会作为参数交给插件),含 `read`/`write`/`network` 三项布尔值;未写 `permissions` 或未写某一项时均为允许。由 `/plugins ban_write|enable_write` 与 GUI 插件市场的勾选框写入,也可手写;拼错的键或非布尔值会在启动时报 `INVALID_PLUGIN_SETTING`。目前只记录配置,强制执行由后续版本的插件沙箱(`sandbox.enabled: true`)提供:
 
