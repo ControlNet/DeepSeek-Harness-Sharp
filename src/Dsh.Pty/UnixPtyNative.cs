@@ -39,6 +39,8 @@ internal static class UnixPtyNative
     private static readonly short PosixSpawnSetsid = OperatingSystem.IsMacOS() ? (short)0x0400 : (short)0x80;
     /** 不透明类型的保守容量: glibc 2.39 的 posix_spawnattr_t 含两个 sigset_t(共 256 字节)加调度参数, 已超 256。 */
     private const int SpawnAttrBytes = 1024;
+    /** Darwin arm64 passes variadic arguments on the stack, so ioctl's argument has to follow the eight register arguments. */
+    private static readonly bool VariadicArgumentsOnStack = OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
 
     public static (int MasterFd, int Pid) Spawn(PtyStartInfo info)
     {
@@ -150,7 +152,9 @@ internal static class UnixPtyNative
             WsRow = checked((ushort)rows),
             WsCol = checked((ushort)cols),
         };
-        if (ioctl((int)master.DangerousGetHandle(), Tiocswinsz, ref ws) != 0)
+        var fd = (int)master.DangerousGetHandle();
+        var result = VariadicArgumentsOnStack ? ioctlAfterRegisters(fd, Tiocswinsz, 0, 0, 0, 0, 0, 0, ref ws) : ioctl(fd, Tiocswinsz, ref ws);
+        if (result != 0)
             throw new Win32Exception(Marshal.GetLastWin32Error(), "ioctl(TIOCSWINSZ) failed");
     }
 
@@ -293,6 +297,10 @@ internal static class UnixPtyNative
 
     [DllImport("libc", SetLastError = true)]
     private static extern int ioctl(int fd, ulong request, ref Winsize argp);
+
+    /** The same ioctl with six unused register arguments, which puts argp in the first stack slot where Darwin arm64 reads variadic arguments. */
+    [DllImport("libc", EntryPoint = "ioctl", SetLastError = true)]
+    private static extern int ioctlAfterRegisters(int fd, ulong request, nint x2, nint x3, nint x4, nint x5, nint x6, nint x7, ref Winsize argp);
 
     [DllImport("libc", SetLastError = true)]
     private static extern int close(int fd);

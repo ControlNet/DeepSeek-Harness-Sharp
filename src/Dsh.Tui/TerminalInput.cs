@@ -317,8 +317,15 @@ public sealed class TerminalInputParser
 internal sealed class TerminalInputReader : ITerminalInputSource
 {
     private const short PollIn = 0x0001;
+    private const int FGetFl = 3;
     private const int FSetFl = 4;
-    private const int ONonBlock = 0x800;
+
+    /** O_NONBLOCK 随平台不同: Linux 0x800, Darwin/FreeBSD 0x4(Darwin 的 0x800 是 O_EXCL, F_SETFL 会忽略它, 管道仍是阻塞的)。 */
+    private static readonly int ONonBlock = OperatingSystem.IsMacOS() || OperatingSystem.IsFreeBSD() ? 0x4 : 0x800;
+
+    /** Darwin arm64 把变参放在栈上, fcntl 的第三个参数要排在八个寄存器参数之后。 */
+    private static readonly bool VariadicArgumentsOnStack = OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
+
     private const int StdinFd = 0;
 
     /** 挂起孤立 ESC 时的等待上限: 超过它还没等到后续字节, 就认为用户真的按了 Esc。 */
@@ -339,11 +346,28 @@ internal sealed class TerminalInputReader : ITerminalInputSource
         if (pipe(pipeFds) != 0)
             throw new InvalidOperationException($"pipe() failed, errno={Marshal.GetLastWin32Error()}");
         (_wakeRead, _wakeWrite) = (pipeFds[0], pipeFds[1]);
-        fcntl(_wakeRead, FSetFl, ONonBlock);
-        fcntl(_wakeWrite, FSetFl, ONonBlock);
+        SetNonBlocking(_wakeRead);
+        SetNonBlocking(_wakeWrite);
+    }
+
+    /**
+     * DrainWake 读到管道为空才返回, 所以两端必须非阻塞。
+     * macOS 上曾用 Linux 的 O_NONBLOCK 值且按寄存器传变参, 管道留在阻塞模式, 第一次 Wake 后输入线程永久卡在 read 里。
+     */
+    private static void SetNonBlocking(int fd)
+    {
+        var result = VariadicArgumentsOnStack
+            ? fcntlAfterRegisters(fd, FSetFl, 0, 0, 0, 0, 0, 0, ONonBlock)
+            : fcntl(fd, FSetFl, ONonBlock);
+        if (result != 0)
+            throw new InvalidOperationException($"fcntl(F_SETFL, O_NONBLOCK) failed, errno={Marshal.GetLastWin32Error()}");
     }
 
     public bool EndOfStream { get; private set; }
+
+    /** 内核视角的唤醒管道状态: 两端都带 O_NONBLOCK 时, 排空管道读到空会立即返回而不是阻塞。 */
+    internal bool WakePipeIsNonBlocking
+        => (fcntl(_wakeRead, FGetFl, 0) & ONonBlock) != 0 && (fcntl(_wakeWrite, FGetFl, 0) & ONonBlock) != 0;
 
     public TerminalInputEvent? Read(int timeoutMs)
     {
@@ -432,6 +456,10 @@ internal sealed class TerminalInputReader : ITerminalInputSource
 
     [DllImport("libc", SetLastError = true)]
     private static extern int fcntl(int fd, int cmd, int arg);
+
+    /** 同一个 fcntl, 用六个占位寄存器参数把 arg 推到第一个栈槽: Darwin arm64 从那里读取变参。 */
+    [DllImport("libc", EntryPoint = "fcntl", SetLastError = true)]
+    private static extern int fcntlAfterRegisters(int fd, int cmd, nint x2, nint x3, nint x4, nint x5, nint x6, nint x7, nint arg);
 
     [DllImport("libc", SetLastError = true)]
     private static extern int write(int fd, byte[] buf, int count);
