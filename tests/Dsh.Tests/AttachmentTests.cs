@@ -171,6 +171,33 @@ public sealed class AttachmentTests : IDisposable
         Assert.Null(handler.Body);
     }
 
+    [Fact]
+    public async Task Runtime_SendsPastedImagesToTextOnlyModelAsOmittedText()
+    {
+        var bytes = PngBytes();
+        var reference = _store.Put(bytes, "image/png", 1, 1, "shot.png");
+        var handler = new DeepSeekCapture();
+        var llm = new LlmRuntime(_ctx);
+        using var registration = llm.RegisterAdapter(["deepseek-official"], DeepSeekAdapterFor(handler));
+        var options = new GenerateOptions
+        {
+            Provider = "deepseek-official",
+            Model = TextOnlyModel,
+            Messages = [MessageFactory.CreateUserMessage([new TextBlock("what is this"), new ImageBlock(reference)])],
+            Purpose = GeneratePurpose.Compaction,
+            Attachments = new Dictionary<string, byte[]> { [reference.AttachmentId] = bytes },
+        };
+
+        var chunks = new List<StreamChunk>();
+        await foreach (var chunk in llm.Stream(options))
+            chunks.Add(chunk);
+
+        Assert.DoesNotContain(chunks, chunk => chunk is StreamChunk.Finish { Reason: FinishReason.Error });
+        Assert.DoesNotContain("image_url", handler.Body);
+        Assert.Contains(TextOnlyImages.OmittedText(reference), handler.Body);
+        Assert.IsType<ImageBlock>(options.Messages[0].Content[1]);
+    }
+
     private static GenerateOptions ToolResultImageOptions(string model, ImageAttachmentRef reference, byte[] bytes)
     {
         var callId = ToolCallId.Create("call_1");

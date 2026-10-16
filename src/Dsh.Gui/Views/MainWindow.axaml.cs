@@ -20,6 +20,9 @@ public sealed partial class MainWindow : Window
     private const double ScreenMargin = 60;
     private const double TitleBarHeight = 34;
 
+    /** What /plugins add accepts from a path: managed assemblies and native shared libraries. */
+    private static readonly FilePickerFileType PluginLibraries = new("插件库") { Patterns = ["*.dll", "*.so", "*.dylib"] };
+
     private readonly GuiSettings? _guiSettings;
     private CloseActionKind _closeAction = CloseActionKind.Tray;
     private TrayIcon? _tray;
@@ -41,6 +44,7 @@ public sealed partial class MainWindow : Window
         ViewModel.TerminalRequested += ShowTerminal;
         ViewModel.FilePicker = PickAsync;
         ViewModel.Preferences.RemoteFolderPicker = PickRemoteFolderAsync;
+        ViewModel.Preferences.PluginFilePicker = PickPluginLibraryAsync;
         ViewModel.Preferences.Applied += ApplyAppearance;
         ViewModel.Preferences.Preview += ApplyPreview;
         AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
@@ -361,6 +365,19 @@ public sealed partial class MainWindow : Window
         }
         var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions { AllowMultiple = allowMultiple, Title = "选择文件" });
         return [.. files.Select(file => file.TryGetLocalPath()).Where(path => path is not null).Select(path => path!)];
+    }
+
+    private async Task<string?> PickPluginLibraryAsync()
+    {
+        if (StorageProvider is not { } storage)
+            return null;
+        var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            AllowMultiple = false,
+            Title = "选择插件",
+            FileTypeFilter = [PluginLibraries, FilePickerFileTypes.All],
+        });
+        return files.Select(file => file.TryGetLocalPath()).FirstOrDefault(path => path is not null);
     }
 
     /** “选择远端目录”: 需要时先自动部署 dsharp, 连上后再用对话框浏览远端目录树。 */

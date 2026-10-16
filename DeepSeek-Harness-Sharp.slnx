@@ -17,6 +17,7 @@
     <Project Path="src/Dsh.Checkpoints/Dsh.Checkpoints.csproj" />
     <Project Path="src/Dsh.Compaction/Dsh.Compaction.csproj" />
     <Project Path="src/Dsh.Core/Dsh.Core.csproj" />
+    <Project Path="src/Dsh.Deliverables/Dsh.Deliverables.csproj" />
     <Project Path="src/Dsh.E2b/Dsh.E2b.csproj" />
     <Project Path="src/Dsh.Goal/Dsh.Goal.csproj" />
     <Project Path="src/Dsh.Gui/Dsh.Gui.csproj" />
@@ -47,6 +48,7 @@
     <Project Path="src/Dsh.Runtime/Dsh.Runtime.csproj" />
     <Project Path="src/Dsh.ScriptHost/Dsh.ScriptHost.csproj" />
     <Project Path="src/Dsh.Sdk/Dsh.Sdk.csproj" />
+    <Project Path="src/Dsh.SessionGraph/Dsh.SessionGraph.csproj" />
     <Project Path="src/Dsh.SessionQuery/Dsh.SessionQuery.csproj" />
     <Project Path="src/Dsh.Skills/Dsh.Skills.csproj" />
     <Project Path="src/Dsh.Subagent/Dsh.Subagent.csproj" />

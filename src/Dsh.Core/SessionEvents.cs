@@ -165,6 +165,7 @@ public static class SessionEventTypes
     public const string RequestContext = "request/context";
     public const string SessionEndSeed = "session/end-seed";
     public const string AgentInboxSpliced = "agent/inbox/spliced";
+    public const string WorkingDirectoryChange = "working-directory/change";
 
     public static readonly IReadOnlySet<string> SurfaceEligible = new HashSet<string>
     {

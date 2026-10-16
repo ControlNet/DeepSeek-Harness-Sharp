@@ -1,7 +1,9 @@
 using System.Net;
 using System.Text;
 using Dsh.Runtime;
+using Dsh.Boot;
 using Dsh.Core;
+using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Tools;
 using SixLabors.ImageSharp;
@@ -11,6 +13,8 @@ namespace Dsh.Tests;
 
 public class AgentLoopIntegrationTests
 {
+    private const string TextOnlyModel = "text-only-model";
+
     private static readonly string[] SseTextOnly =
     [
         """data: {"choices":[{"delta":{"role":"assistant","content":null,"reasoning_content":""}}]}""",
@@ -112,7 +116,8 @@ public class AgentLoopIntegrationTests
                 [new Dsh.Llm.DeepSeek.DeepSeekCatalogModel(
                     "test-model",
                     InputModalities: inputModalities,
-                    SystemPromptUpdate: inHistory ? SystemPromptUpdateModes.InHistory : null)],
+                    SystemPromptUpdate: inHistory ? SystemPromptUpdateModes.InHistory : null),
+                    new Dsh.Llm.DeepSeek.DeepSeekCatalogModel(TextOnlyModel)],
                 Dsh.Llm.DeepSeek.DeepSeekConnectionOptions.DefaultStreamIdleTimeoutMs,
                 retryPolicy ?? ResolvedRetryPolicy.Resolve(null, "test"));
             var adapter = new Dsh.Llm.DeepSeek.DeepSeekAdapter("test-provider", new Dsh.Llm.DeepSeek.DeepSeekAdapterOptions
@@ -494,7 +499,34 @@ public class AgentLoopIntegrationTests
         }
     }
 
-    private static async Task<(AgentLoopAgent Agent, List<string> Requests, byte[] Png)> RunReadImageTurn(IReadOnlyList<string>? inputModalities)
+    [Fact]
+    public async Task ReadImage_HistoryImage_IsOmittedAfterSwitchingToTextOnlyModel()
+    {
+        var (agent, requests, _) = await RunReadImageTurn(["text", "image"], async (fixture, readAgent, directory) =>
+        {
+            var commands = CommandsService.Register(fixture.Ctx);
+            _ = ModelCommand.Register(fixture.Ctx, HarnessHome.Resolve(Path.Combine(directory, "home")));
+            var execution = await commands.Execute(readAgent, $"/model test-provider/{TextOnlyModel}", TestContext.Current.CancellationToken);
+            Assert.IsType<CommandResult.Success>(execution!.Result);
+            readAgent.Followup(MessageFactory.CreateUserText("describe it again"));
+            await readAgent.WhenIdle();
+        });
+
+        Assert.Equal(3, requests.Count);
+        Assert.IsNotType<TurnEndReason.Error>(agent.Session.SnapshotEvents().Select(e => e.Data).OfType<TurnEndPayload>().Last().Reason);
+        var persisted = agent.Session.DeriveMessages()
+            .SelectMany(message => message.Content)
+            .OfType<ToolResultBlock>()
+            .SelectMany(result => result.Content)
+            .OfType<ImageBlock>()
+            .Single();
+        Assert.DoesNotContain("image_url", requests[2]);
+        Assert.Contains(TextOnlyImages.OmittedText(persisted.Attachment), requests[2]);
+    }
+
+    private static async Task<(AgentLoopAgent Agent, List<string> Requests, byte[] Png)> RunReadImageTurn(
+        IReadOnlyList<string>? inputModalities,
+        Func<HarnessFixture, AgentLoopAgent, string, Task>? afterReadImage = null)
     {
         var requests = new List<string>();
         using var server = new MockDeepSeekServer(body =>
@@ -536,6 +568,8 @@ public class AgentLoopIntegrationTests
             var agent = (AgentLoopAgent)handle.Agent;
             agent.Followup(MessageFactory.CreateUserText("look at shot.png"));
             await agent.WhenIdle();
+            if (afterReadImage is not null)
+                await afterReadImage(fixture, agent, directory);
             return (agent, requests, await File.ReadAllBytesAsync(Path.Combine(directory, "shot.png"), TestContext.Current.CancellationToken));
         }
         finally

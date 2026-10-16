@@ -24,6 +24,7 @@ namespace Dsh.Core;
 [JsonSerializable(typeof(SessionEndSeedPayload))]
 [JsonSerializable(typeof(UnknownSessionEventPayload))]
 [JsonSerializable(typeof(InboxSplicePayload))]
+[JsonSerializable(typeof(WorkingDirectoryChangedPayload))]
 [JsonSerializable(typeof(ToolResultErrorInfo))]
 [JsonSerializable(typeof(EpochHeader))]
 [JsonSerializable(typeof(LlmCallConfigAdapterDefaults))]

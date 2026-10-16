@@ -55,6 +55,7 @@ public static class EditTool
                 },
                 (args, value) => PresentDiffMeta(args, value, "edit")),
             Execute = Execute,
+            WriteTargets = (args, exec) => WorkspacePath.WriteTarget(args, exec, "file_path"),
         });
         return new CompositeDisposable(section, registration);
     }

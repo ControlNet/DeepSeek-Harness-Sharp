@@ -153,3 +153,37 @@ public static class ToolResultImages
         return relayed;
     }
 }
+
+/**
+ * A model known to accept only text cannot receive image blocks, even ones left in the history by an earlier image-capable route.
+ * Requests to such a model carry a short notice in place of every image, including images nested in tool results; the session keeps the images.
+ */
+public static class TextOnlyImages
+{
+    private const string ImageModality = "image";
+    private const int DigestPrefixLength = 8;
+
+    /** The notice the model sees instead of one image. */
+    public static string OmittedText(ImageAttachmentRef attachment)
+        => $"[image omitted because this model accepts text only; attachment sha256:{attachment.AttachmentId[..Math.Min(DigestPrefixLength, attachment.AttachmentId.Length)]}]";
+
+    /** Returns the request unchanged unless the model is known to lack image input and the messages carry images. */
+    public static GenerateOptions Project(GenerateOptions options, IReadOnlyList<string>? inputModalities)
+    {
+        if (inputModalities is null
+            || inputModalities.Contains(ImageModality)
+            || !options.Messages.Any(message => ToolResultImages.Any(message.Content)))
+            return options;
+        return options.WithMessages([.. options.Messages.Select(message => ToolResultImages.Any(message.Content)
+            ? message with { Content = Replace(message.Content) }
+            : message)]);
+    }
+
+    private static IReadOnlyList<ContentBlock> Replace(IReadOnlyList<ContentBlock> blocks)
+        => [.. blocks.Select(block => block switch
+        {
+            ImageBlock image => new TextBlock(OmittedText(image.Attachment)),
+            ToolResultBlock result when ToolResultImages.Any(result.Content) => result with { Content = Replace(result.Content) },
+            _ => block,
+        })];
+}

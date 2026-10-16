@@ -38,7 +38,11 @@ public sealed class DefaultCompositionTests
             Assert.NotNull(app.Ctx.Get<Dsh.Telemetry.TelemetryService>(Dsh.Telemetry.TelemetryService.ServiceName, false));
             Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-tool-session-query")?.State);
             Assert.NotNull(tools.Get("session_search"));
+            Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-tool-present")?.State);
+            Assert.NotNull(tools.Get("present"));
             Assert.NotNull(app.Ctx.Get<Dsh.SessionQuery.SessionQueryService>(Dsh.SessionQuery.SessionQueryService.ServiceName, false));
+            Assert.Equal(ActivationState.Active, composition.Find("@deepseek-ai/dsh-session-graph")?.State);
+            Assert.IsType<Dsh.SessionGraph.SessionEventGraphService>(app.Ctx.Get<ISessionEventGraph>(ISessionEventGraph.ServiceName, false));
 
             var settings = File.ReadAllText(Path.Combine(home.Root, "settings.yaml"));
             Assert.Contains("plugins:", settings);

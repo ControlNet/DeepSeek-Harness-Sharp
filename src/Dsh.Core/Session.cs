@@ -12,6 +12,7 @@ public sealed class Session
     private Surface.Manager _surfaceManager;
     private EpochHeader? _headerFold;
     private RequestContextPayload? _contextFold;
+    private string? _workingDirectoryFold;
     private List<Message> _derived = [];
     private int _derivedNodes;
     private int _derivedGeneration;
@@ -25,6 +26,9 @@ public sealed class Session
     public SessionHeader Header { get; private set; }
 
     public SessionId Id => Header.Id;
+
+    /** Effective working directory: the latest working-directory change, else the header cwd (which stays the write permission root). */
+    public string? WorkingDirectory => Volatile.Read(ref _workingDirectoryFold) ?? Header.Cwd;
 
     public long InheritedEventCount { get; }
 
@@ -130,6 +134,7 @@ public sealed class Session
             _surfaceManager = new Surface.Manager(() => Volatile.Read(ref _snapshot));
             _headerFold = null;
             _contextFold = null;
+            _workingDirectoryFold = null;
             for (var index = 0; index < _count; index++)
             {
                 switch (_buffer[index].Data)
@@ -139,6 +144,9 @@ public sealed class Session
                         break;
                     case RequestContextPayload context:
                         _contextFold = context;
+                        break;
+                    case WorkingDirectoryChangedPayload change:
+                        _workingDirectoryFold = change.Cwd;
                         break;
                 }
             }
@@ -185,6 +193,7 @@ public sealed class Session
                 Seq = _count,
                 Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Data = payload,
+                Ignorable = SessionEventCodec.IsIgnorable(payload.Type),
                 SurfaceOp = surfaceOp,
                 SourceEventSeqs = sourceEventSeqs,
             };
@@ -269,6 +278,9 @@ public sealed class Session
                 break;
             case RequestContextPayload context:
                 Volatile.Write(ref _contextFold, context);
+                break;
+            case WorkingDirectoryChangedPayload change:
+                Volatile.Write(ref _workingDirectoryFold, change.Cwd);
                 break;
         }
         Volatile.Write(ref _snapshot, new SessionLog(_buffer, 0, _count));
