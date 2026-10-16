@@ -1,6 +1,8 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Input;
+using Avalonia.Input.Raw;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -39,16 +41,30 @@ public sealed class PluginMarketGuiTests
             Dispatcher.UIThread.RunJobs();
             Assert.False(Row(preferences, Todo).CanWrite);
 
-            Toggle(window, Todo, "permissions.network").IsChecked = false;
-            await GuiTestEnvironment.WaitForAsync(preferences,
-                () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Network == false);
+            var network = Toggle(window, Todo, "permissions.network");
+            Assert.True(network.IsChecked);
+            PressSpace(window, network);
+            Assert.False(Row(preferences, Todo).CanNetwork);
+            try
+            {
+                await GuiTestEnvironment.WaitForAsync(preferences,
+                    () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Network == false);
+            }
+            catch (TimeoutException error)
+            {
+                var status = preferences.Status.Replace(environment.App.Home.Root, "<test-home>", StringComparison.OrdinalIgnoreCase);
+                throw new TimeoutException($"Network permission did not persist; status: {status}", error);
+            }
             Dispatcher.UIThread.RunJobs();
             var permissions = HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions;
             Assert.Equal(new PluginPermissions { Write = false, Network = false }, permissions);
             Assert.Contains("network", preferences.Status, StringComparison.Ordinal);
             Capture(window, "headless-market-permissions");
 
-            Toggle(window, Todo, "permissions.write").IsChecked = true;
+            var write = Toggle(window, Todo, "permissions.write");
+            Assert.False(write.IsChecked);
+            PressSpace(window, write);
+            Assert.True(Row(preferences, Todo).CanWrite);
             await GuiTestEnvironment.WaitForAsync(preferences,
                 () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Write != false);
             Dispatcher.UIThread.RunJobs();
@@ -118,8 +134,23 @@ public sealed class PluginMarketGuiTests
     private static IReadOnlyList<Button> RowButtons(Window window, string package)
         => [.. RowControls(window, package).OfType<Button>()];
 
-    private static CheckBox Toggle(Window window, string package, string tip)
-        => RowControls(window, package).OfType<CheckBox>().Single(box => Equals(ToolTip.GetTip(box), tip));
+    private static CheckBox Toggle(MainWindow window, string package, string tip)
+    {
+        // A collection refresh completes before ItemsControl's layout/materialization pass.
+        window.CaptureRenderedFrame()?.Dispose();
+        var toggle = RowControls(window, package).OfType<CheckBox>().Single(box => Equals(ToolTip.GetTip(box), tip));
+        Assert.Same(Row(window.ViewModel!.Preferences, package), toggle.DataContext);
+        return toggle;
+    }
+
+    /** Use CheckBox.OnClick/Toggle, which preserves its TwoWay binding, rather than a local property assignment. */
+    private static void PressSpace(Window window, CheckBox toggle)
+    {
+        Assert.True(toggle.IsEffectivelyEnabled);
+        Assert.True(toggle.Focus());
+        window.KeyPress(Key.Space, RawInputModifiers.None, PhysicalKey.Space, null);
+        window.KeyRelease(Key.Space, RawInputModifiers.None, PhysicalKey.Space, null);
+    }
 
     /** Runs the button's bound command with its bound parameter, as a click does. */
     private static void ClickAndWait(Button button)
