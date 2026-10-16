@@ -1,5 +1,9 @@
 using System.Net;
 using System.Text;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Dsh.Runtime;
 using Dsh.Boot;
 using Dsh.Core;
@@ -29,65 +33,57 @@ public class AgentLoopIntegrationTests
         "",
     ];
 
-    private sealed class MockDeepSeekServer : IDisposable
+    private sealed class MockDeepSeekServer : IAsyncDisposable
     {
-        private readonly HttpListener _listener = new();
-        private readonly CancellationTokenSource _stop = new();
+        private readonly WebApplication _application;
         private readonly Func<string, IReadOnlyList<string>> _script;
 
-        public MockDeepSeekServer(Func<string, IReadOnlyList<string>> script)
+        private MockDeepSeekServer(Func<string, IReadOnlyList<string>> script)
         {
             _script = script;
-            var probe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-            probe.Start();
-            Port = ((IPEndPoint)probe.LocalEndpoint).Port;
-            probe.Stop();
-            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
-            _listener.Start();
-            _ = Task.Run(Serve);
+            var builder = WebApplication.CreateSlimBuilder();
+            builder.Logging.ClearProviders();
+            builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
+            _application = builder.Build();
+            _application.Run(Serve);
         }
 
-        public int Port { get; }
+        public static async Task<MockDeepSeekServer> StartAsync(Func<string, IReadOnlyList<string>> script)
+        {
+            var server = new MockDeepSeekServer(script);
+            try
+            {
+                await server._application.StartAsync(TestContext.Current.CancellationToken);
+                server.Port = new Uri(server._application.Urls.Single()).Port;
+                return server;
+            }
+            catch
+            {
+                await server.DisposeAsync();
+                throw;
+            }
+        }
+
+        public int Port { get; private set; }
 
         public string BaseUrl => $"http://127.0.0.1:{Port}";
 
         public string? LastRequestBody { get; private set; }
 
-        private async Task Serve()
+        private async Task Serve(HttpContext context)
         {
-            while (!_stop.IsCancellationRequested)
+            using var reader = new StreamReader(context.Request.Body);
+            LastRequestBody = await reader.ReadToEndAsync(context.RequestAborted);
+            context.Response.ContentType = "text/event-stream";
+            foreach (var line in _script(LastRequestBody))
             {
-                HttpListenerContext context;
-                try
-                {
-                    context = await _listener.GetContextAsync().WaitAsync(_stop.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch (HttpListenerException)
-                {
-                    break;
-                }
-                using var reader = new StreamReader(context.Request.InputStream);
-                LastRequestBody = await reader.ReadToEndAsync();
-                context.Response.ContentType = "text/event-stream";
-                foreach (var line in _script(LastRequestBody))
-                {
-                    var bytes = Encoding.UTF8.GetBytes(line + "\n");
-                    await context.Response.OutputStream.WriteAsync(bytes);
-                    await context.Response.OutputStream.FlushAsync();
-                }
-                context.Response.Close();
+                var bytes = Encoding.UTF8.GetBytes(line + "\n");
+                await context.Response.Body.WriteAsync(bytes, context.RequestAborted);
+                await context.Response.Body.FlushAsync(context.RequestAborted);
             }
         }
 
-        public void Dispose()
-        {
-            _stop.Cancel();
-            _listener.Stop();
-        }
+        public ValueTask DisposeAsync() => _application.DisposeAsync();
     }
 
     private sealed class HarnessFixture : IDisposable
@@ -135,7 +131,7 @@ public class AgentLoopIntegrationTests
     [Fact]
     public async Task TextTurn_LogsFullEventSequence()
     {
-        using var server = new MockDeepSeekServer(_ => SseTextOnly);
+        await using var server = await MockDeepSeekServer.StartAsync(_ => SseTextOnly);
         using var fixture = new HarnessFixture(server.BaseUrl);
         var handle = await fixture.Agents.Create(new CreateAgentOptions(
             SessionId.Create("session-test-1"),
@@ -181,7 +177,7 @@ public class AgentLoopIntegrationTests
     {
         var calls = 0;
         var scriptCalls = 0;
-        using var server = new MockDeepSeekServer(_ =>
+        await using var server = await MockDeepSeekServer.StartAsync(_ =>
         {
             scriptCalls++;
             if (scriptCalls == 1)
@@ -250,7 +246,7 @@ public class AgentLoopIntegrationTests
     public async Task ParallelToolCalls_RespectConfiguredLimit()
     {
         var scriptCalls = 0;
-        using var server = new MockDeepSeekServer(_ =>
+        await using var server = await MockDeepSeekServer.StartAsync(_ =>
         {
             scriptCalls++;
             if (scriptCalls > 1)
@@ -325,7 +321,7 @@ public class AgentLoopIntegrationTests
     public async Task TruncatedStream_RetriesThenErrorsInsteadOfCompleting()
     {
         var calls = 0;
-        using var server = new MockDeepSeekServer(_ =>
+        await using var server = await MockDeepSeekServer.StartAsync(_ =>
         {
             calls++;
             // 有内容但流尾缺 [DONE]/finish_reason: 供应商中途断开。
@@ -360,7 +356,7 @@ public class AgentLoopIntegrationTests
     [Fact]
     public async Task InHistoryModel_AppendsSystemPromptOnChange()
     {
-        using var server = new MockDeepSeekServer(_ => SseTextOnly);
+        await using var server = await MockDeepSeekServer.StartAsync(_ => SseTextOnly);
         using var fixture = new HarnessFixture(server.BaseUrl, inHistory: true);
         var handle = await fixture.Agents.Create(new CreateAgentOptions(
             SessionId.Create("session-in-history"),
@@ -391,7 +387,7 @@ public class AgentLoopIntegrationTests
     [Fact]
     public async Task NonInHistoryModel_RewritesSystemHeadOnChange()
     {
-        using var server = new MockDeepSeekServer(_ => SseTextOnly);
+        await using var server = await MockDeepSeekServer.StartAsync(_ => SseTextOnly);
         using var fixture = new HarnessFixture(server.BaseUrl);
         var handle = await fixture.Agents.Create(new CreateAgentOptions(
             SessionId.Create("session-replace"),
@@ -476,7 +472,7 @@ public class AgentLoopIntegrationTests
         Func<HarnessFixture, AgentLoopAgent, string, Task>? afterReadImage = null)
     {
         var requests = new List<string>();
-        using var server = new MockDeepSeekServer(body =>
+        await using var server = await MockDeepSeekServer.StartAsync(body =>
         {
             requests.Add(body);
             return requests.Count == 1
