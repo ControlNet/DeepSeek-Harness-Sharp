@@ -80,6 +80,47 @@ public class PluginSchedulerTests
     }
 
     [Fact]
+    public async Task Registration_CompletesWhileAnotherProviderIsApplying()
+    {
+        var ctx = new Context();
+        var applied = 0;
+        var consumer = ctx.Plugin(PluginDefinition.From((context, _) =>
+        {
+            Assert.Equal("ready", context.Get("svc"));
+            Interlocked.Increment(ref applied);
+            return null;
+        }, "consumer", ["svc"]));
+        await ctx.Scheduler.SettleAsync();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        var provider = Task.Factory.StartNew(() => ctx.Plugin(PluginDefinition.From((context, _) =>
+        {
+            entered.SetResult();
+            release.Wait(TestContext.Current.CancellationToken);
+            context.Provide("svc", "ready");
+            return null;
+        }, "provider")), TestContext.Current.CancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        await entered.Task;
+        var independent = Task.Factory.StartNew(() => ctx.Plugin(PluginDefinition.From(static (_, _) => null, "independent")),
+            TestContext.Current.CancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        try
+        {
+            // A user Apply callback may be slow; publishing another activation cannot wait while holding the scheduler's registry lock.
+            Assert.Equal(ActivationState.Active, (await independent.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken)).State);
+        }
+        finally
+        {
+            release.Set();
+            await provider;
+            await independent;
+        }
+        await ctx.Scheduler.SettleAsync();
+        Assert.Equal(ActivationState.Active, consumer.State);
+        Assert.Equal(1, applied);
+        Assert.Equal("ready", consumer.Ctx.Get("svc"));
+    }
+
+    [Fact]
     public async Task Scheduler_KeepsDownstreamPendingWhenUpstreamFails()
     {
         var ctx = new Context();
