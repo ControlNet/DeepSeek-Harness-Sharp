@@ -92,9 +92,6 @@ public sealed record GuiSettingsSnapshot
 
     public string RemoteReleaseVersion { get; init; } = GuiSettings.DefaultReleaseVersion;
 
-    /** 本机下载 Release 时的代理(为空则直连)。 */
-    public string RemoteDownloadProxy { get; init; } = "";
-
     /** 下载位置: auto(先远端后本地)/client(仅本地下发)/server(仅远端直下)。 */
     public string RemoteDownloadVia { get; init; } = "auto";
 
@@ -146,7 +143,6 @@ public sealed record GuiSettingsSnapshot
             RemoteAutoDeploy = Flag(parameters, "remoteAutoDeploy") ?? true,
             RemoteReleaseBaseUrl = Text(parameters, "remoteReleaseBaseUrl") ?? GuiSettings.DefaultReleaseBaseUrl,
             RemoteReleaseVersion = Text(parameters, "remoteReleaseVersion") ?? GuiSettings.DefaultReleaseVersion,
-            RemoteDownloadProxy = Text(parameters, "remoteDownloadProxy") ?? "",
             RemoteDownloadVia = Text(parameters, "remoteDownloadVia") ?? "auto",
             RemoteServerProxy = Text(parameters, "remoteServerProxy") ?? "",
             SortSessions = Text(parameters, "sortSessions") ?? GuiSettings.SortUpdated,
@@ -191,7 +187,6 @@ public sealed record GuiSettingsSnapshot
         ["remoteAutoDeploy"] = RemoteAutoDeploy,
         ["remoteReleaseBaseUrl"] = RemoteReleaseBaseUrl,
         ["remoteReleaseVersion"] = RemoteReleaseVersion,
-            ["remoteDownloadProxy"] = RemoteDownloadProxy,
             ["remoteDownloadVia"] = RemoteDownloadVia,
             ["remoteServerProxy"] = RemoteServerProxy,
         ["sortSessions"] = SortSessions,
