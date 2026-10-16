@@ -3,6 +3,7 @@ using Dsh.Fleet;
 using Dsh.Pty;
 using Dsh.RemoteHost;
 using Dsh.Transport;
+using Dsh.Runtime;
 
 namespace Dsh.Host;
 
@@ -165,7 +166,8 @@ internal static class FleetCli
             return await FailAsync($"{machine.Name} is this computer; it runs this dsharp and needs no deployment");
         var deploy = context.Store.Load().Deploy;
         var result = await RemoteDsharpInstaller.EnsureAsync(
-            machine, deploy, step => Console.Error.WriteLine(step), context.Cancellation, force: context.Arguments.Has("--force"));
+            machine, deploy, step => Console.Error.WriteLine(step), context.Cancellation, force: context.Arguments.Has("--force"),
+            localProxy: context.Options(deploy: true, startLocalHost: false).LocalProxy);
         await Console.Out.WriteLineAsync(result.AlreadyPresent
             ? $"{machine.Name}: {result.CommandPath} is already at {RemoteHostServer.ReleaseVersion} or newer (use --force to redeploy)"
             : $"{machine.Name}: deployed {RemoteHostServer.ReleaseVersion} to {result.CommandPath}");
@@ -233,8 +235,13 @@ internal static class FleetCli
                     await client.InterruptAsync(session.SessionId, context.Cancellation);
                     await Console.Out.WriteLineAsync($"interrupted the running turn of {target}");
                     return 0;
+                case HostSessionKinds.Acp:
+                case HostSessionKinds.External:
+                    await client.StopAgentAsync(session.SessionId, context.Cancellation);
+                    await Console.Out.WriteLineAsync($"stopped {target}");
+                    return 0;
                 default:
-                    return await FailAsync($"stopping {session.Kind} sessions needs the host's agent methods (host.agent.*), which the host of {connection.Machine.Name} does not offer yet");
+                    return await FailAsync($"unknown session kind {session.Kind} for {target}");
             }
         }
     }
@@ -332,10 +339,14 @@ internal sealed record FleetCliContext(
     public FleetOptions Options(bool deploy, bool startLocalHost)
     {
         var settings = Store.Load().Deploy;
+        var proxy = new OutboundProxy();
+        var proxySettings = HarnessSettings.Load(Home).Network?.OutboundProxy;
+        proxy.Configure(proxySettings?.Url, proxySettings?.Bypass);
         return new FleetOptions
         {
             ClientName = $"cli@{Environment.MachineName}",
             Deploy = deploy ? settings : settings with { AutoDeploy = false },
+            LocalProxy = proxy,
             AutoReconnect = false,
             StartLocalHost = startLocalHost ? StartLocalHostAsync : null,
         };

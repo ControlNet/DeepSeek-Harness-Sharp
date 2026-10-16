@@ -1,5 +1,4 @@
-﻿using Avalonia.Threading;
-using Dsh.Core;
+﻿using Dsh.Core;
 using Dsh.Gui.ViewModels;
 using Dsh.Llm;
 
@@ -10,7 +9,7 @@ namespace Dsh.Tests;
 public sealed class ExportSessionLogTests
 {
     [Fact]
-    public async Task ExportSessionLog_WritesEveryEventAsJsonLine()
+    public async Task ExportSessionLog_WritesEveryEventAsJsonLine() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var session = environment.Agent.Session;
@@ -25,15 +24,12 @@ public sealed class ExportSessionLogTests
             new TokenUsage(10, 5)),
             new SurfaceOp.Append());
         var persistence = environment.App.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)!;
-        var expected = await WaitForStoredEvents(persistence, environment.Agent.Id, 3);
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        await environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(session);
+        using var stored = persistence.Open(environment.Agent.Id, SessionAccess.Read);
+        var expected = stored.Read();
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
-        viewModel.ExportSessionLogCommand.Execute(null);
-        for (var attempt = 0; attempt < 500 && !viewModel.StatusText.Contains("导出"); attempt++)
-        {
-            Dispatcher.UIThread.RunJobs();
-            Thread.Sleep(5);
-        }
+        await viewModel.ExportSessionLogCommand.ExecuteAsync(null);
 
         Assert.StartsWith("已导出", viewModel.StatusText);
         var file = Assert.Single(Directory.GetFiles(Path.Combine(environment.App.Home.Root, "exports"), "*.jsonl"));
@@ -41,19 +37,6 @@ public sealed class ExportSessionLogTests
         Assert.Equal(expected.Count, lines.Length);
         foreach (var line in lines)
             Assert.NotNull(DshJson.Deserialize<SessionEvent>(line));
-    }
+    });
 
-    private static async Task<IReadOnlyList<SessionEvent>> WaitForStoredEvents(ISessionPersistence persistence, SessionId id, int count)
-    {
-        for (var attempt = 0; attempt < 500; attempt++)
-        {
-            using var handle = persistence.Open(id, SessionAccess.Read);
-            var events = handle.Read();
-            if (events.Count >= count)
-                return events;
-            Dispatcher.UIThread.RunJobs();
-            Thread.Sleep(5);
-        }
-        throw new TimeoutException($"session \"{id}\" 持久化事件数未达到 {count}");
-    }
 }

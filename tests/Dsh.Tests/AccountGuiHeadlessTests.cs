@@ -14,7 +14,7 @@ public sealed class AccountGuiHeadlessTests
     {
         var environment = await GuiTestEnvironment.CreateAsync();
         using var environmentScope = environment;
-        var window = new MainWindow(environment.App, environment.Agent);
+        var window = new MainWindow(environment.App, await environment.OpenChatAsync());
         var viewModel = window.ViewModel!;
         window.Show();
         Dispatcher.UIThread.RunJobs();

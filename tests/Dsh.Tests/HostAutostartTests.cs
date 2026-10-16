@@ -7,6 +7,27 @@ namespace Dsh.Tests;
 public sealed class HostAutostartTests
 {
     [Fact]
+    public void InstanceLease_PreventsConcurrentRegistryOwners_AndCanBeReacquired()
+    {
+        var root = TempTree.CreateDirectory("host-lock");
+        try
+        {
+            var home = new HarnessHome(root);
+            using (var first = HostAutostart.TryAcquireInstance(home))
+            {
+                Assert.NotNull(first);
+                Assert.Null(HostAutostart.TryAcquireInstance(home));
+            }
+            using var next = HostAutostart.TryAcquireInstance(home);
+            Assert.NotNull(next);
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
+    [Fact]
     public void Unit_RunsTheCurrentBinary_KeepsPtysOnStop_AndQuotesForSystemd()
     {
         if (OperatingSystem.IsWindows())

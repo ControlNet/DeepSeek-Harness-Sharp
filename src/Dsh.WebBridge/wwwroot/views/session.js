@@ -143,6 +143,7 @@ function conversation(machineLink, session) {
 
   const unsubscribe = machineLink.subscribe(session.SessionId, {
     event: (event) => transcript.apply(event),
+    reset: () => transcript.reset(),
     error: (message) => transcript.showError(`Cannot follow this session: ${message}`),
   });
 

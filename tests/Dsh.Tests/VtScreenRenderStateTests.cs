@@ -76,6 +76,93 @@ public sealed class VtScreenRenderStateTests
     }
 
     [Fact]
+    public void Alternate_Screen_Has_Its_Own_Saved_Cursor_And_Pen()
+    {
+        var screen = Fed("\e[32m\e[2;3H\e7\e[3;6H\e[?1049h\e[31m\e[4;8H\e7\e[1;1H\e8X");
+        Assert.Equal('X', screen.Row(3)[7].Character);
+        Assert.Equal(CellColor.FromPalette(AnsiColor.Red), screen.Row(3)[7].Foreground);
+
+        // tmux/ncurses saves its alternate-screen cursor while painting. It must not overwrite
+        // either the shell cursor captured on entry or the shell's independent DECSC slot.
+        screen.Feed("\e[?1049lY\e8Z");
+        Assert.Equal('Y', screen.Row(2)[5].Character);
+        Assert.Equal('Z', screen.Row(1)[2].Character);
+        Assert.Equal(CellColor.FromPalette(AnsiColor.Green), screen.Row(2)[5].Foreground);
+        Assert.Equal(CellColor.FromPalette(AnsiColor.Green), screen.Row(1)[2].Foreground);
+    }
+
+    [Fact]
+    public void Autowrap_Off_Overwrites_The_Right_Edge_Without_Scrolling()
+    {
+        var screen = Fed("\e[?1049h\e[?7l\e[3;1H123456", width: 4, height: 3);
+        Assert.Equal("1236", RowText(screen, 2));
+        Assert.Equal("", RowText(screen, 1));
+        screen.Feed("\e[?7hAB");
+        Assert.Equal("B", RowText(screen, 2));
+        Assert.Equal("123A", RowText(screen, 1));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Snapshot_And_Subsequent_Output_Match_The_Live_Screen(bool alternate)
+    {
+        var source = Fed("shell\e[2;3H\e[32m\e7\e[3;4H", width: 12, height: 5);
+        if (alternate)
+            source.Feed("\e[?1049h\e[1;1H12345678901X\e[5;1HabcdefghijkZ");
+        source.Feed("\e[2;4r\e[3;5H\e[31;44m\e7\e[3;7H\e[?1h\e[?2004h\e[?1004h\e[?1002h\e[?1006h\e[6 q");
+        var restored = new VtScreen(source.Width, source.Height);
+        restored.Feed("\e[?1049h\e[2;3r\e[?25l\e["); // reconnect may interrupt a CSI
+        restored.Feed(Encoding.UTF8.GetBytes(source.Snapshot()));
+        AssertScreensEqual(source, restored);
+
+        foreach (var continuation in new[] { "\e8Q", "\r\nnext", "\e[?1049l!", "\e8R" })
+        {
+            source.Feed(continuation);
+            restored.Feed(continuation);
+            AssertScreensEqual(source, restored);
+        }
+    }
+
+    [Theory]
+    [InlineData("abcdef")]
+    [InlineData("abcd中")]
+    [InlineData("abcd\U0001F600")]
+    public void Snapshot_After_Resize_Preserves_The_Right_Edge_And_Pending_Wrap(string row)
+    {
+        var source = Fed("\e[?1049h", width: 4, height: 2);
+        source.Resize(6, 3);
+        source.Feed(row);
+        var restored = new VtScreen(6, 3);
+        restored.Feed(Encoding.UTF8.GetBytes(source.Snapshot()));
+        AssertScreensEqual(source, restored);
+        source.Feed("Z");
+        restored.Feed("Z");
+        AssertScreensEqual(source, restored);
+        Assert.Equal('Z', restored.Row(1)[0].Character);
+    }
+
+    private static void AssertScreensEqual(VtScreen expected, VtScreen actual)
+    {
+        Assert.Equal((expected.CursorX, expected.CursorY, expected.ScrollTop, expected.ScrollBottom),
+            (actual.CursorX, actual.CursorY, actual.ScrollTop, actual.ScrollBottom));
+        Assert.Equal(expected.IsAlternateScreen, actual.IsAlternateScreen);
+        Assert.Equal(expected.CursorVisible, actual.CursorVisible);
+        Assert.Equal(expected.ApplicationCursorKeys, actual.ApplicationCursorKeys);
+        Assert.Equal(expected.BracketedPaste, actual.BracketedPaste);
+        Assert.Equal(expected.FocusReporting, actual.FocusReporting);
+        Assert.Equal(expected.MouseTracking, actual.MouseTracking);
+        Assert.Equal(expected.SgrMouse, actual.SgrMouse);
+        Assert.Equal(expected.CursorShape, actual.CursorShape);
+        var expectedFrame = new Dsh.Gui.Terminal.TerminalFrame();
+        var actualFrame = new Dsh.Gui.Terminal.TerminalFrame();
+        expectedFrame.Capture(expected, 0);
+        actualFrame.Capture(actual, 0);
+        for (var row = 0; row < expected.Height; row++)
+            Assert.Equal(expectedFrame.Row(row).ToArray(), actualFrame.Row(row).ToArray());
+    }
+
+    [Fact]
     public void Scroll_Region_Is_Exposed_Zero_Based()
     {
         var screen = Fed("\e[2;4r", height: 6);

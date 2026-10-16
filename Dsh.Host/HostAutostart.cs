@@ -24,6 +24,20 @@ public static class HostAutostart
     /** 单次 systemctl/loginctl 调用的上限: 用户管理器卡住时不让 CLI 一直挂着。 */
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(30);
 
+
+    /** Kept open before composition and registry loading, so competing starts cannot replace a live endpoint or read a stale registry. */
+    public static FileStream? TryAcquireInstance(HarnessHome home)
+    {
+        Directory.CreateDirectory(home.RunPath);
+        try
+        {
+            return new FileStream(Path.Combine(home.RunPath, "host.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
     /** systemd 读取用户单元的位置。 */
     public static string UnitPath()
     {
@@ -80,10 +94,10 @@ public static class HostAutostart
     {
         if (await RemoteHostListener.IsReachableAsync(home.Root, CancellationToken.None))
             return;
-        if (File.Exists(UnitPath()) && await IsSystemdUserAvailableAsync()
-            && (await SystemctlAsync("start", UnitName)).ExitCode == 0)
-            return;
-        StartDetached(token);
+        if (!(File.Exists(UnitPath()) && await IsSystemdUserAvailableAsync()
+            && (await SystemctlAsync("start", UnitName)).ExitCode == 0))
+            StartDetached(token, home.Root);
+        using var connection = await RemoteHostListener.ConnectAsync(home.Root, CancellationToken.None);
     }
 
     public static async Task<int> InstallAsync(HarnessHome home, TextWriter output)
@@ -169,8 +183,9 @@ public static class HostAutostart
             await output.WriteLineAsync("a dsharp host is already running");
             return 0;
         }
-        StartDetached(null);
-        await output.WriteLineAsync($"started a detached dsharp host; it listens on {RemoteHostEndpoint.SocketPath(home.Root)} once composed");
+        StartDetached(null, home.Root);
+        using var connection = await RemoteHostListener.ConnectAsync(home.Root, CancellationToken.None);
+        await output.WriteLineAsync($"started a detached dsharp host; it listens on {RemoteHostEndpoint.SocketPath(home.Root)}");
         return 0;
     }
 

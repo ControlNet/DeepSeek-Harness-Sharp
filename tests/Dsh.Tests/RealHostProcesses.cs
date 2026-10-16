@@ -20,14 +20,13 @@ internal static class RealHostProcesses
           file: false
         """;
 
-    /** This worktree's dsharp (DeepSeek-Harness-Sharp/bin/Debug/net10.0); a test that needs it is skipped while it has not been built. */
+    /** This worktree's dsharp is a required E2E build artifact, not an optional runtime capability. */
     public static string Executable
     {
         get
         {
             var executable = PtyTuiHarness.FindTuiExecutable();
-            if (executable is null)
-                Assert.Skip("dsharp has not been built (DeepSeek-Harness-Sharp/bin/Debug/net10.0)");
+            Assert.NotNull(executable);
             return executable;
         }
     }

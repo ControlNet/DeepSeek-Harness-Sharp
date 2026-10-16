@@ -31,7 +31,8 @@ internal sealed class HarnessDecisionBridge : IDisposable
             request.Agent.Id.Value).ConfigureAwait(false);
         if (response is null)
             return ApprovalOutcome.Cancelled;
-        return response.Allow ? ApprovalOutcome.AllowedOnce : ApprovalOutcome.Rejected;
+        return !response.Allow ? ApprovalOutcome.Rejected
+            : response.RememberForSession ? ApprovalOutcome.AllowedForSession : ApprovalOutcome.AllowedOnce;
     }
 
     private async ValueTask<object?> BridgeQuestionAsync(UserQuestionsRequestNotification notification, Func<ValueTask<object?>> next)

@@ -79,10 +79,11 @@ public sealed class MachineStoreTests : IDisposable
         var machine = Assert.Single(imported.Machines);
         Assert.Equal(MachineSpec.Ssh("lab", "lab.internal", 2200, "dev", SshAuth.Password) with { RemotePath = "~/repo", Password = "pw" }, machine);
         Assert.False(imported.Deploy.AutoDeploy);
-        Assert.Equal("http://proxy:3128", imported.Deploy.DownloadProxy);
+        Assert.Null(HarnessSettings.Load(home).Network?.OutboundProxy);
         var gui = HarnessSettings.Load(home).Plugins[GuiSettings.Package].Parameters;
         Assert.False(gui.ContainsKey("remoteWorkspaces"));
         Assert.False(gui.ContainsKey("remoteAutoDeploy"));
+        Assert.False(gui.ContainsKey("remoteDownloadProxy"));
         Assert.Equal(GuiSettings.ThemeLight, new GuiSettings(home).Load().Theme);
         Assert.NotNull(HarnessSettings.Load(home).Fleet);
         Assert.Equal(imported.Machines, new MachineStore(home).Load().Machines);

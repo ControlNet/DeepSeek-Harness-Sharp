@@ -4,13 +4,15 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Core;
 using Dsh.Gui.Services;
+using Dsh.Fleet;
+using Dsh.RemoteHost;
 using Dsh.Llm;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
 
 namespace Dsh.Gui.ViewModels;
 
-/** 子代理树里的一个条目: 身份来自持久化 descriptor, IsLive 由 start/end 通知与运行时查询共同判定。 */
+/** 子代理树条目: descriptor 与 live 状态均来自拥有父会话的 Host。 */
 public sealed partial class SubagentNodeViewModel(
     SessionId id, SessionId? parent, int depth, string mode, string? label, bool hasChildren) : ObservableObject
 {
@@ -46,27 +48,21 @@ public sealed partial class SubagentNodeViewModel(
     private const double TreeIndentPixels = 14;
 }
 
-/** 子代理列表与只读查看状态: 列表来自 SubagentRuntime 的持久化子树, live 由通知与 GetLive 共同判定。 */
+/** 子代理列表与只读查看状态: Host 查询子树, Host 事件流实时呈现子会话, GUI 不恢复子代理。 */
 public sealed partial class SubagentPanelViewModel : ObservableObject, IDisposable
 {
-    private readonly Context _ctx;
+    private readonly HostChatSession _chat;
     private readonly SubagentDirectory _directory;
     private readonly Dictionary<SessionId, SubagentNodeViewModel> _byId = [];
-    private readonly Func<bool> _unsubscribeStart;
-    private readonly Func<bool> _unsubscribeEnd;
     private SessionId? _root;
     private bool _disposed;
+    private long _refreshGeneration;
+    public event Action<string>? Failed;
 
-    public SubagentPanelViewModel(Context ctx)
+    public SubagentPanelViewModel(HostChatSession chat)
     {
-        _ctx = ctx;
-        _directory = new SubagentDirectory(ctx);
-        _unsubscribeStart = ctx.On<SubagentStartNotification>(
-            notification => Dispatch(() => NotifyStart(notification.Info.Id)),
-            new EventOptions { Global = true });
-        _unsubscribeEnd = ctx.On<SubagentEndNotification>(
-            notification => Dispatch(() => NotifyEnd(notification.Info.Id)),
-            new EventOptions { Global = true });
+        _chat = chat;
+        _directory = new SubagentDirectory(chat);
     }
 
     public ObservableCollection<SubagentNodeViewModel> Nodes { get; } = [];
@@ -108,34 +104,58 @@ public sealed partial class SubagentPanelViewModel : ObservableObject, IDisposab
         Refresh();
     }
 
-    public void Refresh()
+    public void Refresh() => _ = RefreshAsync();
+
+    public async Task RefreshAsync()
+    {
+        try
+        {
+            await RefreshCoreAsync();
+        }
+        catch (Exception error)
+        {
+            if (!_disposed)
+                Failed?.Invoke(error.Message);
+        }
+    }
+
+    private async Task RefreshCoreAsync()
     {
         if (_disposed)
             return;
-        var entries = _root is { } root ? _directory.Descendants(root) : [];
+        var root = _root;
+        var generation = ++_refreshGeneration;
+        var entries = root is { } rootId ? await _directory.DescendantsAsync(rootId) : [];
+        if (_disposed || root != _root || generation != _refreshGeneration)
+            return;
         var seen = new HashSet<SessionId>();
         var ordered = new List<SubagentNodeViewModel>();
         foreach (var entry in entries)
         {
-            seen.Add(entry.Id);
-            if (!_byId.TryGetValue(entry.Id, out var node))
+            var id = SessionId.Create(entry.SessionId);
+            seen.Add(id);
+            if (!_byId.TryGetValue(id, out var node))
             {
-                node = new SubagentNodeViewModel(entry.Id, entry.Parent, entry.Depth ?? 0, entry.Mode, entry.Label, entry.HasChildren)
+                node = new SubagentNodeViewModel(id, entry.Parent is null ? null : SessionId.Create(entry.Parent), entry.Depth, entry.Mode, entry.Label, entry.HasChildren)
                 {
-                    IsLive = _directory.IsLive(entry.Id),
+                    IsLive = entry.IsLive,
                 };
-                _byId[entry.Id] = node;
+                _byId[id] = node;
             }
             else
             {
-                node.Parent = entry.Parent;
-                node.Depth = entry.Depth ?? 0;
+                node.Parent = entry.Parent is null ? null : SessionId.Create(entry.Parent);
+                node.Depth = entry.Depth;
                 node.Mode = entry.Mode;
                 node.Label = entry.Label;
                 node.HasChildren = entry.HasChildren;
+                node.IsLive = entry.IsLive;
             }
             ordered.Add(node);
+            await _directory.LoadEventsAsync(id);
         }
+        if (_disposed || root != _root || generation != _refreshGeneration)
+            return;
         foreach (var stale in _byId.Keys.Where(id => !seen.Contains(id)).ToList())
             _byId.Remove(stale);
         Nodes.Clear();
@@ -144,34 +164,32 @@ public sealed partial class SubagentPanelViewModel : ObservableObject, IDisposab
         SyncState();
     }
 
-    public void NotifyStart(SessionId id)
-    {
-        if (_disposed)
-            return;
-        if (_byId.TryGetValue(id, out var node))
-            node.IsLive = true;
-        else
-            Refresh();
-        SyncState();
-    }
-
-    public void NotifyEnd(SessionId id)
-    {
-        if (_disposed)
-            return;
-        if (_byId.TryGetValue(id, out var node))
-            node.IsLive = false;
-        SyncState();
-    }
 
     [RelayCommand]
-    private void Open(SubagentNodeViewModel? node)
+    private async Task OpenAsync(SubagentNodeViewModel? node)
     {
-        if (node is null || _directory.FindSession(node.Id) is not { } session)
+        try
+        {
+            await OpenCoreAsync(node);
+        }
+        catch (Exception error)
+        {
+            if (!_disposed)
+                Failed?.Invoke(error.Message);
+        }
+    }
+
+    private async Task OpenCoreAsync(SubagentNodeViewModel? node)
+    {
+        if (node is null)
+            return;
+        var root = _root;
+        var events = await _directory.LoadEventsAsync(node.Id);
+        if (_disposed || root != _root)
             return;
         Viewing?.Dispose();
         Current = node;
-        Viewing = new SubagentConversationViewModel(_ctx, session, node.IsLive);
+        Viewing = new SubagentConversationViewModel(_chat, node.Id, events);
         IsViewing = true;
         RefreshNavigation();
     }
@@ -194,7 +212,7 @@ public sealed partial class SubagentPanelViewModel : ObservableObject, IDisposab
     [RelayCommand]
     private void Next() => Step(1);
 
-    public Session? FindSession(SessionId id) => _directory.FindSession(id);
+    public IReadOnlyList<SessionEvent>? FindEvents(SessionId id) => _directory.FindEvents(id);
 
     private void Step(int delta)
     {
@@ -205,7 +223,7 @@ public sealed partial class SubagentPanelViewModel : ObservableObject, IDisposab
         var target = index + delta;
         if (index < 0 || target < 0 || target >= siblings.Count)
             return;
-        Open(siblings[target]);
+        _ = OpenAsync(siblings[target]);
     }
 
     private List<SubagentNodeViewModel> Siblings(SubagentNodeViewModel current)
@@ -239,64 +257,80 @@ public sealed partial class SubagentPanelViewModel : ObservableObject, IDisposab
         PositionText = index >= 0 ? $"{index + 1} / {siblings.Count}" : "";
     }
 
-    /** 通知可能来自后台线程: 已在 UI 线程时直接处理, 否则投递过去。 */
-    private static void Dispatch(Action action)
-    {
-        if (Dispatcher.UIThread.CheckAccess())
-            action();
-        else
-            Dispatcher.UIThread.Post(action);
-    }
 
     public void Dispose()
     {
         if (_disposed)
             return;
         _disposed = true;
-        _unsubscribeStart();
-        _unsubscribeEnd();
         Close();
     }
 }
 
-/** 只读子代理视图: 用子会话事件渲染消息, 活代理后续事件追加, 关闭时退订, 绝不写入子会话。 */
+/** Read-only child transcript: subscribe to the Host without resuming or writing the child session. */
 public sealed class SubagentConversationViewModel : ObservableObject, IDisposable
 {
-    private readonly SubagentTranscript _transcript = new();
-    private readonly Func<bool>? _unsubscribe;
-    private bool _disposed;
+    private SubagentTranscript _transcript = new();
+    private readonly CancellationTokenSource _lifetime = new();
+    private long _renderedSeq;
 
-    public SubagentConversationViewModel(Context ctx, Session session, bool live)
+    public SubagentConversationViewModel(HostChatSession chat, SessionId id, IReadOnlyList<SessionEvent> events)
     {
-        Session = session;
-        var events = new DispatcherBridge<SessionEvent>(ApplyBatch);
-        ApplyBatch(session.SnapshotEvents());
-        if (live)
-            _unsubscribe = ctx.On<SessionEventNotification>(notification =>
-            {
-                if (ReferenceEquals(notification.Session, session))
-                    events.Enqueue(notification.Event);
-            });
+        SessionId = id;
+        ApplyBatch(events);
+        _ = FollowAsync(chat, events.Count);
     }
 
-    public Session Session { get; }
-
+    public SessionId SessionId { get; }
     public ObservableCollection<MessageViewModel> Messages { get; } = [];
+
+    private async Task FollowAsync(HostChatSession chat, long fromSeq)
+    {
+        try
+        {
+            await foreach (var item in chat.Fleet.Find(MachineSpec.LocalName)!.SubscribeAsync(SessionId.Value, fromSeq, _lifetime.Token))
+            {
+                if (item.Reset)
+                {
+                    var snapshot = await (await chat.ClientAsync(_lifetime.Token)).GetSessionSnapshotAsync(SessionId.Value, _lifetime.Token);
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        if (_lifetime.IsCancellationRequested)
+                            return;
+                        Messages.Clear();
+                        _transcript = new SubagentTranscript();
+                        _renderedSeq = 0;
+                        ApplyBatch(snapshot.Events.Select(value => DshJson.Deserialize<SessionEvent>(value.EventJson)).OfType<SessionEvent>().ToList());
+                    });
+                }
+                else if (DshJson.Deserialize<SessionEvent>(item.EventJson) is { } sessionEvent)
+                    Dispatcher.UIThread.Post(() => ApplyBatch([sessionEvent]));
+            }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception error)
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (!_lifetime.IsCancellationRequested)
+                    Messages.Add(new MessageViewModel("错误", error.Message, MessageKind.System, false));
+            });
+        }
+    }
 
     private void ApplyBatch(IReadOnlyList<SessionEvent> batch)
     {
-        if (_disposed)
+        if (_lifetime.IsCancellationRequested)
             return;
         foreach (var sessionEvent in batch)
+        {
+            if (sessionEvent.Seq < _renderedSeq)
+                continue;
+            _renderedSeq = sessionEvent.Seq + 1;
             _transcript.Apply(sessionEvent, Messages);
+        }
         _transcript.Flush();
     }
 
-    public void Dispose()
-    {
-        if (_disposed)
-            return;
-        _disposed = true;
-        _unsubscribe?.Invoke();
-    }
+    public void Dispose() => _lifetime.Cancel();
 }

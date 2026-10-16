@@ -18,6 +18,28 @@ public interface IRemoteHost
 
     Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, RemoteModelSelection? selection = null, RemoteProviderSpec? provider = null, CancellationToken cancellationToken = default);
 
+    Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken = default);
+
+    Task<RemoteCommandResult> ExecuteSessionCommandAsync(string sessionId, string line, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<RemoteCommandDescriptor>> ListSessionCommandsAsync(string sessionId, CancellationToken cancellationToken = default);
+
+    Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken = default);
+
+    Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken = default);
+
+    Task SetSessionApprovalPolicyAsync(string sessionId, string policy, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<RemoteSubagentInfo>> ListSubagentsAsync(string rootSessionId, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<RemotePluginInfo>> ListPluginsAsync(CancellationToken cancellationToken = default);
+
+    Task<string> SetPluginPermissionAsync(string package, string permission, bool allowed, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<string>> ListReasoningEffortsAsync(string provider, string model, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<string>> ListProviderModelsAsync(string provider, CancellationToken cancellationToken = default);
+
     IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken = default);
 
     /** 停止某会话的事件推送(重新订阅前调用, 避免旧泵与新泵同时推送导致重复)。 */
@@ -36,7 +58,7 @@ public interface IRemoteHost
     IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync(CancellationToken cancellationToken = default);
 
     /** 返回 false 表示该请求已被别的客户端先回答或已取消, 本次回答无效。 */
-    Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason = null, CancellationToken cancellationToken = default);
+    Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason = null, CancellationToken cancellationToken = default, bool rememberForSession = false);
 
     /** 问答请求流(远端发起); 本地决定后经 RespondQuestionAsync 回填。 */
     IAsyncEnumerable<RemoteQuestionRequest> QuestionsAsync(CancellationToken cancellationToken = default);

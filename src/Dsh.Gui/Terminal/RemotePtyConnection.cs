@@ -24,6 +24,9 @@ public sealed class RemotePtyConnection : ITerminalConnection, IAsyncDisposable
     private readonly Stream _inputStream;
     private readonly Stream _outputStream;
     private readonly CancellationTokenSource _cts = new();
+    private readonly Lock _sizeGate = new();
+    private readonly SemaphoreSlim _resizeGate = new(1);
+    private TerminalSize _size = new(80, 24);
 
     private RemotePtyConnection(MachineConnection machine, string ptyId, bool ownsPty)
     {
@@ -60,16 +63,36 @@ public sealed class RemotePtyConnection : ITerminalConnection, IAsyncDisposable
     /** The PTY follows the control's grid; while the machine is unreachable the next attach's snapshot catches up instead. */
     public async ValueTask ResizeAsync(TerminalSize size, CancellationToken cancellationToken)
     {
+        lock (_sizeGate)
+            _size = size;
         if (_machine.State != MachineConnectionState.Connected)
             return;
         try
         {
             var lease = await _machine.WaitConnectedAsync(cancellationToken);
-            await lease.Client.ResizePtyAsync(_ptyId, size.Columns, size.Rows, cancellationToken);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
+            await ResizeForAttachAsync(lease.Client, linked.Token);
         }
-        catch (Exception error) when (error is JsonRpcException or IOException or ObjectDisposedException)
+        catch (Exception error) when (error is JsonRpcException or IOException or ObjectDisposedException
+            || error is OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
             // The PTY exited or the link dropped: the screen model already has the new size and there is no peer to tell.
+        }
+    }
+
+    private async Task ResizeForAttachAsync(RemoteHostClient client, CancellationToken cancellationToken)
+    {
+        await _resizeGate.WaitAsync(cancellationToken);
+        try
+        {
+            TerminalSize size;
+            lock (_sizeGate)
+                size = _size;
+            await client.ResizePtyAsync(_ptyId, size.Columns, size.Rows, cancellationToken);
+        }
+        finally
+        {
+            _resizeGate.Release();
         }
     }
 
@@ -101,7 +124,7 @@ public sealed class RemotePtyConnection : ITerminalConnection, IAsyncDisposable
     {
         try
         {
-            await _machine.AttachPtyAsync(_ptyId, _input.Reader.AsStream(), _output.Writer.AsStream(), _cts.Token);
+            await _machine.AttachPtyAsync(_ptyId, _input.Reader.AsStream(), _output.Writer.AsStream(), _cts.Token, ResizeForAttachAsync);
         }
         catch (Exception error) when (error is OperationCanceledException or IOException or InvalidOperationException or JsonRpcException or ObjectDisposedException)
         {

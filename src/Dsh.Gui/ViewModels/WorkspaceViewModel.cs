@@ -98,6 +98,9 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     /** Questions are answered in the decision dialog that the main window shows. */
     public event Func<DecisionViewModel, Task<object?>>? DecisionRequested;
 
+    /** The main chat shell can handle local harness cards with its full composer and trace UI. */
+    public event Action<string>? LocalChatRequested;
+
     public void Start() => Fleet.Start();
 
     /** Shows a session in the main window, unless its own window already shows it. */
@@ -235,6 +238,13 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     private void ShowInMain(SessionCardViewModel card)
     {
         _ = CloseActiveAsync();
+        if (card.Machine == MachineSpec.LocalName && card.Kind == HostSessionKinds.Harness && LocalChatRequested is { } openChat)
+        {
+            PageContent = null;
+            ActivePage = null;
+            openChat(card.SessionId);
+            return;
+        }
         ActiveSession = CreateSession(card);
         PageContent = null;
         ActivePage = null;

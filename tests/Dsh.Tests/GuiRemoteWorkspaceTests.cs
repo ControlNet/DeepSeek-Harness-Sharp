@@ -40,7 +40,7 @@ public sealed class GuiRemoteWorkspaceTests
         using var environmentScope = environment;
         new MachineStore(environment.App.Home).Save(FleetConfig.Empty with { Machines = SampleWorkspaces() });
 
-        var window = new MainWindow(environment.App, environment.Agent);
+        var window = new MainWindow(environment.App, await environment.OpenChatAsync());
         var viewModel = window.ViewModel!;
         window.Show();
         Dispatcher.UIThread.RunJobs();
@@ -92,7 +92,8 @@ public sealed class GuiRemoteWorkspaceTests
         machines.Editor!.Name = "改名后的工作区";
         await machines.SaveCommand.ExecuteAsync(null);
         Assert.Contains(new MachineStore(environment.App.Home).Load().Machines, workspace => workspace.Name == "改名后的工作区");
-        await GuiWorkspaceTests.UntilAsync(() => viewModel.Workspace.Fleet.Find("改名后的工作区") is not null, "the workspace reconnects to the saved list");
+        await GuiTestEnvironment.WaitForAsync(viewModel.Workspace.Fleet,
+            () => viewModel.Workspace.Fleet.Find("改名后的工作区") is not null);
         Assert.True(viewModel.Preferences.IsRemoteSection);
 
         window.Close();
@@ -116,7 +117,7 @@ public sealed class GuiRemoteWorkspaceTests
             using var environmentScope = environment;
             new MachineStore(environment.App.Home).Save(FleetConfig.Empty with { Machines = [spec.ToMachine()] });
 
-            var window = new MainWindow(environment.App, environment.Agent);
+            var window = new MainWindow(environment.App, await environment.OpenChatAsync());
             var viewModel = window.ViewModel!;
             window.Show();
             Dispatcher.UIThread.RunJobs();

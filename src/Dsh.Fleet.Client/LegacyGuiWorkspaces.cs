@@ -47,7 +47,6 @@ internal static class LegacyGuiWorkspaces
             AutoDeploy = parameters.GetValueOrDefault(AutoDeployKey) as bool? ?? defaults.AutoDeploy,
             ReleaseBaseUrl = Text(parameters, ReleaseBaseUrlKey) ?? defaults.ReleaseBaseUrl,
             ReleaseVersion = Text(parameters, ReleaseVersionKey) ?? defaults.ReleaseVersion,
-            DownloadProxy = Text(parameters, DownloadProxyKey),
             Via = Text(parameters, DownloadViaKey) ?? defaults.Via,
             ServerProxy = Text(parameters, ServerProxyKey),
         };

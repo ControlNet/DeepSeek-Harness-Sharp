@@ -3,11 +3,12 @@ using System.Net.Sockets;
 using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.Transport;
+using Dsh.Runtime;
 
 namespace Dsh.WebBridge;
 
 /**
- * `dsharp host web [--port N] [--print-token]`: runs the bridge until cancelled, or prints the running bridge's access token.
+ * `dsharp web [--port N] [--print-token]` (also `dsharp host web`): runs the bridge until cancelled, or prints the running bridge's access token.
  * The bridge serves this computer and every machine of the harness home's machine list (the fleet section of settings.yaml).
  */
 public static class WebBridgeCommand
@@ -15,7 +16,7 @@ public static class WebBridgeCommand
     public const string PortOption = "--port";
     public const string PrintTokenOption = "--print-token";
 
-    private const string Usage = "usage: dsharp host web [--port N] [--print-token]";
+    private const string Usage = "usage: dsharp web [--port N] [--print-token]";
 
     private readonly record struct WebBridgeArguments(int Port, bool PrintToken, string? Error);
 
@@ -30,7 +31,8 @@ public static class WebBridgeCommand
         TextWriter error,
         Func<Task> ensureHostAsync,
         CancellationToken cancellationToken,
-        Func<MachineSpec, CancellationToken, Task>? startLocalHost = null)
+        Func<MachineSpec, CancellationToken, Task>? startLocalHost = null,
+        OutboundProxy? localProxy = null)
     {
         var (port, printToken, problem) = Parse(arguments);
         if (problem is not null)
@@ -42,7 +44,7 @@ public static class WebBridgeCommand
         if (printToken)
             return await PrintTokenAsync(root, output, error, cancellationToken).ConfigureAwait(false);
         await ensureHostAsync().ConfigureAwait(false);
-        return await ServeAsync(Options(root, port, startLocalHost), output, error, cancellationToken).ConfigureAwait(false);
+        return await ServeAsync(Options(root, port, startLocalHost, localProxy), output, error, cancellationToken).ConfigureAwait(false);
     }
 
     private static WebBridgeArguments Parse(IReadOnlyList<string> arguments)
@@ -77,7 +79,7 @@ public static class WebBridgeCommand
         var portText = File.Exists(portFile) ? await File.ReadAllTextAsync(portFile, cancellationToken).ConfigureAwait(false) : "";
         if (token is null || !int.TryParse(portText.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var port))
         {
-            await error.WriteLineAsync($"dsharp: no web bridge is running for {root}; start one with `dsharp host web`").ConfigureAwait(false);
+            await error.WriteLineAsync($"dsharp: no web bridge is running for {root}; start one with `dsharp web`").ConfigureAwait(false);
             return 1;
         }
 
@@ -87,10 +89,10 @@ public static class WebBridgeCommand
     }
 
     /** This computer first (the default target), then the stored machines, deployed with the stored preferences. */
-    private static WebBridgeOptions Options(string root, int port, Func<MachineSpec, CancellationToken, Task>? startLocalHost)
+    private static WebBridgeOptions Options(string root, int port, Func<MachineSpec, CancellationToken, Task>? startLocalHost, OutboundProxy? localProxy)
     {
         var config = new MachineStore(new HarnessHome(root)).Load();
-        var fleet = new FleetOptions { ClientName = WebBridgeServer.DefaultClientName, Deploy = config.Deploy, StartLocalHost = startLocalHost };
+        var fleet = new FleetOptions { ClientName = WebBridgeServer.DefaultClientName, Deploy = config.Deploy, StartLocalHost = startLocalHost, LocalProxy = localProxy ?? new OutboundProxy() };
         return new WebBridgeOptions(root, port, [MachineSpec.Local(root), .. config.Machines], fleet);
     }
 
@@ -129,7 +131,7 @@ public static class WebBridgeCommand
         var login = $"ssh -N -L {port}:127.0.0.1:{port} {Environment.UserName}@{Environment.MachineName}";
         await output.WriteLineAsync($"dsharp web bridge listening on {url} (loopback only)").ConfigureAwait(false);
         await output.WriteLineAsync($"machines: {string.Join(", ", (options.Machines ?? []).Select(machine => $"{machine.Name} ({machine.Target})"))}").ConfigureAwait(false);
-        await output.WriteLineAsync($"web access token: {WebBridgeEndpoint.TokenFile(options.HostRoot)} (new on every start; show it with `dsharp host web {PrintTokenOption}`)").ConfigureAwait(false);
+        await output.WriteLineAsync($"web access token: {WebBridgeEndpoint.TokenFile(options.HostRoot)} (new on every start; show it with `dsharp web {PrintTokenOption}`)").ConfigureAwait(false);
         await output.WriteLineAsync($"first login: open {url}#token=<token>, or paste the token into the login page").ConfigureAwait(false);
         await output.WriteLineAsync($"from another computer: {login}, then open {url} there").ConfigureAwait(false);
         await output.WriteLineAsync($"through a jump host: ssh -N -J <user>@<jump-host> -L {port}:127.0.0.1:{port} {Environment.UserName}@{Environment.MachineName}").ConfigureAwait(false);

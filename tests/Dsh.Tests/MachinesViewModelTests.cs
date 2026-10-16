@@ -64,7 +64,7 @@ public sealed class MachinesViewModelTests : IDisposable
         viewModel.Load();
         var deploy = viewModel.Deploy!;
 
-        (deploy.AutoDeploy, deploy.ReleaseVersion, deploy.Via, deploy.DownloadProxy, deploy.ServerProxy) = (false, "v1.2.3", DownloadVia.Client, "http://127.0.0.1:7890", " ");
+        (deploy.AutoDeploy, deploy.ReleaseVersion, deploy.Via, deploy.ServerProxy) = (false, "v1.2.3", DownloadVia.Client, " ");
         await viewModel.SaveDeploySettingsCommand.ExecuteAsync(null);
         deploy.ReleaseVersion = "v9.9.9";
         viewModel.NewSshCommand.Execute(null);
@@ -72,7 +72,7 @@ public sealed class MachinesViewModelTests : IDisposable
         await viewModel.SaveCommand.ExecuteAsync(null);
         var config = store.Load();
 
-        Assert.Equal((false, "v1.2.3", DownloadVia.Client, "http://127.0.0.1:7890", (string?)null), (config.Deploy.AutoDeploy, config.Deploy.ReleaseVersion, config.Deploy.Via, config.Deploy.DownloadProxy, config.Deploy.ServerProxy));
+        Assert.Equal((false, "v1.2.3", DownloadVia.Client, (string?)null), (config.Deploy.AutoDeploy, config.Deploy.ReleaseVersion, config.Deploy.Via, config.Deploy.ServerProxy));
         Assert.Equal(DeploySettings.DefaultReleaseBaseUrl, config.Deploy.ReleaseBaseUrl);
         Assert.Same(deploy, viewModel.Deploy);
         Assert.Equal("v9.9.9", viewModel.Deploy!.ReleaseVersion);

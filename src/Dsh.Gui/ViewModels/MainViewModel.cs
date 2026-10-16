@@ -53,46 +53,42 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private const int MaxToasts = 4;
 
     private readonly Context _ctx;
-    private readonly AgentRegistry _agents;
     private readonly SettingsFacade _settings;
     private readonly SessionCatalog _catalog;
-    private readonly CommandBridge _bridge;
-    private readonly DispatcherBridge<SessionEvent> _events;
     private readonly List<Func<bool>> _unsubscribers = [];
     private readonly List<MessageViewModel> _lastUserMessages = [];
-    private Session? _renamedSession;
     private IReadOnlyList<string> _skillNames = [];
     private readonly Dictionary<string, string> _contentMatches = new(StringComparer.Ordinal);
     private readonly Dictionary<ToolCallId, (string Name, string Arguments)> _pendingToolCalls = [];
+    private readonly Dictionary<string, DecisionViewModel?> _pendingDialogs = new(StringComparer.Ordinal);
     private CancellationTokenSource? _contentSearch;
 
-    private AgentLoopAgent _agent;
+    private readonly HostChatSession _chat;
     private long _renderedSeq;
     private MessageViewModel? _openAssistant;
     private MessageViewModel? _openReasoning;
     private bool _disposed;
     private bool _updatingSuggestions;
+    private bool _commandSuggestionsLoaded;
 
-    /** fleet defaults to this home's machines without starting a local host; the GUI entry passes one that can start it. */
-    public MainViewModel(HarnessApp app, AgentLoopAgent agent, FleetWorkspace? fleet = null)
+    /** Local chat lifecycle and all session mutations belong to the persistent Host. */
+    public MainViewModel(HarnessApp app, HostChatSession chat)
     {
         _ctx = app.Ctx;
-        _agent = agent;
+        _chat = chat;
         Home = app.Home;
-        _agents = _ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
-        Subagents = new SubagentPanelViewModel(_ctx);
+        Subagents = new SubagentPanelViewModel(chat);
         Subagents.Changed += PopulateSubagentCards;
-        _settings = new SettingsFacade(_ctx, app.Home);
-        _catalog = new SessionCatalog(_ctx);
-        _bridge = new CommandBridge(_ctx);
+        Subagents.Failed += SetStatus;
+        _settings = new SettingsFacade(app.Home);
+        _catalog = new SessionCatalog(_ctx, chat.Fleet);
         Gui = new GuiSettings(app.Home);
-        _events = new DispatcherBridge<SessionEvent>(ApplyEvents);
         var snapshot = Gui.Load();
         _workspaceView = snapshot.WorkspaceView;
         _sortMode = snapshot.SortSessions;
         _onlyWithSessions = snapshot.ShowOnlyWithSessions;
         _isSidebarVisible = snapshot.SidebarVisible;
-        Preferences = new SettingsViewModel(_ctx, app.Home, () => _agent, _bridge, Gui, _settings);
+        Preferences = new SettingsViewModel(_ctx, app.Home, CurrentRemoteModel, chat.RunAsync, Gui, _settings, () => chat.ClientAsync());
         Preferences.Models.CollectionChanged += (_, _) => RefreshFilteredModels();
         Preferences.ReasoningEfforts.CollectionChanged += (_, _) => HasReasoningEfforts = Preferences.ReasoningEfforts.Count > 0;
         HasReasoningEfforts = Preferences.ReasoningEfforts.Count > 0;
@@ -100,18 +96,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Composer.PropertyChanged += OnComposerPropertyChanged;
         _unsubscribers.Add(_ctx.On<SkillsChangedNotification>(notification => { _ = LoadSkillNamesAsync(); }));
         _ = LoadSkillNamesAsync();
-        _unsubscribers.Add(_ctx.On<SessionEventNotification>(notification => OnSessionEvent(notification)));
-        _unsubscribers.Add(_ctx.OnWaterfall<ApprovalRequestNotification>(
-            (notification, next) => OnApprovalRequest(notification, next),
-            new EventOptions { Global = true }));
-        _unsubscribers.Add(_ctx.OnWaterfall<UserQuestionsRequestNotification>(
-            (notification, next) => OnUserQuestionRequest(notification, next),
-            new EventOptions { Global = true }));
         _settings.Changed += OnSettingsChanged;
         RefreshTraceFilters();
         RefreshSessions();
-        ShowAgent(agent);
-        Workspace = CreateWorkspace(fleet ?? FleetWorkspace.ForHome(app.Home, null));
+        Workspace = CreateWorkspace(chat.Fleet);
+        chat.Fleet.Changed += OnFleetChanged;
+        chat.Reset += ShowSession;
+        chat.Received += ApplyEvents;
+        chat.Failed += SetStatus;
+        ShowSession();
+        chat.Follow();
         Page = AppPage.Dashboard;
     }
 
@@ -124,6 +118,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             WorkspaceDestination.Page => AppPage.WorkspacePage,
             _ => AppPage.Dashboard,
         };
+        workspace.LocalChatRequested += id => _ = OpenHostChatAsync(id);
         workspace.DecisionRequested += decision => DecisionRequested?.Invoke(decision) ?? Task.FromResult<object?>(null);
         return workspace;
     }
@@ -140,6 +135,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public SettingsViewModel Preferences { get; }
 
     public SubagentPanelViewModel Subagents { get; }
+
+    public DeliverablesViewModel Deliverables { get; } = new();
 
     public ObservableCollection<WorkspaceGroupViewModel> Workspaces { get; } = [];
 
@@ -173,7 +170,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public SettingsFacade Settings => _settings;
 
-    public AgentLoopAgent CurrentAgent => _agent;
+    public SessionId CurrentSessionId => _chat.Id;
 
     /** 视图响应此事件把某条消息滚入视野。 */
     public event Action<MessageViewModel>? ScrollRequested;
@@ -181,8 +178,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     /** 会话流内容发生变化, 视图据此保持贴底滚动。 */
     public event Action? MessagesChanged;
 
-    /** 当前会话切换时触发, 供视图把依赖项重新指向新 agent。 */
-    public event Action<AgentLoopAgent>? AgentChanged;
 
     /** 统一「需要你决定」窗口由视图实现: 审批与 ask_user_question 都走这里。 */
     public event Func<DecisionViewModel, Task<object?>>? DecisionRequested;
@@ -410,7 +405,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             node.IsSelected = ReferenceEquals(node, value);
         if (value is null || _disposed)
             return;
-        if (value.Agent is { } live && ReferenceEquals(live, _agent))
+        if (value.SessionId == _chat.Id)
             return;
         _ = SwitchToAsync(value);
     }
@@ -430,7 +425,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         RecentSessions.Clear();
         foreach (var node in Sort(nodes).Take(20))
             RecentSessions.Add(node);
-        SelectedSession = FindSession(_agent.Id);
+        SelectedSession = FindSession(_chat.Id);
         RebuildRecentWorkspaces();
         UpdateCurrentWorkspace();
     }
@@ -464,7 +459,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         TerminalRequested?.Invoke(terminal);
         try
         {
-            await terminal.StartLocalAsync(Home.Root);
+            await terminal.StartOnMachineAsync(_chat.Fleet.Find(MachineSpec.LocalName)!, Home.Root);
         }
         catch (Exception error)
         {
@@ -500,7 +495,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     private void UpdateCurrentWorkspace()
-        => CurrentWorkspace = SessionCatalog.WorkspacePath(_agent.Session.Header.Cwd);
+        => CurrentWorkspace = SessionCatalog.WorkspacePath(_chat.Header.Cwd);
 
     [RelayCommand]
     private async Task PickWorkspaceAsync()
@@ -579,24 +574,29 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         if (text.Length == 0 && Attachments.Count == 0)
             return;
-        Composer.Input = "";
-        CloseSuggestions();
-        var content = new List<ContentBlock>();
-        if (text.Length > 0)
-            content.Add(new TextBlock(ExpandMentions(text)));
-        foreach (var attachment in Attachments)
-            content.Add(new ImageBlock(attachment.Reference));
-        Attachments.Clear();
-        HasAttachments = false;
-        // 用户消息只由会话事件渲染: 本地回显会在恢复会话/重放事件时变成第二条。
-        _agent.Followup(MessageFactory.CreateUserMessage(content));
+        var images = Attachments.Select(attachment => new RemoteImageBlock(
+            attachment.Reference.MediaType, attachment.Reference.Width, attachment.Reference.Height,
+            attachment.Name, Convert.ToBase64String(attachment.Png))).ToList();
+        try
+        {
+            // The Host event stream is the only source of user-message rendering.
+            await _chat.SendAsync(ExpandMentions(text), images);
+            Composer.Input = "";
+            CloseSuggestions();
+            Attachments.Clear();
+            HasAttachments = false;
+        }
+        catch (Exception error)
+        {
+            StatusText = $"发送失败: {error.Message}";
+        }
     }
 
     /** 抽出文本里可读的本地图片路径挂为附件、从文本移除, 返回剩余文本(通常是用户指令)。 */
     private async Task<string> ExtractImagePathsAsync(string text)
     {
         var remaining = text;
-        var cwd = _agent.Session.Header.Cwd ?? Environment.CurrentDirectory;
+        var cwd = _chat.Header.Cwd ?? Environment.CurrentDirectory;
         foreach (Match match in PromptImages.PathPattern().Matches(text))
         {
             var relative = match.Groups["m"].Success;
@@ -645,9 +645,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void CancelTask()
+    private async Task CancelTaskAsync()
     {
-        _agent.Cancel(new AgentCancelCause.User());
+        await (await _chat.ClientAsync()).InterruptAsync(_chat.Id.Value);
     }
 
     [RelayCommand]
@@ -712,7 +712,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void CommitRename(SessionNodeViewModel? node)
+    private async Task CommitRenameAsync(SessionNodeViewModel? node)
     {
         if (node is null || !node.IsRenaming)
             return;
@@ -720,16 +720,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var title = node.RenameDraft.Trim();
         if (title.Length == 0 || title == node.Title)
             return;
-        var persistence = _ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName, false);
-        if (persistence is null)
+        await (await _chat.ClientAsync()).RenameSessionAsync(node.SessionId.Value, title);
+        node.Title = title;
+        if (node.SessionId == _chat.Id)
         {
-            StatusText = "会话持久化不可用";
-            return;
-        }
-        persistence.Rename(node.SessionId, title);
-        node.Agent?.Session.Rename(title);
-        if (node.SessionId == _agent.Id)
+            await _chat.ReloadAsync();
             SessionTitle = title;
+        }
         StatusText = $"已重命名为「{title}」";
         RefreshSessions();
     }
@@ -746,35 +743,30 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (node is null)
             return;
-        if (ReferenceEquals(node.Agent, _agent) || node.SessionId == _agent.Id)
+        if (node.SessionId == _chat.Id)
         {
             StatusText = "不能删除当前正在使用的会话";
             return;
         }
-        StatusText = await _bridge.RunAsync(_agent, $"/session delete {node.SessionId.Value}");
+        await (await _chat.ClientAsync()).DeleteSessionAsync(node.SessionId.Value);
+        StatusText = "会话已删除";
         RefreshSessions();
     }
 
     [RelayCommand]
     private async Task ExportSessionLogAsync()
     {
-        var persistence = _ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName, false);
-        if (persistence is null)
-        {
-            StatusText = "会话持久化不可用";
-            return;
-        }
         try
         {
-            using var handle = persistence.Open(_agent.Id, SessionAccess.Read);
-            var events = handle.Read();
+            var snapshot = await (await _chat.ClientAsync()).GetSessionSnapshotAsync(_chat.Id.Value);
+            var events = snapshot.Events;
             var directory = Path.Combine(Home.Root, "exports");
             Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, $"{_agent.Id.Value}-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.jsonl");
+            var path = Path.Combine(directory, $"{_chat.Id.Value}-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.jsonl");
             await using var stream = File.Create(path);
             await using var writer = new StreamWriter(stream);
             foreach (var sessionEvent in events)
-                await writer.WriteLineAsync(DshJson.Serialize(sessionEvent));
+                await writer.WriteLineAsync(sessionEvent.EventJson);
             await writer.FlushAsync();
             StatusText = $"已导出 {events.Count} 条事件: {path}";
             CopyRequested?.Invoke(path);
@@ -838,6 +830,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
+    private async Task OpenDeliverable(DeliverableItemViewModel? item)
+    {
+        if (item is null)
+            return;
+        StatusText = File.Exists(item.Path)
+            ? await DesktopIntegration.OpenPathAsync(item.Path)
+            : $"文件已不存在: {item.Path}";
+    }
+
+    [RelayCommand]
+    private void CopyDeliverablePath(DeliverableItemViewModel? item)
+    {
+        if (item is null)
+            return;
+        CopyRequested?.Invoke(item.Path);
+        StatusText = $"已复制路径: {item.Path}";
+    }
+
+    [RelayCommand]
     private void CopyMessage(MessageViewModel? message)
     {
         if (message is { } value)
@@ -863,7 +874,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void RegenerateMessage(MessageViewModel? message)
+    private async Task RegenerateMessageAsync(MessageViewModel? message)
     {
         var lastUser = _lastUserMessages.LastOrDefault();
         if (lastUser is null)
@@ -872,7 +883,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
         StatusText = "重新生成上一条回答";
-        _agent.Followup(MessageFactory.CreateUserText(lastUser.Text));
+        await _chat.SendAsync(lastUser.Text);
     }
 
     [RelayCommand]
@@ -884,10 +895,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _ = TogglePlanModeAsync();
                 return;
             case "full":
-                ApplyApprovalPolicy(ApprovalPolicy.Auto, SessionMode.FullAccess, "Full access：需要审批的工具自动放行（黑名单仍然生效）");
+                _ = ApplyApprovalPolicyAsync(ApprovalPolicy.Auto, SessionMode.FullAccess, "Full access：需要审批的工具自动放行（黑名单仍然生效）");
                 return;
             default:
-                ApplyApprovalPolicy(ApprovalPolicy.Ask, SessionMode.Standard, "标准模式：需要审批时弹窗确认");
+                _ = ApplyApprovalPolicyAsync(ApprovalPolicy.Ask, SessionMode.Standard, "标准模式：需要审批时弹窗确认");
                 return;
         }
     }
@@ -932,10 +943,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private async Task CompactAsync() => StatusText = await _bridge.RunAsync(_agent, "/compact");
+    private async Task CompactAsync() => StatusText = await _chat.RunAsync("/compact");
 
     [RelayCommand]
-    private async Task ReloadMcpAsync() => StatusText = await _bridge.RunAsync(_agent, "/mcp");
+    private async Task ReloadMcpAsync() => StatusText = await _chat.RunAsync("/mcp");
 
     [RelayCommand]
     private async Task RefreshModelsAsync()
@@ -948,7 +959,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task SetPreset(string id)
     {
-        var output = await _bridge.RunAsync(_agent, $"/preset {id}");
+        var output = await _chat.RunAsync($"/preset {id}");
         StatusText = output;
         RefreshPreset();
     }
@@ -958,7 +969,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (string.IsNullOrWhiteSpace(model))
             return;
-        StatusText = await _bridge.RunAsync(_agent, $"/model {model}");
+        StatusText = await _chat.RunAsync($"/model {model}");
         RefreshModelLabels();
         Preferences.RefreshReasoningEfforts();
     }
@@ -968,7 +979,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (string.IsNullOrWhiteSpace(effort))
             return;
-        StatusText = await _bridge.RunAsync(_agent, $"/reasoning {effort}");
+        StatusText = await _chat.RunAsync($"/reasoning {effort}");
         RefreshModelLabels();
     }
 
@@ -1005,6 +1016,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (_disposed)
             return;
         _disposed = true;
+        foreach (var dialog in _pendingDialogs.Values)
+            dialog?.CancelCommand.Execute(null);
+        _pendingDialogs.Clear();
+        _chat.Fleet.Changed -= OnFleetChanged;
+        _chat.Reset -= ShowSession;
+        _chat.Received -= ApplyEvents;
+        _chat.Failed -= SetStatus;
         _contentSearch?.Cancel();
         _contentSearch?.Dispose();
         Composer.PropertyChanged -= OnComposerPropertyChanged;
@@ -1014,8 +1032,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         foreach (var unsubscribe in _unsubscribers)
             unsubscribe();
         _unsubscribers.Clear();
-        if (_renamedSession is not null)
-            _renamedSession.Renamed -= OnSessionRenamed;
+        _chat.Dispose();
         _ = Workspace.DisposeAsync().AsTask();
     }
 
@@ -1039,7 +1056,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private string Relative(string path)
     {
-        var cwd = _agent.Session.Header.Cwd ?? Environment.CurrentDirectory;
+        var cwd = _chat.Header.Cwd ?? Environment.CurrentDirectory;
         try
         {
             var relative = Path.GetRelativePath(cwd, path);
@@ -1051,18 +1068,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private AgentOptions CurrentOptions()
-        => new(_agent.Options.Provider, _agent.Options.Model, _agent.Options.ReasoningEffort, _agent.Options.MaxTokens);
 
     /** 远端会话用的客户端模型选择与 provider 规格: 采用本体当前 provider/model(请求头优先, 见 RefreshModelLabels), 规格取自本地 settings.yaml。 */
     private HarnessModelChoice CurrentRemoteModel()
     {
-        var config = _agent.Session.RequestHeader()?.Config;
-        var provider = config?.Provider ?? _agent.Options.Provider;
-        var model = config?.Model ?? _agent.Options.Model;
+        var config = _chat.Events.Select(item => item.Data).OfType<RequestHeaderPayload>().LastOrDefault()?.Header.Config;
+        var provider = config?.Provider ?? _chat.Selection?.Provider;
+        var model = config?.Model ?? _chat.Selection?.Model;
         if (string.IsNullOrWhiteSpace(provider) || string.IsNullOrWhiteSpace(model))
             return new HarnessModelChoice(null, null);
-        var effort = (config?.ReasoningEffort ?? _agent.Options.ReasoningEffort)?.Value;
+        var effort = config?.ReasoningEffort?.Value ?? _chat.Selection?.ReasoningEffort;
         return new HarnessModelChoice(new RemoteModelSelection(provider, model, effort), FindRemoteProviderSpec(provider));
     }
 
@@ -1191,189 +1206,164 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void OnSettingsChanged() => Dispatcher.UIThread.Post(RefreshSessions);
 
-    private void OnSessionEvent(SessionEventNotification notification)
+    private void OnFleetChanged()
     {
-        if (ReferenceEquals(notification.Session, _agent.Session))
-            _events.Enqueue(notification.Event);
-        if (notification.Event.Data is TurnStartPayload or TurnEndPayload)
-            RefreshRunningState(notification.Session, notification.Event.Data is TurnStartPayload);
+        if (_disposed)
+            return;
+        var current = _chat.Fleet.Find(MachineSpec.LocalName)?.Sessions.FirstOrDefault(item => item.SessionId == _chat.Id.Value);
+        if (current is not null)
+            SessionTitle = current.Title ?? _chat.Id.Value;
+        RefreshSessions();
+        Subagents.Refresh();
+        _chat.RefreshConnection();
+        RefreshPendingDialogs();
     }
 
-    /** 后台会话的回合开始/结束也要反映到侧栏, 否则非当前会话看起来像被挂起。 */
-    private void RefreshRunningState(Session session, bool running)
+    /** Host broadcasts are authoritative: another client's answer closes this client's outstanding dialog. */
+    public void RefreshPendingDialogs()
     {
-        Dispatcher.UIThread.Post(() =>
+        var pending = _chat.Fleet.Client.Pending().Where(item => item.Machine == MachineSpec.LocalName).ToList();
+        var present = pending.Select(item => item.RequestId).ToHashSet(StringComparer.Ordinal);
+        foreach (var id in _pendingDialogs.Keys.Where(id => !present.Contains(id)).ToList())
         {
-            if (_disposed)
-                return;
-            foreach (var node in AllSessions())
-            {
-                if (node.SessionId == session.Id)
-                    node.IsRunning = running;
-            }
-        });
-    }
-
-    /** 会话被自动命名或压缩重命名后, 刷新顶部标题与侧栏节点(原本只在切换/新建时刷新)。 */
-    private void OnSessionRenamed(Session session, SessionHeader header)
-    {
-        Dispatcher.UIThread.Post(() =>
+            _pendingDialogs[id]?.CancelCommand.Execute(null);
+            _pendingDialogs.Remove(id);
+        }
+        if (_disposed || DecisionRequested is null)
+            return;
+        foreach (var item in pending)
         {
-            if (_disposed || !ReferenceEquals(session, _agent.Session))
-                return;
-            SessionTitle = header.Title ?? _agent.Id.Value;
-            RefreshSessions();
-        });
+            if (_pendingDialogs.ContainsKey(item.RequestId))
+                continue;
+            var decision = item.Approval is { } approval
+                ? DecisionViewModel.ForApproval(approval.Tool, approval.Arguments, approval.Reason)
+                : DecisionViewModel.ForQuestion(new AskUserQuestionRequest([.. item.Question!.Questions.Select(PendingDecisionViewModel.ToItem)]));
+            _pendingDialogs[item.RequestId] = decision;
+            _ = AnswerPendingAsync(item, decision);
+        }
     }
 
+    private async Task AnswerPendingAsync(FleetPendingItem item, DecisionViewModel decision)
+    {
+        try
+        {
+            var result = await DecisionRequested!(decision);
+            if (_disposed || !_pendingDialogs.ContainsKey(item.RequestId))
+                return;
+            _pendingDialogs[item.RequestId] = null;
+            var client = await _chat.ClientAsync();
+            if (item.Approval is not null && result is ApprovalOutcome outcome)
+                await client.RespondApprovalAsync(item.RequestId,
+                    outcome is ApprovalOutcome.AllowedOnce or ApprovalOutcome.AllowedForSession,
+                    rememberForSession: outcome is ApprovalOutcome.AllowedForSession);
+            else if (result is AskUserQuestionAnswer answer)
+                await client.RespondQuestionAsync(item.RequestId,
+                    [.. answer.Answers.Select(value => new RemoteQuestionAnswerItem(value.Id, value.Selected, value.Custom))]);
+        }
+        catch (Exception error)
+        {
+            if (!_disposed)
+                StatusText = $"决定提交失败: {error.Message}";
+        }
+    }
     private void OnComposerPropertyChanged(object? sender, PropertyChangedEventArgs args)
     {
-        if (args.PropertyName == nameof(ComposerViewModel.Input))
-            RefreshSuggestions();
-    }
-
-    private ValueTask<object?> OnApprovalRequest(ApprovalRequestNotification notification, Func<ValueTask<object?>> next)
-    {
-        var handler = DecisionRequested;
-        if (handler is null)
-            return next();
-        var request = notification.Request;
-        var answer = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        DispatchDecision(() => AskAsync(handler, DecisionViewModel.ForApproval(request), answer));
-        return new ValueTask<object?>(answer.Task);
-    }
-
-    private ValueTask<object?> OnUserQuestionRequest(UserQuestionsRequestNotification notification, Func<ValueTask<object?>> next)
-    {
-        var handler = DecisionRequested;
-        if (handler is null)
-            return next();
-        var request = notification.Request;
-        var answer = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        DispatchDecision(() => AskAsync(handler, DecisionViewModel.ForQuestion(request), answer));
-        return new ValueTask<object?>(answer.Task);
-    }
-
-    /** 事件可能来自后台线程: 已在 UI 线程时直接处理, 否则投递过去。 */
-    private static void DispatchDecision(Func<Task> ask)
-    {
-        if (Dispatcher.UIThread.CheckAccess())
-            _ = ask();
-        else
-            Dispatcher.UIThread.Post(() => _ = ask());
-    }
-
-    private static async Task AskAsync(
-        Func<DecisionViewModel, Task<object?>> handler,
-        DecisionViewModel decision,
-        TaskCompletionSource<object?> answer)
-    {
-        try
-        {
-            answer.TrySetResult(await handler(decision));
-        }
-        catch (Exception)
-        {
-            answer.TrySetResult(null);
-        }
-    }
-
-    private async Task SwitchToAsync(SessionNodeViewModel node)
-    {
-        var agent = node.Agent ?? _agents.Get(node.SessionId) as AgentLoopAgent ?? await ResumeAsync(node);
-        if (agent is null)
+        if (args.PropertyName != nameof(ComposerViewModel.Input))
             return;
-        node.Agent = agent;
-        ShowAgent(agent);
+        RefreshSuggestions();
+        if (!Composer.Input.StartsWith('/'))
+            _commandSuggestionsLoaded = false;
+        else if (!_commandSuggestionsLoaded)
+        {
+            _commandSuggestionsLoaded = true;
+            _ = RefreshCommandSuggestionsAsync();
+        }
     }
 
-    private async Task<AgentLoopAgent?> ResumeAsync(SessionNodeViewModel node)
+    private async Task RefreshCommandSuggestionsAsync()
     {
         try
         {
-            var handle = await _agents.Resume(new ResumeAgentOptions(node.SessionId, CurrentOptions()));
-            var resumed = (AgentLoopAgent)handle.Agent;
-            await resumed.WhenIdle();
-            return resumed;
+            await _chat.RefreshCommandsAsync();
+            RefreshSuggestions();
+        }
+        catch (Exception error)
+        {
+            if (!_disposed)
+                StatusText = $"命令列表读取失败: {error.Message}";
+        }
+    }
+
+
+    private Task SwitchToAsync(SessionNodeViewModel node) => OpenHostChatAsync(node.SessionId.Value);
+
+    private async Task OpenHostChatAsync(string id)
+    {
+        try
+        {
+            if (_chat.Id.Value != id)
+                await _chat.SwitchAsync(id, CurrentRemoteModel());
+            Page = AppPage.Chat;
         }
         catch (Exception error)
         {
             StatusText = $"会话无法加载: {error.Message}";
-            return null;
         }
     }
 
     private async Task RunCommandAsync(string text)
     {
-        var execution = await _bridge.ExecuteAsync(_agent, text);
-        if (execution is null)
+        var execution = await _chat.ExecuteAsync(text);
+        if (!execution.Known)
         {
-            // 首 token 不是已知命令: 用户为自己的输入负责, 整行当普通消息发给模型。
-            _agent.Followup(MessageFactory.CreateUserText(ExpandMentions(text)));
+            await _chat.SendAsync(ExpandMentions(text));
             return;
         }
-
-        var output = execution.Result switch
-        {
-            CommandResult.Success { Text: { } successText } => successText,
-            CommandResult.Error error => error.Text,
-            _ => "",
-        };
-        if (output.Length > 0)
+        if (execution.Text is { Length: > 0 } output)
             AppendMessage(new MessageViewModel("系统", output, MessageKind.System, false));
-
-        // 命令 + 提示词: 命令带的提示词作为下一步用户消息发出。
-        var followup = execution.Result switch
-        {
-            CommandResult.Success success => success.FollowupPrompt,
-            CommandResult.Error error => error.FollowupPrompt,
-            _ => null,
-        };
-        if (followup is { Length: > 0 } prompt)
-            _agent.Followup(MessageFactory.CreateUserText(ExpandMentions(prompt)));
+        if (execution.FollowupPrompt is { Length: > 0 } prompt)
+            await _chat.SendAsync(ExpandMentions(prompt));
     }
 
     private async Task NewSessionAsync()
     {
         // 显式设置的工作区优先于当前会话目录: 设置项的意义就是让用户摆脱"会话永远落在启动目录"
         var cwd = Gui.Load().DefaultWorkspace
-            ?? _agent.Session.Header.Cwd
+            ?? _chat.Header.Cwd
             ?? Environment.CurrentDirectory;
-        var handle = await _agents.Create(new CreateAgentOptions(
-            SessionId.Create($"session-{Guid.NewGuid()}"),
-            cwd,
-            CurrentOptions()));
-        var created = (AgentLoopAgent)handle.Agent;
-        await created.WhenIdle();
-        RefreshSessions();
-        ShowAgent(created);
+        try
+        {
+            var model = CurrentRemoteModel();
+            var created = await (await _chat.ClientAsync()).CreateSessionAsync(cwd, model.Selection, model.Provider);
+            await _chat.SwitchAsync(created.Id, model);
+            RefreshSessions();
+            Page = AppPage.Chat;
+        }
+        catch (Exception error)
+        {
+            StatusText = $"新建会话失败: {error.Message}";
+        }
     }
 
     private async Task TogglePlanModeAsync()
     {
-        var output = await _bridge.RunAsync(_agent, "/plan");
+        var output = await _chat.RunAsync("/plan");
         var enabled = output.Contains("on", StringComparison.OrdinalIgnoreCase);
         Mode = enabled ? SessionMode.Plan : SessionMode.Standard;
         StatusText = output;
     }
 
-    private void ApplyApprovalPolicy(ApprovalPolicy policy, SessionMode mode, string status)
+    private async Task ApplyApprovalPolicyAsync(ApprovalPolicy policy, SessionMode mode, string status)
     {
-        var approval = _ctx.Get<ApprovalService>(ApprovalService.ServiceName, false);
-        if (approval is null)
-        {
-            StatusText = "审批服务不可用";
-            return;
-        }
-        approval.SetPolicy(_agent, policy);
+        await (await _chat.ClientAsync()).SetSessionApprovalPolicyAsync(_chat.Id.Value, policy.ToString());
+        await _chat.ReloadAsync();
         Mode = mode;
         RefreshPermissionLabel();
         StatusText = status;
     }
 
-    private void ShowAgent(AgentLoopAgent agent)
+    private void ShowSession()
     {
-        _agent = agent;
         UpdateCurrentWorkspace();
         _renderedSeq = 0;
         _openAssistant = null;
@@ -1382,30 +1372,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         TraceItems.Clear();
         TraceView.Clear();
         _lastUserMessages.Clear();
-        Page = AppPage.Chat;
-        SessionTitle = agent.Session.Header.Title ?? agent.Id.Value;
-        if (_renamedSession is not null)
-            _renamedSession.Renamed -= OnSessionRenamed;
-        _renamedSession = agent.Session;
-        agent.Session.Renamed += OnSessionRenamed;
-        ApplyEvents(agent.Session.SnapshotEvents());
-        IsBusy = agent.Status == AgentStatus.Running;
+        Deliverables.Reset(canOpen: true);
+        _pendingToolCalls.Clear();
+        SessionTitle = _chat.Header.Title ?? _chat.Id.Value;
+        IsBusy = false;
+        ApplyEvents(_chat.Events);
         RefreshMode();
         RefreshPreset();
         RefreshPermissionLabel();
-        SelectedSession = FindSession(agent.Id);
-        Subagents.SetRoot(agent.Id);
-        AgentChanged?.Invoke(agent);
+        SelectedSession = FindSession(_chat.Id);
+        Subagents.SetRoot(_chat.Id);
+        OnPropertyChanged(nameof(CurrentSessionId));
     }
 
     private void RefreshMode()
-        => Mode = PlanActive(_agent.Session) ? SessionMode.Plan : SessionMode.Standard;
+        => Mode = PlanActive(_chat.Events) ? SessionMode.Plan : SessionMode.Standard;
 
     /** preset 状态持久在会话事件 `preset/mode` 里; payload 类型在 Dsh.Presets 程序集, GUI 只能按事件 Type + 泛化属性读取。 */
     private void RefreshPreset()
     {
         var preset = "standard";
-        foreach (var sessionEvent in _agent.Session.SnapshotEvents())
+        foreach (var sessionEvent in _chat.Events)
         {
             if (sessionEvent.Type != PresetEventType)
                 continue;
@@ -1415,10 +1402,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /** 计划模式状态持久在会话事件 `plan/mode` 里; 这里只读它, 不复制 PlanMode 插件的判定逻辑。 */
-    private static bool PlanActive(Session session)
+    private static bool PlanActive(IReadOnlyList<SessionEvent> events)
     {
         var active = false;
-        foreach (var sessionEvent in session.SnapshotEvents())
+        foreach (var sessionEvent in events)
         {
             if (sessionEvent.Type != "plan/mode")
                 continue;
@@ -1455,8 +1442,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void RefreshPermissionLabel()
     {
-        var approval = _ctx.Get<ApprovalService>(ApprovalService.ServiceName, false);
-        var policy = approval?.EffectivePolicy(_agent.Session) ?? ApprovalPolicy.Ask;
+        var policy = _chat.Events.Select(item => item.Data).OfType<ApprovalPolicyPayload>().LastOrDefault()?.Policy
+            ?? (Enum.TryParse<ApprovalPolicy>(_chat.ApprovalPolicy, out var hostPolicy) ? hostPolicy : ApprovalPolicy.Ask);
         Composer.PermissionLabel = policy switch
         {
             ApprovalPolicy.Never => "Never（自动拒绝）",
@@ -1468,11 +1455,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void RefreshModelLabels()
     {
-        var config = _agent.Session.RequestHeader()?.Config;
-        var label = $"{config?.Provider ?? _agent.Options.Provider}/{config?.Model ?? _agent.Options.Model}";
+        var model = CurrentRemoteModel().Selection;
+        var label = $"{model?.Provider}/{model?.Model}";
         Composer.ModelLabel = label;
         SessionSubtitle = label;
-        Composer.ReasoningLabel = config?.ReasoningEffort?.Value ?? "推理";
+        Composer.ReasoningLabel = model?.ReasoningEffort ?? "推理";
         RefreshFilteredModels();
     }
 
@@ -1493,6 +1480,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (sessionEvent.Type == PresetEventType)
             RefreshPreset();
+        if (sessionEvent.Data is TurnStartPayload or TurnEndPayload)
+            foreach (var node in AllSessions().Where(node => node.SessionId == _chat.Id))
+                node.IsRunning = sessionEvent.Data is TurnStartPayload;
         switch (sessionEvent.Data)
         {
             case TurnStartPayload turn:
@@ -1543,6 +1533,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 break;
             case ApprovalPolicyPayload:
                 RefreshPermissionLabel();
+                break;
+            case DeliverablesPresentedPayload presented:
+                Deliverables.Observe(sessionEvent);
+                AddTrace(sessionEvent.Seq, TraceKind.Tool, $"交付物 {presented.Files.Count} 个", string.Join('\n', presented.Files.Select(file => file.Path)));
                 break;
         }
     }
@@ -1619,7 +1613,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     private string AssistantRole()
-        => _agent.Session.RequestHeader()?.Config.Model ?? _agent.Options.Model ?? "助手";
+        => CurrentRemoteModel().Selection?.Model ?? "助手";
 
     private void ApplyToolCall(long seq, ToolCallPayload call)
     {
@@ -1674,8 +1668,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 continue;
             claimed.Add(node.Id);
             message.SubagentSessionId = node.Id;
-            if (Subagents.FindSession(node.Id) is { } session)
-                message.SetSubagentStream(SubagentTranscript.Summarize(session));
+            if (Subagents.FindEvents(node.Id) is { } events)
+                message.SetSubagentStream(SubagentTranscript.Summarize(events));
         }
     }
 
@@ -1744,7 +1738,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     private string ExpandMentions(string text)
-        => MentionResolver.ExpandMentions(text, _agent.Session.Header.Cwd ?? Environment.CurrentDirectory, CurrentMentionSessions());
+        => MentionResolver.ExpandMentions(text, _chat.Header.Cwd ?? Environment.CurrentDirectory, CurrentMentionSessions());
 
     private IReadOnlyList<MentionSessionInfo> CurrentMentionSessions()
         => [.. _catalog.Load().Select(node => new MentionSessionInfo(node.SessionId.Value, node.Title, null))];
@@ -1798,7 +1792,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             var argument = body[(space + 1)..].TrimEnd();
             return ArgumentSuggestions(name, argument);
         }
-        return [.. _bridge.List(_agent)
+        return [.. _chat.Commands
             .Where(descriptor => descriptor.Name.StartsWith(name, StringComparison.OrdinalIgnoreCase))
             .Select(descriptor => new SuggestionViewModel("command", $"/{descriptor.Name}", descriptor.Description, $"/{descriptor.Name} "))];
     }
@@ -1852,7 +1846,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         while (end < input.Length && !char.IsWhiteSpace(input[end]) && input[end] != '@')
             end++;
         var token = input[(at + 1)..end];
-        var cwd = _agent.Session.Header.Cwd ?? Environment.CurrentDirectory;
+        var cwd = _chat.Header.Cwd ?? Environment.CurrentDirectory;
         return [.. MentionResolver.ResolveCandidates(token, cwd, CurrentMentionSessions())
             .Select(candidate => new SuggestionViewModel("mention", $"@{candidate}", "", $"@{candidate}"))];
     }

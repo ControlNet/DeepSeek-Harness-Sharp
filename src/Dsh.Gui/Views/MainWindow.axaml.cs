@@ -10,8 +10,6 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
-using Dsh.Core;
-using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
 
@@ -21,6 +19,9 @@ public sealed partial class MainWindow : Window
 {
     private const double ScreenMargin = 60;
     private const double TitleBarHeight = 34;
+
+    /** What /plugins add accepts from a path: managed assemblies and native shared libraries. */
+    private static readonly FilePickerFileType PluginLibraries = new("插件库") { Patterns = ["*.dll", "*.so", "*.dylib"] };
 
     private readonly GuiSettings? _guiSettings;
     private CloseActionKind _closeAction = CloseActionKind.Tray;
@@ -32,17 +33,19 @@ public sealed partial class MainWindow : Window
     /** XAML 编译器要求存在无参构造, 实际启动路径走下面的带参构造。 */
     public MainWindow() => InitializeComponent();
 
-    public MainWindow(HarnessApp app, AgentLoopAgent agent, FleetWorkspace? fleet = null) : this()
+    public MainWindow(HarnessApp app, HostChatSession chat) : this()
     {
         _guiSettings = new GuiSettings(app.Home);
         _closeAction = ClosePolicy.Effective(ClosePolicy.Parse(_guiSettings.Load().CloseAction));
-        ViewModel = new MainViewModel(app, agent, fleet);
+        ViewModel = new MainViewModel(app, chat);
         DataContext = ViewModel;
         ConnectWorkspace(ViewModel.Workspace);
         ViewModel.DecisionRequested += ShowDecisionAsync;
+        Opened += (_, _) => ViewModel.RefreshPendingDialogs();
         ViewModel.CopyRequested += CopyToClipboard;
         ViewModel.TerminalRequested += ShowTerminal;
         ViewModel.FilePicker = PickAsync;
+        ViewModel.Preferences.PluginFilePicker = PickPluginLibraryAsync;
         ViewModel.Preferences.Applied += ApplyAppearance;
         ViewModel.Preferences.Preview += ApplyPreview;
         AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
@@ -396,4 +399,18 @@ public sealed partial class MainWindow : Window
         var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions { AllowMultiple = allowMultiple, Title = "选择文件" });
         return [.. files.Select(file => file.TryGetLocalPath()).Where(path => path is not null).Select(path => path!)];
     }
+
+    private async Task<string?> PickPluginLibraryAsync()
+    {
+        if (StorageProvider is not { } storage)
+            return null;
+        var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            AllowMultiple = false,
+            Title = "选择插件",
+            FileTypeFilter = [PluginLibraries, FilePickerFileTypes.All],
+        });
+        return files.Select(file => file.TryGetLocalPath()).FirstOrDefault(path => path is not null);
+    }
+
 }

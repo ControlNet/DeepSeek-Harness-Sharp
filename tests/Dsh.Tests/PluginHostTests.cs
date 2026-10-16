@@ -23,7 +23,11 @@ public sealed class PluginHostTests
         Assert.True(host.Catalog.TryCreateDefinition("test/local", out var definition));
 
         // 入口描述符随插件清单生成:丢掉接线(如 Web/Lsp 在重构中丢过)会在这里暴露。
-        Assert.Contains(host.Catalog.Descriptors, entry => entry.Entry == "web");
+        var web = Assert.Single(host.Catalog.Descriptors, entry => entry.Entry == "web");
+        Assert.Equal("@deepseek-ai/dsh-web-bridge", web.Package);
+        Assert.True(host.Catalog.TryGet(web.Package, out var createWeb));
+        Assert.IsType<Dsh.WebBridge.Plugin>(createWeb());
+        Assert.True(host.Catalog.TryDescribe("@deepseek-ai/dsh-fleet", out _));
         Assert.Contains(host.Catalog.Descriptors, entry => entry.Entry == "lsp");
         Assert.Contains(host.Catalog.Descriptors, entry => entry.Package == "@deepseek-ai/dsh-tool-web");
 
@@ -32,6 +36,113 @@ public sealed class PluginHostTests
         await activation.WaitAsync();
         Assert.True(TestPlugin.Applied);
         Assert.Equal(ActivationState.Active, activation.State);
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task DisabledWebBridgePlugin_CannotResolveOrRunWebEntry()
+    {
+        var root = TempTree.CreateSocketDirectory("wpo");
+        try
+        {
+            var home = Dsh.Boot.HarnessHome.Resolve(root);
+            var settings = Dsh.Boot.HarnessSettings.Load(home);
+            settings.Plugins["@deepseek-ai/dsh-web-bridge"] = new Dsh.Boot.PluginSetting { Enabled = false };
+            settings.SavePlugins(home);
+            using var app = await Dsh.Boot.ConfigBoot.Compose(new Dsh.Boot.HarnessOptions(home, Cwd: root));
+            Assert.Null(app.Composition!.Find("@deepseek-ai/dsh-web-bridge"));
+            Assert.Null(app.Ctx.Get(Dsh.WebBridge.WebBridgeRuntime.ServiceName, false));
+            var failure = await Assert.ThrowsAsync<RuntimeException>(() => app.RunEntrypointAsync(
+                "web", new Dsh.Boot.PluginEntrypointOptions(home, root,
+                    Arguments: [Dsh.WebBridge.WebBridgeCommand.PortOption, "0"]), TestContext.Current.CancellationToken));
+            Assert.Equal("ENTRYPOINT_NOT_ACTIVE", failure.Code);
+            Assert.False(File.Exists(Dsh.WebBridge.WebBridgeEndpoint.PortFile(root)));
+            Assert.False(File.Exists(Dsh.WebBridge.WebBridgeEndpoint.TokenFile(root)));
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task FleetPlugin_DeactivationClosesOwnedLinksButKeepsHostSessions()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var server = await HarnessHostFixture.CreateAsync("fpl", ct);
+        var host = new PluginHost();
+        host.RegisterCompiledIn();
+        Assert.True(host.Catalog.TryCreateDefinition("@deepseek-ai/dsh-fleet", out var definition));
+        var ctx = new Context();
+        ctx.SetOwn("dshHomePath", server.Root);
+        var activation = ctx.Plugin(definition!);
+        await activation.WaitAsync();
+        Assert.Equal(ActivationState.Active, activation.State);
+        var service = Assert.IsType<Dsh.Fleet.FleetService>(ctx.Get(Dsh.Fleet.FleetService.ServiceName));
+        var client = service.CreateClient(FleetConnectionTests.TestOptions);
+        client.Start();
+        var lease = await Assert.Single(client.Machines).WaitConnectedAsync(ct);
+        var session = await lease.Client.CreateSessionAsync(server.Root, RemoteHostMultiClientTests.Selection, RemoteHostMultiClientTests.Spec, ct);
+        try
+        {
+            await activation.DeactivateAsync();
+            Assert.True(lease.Lifetime.IsCancellationRequested);
+            Assert.Null(ctx.Get(Dsh.Fleet.FleetService.ServiceName, false));
+            Assert.Throws<ObjectDisposedException>(() => service.CreateClient(FleetConnectionTests.TestOptions));
+            await client.DisposeAsync();
+            service.Dispose();
+            var observer = await server.ConnectAsync("after-fleet-unload", ct);
+            Assert.Contains(await observer.ListHostSessionsAsync(ct), item => item.SessionId == session.Id);
+        }
+        finally
+        {
+            await activation.DeactivateAsync();
+        }
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task WebBridgePlugin_DeactivationStopsServerAndRemovesCredentials()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = TempTree.CreateSocketDirectory("wpl");
+        var app = await Dsh.Boot.ConfigBoot.Compose(new Dsh.Boot.HarnessOptions(new Dsh.Boot.HarnessHome(root), Cwd: root));
+        var ctx = app.Ctx;
+        var activation = Assert.IsType<PluginActivation>(app.Composition!.Find("@deepseek-ai/dsh-web-bridge"));
+        Assert.Equal(ActivationState.Active, activation.State);
+        var runtime = Assert.IsType<Dsh.WebBridge.WebBridgeRuntime>(ctx.Get(Dsh.WebBridge.WebBridgeRuntime.ServiceName));
+        string? startedHome = null;
+        var options = new Dsh.Boot.PluginEntrypointOptions(new Dsh.Boot.HarnessHome(root), root,
+            StartLocalHost: (home, _) =>
+            {
+                startedHome = home;
+                return Task.CompletedTask;
+            },
+            Arguments: [Dsh.WebBridge.WebBridgeCommand.PortOption, "0"]);
+        try
+        {
+            var run = app.RunEntrypointAsync("web", options, ct);
+            await WebSocketRpc.WaitForAsync(() => File.Exists(Dsh.WebBridge.WebBridgeEndpoint.PortFile(root)));
+            Assert.Equal(root, startedHome);
+            Assert.True(File.Exists(Dsh.WebBridge.WebBridgeEndpoint.TokenFile(root)));
+            var port = int.Parse(await File.ReadAllTextAsync(Dsh.WebBridge.WebBridgeEndpoint.PortFile(root), ct),
+                System.Globalization.CultureInfo.InvariantCulture);
+            await activation.DeactivateAsync();
+            Assert.Equal(0, await run);
+            Assert.False(File.Exists(Dsh.WebBridge.WebBridgeEndpoint.PortFile(root)));
+            Assert.False(File.Exists(Dsh.WebBridge.WebBridgeEndpoint.TokenFile(root)));
+            using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+            listener.Start();
+            Assert.Null(ctx.Get(Dsh.WebBridge.WebBridgeRuntime.ServiceName, false));
+            Assert.Throws<ObjectDisposedException>(() =>
+            {
+                _ = runtime.RunAsync(options, new StringWriter(), new StringWriter(), ct);
+            });
+        }
+        finally
+        {
+            await activation.DeactivateAsync();
+            app.Dispose();
+            TempTree.Delete(root);
+        }
     }
 
     [Fact]

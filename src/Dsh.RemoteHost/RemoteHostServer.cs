@@ -197,6 +197,52 @@ public sealed class RemoteHostServer(
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "resume requires sessionId");
                     return Serialize(await backend.ResumeSessionAsync(request.SessionId, request.Selection, request.Provider, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionInfo);
                 }
+                case HostProtocol.MethodSessionSnapshot:
+                {
+                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "snapshot requires sessionId");
+                    return Serialize(await backend.GetSessionSnapshotAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionSnapshot);
+                }
+                case HostProtocol.MethodSessionCommand:
+                {
+                    var request = Require(message, HostProtocolJsonContext.Default.RemoteCommandRequest, "command requires sessionId and line");
+                    return Serialize(await backend.ExecuteSessionCommandAsync(request.SessionId, request.Line, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteCommandResult);
+                }
+                case HostProtocol.MethodSessionCommands:
+                {
+                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "commands requires sessionId");
+                    return Serialize(await backend.ListSessionCommandsAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListRemoteCommandDescriptor);
+                }
+                case HostProtocol.MethodSessionRename:
+                {
+                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRenameRequest, "rename requires sessionId and title");
+                    await backend.RenameSessionAsync(request.SessionId, request.Title, cancellationToken).ConfigureAwait(false);
+                    return True;
+                }
+                case HostProtocol.MethodSessionDelete:
+                    await backend.DeleteSessionAsync(Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "delete requires sessionId").SessionId, cancellationToken).ConfigureAwait(false);
+                    return True;
+                case HostProtocol.MethodSessionApprovalPolicy:
+                {
+                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionPolicyRequest, "approvalPolicy requires sessionId and policy");
+                    await backend.SetSessionApprovalPolicyAsync(request.SessionId, request.Policy, cancellationToken).ConfigureAwait(false);
+                    return True;
+                }
+                case HostProtocol.MethodSessionSubagents:
+                    return Serialize(await backend.ListSubagentsAsync(Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "subagents requires sessionId").SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListRemoteSubagentInfo);
+                case HostProtocol.MethodPluginsList:
+                    return Serialize(await backend.ListPluginsAsync(cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListRemotePluginInfo);
+                case HostProtocol.MethodPluginPermission:
+                {
+                    var request = Require(message, HostProtocolJsonContext.Default.RemotePluginPermissionRequest, "permission requires package, permission and allowed");
+                    return Serialize(await backend.SetPluginPermissionAsync(request.Package, request.Permission, request.Allowed, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.String);
+                }
+                case HostProtocol.MethodReasoningEfforts:
+                {
+                    var request = Require(message, HostProtocolJsonContext.Default.RemoteModelRef, "reasoningEfforts requires provider and model");
+                    return Serialize(await backend.ListReasoningEffortsAsync(request.Provider, request.Model, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListString);
+                }
+                case HostProtocol.MethodProviderModels:
+                    return Serialize(await backend.ListProviderModelsAsync(Require(message, HostProtocolJsonContext.Default.RemoteProviderRef, "models requires provider").Provider, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListString);
                 case HostProtocol.MethodSessionSubscribe:
                 {
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteSubscribeRequest, "subscribe requires sessionId");

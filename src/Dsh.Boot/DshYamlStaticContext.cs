@@ -20,6 +20,9 @@ namespace Dsh.Boot;
 [YamlSerializable(typeof(FleetSettings))]
 [YamlSerializable(typeof(MachineSettings))]
 [YamlSerializable(typeof(FleetDeploySettings))]
+[YamlSerializable(typeof(NetworkSettings))]
+[YamlSerializable(typeof(OutboundProxySettings))]
+[YamlSerializable(typeof(SandboxSettings))]
 public partial class DshYamlStaticContext : StaticContext
 {
 }

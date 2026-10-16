@@ -107,6 +107,39 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
         }
     }
 
+    public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodSessionSnapshot, Serialize(new RemoteSessionRef(sessionId), HostProtocolJsonContext.Default.RemoteSessionRef), HostProtocolJsonContext.Default.RemoteSessionSnapshot, cancellationToken);
+
+    public Task<RemoteCommandResult> ExecuteSessionCommandAsync(string sessionId, string line, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodSessionCommand, Serialize(new RemoteCommandRequest(sessionId, line), HostProtocolJsonContext.Default.RemoteCommandRequest), HostProtocolJsonContext.Default.RemoteCommandResult, cancellationToken);
+
+    public Task<IReadOnlyList<RemoteCommandDescriptor>> ListSessionCommandsAsync(string sessionId, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodSessionCommands, Serialize(new RemoteSessionRef(sessionId), HostProtocolJsonContext.Default.RemoteSessionRef), HostProtocolJsonContext.Default.IReadOnlyListRemoteCommandDescriptor, cancellationToken);
+
+    public Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodSessionRename, Serialize(new RemoteSessionRenameRequest(sessionId, title), HostProtocolJsonContext.Default.RemoteSessionRenameRequest), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodSessionDelete, Serialize(new RemoteSessionRef(sessionId), HostProtocolJsonContext.Default.RemoteSessionRef), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task SetSessionApprovalPolicyAsync(string sessionId, string policy, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodSessionApprovalPolicy, Serialize(new RemoteSessionPolicyRequest(sessionId, policy), HostProtocolJsonContext.Default.RemoteSessionPolicyRequest), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+
+    public Task<IReadOnlyList<RemoteSubagentInfo>> ListSubagentsAsync(string rootSessionId, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodSessionSubagents, Serialize(new RemoteSessionRef(rootSessionId), HostProtocolJsonContext.Default.RemoteSessionRef), HostProtocolJsonContext.Default.IReadOnlyListRemoteSubagentInfo, cancellationToken);
+
+    public Task<IReadOnlyList<RemotePluginInfo>> ListPluginsAsync(CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodPluginsList, null, HostProtocolJsonContext.Default.IReadOnlyListRemotePluginInfo, cancellationToken);
+
+    public Task<string> SetPluginPermissionAsync(string package, string permission, bool allowed, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodPluginPermission, Serialize(new RemotePluginPermissionRequest(package, permission, allowed), HostProtocolJsonContext.Default.RemotePluginPermissionRequest), HostProtocolJsonContext.Default.String, cancellationToken);
+
+    public Task<IReadOnlyList<string>> ListReasoningEffortsAsync(string provider, string model, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodReasoningEfforts, Serialize(new RemoteModelRef(provider, model), HostProtocolJsonContext.Default.RemoteModelRef), HostProtocolJsonContext.Default.IReadOnlyListString, cancellationToken);
+
+    public Task<IReadOnlyList<string>> ListProviderModelsAsync(string provider, CancellationToken cancellationToken = default)
+        => SendAsync(HostProtocol.MethodProviderModels, Serialize(new RemoteProviderRef(provider), HostProtocolJsonContext.Default.RemoteProviderRef), HostProtocolJsonContext.Default.IReadOnlyListString, cancellationToken);
+
     public async IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         // 重新订阅前停掉服务端旧泵, 并换成新通道: 否则旧泵与新泵会同时推送, 事件翻倍。
@@ -140,8 +173,8 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     public IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync(CancellationToken cancellationToken = default)
         => _approvals.Reader.ReadAllAsync(cancellationToken);
 
-    public Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason = null, CancellationToken cancellationToken = default)
-        => SendAsync(HostProtocol.MethodApprovalRespond, Serialize(new RemoteApprovalResponse(requestId, allow, reason), HostProtocolJsonContext.Default.RemoteApprovalResponse), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+    public Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason = null, CancellationToken cancellationToken = default, bool rememberForSession = false)
+        => SendAsync(HostProtocol.MethodApprovalRespond, Serialize(new RemoteApprovalResponse(requestId, allow, reason, rememberForSession), HostProtocolJsonContext.Default.RemoteApprovalResponse), HostProtocolJsonContext.Default.Boolean, cancellationToken);
 
     public IAsyncEnumerable<RemoteQuestionRequest> QuestionsAsync(CancellationToken cancellationToken = default)
         => _questions.Reader.ReadAllAsync(cancellationToken);

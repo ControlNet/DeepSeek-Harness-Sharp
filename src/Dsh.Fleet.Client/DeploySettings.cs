@@ -15,7 +15,7 @@ public static class DownloadVia
 
 /**
  * Automatic remote deployment preferences, shared by every SSH machine.
- * ReleaseVersion is "latest" or a tag (with or without the v prefix); DownloadProxy is used for local downloads, ServerProxy for downloads on the remote.
+ * ReleaseVersion is "latest" or a tag (with or without the v prefix); ServerProxy is only used for remote deployment downloads.
  */
 public sealed record DeploySettings
 {
@@ -29,8 +29,6 @@ public sealed record DeploySettings
     public string ReleaseBaseUrl { get; init; } = DefaultReleaseBaseUrl;
 
     public string ReleaseVersion { get; init; } = LatestVersion;
-
-    public string? DownloadProxy { get; init; }
 
     public string Via { get; init; } = DownloadVia.Auto;
 

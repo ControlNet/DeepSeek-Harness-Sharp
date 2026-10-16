@@ -1,3 +1,5 @@
+using Dsh.Runtime;
+
 namespace Dsh.Fleet;
 
 /** Connection state of one machine, as shown by clients. */
@@ -35,6 +37,8 @@ public sealed record FleetOptions
     public string ClientName { get; init; } = $"fleet@{Environment.MachineName}";
 
     public DeploySettings Deploy { get; init; } = new();
+
+    public OutboundProxy LocalProxy { get; init; } = new();
 
     public bool AutoReconnect { get; init; } = true;
 

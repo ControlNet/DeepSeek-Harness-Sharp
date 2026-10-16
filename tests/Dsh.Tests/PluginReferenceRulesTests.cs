@@ -28,7 +28,7 @@ public sealed class PluginReferenceRulesTests
 
     /** 共享库: 不含插件入口的纯能力库, 可被多个插件复用。 */
     private static readonly HashSet<string> SharedLibraries =
-        ["Dsh.Pty", "Dsh.Transport", "Dsh.RemoteHost", "Dsh.Sdk", "Dsh.ScriptHost", "Dsh.GitInspect", "Dsh.Notifications", "Dsh.AgentAdapters", "Dsh.WebBridge", "Dsh.Fleet"];
+        ["Dsh.Pty", "Dsh.Transport", "Dsh.RemoteHost", "Dsh.Sdk", "Dsh.ScriptHost", "Dsh.GitInspect", "Dsh.Notifications", "Dsh.AgentAdapters", "Dsh.Fleet.Client"];
 
     /** 卫星程序集: 实现所属插件自有的 SPI 并由其反射发现, 只允许引用所属插件。 */
     private static readonly Dictionary<string, HashSet<string>> SatelliteOwners = new()
@@ -106,6 +106,19 @@ public sealed class PluginReferenceRulesTests
             .Where(name => Assembly.Load(name).GetType(PluginHost.ManifestTypeName) is not null)
             .ToList();
         Assert.True(plugins.Count == 0, $"shared libraries and satellites must not declare a plugin: {string.Join(", ", plugins)}");
+    }
+
+    [Fact]
+    public void CapabilityModules_DeclarePluginManifests()
+    {
+        var modules = ProjectReferences().Keys
+            .Where(name => !LoaderModules.Contains(name) && !ContractLayers.Contains(name)
+                && !SharedLibraries.Contains(name) && !SatelliteOwners.ContainsKey(name));
+        var missing = modules
+            .Where(name => Assembly.Load(name).GetType(PluginHost.ManifestTypeName) is null)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        Assert.True(missing.Count == 0, $"capability modules must declare a plugin: {string.Join(", ", missing)}");
     }
 
     [Fact]

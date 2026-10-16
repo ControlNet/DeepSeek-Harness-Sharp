@@ -4,10 +4,32 @@
 public sealed record RemoteSessionInfo(string Id, string Cwd, string Status, long StartedAt, string? Title, string? Summary, long UpdatedAt);
 
 /** 会话事件流的一条: EventJson 是该 SessionEvent 的完整序列化(含 type/seq/time/data/surfaceOp), 本地据此重建会话。 */
-public sealed record RemoteEventInfo(string SessionId, string EventJson);
+public sealed record RemoteEventInfo(string SessionId, string EventJson, bool Reset = false);
 
 /** 订阅会话事件: FromSeq 之前的作为历史先补发, 之后的实时推送(local 重连后可见增量)。 */
 public sealed record RemoteSubscribeRequest(string SessionId, long FromSeq);
+
+public sealed record RemoteSessionSnapshot(string HeaderJson, IReadOnlyList<RemoteEventInfo> Events, string? ApprovalPolicy = null);
+
+public sealed record RemoteCommandRequest(string SessionId, string Line);
+
+public sealed record RemoteCommandResult(bool Known, string? Text, string? FollowupPrompt);
+
+public sealed record RemoteCommandDescriptor(string Name, string Description);
+
+public sealed record RemoteSessionRenameRequest(string SessionId, string Title);
+
+public sealed record RemoteSessionPolicyRequest(string SessionId, string Policy);
+
+public sealed record RemoteSubagentInfo(string SessionId, string? Parent, int Depth, string Mode, string? Label, bool HasChildren, bool IsLive, long CreatedAt);
+
+public sealed record RemotePluginInfo(string Package, string Description, bool Enabled, bool ReadAllowed, bool WriteAllowed, bool NetworkAllowed);
+
+public sealed record RemotePluginPermissionRequest(string Package, string Permission, bool Allowed);
+
+public sealed record RemoteModelRef(string Provider, string Model);
+
+public sealed record RemoteProviderRef(string Provider);
 
 /** 远端发起的审批/问答: 需本地决策, 用 RequestId 回填。 */
 public sealed record RemoteApprovalRequest(string RequestId, string SessionId, string Tool, string? Arguments, string? Reason);
@@ -45,7 +67,7 @@ public sealed record RemoteMessageRequest(string SessionId, string Text, IReadOn
 /** 远端消息里的一张图片: 字节经 base64 传输, 由远端落进附件库后作为 ImageBlock 发给会话。 */
 public sealed record RemoteImageBlock(string MediaType, int Width, int Height, string? Name, string Base64);
 
-public sealed record RemoteApprovalResponse(string RequestId, bool Allow, string? Reason);
+public sealed record RemoteApprovalResponse(string RequestId, bool Allow, string? Reason, bool RememberForSession = false);
 
 public sealed record RemoteFilePath(string Path);
 
@@ -119,7 +141,8 @@ public sealed record RemoteHostSession(
     long CreatedAt,
     long LastActivityAt,
     int PendingCount,
-    int? ExitCode);
+    int? ExitCode,
+    bool Deleted = false);
 
 public static class HostSessionKinds
 {

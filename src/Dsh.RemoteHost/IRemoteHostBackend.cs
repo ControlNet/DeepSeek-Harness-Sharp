@@ -26,6 +26,28 @@ public interface IRemoteHostBackend
 
     Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken);
 
+    Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken);
+
+    Task<RemoteCommandResult> ExecuteSessionCommandAsync(string sessionId, string line, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<RemoteCommandDescriptor>> ListSessionCommandsAsync(string sessionId, CancellationToken cancellationToken);
+
+    Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken);
+
+    Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken);
+
+    Task SetSessionApprovalPolicyAsync(string sessionId, string policy, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<RemoteSubagentInfo>> ListSubagentsAsync(string rootSessionId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<RemotePluginInfo>> ListPluginsAsync(CancellationToken cancellationToken);
+
+    Task<string> SetPluginPermissionAsync(string package, string permission, bool allowed, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<string>> ListReasoningEffortsAsync(string provider, string model, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<string>> ListProviderModelsAsync(string provider, CancellationToken cancellationToken);
+
     Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken);
 
     Task InterruptAsync(string sessionId, CancellationToken cancellationToken);

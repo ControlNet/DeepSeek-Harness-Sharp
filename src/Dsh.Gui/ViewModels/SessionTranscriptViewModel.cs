@@ -21,9 +21,10 @@ public sealed partial class SessionTranscriptViewModel : ObservableObject, IDisp
     private readonly MachineConnection _machine;
     private readonly FleetSessionActions _actions;
     private readonly SessionCardViewModel _card;
-    private readonly SubagentTranscript _transcript = new();
+    private SubagentTranscript _transcript = new();
     private readonly DispatcherBridge<SessionEvent> _events;
     private readonly CancellationTokenSource _lifetime = new();
+    private long _renderedSeq;
 
     public SessionTranscriptViewModel(MachineConnection machine, FleetSessionActions actions, SessionCardViewModel card)
     {
@@ -122,6 +123,20 @@ public sealed partial class SessionTranscriptViewModel : ObservableObject, IDisp
         {
             await foreach (var item in _machine.SubscribeAsync(_card.SessionId, 0, cancellationToken))
             {
+                if (item.Reset)
+                {
+                    var snapshot = await (await _machine.WaitConnectedAsync(cancellationToken)).Client.GetSessionSnapshotAsync(_card.SessionId, cancellationToken);
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        if (_lifetime.IsCancellationRequested)
+                            return;
+                        _transcript = new SubagentTranscript();
+                        _renderedSeq = 0;
+                        Messages.Clear();
+                        Apply(snapshot.Events.Select(value => DshJson.Deserialize<SessionEvent>(value.EventJson)).OfType<SessionEvent>().ToList());
+                    });
+                    continue;
+                }
                 if (DshJson.Deserialize<SessionEvent>(item.EventJson) is { } sessionEvent)
                     _events.Enqueue(sessionEvent);
             }
@@ -140,7 +155,12 @@ public sealed partial class SessionTranscriptViewModel : ObservableObject, IDisp
         if (_lifetime.IsCancellationRequested)
             return;
         foreach (var sessionEvent in batch)
+        {
+            if (sessionEvent.Seq < _renderedSeq)
+                continue;
+            _renderedSeq = sessionEvent.Seq + 1;
             _transcript.Apply(sessionEvent, Messages);
+        }
         _transcript.Flush();
         MessagesChanged?.Invoke();
     }

@@ -51,7 +51,7 @@ public sealed class WorkerThreadWorkflowEngine : WorkflowEngine
         var subagents = Ctx.Get<ISubagentService>(ISubagentService.ServiceName)
             ?? throw new InvalidOperationException("workflow engine requires the subagents service");
         var controller = new CancellationTokenSource();
-        var port = new WorkflowRunHost.SubagentChildPort(subagents, subagentProvider, request.Parent, controller);
+        var port = new WorkflowRunHost.SubagentChildPort(subagents, subagentProvider, request.Parent, request.ParentCallId, controller);
         var observer = new WorkflowExecutionObserver(
             Phase: title => Ctx.Emit(new WorkflowPhaseNotification(info, title)),
             Log: message => Ctx.Emit(new WorkflowLogNotification(info, message)),

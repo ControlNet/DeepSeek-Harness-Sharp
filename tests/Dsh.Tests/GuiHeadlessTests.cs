@@ -30,7 +30,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
         {
             var environment = await GuiTestEnvironment.CreateAsync();
             using var environmentScope = environment;
-            var window = new MainWindow(environment.App, environment.Agent);
+            var window = new MainWindow(environment.App, await environment.OpenChatAsync());
             var viewModel = window.ViewModel!;
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -46,6 +46,8 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
             Assert.True(window.GetVisualDescendants().OfType<ChatView>().Single().IsVisible);
 
             viewModel.ShowSettingsCommand.Execute(null);
+            await GuiTestEnvironment.WaitForAsync(viewModel.Preferences.Plugins,
+                () => viewModel.Preferences.Plugins.Count > 0);
             Dispatcher.UIThread.RunJobs();
             Capture(window, "headless-settings");
             var settings = window.GetVisualDescendants().OfType<SettingsPageView>().Single();
@@ -74,7 +76,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
         {
             var environment = await GuiTestEnvironment.CreateAsync();
             using var environmentScope = environment;
-            var window = new MainWindow(environment.App, environment.Agent);
+            var window = new MainWindow(environment.App, await environment.OpenChatAsync());
             var viewModel = window.ViewModel!;
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -154,7 +156,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
         {
             var environment = await GuiTestEnvironment.CreateAsync();
             using var environmentScope = environment;
-            var window = new MainWindow(environment.App, environment.Agent);
+            var window = new MainWindow(environment.App, await environment.OpenChatAsync());
             var viewModel = window.ViewModel!;
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -181,7 +183,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
         {
             var environment = await GuiTestEnvironment.CreateAsync();
             using var environmentScope = environment;
-            var window = new MainWindow(environment.App, environment.Agent);
+            var window = new MainWindow(environment.App, await environment.OpenChatAsync());
             var viewModel = window.ViewModel!;
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -226,7 +228,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
         {
             var environment = await GuiTestEnvironment.CreateAsync();
             using var environmentScope = environment;
-            var window = new MainWindow(environment.App, environment.Agent);
+            var window = new MainWindow(environment.App, await environment.OpenChatAsync());
             var viewModel = window.ViewModel!;
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -263,7 +265,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
         // 环境组合必须离开 UI 线程(Task.Run): 在 headless dispatcher 上组合会拖垮后续的窗口测试。
         var environment = await GuiTestEnvironment.CreateAsync();
         using var environmentScope = environment;
-        var window = new MainWindow(environment.App, environment.Agent);
+        var window = new MainWindow(environment.App, await environment.OpenChatAsync());
         var viewModel = window.ViewModel!;
         window.Show();
         viewModel.ShowChatCommand.Execute(null);
@@ -281,11 +283,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
                 .First(button => button.DataContext is PresetListItem { Id: "minimal" });
             item.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 
-            for (var attempt = 0; attempt < 400 && viewModel.PresetLabel != "极简"; attempt++)
-            {
-                await Task.Delay(5, TestContext.Current.CancellationToken);
-                Dispatcher.UIThread.RunJobs();
-            }
+            await GuiTestEnvironment.WaitForAsync(viewModel, () => viewModel.PresetLabel == "极简");
 
             Assert.Equal("极简", viewModel.PresetLabel);
             Assert.Contains(environment.Agent.Session.SnapshotEvents(), sessionEvent => sessionEvent.Type == "preset/mode");
@@ -307,7 +305,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
     {
         var environment = await GuiTestEnvironment.CreateAsync();
         using var environmentScope = environment;
-        var window = new MainWindow(environment.App, environment.Agent);
+        var window = new MainWindow(environment.App, await environment.OpenChatAsync());
         var viewModel = window.ViewModel!;
         window.Show();
         Dispatcher.UIThread.RunJobs();
@@ -363,11 +361,12 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
         using var environmentScope = environment;
         var store = environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
         SubagentTestData.AddChild(store, environment.Agent.Id, "headless-sub", createdAt: 1, withToolCall: true);
-        var window = new MainWindow(environment.App, environment.Agent);
+        var window = new MainWindow(environment.App, await environment.OpenChatAsync());
         var viewModel = window.ViewModel!;
         window.Show();
         viewModel.ShowChatCommand.Execute(null);
         Dispatcher.UIThread.RunJobs();
+        await viewModel.Subagents.RefreshAsync();
         Flyout? flyout = null;
         try
         {
@@ -382,7 +381,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
             var item = ((StackPanel)flyout.Content!).GetVisualDescendants().OfType<Button>()
                 .First(button => button.DataContext is SubagentNodeViewModel);
             item.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Dispatcher.UIThread.RunJobs();
+            await GuiTestEnvironment.WaitForAsync(viewModel.Subagents, () => viewModel.Subagents.IsViewing);
 
             Assert.True(viewModel.Subagents.IsViewing);
             Assert.NotNull(viewModel.Subagents.Viewing);
@@ -402,7 +401,7 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
         {
             var environment = await GuiTestEnvironment.CreateAsync();
             using var environmentScope = environment;
-            var window = new MainWindow(environment.App, environment.Agent);
+            var window = new MainWindow(environment.App, await environment.OpenChatAsync());
             var viewModel = window.ViewModel!;
             window.Show();
             viewModel.ShowChatCommand.Execute(null);

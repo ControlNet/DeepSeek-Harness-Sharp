@@ -364,7 +364,7 @@ public sealed class PtyDaemon : IAsyncDisposable
                     try
                     {
                         await WriteResponseAsync(stream, new PtyDaemonResponse { Ok = true, Session = ToDto(session.ToInfo()) }, cancellationToken);                        // 状态重建: 用会话的 VT 屏全量重绘(清屏+定位+SGR+光标), 空闲/全屏程序接管后都是正确画面。
-                        await stream.WriteAsync(session.Snapshot(), cancellationToken);
+                        await stream.WriteAsync(session.ConsoleSnapshot(), cancellationToken);
                         await TunnelAsync(session, stream, cancellationToken);
                     }
                     finally

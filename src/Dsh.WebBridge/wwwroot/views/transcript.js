@@ -15,6 +15,13 @@ export class Transcript {
   #tools = new Map();
   #plan = null;
 
+  reset() {
+    this.#streaming.clear();
+    this.#tools.clear();
+    this.#plan = null;
+    this.element.replaceChildren();
+  }
+
   /** Applies one event; unknown types (request headers, step markers) are not shown. */
   apply(event) {
     const pinned = this.#isPinned();

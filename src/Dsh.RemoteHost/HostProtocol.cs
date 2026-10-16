@@ -27,6 +27,17 @@ public static class HostProtocol
     public const string MethodSessionUnsubscribe = "host.session.unsubscribe";
     public const string MethodSessionMessage = "host.session.message";
     public const string MethodSessionInterrupt = "host.session.interrupt";
+    public const string MethodSessionSnapshot = "host.session.snapshot";
+    public const string MethodSessionCommand = "host.session.command";
+    public const string MethodSessionCommands = "host.session.commands";
+    public const string MethodSessionRename = "host.session.rename";
+    public const string MethodSessionDelete = "host.session.delete";
+    public const string MethodSessionApprovalPolicy = "host.session.approvalPolicy";
+    public const string MethodSessionSubagents = "host.session.subagents";
+    public const string MethodPluginsList = "host.plugins.list";
+    public const string MethodPluginPermission = "host.plugins.permission";
+    public const string MethodReasoningEfforts = "host.models.reasoningEfforts";
+    public const string MethodProviderModels = "host.models.list";
 
     public const string MethodToolsList = "host.tools.list";
     public const string MethodApprovalRespond = "host.approval.respond";
@@ -111,8 +122,12 @@ public static class HostCapabilities
     /** host.notify.*: the host's persistent notification history, read marks shared by every client. */
     public const string NotifyHistory = "notify.history";
 
+    public const string SessionEditing = "session.editing";
+    public const string PluginManagement = "plugins.manage";
+    public const string ModelCatalog = "models.catalog";
+
     public static readonly IReadOnlyList<string> All =
-        [PendingBroadcast, SessionRegistry, PtyDaemon, PtyResize, AgentSessions, GitInspect, FsTransfer, NotifyHistory];
+        [PendingBroadcast, SessionRegistry, PtyDaemon, PtyResize, AgentSessions, GitInspect, FsTransfer, NotifyHistory, SessionEditing, PluginManagement, ModelCatalog];
 }
 
 /** 握手请求: 客户端声明的协议版本与 token; ClientName 是客户端自报的显示名(如 "gui@laptop"), 用于标注由谁回答了审批。 */
@@ -139,6 +154,18 @@ public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Pl
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(RemoteSessionInfo))]
 [JsonSerializable(typeof(RemoteEventInfo))]
+[JsonSerializable(typeof(RemoteSessionSnapshot))]
+[JsonSerializable(typeof(RemoteCommandRequest))]
+[JsonSerializable(typeof(RemoteCommandResult))]
+[JsonSerializable(typeof(RemoteSessionRenameRequest))]
+[JsonSerializable(typeof(RemoteSessionPolicyRequest))]
+[JsonSerializable(typeof(IReadOnlyList<RemoteCommandDescriptor>))]
+[JsonSerializable(typeof(IReadOnlyList<RemoteSubagentInfo>))]
+[JsonSerializable(typeof(IReadOnlyList<RemotePluginInfo>))]
+[JsonSerializable(typeof(RemotePluginPermissionRequest))]
+[JsonSerializable(typeof(RemoteModelRef))]
+[JsonSerializable(typeof(RemoteProviderRef))]
+[JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(RemoteApprovalRequest))]
 [JsonSerializable(typeof(RemoteApprovalResponse))]
 [JsonSerializable(typeof(RemoteQuestionRequest))]

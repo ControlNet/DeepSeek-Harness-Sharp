@@ -1,5 +1,6 @@
 using Dsh.Core;
 using Dsh.Runtime;
+using Dsh.Runtime.Events;
 
 namespace Dsh.SessionQuery;
 
@@ -11,12 +12,19 @@ public sealed class SessionQueryService : Service, ISessionQueryService, IDispos
     private readonly SessionQueryIndex _index;
     private readonly Dictionary<string, string> _versions = new(StringComparer.Ordinal);
     private readonly Lock _gate = new();
+    private readonly Func<bool> _unsubscribeTruncate;
 
     public SessionQueryService(Context ctx) : base(ctx, ServiceName)
     {
         _index = new SessionQueryIndex();
         if (!_index.UsesFullText)
             Ctx.Logger.Warn("%s", "sqlite3 is unavailable: session search falls back to local text matching");
+        // 活会话以事件数作版本, 截断后再长回同样长度时版本相同而内容已变; 截断即作废版本, 下次检索重建该会话索引。
+        _unsubscribeTruncate = ctx.On<SessionTruncateNotification>(notification =>
+        {
+            lock (_gate)
+                _versions.Remove(notification.Session.Id.Value);
+        }, new EventOptions { Global = true });
     }
 
     public IReadOnlyList<SessionQueryHit> Search(string query, int limit = 20)
@@ -59,5 +67,9 @@ public sealed class SessionQueryService : Service, ISessionQueryService, IDispos
     private bool IsCurrent(string id, string version)
         => _versions.TryGetValue(id, out var known) && string.Equals(known, version, StringComparison.Ordinal);
 
-    public void Dispose() => _index.Dispose();
+    public void Dispose()
+    {
+        _unsubscribeTruncate();
+        _index.Dispose();
+    }
 }

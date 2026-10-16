@@ -10,6 +10,7 @@ public sealed class TranscriptRenderer
     public const int ToolArgumentsPreviewChars = 120;
     public const int ToolResultPreviewChars = 300;
     public const int SystemMessageFoldChars = 140;
+    public const string DeliverablesHint = "/deliverables 列出本会话交付物, /deliverables open <编号> 用默认程序打开";
 
     private readonly StringBuilder _buffer = new();
     private readonly List<TranscriptFold> _folds = [];
@@ -166,6 +167,9 @@ public sealed class TranscriptRenderer
 
                     break;
                 }
+            case DeliverablesPresentedPayload presented:
+                AppendDeliverables(presented);
+                break;
             case TurnEndPayload { Reason: TurnEndReason.Error error }:
                 _assistantStreamed = false;
                 _pendingTint = TranscriptTint.Error;
@@ -347,6 +351,15 @@ public sealed class TranscriptRenderer
                 Preview = title,
             });
         }
+    }
+
+    /** 交付物卡片: 每行一个绝对路径(可直接复制), 末行提示用 /deliverables 打开。 */
+    private void AppendDeliverables(DeliverablesPresentedPayload presented)
+    {
+        Append("  [交付物]\n");
+        foreach (var file in presented.Files)
+            Append(file.Description is { } description ? $"    {file.Path} - {description}\n" : $"    {file.Path}\n");
+        Append($"    {DeliverablesHint}\n");
     }
 
     private static int LineNumberWidth(IReadOnlyList<DiffLine> lines)

@@ -9,6 +9,7 @@ using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Plugins;
 using Dsh.Runtime;
+using Dsh.RemoteHost;
 
 namespace Dsh.Gui.ViewModels;
 
@@ -34,25 +35,28 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private readonly Context _ctx;
     private readonly HarnessHome _home;
-    private readonly Func<AgentLoopAgent> _agent;
-    private readonly CommandBridge _bridge;
+    private readonly Func<HarnessModelChoice> _model;
+    private readonly Func<string, Task<string>> _run;
     private readonly GuiSettings _gui;
     private readonly SettingsFacade _facade;
+    private readonly Func<Task<IRemoteHost>> _host;
 
     public SettingsViewModel(
         Context ctx,
         HarnessHome home,
-        Func<AgentLoopAgent> agent,
-        CommandBridge bridge,
+        Func<HarnessModelChoice> model,
+        Func<string, Task<string>> run,
         GuiSettings gui,
-        SettingsFacade facade)
+        SettingsFacade facade,
+        Func<Task<IRemoteHost>> host)
     {
         _ctx = ctx;
         _home = home;
-        _agent = agent;
-        _bridge = bridge;
+        _model = model;
+        _run = run;
         _gui = gui;
         _facade = facade;
+        _host = host;
         Account = new AccountPanelViewModel(_ctx.Get<IAccountService>(IAccountService.ServiceName, false));
         foreach (var section in Sections)
             section.SelectCommand = new RelayCommand<SettingsNavItemViewModel>(SelectSection);
@@ -449,10 +453,9 @@ public sealed partial class SettingsViewModel : ObservableObject
         IsWorking = true;
         try
         {
-            var llm = _ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false);
-            var models = llm?.ListModels(provider) ?? [];
+            var models = await (await _host()).ListProviderModelsAsync(provider);
             Status = models.Count > 0
-                ? $"Provider {provider} 可用: {models.Count} 个模型（{string.Join(", ", models.Take(3).Select(model => model.Id))}…）"
+                ? $"Provider {provider} 可用: {models.Count} 个模型（{string.Join(", ", models.Take(3))}…）"
                 : $"Provider {provider} 未返回模型，检查 baseUrl/apiKey 与适配器是否加载";
         }
         catch (Exception error)
@@ -514,19 +517,20 @@ public sealed partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task RefreshPluginsAsync()
     {
-        LoadHarnessSettings();
-        await Task.CompletedTask;
+        LoadHarnessSettings(loadMetadata: false);
+        await LoadReasoningEffortsAsync();
+        await LoadPluginRowsAsync();
     }
 
     [RelayCommand]
     private async Task AddPluginAsync()
     {
-        if (PluginInput.Trim().Length == 0 || Manager() is not { } manager)
+        if (PluginInput.Trim().Length == 0)
             return;
         IsWorking = true;
         try
         {
-            Status = await manager.AddAsync(PluginInput.Trim());
+            Status = await RunAsync($"/plugins add {PluginInput.Trim()}");
             PluginInput = "";
             await RefreshPluginsAsync();
         }
@@ -540,24 +544,44 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
     }
 
+    /** Plugin library picker, wired by MainWindow to the platform storage provider. */
+    public Func<Task<string?>>? PluginFilePicker { get; set; }
+
+    [RelayCommand]
+    private async Task BrowsePluginPathAsync()
+    {
+        if (PluginFilePicker is not null && await PluginFilePicker() is { Length: > 0 } path)
+            PluginInput = path;
+    }
+
+    /** Market permission toggles: the same settings mutation as /plugins ban_write|enable_write. */
+    private void SetPluginPermission(string package, PluginPermission permission, bool allowed)
+        => _ = SetPluginPermissionAsync(package, permission, allowed);
+
+    private async Task SetPluginPermissionAsync(string package, PluginPermission permission, bool allowed)
+    {
+        try
+        {
+            Status = await (await _host()).SetPluginPermissionAsync(package, permission.ToString(), allowed);
+        }
+        catch (Exception error)
+        {
+            Status = $"插件权限写入失败: {error.Message}";
+        }
+    }
+
     [RelayCommand]
     private async Task PluginActionAsync(string action)
     {
-        if (Manager() is not { } manager)
-            return;
         var parts = action.Split(':', 2);
         if (parts.Length != 2)
             return;
         IsWorking = true;
         try
         {
-            Status = parts[0] switch
-            {
-                "enable" => await manager.EnableAsync(parts[1]),
-                "disable" => await manager.DisableAsync(parts[1]),
-                "remove" => await manager.RemoveAsync(parts[1]),
-                _ => "未知操作",
-            };
+            Status = parts[0] is "enable" or "disable" or "remove"
+                ? await RunAsync($"/plugins {parts[0]} {parts[1]}")
+                : "未知操作";
             await RefreshPluginsAsync();
         }
         catch (Exception error)
@@ -603,11 +627,11 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private async Task<string> RunAsync(string line)
     {
-        var text = await _bridge.RunAsync(_agent(), line);
+        var text = await _run(line);
         return text.Length > MaxStatusChars ? text[..MaxStatusChars] + "…" : text;
     }
 
-    private void LoadHarnessSettings()
+    private void LoadHarnessSettings(bool loadMetadata = true)
     {
         var settings = HarnessSettings.Load(_home);
         Models.Clear();
@@ -639,39 +663,50 @@ public sealed partial class SettingsViewModel : ObservableObject
         var compaction = settings.Plugins.GetValueOrDefault(CompactionPackage)?.Parameters;
         if (compaction?.GetValueOrDefault("thresholdRatio") is double ratio)
             CompactionThreshold = ratio * 100;
-        LoadReasoningEfforts();
-        LoadPluginRows();
+        if (loadMetadata)
+        {
+            LoadReasoningEfforts();
+            LoadPluginRows();
+        }
     }
 
-    private void LoadReasoningEfforts()
+    private void LoadReasoningEfforts() => _ = LoadReasoningEffortsAsync();
+
+    private async Task LoadReasoningEffortsAsync()
     {
-        ReasoningEfforts.Clear();
-        var agent = _agent();
-        var llm = _ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false);
-        var header = agent.Session.RequestHeader();
-        var provider = header?.Config.Provider ?? agent.Options.Provider ?? "";
-        var model = header?.Config.Model ?? agent.Options.Model ?? "";
+        var selection = _model().Selection;
+        if (selection is null)
+            return;
         try
         {
-            foreach (var effort in llm?.ResolveModelInfo(provider, model).Reasoning?.Efforts ?? [])
-                ReasoningEfforts.Add(effort.Id.Value);
-        }
-        catch (Exception)
-        {
+            var efforts = await (await _host()).ListReasoningEffortsAsync(selection.Provider, selection.Model);
+            if (selection != _model().Selection)
+                return;
             ReasoningEfforts.Clear();
+            foreach (var effort in efforts)
+                ReasoningEfforts.Add(effort);
+        }
+        catch (Exception error)
+        {
+            Status = $"推理选项读取失败: {error.Message}";
         }
     }
 
-    private void LoadPluginRows()
+    private void LoadPluginRows() => _ = LoadPluginRowsAsync();
+
+    private async Task LoadPluginRowsAsync()
     {
-        Plugins.Clear();
-        if (Manager() is not { } manager)
-            return;
-        var settings = HarnessSettings.Load(_home);
-        foreach (var package in manager.PackageNames.OrderBy(name => name, StringComparer.Ordinal))
+        try
         {
-            var enabled = settings.Plugins.GetValueOrDefault(package)?.Enabled ?? true;
-            Plugins.Add(new PluginRowViewModel(package, manager.Describe(package), enabled));
+            var plugins = await (await _host()).ListPluginsAsync();
+            Plugins.Clear();
+            foreach (var plugin in plugins.OrderBy(item => item.Package, StringComparer.Ordinal))
+                Plugins.Add(new PluginRowViewModel(plugin.Package, plugin.Description, plugin.Enabled,
+                    new PluginPermissions { Read = plugin.ReadAllowed, Write = plugin.WriteAllowed, Network = plugin.NetworkAllowed }, SetPluginPermission));
+        }
+        catch (Exception error)
+        {
+            Status = $"插件列表读取失败: {error.Message}";
         }
     }
 
@@ -685,7 +720,6 @@ public sealed partial class SettingsViewModel : ObservableObject
         Status = "";
     }
 
-    private IPluginManager? Manager() => _ctx.Get<IPluginManager>("pluginManager", false);
 }
 
 public sealed partial class SettingsNavItemViewModel(SettingsSection section, string label) : ObservableObject
@@ -736,7 +770,13 @@ public sealed record ShortcutRowViewModel(string Keys, string Description);
 /** 显卡下拉的一项: Value 写进 settings.yaml 的 gpu.adapter, Label 给人看。 */
 public sealed record GpuAdapterOption(string Value, string Label);
 
-public sealed class PluginRowViewModel(string package, string description, bool enabled) : ObservableObject
+/** One plugin row; permission toggles write back through setPermission as soon as they change. */
+public sealed partial class PluginRowViewModel(
+    string package,
+    string description,
+    bool enabled,
+    PluginPermissions permissions,
+    Action<string, PluginPermission, bool> setPermission) : ObservableObject
 {
     public string Package { get; } = package;
 
@@ -747,4 +787,21 @@ public sealed class PluginRowViewModel(string package, string description, bool 
     public string ActionLabel => Enabled ? "禁用" : "启用";
 
     public string WireAction => $"{(Enabled ? "disable" : "enable")}:{Package}";
+
+    public string RemoveAction => $"remove:{Package}";
+
+    [ObservableProperty]
+    private bool _canRead = permissions.Read;
+
+    [ObservableProperty]
+    private bool _canWrite = permissions.Write;
+
+    [ObservableProperty]
+    private bool _canNetwork = permissions.Network;
+
+    partial void OnCanReadChanged(bool value) => setPermission(Package, PluginPermission.Read, value);
+
+    partial void OnCanWriteChanged(bool value) => setPermission(Package, PluginPermission.Write, value);
+
+    partial void OnCanNetworkChanged(bool value) => setPermission(Package, PluginPermission.Network, value);
 }

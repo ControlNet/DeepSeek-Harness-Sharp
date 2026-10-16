@@ -1,11 +1,9 @@
 using Dsh.Boot;
-using Dsh.Core;
-using Dsh.Runtime;
 
 namespace Dsh.Gui.Services;
 
-/** settings.yaml 的唯一读写入口: 有对应命令时复用命令的校验与副作用, 无命令时才直接读写。 */
-public sealed class SettingsFacade(Context ctx, HarnessHome home)
+/** Shared settings-file mutations without a slash command; session commands run through HostChatSession. */
+public sealed class SettingsFacade(HarnessHome home)
 {
     public event Action? Changed;
 
@@ -33,15 +31,9 @@ public sealed class SettingsFacade(Context ctx, HarnessHome home)
         var merged = new Dictionary<string, object?>(existing?.Parameters ?? [], StringComparer.Ordinal);
         foreach (var (key, value) in parameters)
             merged[key] = value;
-        settings.Plugins[package] = new PluginSetting
-        {
-            Enabled = existing?.Enabled ?? true,
-            Parameters = merged,
-        };
+        settings.Plugins[package] = (existing ?? new PluginSetting()) with { Parameters = merged };
         settings.SavePlugins(home);
         Changed?.Invoke();
     }
 
-    public async Task<string> RunCommandAsync(IAgent agent, string line)
-        => await new CommandBridge(ctx).RunAsync(agent, line);
 }

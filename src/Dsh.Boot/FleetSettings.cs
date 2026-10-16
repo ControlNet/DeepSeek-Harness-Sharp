@@ -74,10 +74,6 @@ public sealed class FleetDeploySettings
     [YamlMember(Alias = "releaseVersion")]
     public string? ReleaseVersion { get; set; }
 
-    /** 本机下载发布包时用的代理。 */
-    [YamlMember(Alias = "downloadProxy")]
-    public string? DownloadProxy { get; set; }
-
     /** auto / client / server: 发布包在哪里下载。 */
     [YamlMember(Alias = "via")]
     public string? Via { get; set; }

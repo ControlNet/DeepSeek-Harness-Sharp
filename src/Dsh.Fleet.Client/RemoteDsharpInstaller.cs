@@ -1,7 +1,6 @@
-using System.Collections.Concurrent;
-using System.Net;
 using System.Text.RegularExpressions;
 using Dsh.RemoteHost;
+using Dsh.Runtime;
 
 namespace Dsh.Fleet;
 
@@ -48,7 +47,8 @@ public static class RemoteDsharpInstaller
         Action<string>? progress,
         CancellationToken cancellationToken,
         Func<DeploySettings, string, CancellationToken, Task<string>>? archiveFactory = null,
-        bool force = false)
+        bool force = false,
+        OutboundProxy? localProxy = null)
     {
         var installation = await InspectAsync(machine, cancellationToken).ConfigureAwait(false);
         var identity = RemoteHostServer.ReleaseVersion;
@@ -59,7 +59,7 @@ public static class RemoteDsharpInstaller
             ? $"远端缺少 dsharp, 正在部署 {identity}({installation.Rid}) …"
             : $"远端 dsharp 版本 {installation.Version ?? "(未知)"} 需要更新到 {identity}, 重新部署 …");
         var stop = StopHostCommand(installation.CommandPath);
-        var deployed = await DeployAsync(machine, settings, installation.Rid, stop, progress, archiveFactory, cancellationToken).ConfigureAwait(false);
+        var deployed = await DeployAsync(machine, settings, installation.Rid, stop, progress, archiveFactory, localProxy, cancellationToken).ConfigureAwait(false);
         await WriteIdentityAsync(machine, installation.Rid, identity, cancellationToken).ConfigureAwait(false);
         var report = await InstallServiceAsync(machine, deployed, cancellationToken).ConfigureAwait(false);
         progress?.Invoke(report);
@@ -163,6 +163,7 @@ public static class RemoteDsharpInstaller
         string stop,
         Action<string>? progress,
         Func<DeploySettings, string, CancellationToken, Task<string>>? archiveFactory,
+        OutboundProxy? localProxy,
         CancellationToken cancellationToken)
     {
         // server/auto: 先让远端用它自己的网络/自带代理下载; auto 失败(无下载器/无外网/404)再回退到"本地下载 + scp 上传"。
@@ -180,7 +181,9 @@ public static class RemoteDsharpInstaller
         }
 
         progress?.Invoke($"正在准备 {AssetName(rid)} …");
-        var archive = await (archiveFactory ?? DownloadAsync)(settings, rid, cancellationToken).ConfigureAwait(false);
+        var archive = archiveFactory is null
+            ? await DownloadAsync(settings, rid, localProxy ?? new OutboundProxy(), cancellationToken).ConfigureAwait(false)
+            : await archiveFactory(settings, rid, cancellationToken).ConfigureAwait(false);
         try
         {
             progress?.Invoke($"正在上传并部署 dsharp({rid})到 ~/.dsharp/ …");
@@ -267,23 +270,11 @@ public static class RemoteDsharpInstaller
 
     private static string LastLine(string output) => Lines(output).LastOrDefault() ?? "";
 
-    private static readonly ConcurrentDictionary<string, HttpClient> Clients = new(StringComparer.Ordinal);
-
-    private static HttpClient ClientFor(string? proxy)
-        => Clients.GetOrAdd(proxy ?? "", key =>
-        {
-            var handler = new HttpClientHandler();
-            if (key.Length > 0)
-                handler.Proxy = new WebProxy(key);
-            var client = new HttpClient(handler);
-            client.Timeout = TimeSpan.FromMinutes(10);
-            return client;
-        });
-
-    private static async Task<string> DownloadAsync(DeploySettings settings, string rid, CancellationToken cancellationToken)
+    private static async Task<string> DownloadAsync(DeploySettings settings, string rid, OutboundProxy proxy, CancellationToken cancellationToken)
     {
         var url = AssetUrl(settings, rid);
-        var bytes = await ClientFor(settings.DownloadProxy).GetByteArrayAsync(url, cancellationToken).ConfigureAwait(false);
+        using var client = new HttpClient(proxy.CreateHandler()) { Timeout = TimeSpan.FromMinutes(10) };
+        var bytes = await client.GetByteArrayAsync(url, cancellationToken).ConfigureAwait(false);
         var path = Path.Combine(Path.GetTempPath(), $"dsharp-{rid}-{Guid.NewGuid():N}.tar.gz");
         await File.WriteAllBytesAsync(path, bytes, cancellationToken).ConfigureAwait(false);
         return path;

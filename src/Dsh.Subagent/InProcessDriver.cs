@@ -17,7 +17,7 @@ public static class InProcessDriver
         var childId = SessionId.Create(Guid.NewGuid().ToString());
         var activationBoundary = seed?.Count ?? 0;
         var inherited = ChildCompositionSupport.CaptureDelegatedPolicyOverrides(parent);
-        var header = ChildCompositionSupport.ChildSessionHeader(parent, childDepth, childId, seed is not null, request.Descriptor);
+        var header = ChildCompositionSupport.ChildSessionHeader(request.Request, childDepth, childId, seed is not null, request.Descriptor);
         // standalone（无头）会话不进 SessionStore：无持久化订阅、无 session 级事件发布，transcript 纯内存。
         var session = standalone
             ? Session.Create(childId, seed, header, seed is null ? null : activationBoundary)

@@ -160,8 +160,7 @@
             <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ReleaseVersion, Mode=TwoWay}" PlaceholderText="latest 或 vX.Y.Z" />
             <TextBlock Grid.Row="2" Classes="Label" Text="下载位置" />
             <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{x:Static vm:DeploySettingsEditorViewModel.ViaOptions}" SelectedItem="{Binding Via, Mode=TwoWay}" />
-            <TextBlock Grid.Row="3" Classes="Label" Text="本机下载代理" />
-            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding DownloadProxy, Mode=TwoWay}" PlaceholderText="留空 = 直连" />
+            <TextBlock Grid.Row="3" Grid.ColumnSpan="2" Classes="Muted" Text="本机下载使用共享 network.outbound_proxy 设置" TextWrapping="Wrap" />
             <TextBlock Grid.Row="4" Classes="Label" Text="远端下载代理" />
             <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding ServerProxy, Mode=TwoWay}" PlaceholderText="在远端解析；留空 = 远端自带代理或直连" />
           </Grid>

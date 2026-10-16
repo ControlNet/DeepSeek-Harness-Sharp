@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.RemoteHost;
+using Dsh.Transport;
 
 namespace Dsh.Tests;
 
@@ -69,14 +70,34 @@ public sealed class FleetSshEndToEndTests
             Assert.Equal(Path.Combine(deployed, "dsharp"), reused.CommandPath);
 
             var lease = await connection.WaitConnectedAsync(Ct);
+            var hostIdentity = LocalEndpointToken.Read(RemoteHostEndpoint.EndpointFile(harness));
+            Assert.NotNull(hostIdentity);
             var shell = await lease.Client.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", [], harness, Title: "e2e-shell"), Ct);
             await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session.SessionId == shell));
+            await using (var before = RemoteHostPtyTests.TerminalCapture.Attach(lease.Client, shell))
+            {
+                await before.SendAsync("printf '%s\\n' \"$$\" > before.pid; echo before-$((40+2))\n");
+                await before.WaitForAsync("before-42", TimeSpan.FromSeconds(20));
+            }
+            var shellPid = await File.ReadAllTextAsync(Path.Combine(harness, "before.pid"), Ct);
 
             var ssh = connection.LinkProcess!;
             ssh.Kill();
             await FleetConnectionTests.WaitForAsync(() => states.Contains(MachineConnectionState.Reconnecting)
                 && connection.State == MachineConnectionState.Connected && connection.LinkProcess is { } next && next != ssh);
             await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session.SessionId == shell && session.Kind == HostSessionKinds.Terminal));
+            Assert.True(hostIdentity == LocalEndpointToken.Read(RemoteHostEndpoint.EndpointFile(harness)),
+                "dropping only the SSH bridge must not replace the host process");
+            var reconnected = await connection.WaitConnectedAsync(Ct);
+            var registered = Assert.Single(await reconnected.Client.ListHostSessionsAsync(Ct), session => session.SessionId == shell);
+            Assert.Equal(HostSessionStatuses.Running, registered.Status);
+            Assert.Equal("e2e-shell", registered.Title);
+            await using (var after = RemoteHostPtyTests.TerminalCapture.Attach(reconnected.Client, shell))
+            {
+                await after.SendAsync("printf '%s\\n' \"$$\" > after.pid; echo after-$((50+5))\n");
+                await after.WaitForAsync("after-55", TimeSpan.FromSeconds(20));
+            }
+            Assert.Equal(shellPid, await File.ReadAllTextAsync(Path.Combine(harness, "after.pid"), Ct));
 
             await AssertCliSeesTheMachineAsync(executable, machine, shell);
         }

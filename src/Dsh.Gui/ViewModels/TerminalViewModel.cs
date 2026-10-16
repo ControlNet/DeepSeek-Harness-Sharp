@@ -1,7 +1,9 @@
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Dsh.Gui.Terminal;
+using Dsh.Fleet;
 using Dsh.Pty;
+using Dsh.RemoteHost;
 
 namespace Dsh.Gui.ViewModels;
 
@@ -11,14 +13,6 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
     /** 启动时的 PTY 尺寸; 控件完成布局后立即按实际格子数 resize。 */
     private static readonly TerminalSize InitialSize = new(80, 24);
 
-    /** 本地终端声明为 xterm 兼容真彩终端; GUI 进程从桌面启动时自身可能没有 TERM。 */
-    private static readonly IReadOnlyDictionary<string, string?> LocalEnvironment = new Dictionary<string, string?>
-    {
-        ["TERM"] = "xterm-256color",
-        ["COLORTERM"] = "truecolor",
-    };
-
-    private PtySession? _local;
     private RemotePtyConnection? _remote;
     private string _origin = "";
 
@@ -36,20 +30,13 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
     [ObservableProperty]
     private string _screenTitle = "";
 
-    /** 本地终端: 进程内 PTY。 */
-    public async Task StartLocalAsync(string homeRoot)
+    /** 本地机器也经常驻 host/PTY daemon 启动, 与 SSH 终端共享会话登记和断线存活语义。 */
+    public async Task StartOnMachineAsync(MachineConnection machine, string workingDirectory, CancellationToken cancellationToken = default)
     {
         var shell = PtyShell.Resolve();
-        _local = await PtyHost.Default.StartAsync(new PtyStartInfo
-        {
-            FileName = shell,
-            Arguments = [.. PtyShell.Arguments(shell)],
-            Home = homeRoot,
-            Rows = InitialSize.Rows,
-            Columns = InitialSize.Columns,
-            Environment = LocalEnvironment,
-        });
-        Attach(_local, $"本地 · {shell}");
+        var connection = await RemotePtyConnection.StartAsync(machine, new RemotePtyStartRequest(
+            shell, PtyShell.Arguments(shell), workingDirectory, Columns: InitialSize.Columns, Rows: InitialSize.Rows), cancellationToken);
+        AttachRemote(connection, $"本地 · {shell}");
     }
 
     /** Remote terminal: a PTY on a fleet machine, attached through the machine's connection; the view model disposes the connection. */
@@ -66,11 +53,7 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
     {
         if (Session is not null)
             await Session.DisposeAsync();
-        if (_local is not null)
-        {
-            await PtyHost.Default.StopAsync(_local.Id.Value);
-            _local.Dispose();
-        }
+        // 主机持有 PTY; 自己创建的终端在关闭窗口时显式停止, 附加的终端只断开视图。
         if (_remote is not null)
             await _remote.DisposeAsync();
     }

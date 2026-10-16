@@ -5,6 +5,8 @@ using Avalonia.Headless;
 using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using Dsh.Fleet;
+using Dsh.RemoteHost;
 using Dsh.Gui.Terminal;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
@@ -82,20 +84,24 @@ public sealed class TerminalControlHeadlessTests
     {
         if (OperatingSystem.IsWindows())
             return;
-        // PtyHost.Default 是进程级单例: 用唯一的 Home 认出本用例起的会话, 不受其它用例的会话干扰。
-        var home = Path.Combine(AppContext.BaseDirectory, $"terminal-window-home-{Guid.NewGuid():N}");
+        await using var host = await HarnessHostFixture.CreateAsync("tl", TestContext.Current.CancellationToken);
+        await using var machine = new MachineConnection(MachineSpec.Local(host.Root), FleetConnectionTests.TestOptions);
+        machine.Start();
+        await machine.WaitConnectedAsync(TestContext.Current.CancellationToken);
         var viewModel = new TerminalViewModel("本地终端");
         var window = new TerminalWindow(viewModel);
         window.Show();
-        await viewModel.StartLocalAsync(home);
+        await viewModel.StartOnMachineAsync(machine, host.Root, TestContext.Current.CancellationToken);
         Dispatcher.UIThread.RunJobs();
 
         Assert.Matches(@"· \d+x\d+$", viewModel.Status);
-        var started = PtyHost.Default.List().Single(info => info.Home == home);
+        var started = Assert.Single(await PtyDaemonClient.ListAsync(host.PtyEndpoint.SocketPath, host.PtyEndpoint.PortFile, TestContext.Current.CancellationToken));
+        await FleetConnectionTests.WaitForAsync(() => machine.Sessions.Any(session => session.SessionId == started.Id));
+        Assert.Contains(machine.Sessions, session => session.SessionId == started.Id && session.Kind == HostSessionKinds.Terminal);
         window.Close();
         await viewModel.DisposeAsync();
 
-        Assert.DoesNotContain(PtyHost.Default.List(), info => info.Id == started.Id);
+        await FleetConnectionTests.WaitForAsync(() => host.Backend.Sessions.Get(started.Id)?.Status == HostSessionStatuses.Exited);
         Assert.True(await ExitsAsync(started.Pid!.Value), $"shell pid {started.Pid} still running");
     });
 

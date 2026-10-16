@@ -161,6 +161,8 @@ public static class HarnessEntrypoint
                 if (OperatingSystem.IsMacOS())
                     return RunGuiOnMainThread(harnessHome, resumeSessionId);
                 return await RunEntrypointAsync(harnessHome, "gui", resumeSessionId);
+            case "web":
+                return await RunHostWebAsync(harnessHome, positional.Skip(1).ToList());
             case "host":
                 {
                     var subcommand = positional.Skip(1).FirstOrDefault();
@@ -202,6 +204,13 @@ public static class HarnessEntrypoint
             return 0;
         }
 
+        using var instance = HostAutostart.TryAcquireInstance(home);
+        if (instance is null)
+        {
+            using var connection = await Dsh.RemoteHost.RemoteHostListener.ConnectAsync(home.Root, CancellationToken.None);
+            return 0;
+        }
+
         using var app = await ConfigBoot.Compose(new HarnessOptions(home, Directory.GetCurrentDirectory(), IsTui: false));
         await using var backend = await HarnessRemoteHostBackend.CreateAsync(app);
         var server = new Dsh.RemoteHost.RemoteHostServer(new Dsh.RemoteHost.RemoteHostServerOptions(token), backend);
@@ -222,7 +231,7 @@ public static class HarnessEntrypoint
         return 0;
     }
 
-    /** `dsharp host web`: the browser bridge relays to the resident host daemon, so the daemon is started first when it is not running. */
+    /** The browser UI runs through the same plugin-entrypoint resolution as TUI and GUI. */
     private static async Task<int> RunHostWebAsync(HarnessHome home, List<string> arguments)
     {
         using var cancellation = new CancellationTokenSource();
@@ -231,16 +240,11 @@ public static class HarnessEntrypoint
             eventArgs.Cancel = true;
             cancellation.Cancel();
         };
-        return await Dsh.WebBridge.WebBridgeCommand.RunAsync(home.Root, arguments, Console.Out, Console.Error,
-            () => HostAutostart.EnsureRunningAsync(home, token: null), cancellation.Token, StartLocalMachineHost);
+        using var app = await ConfigBoot.Compose(new HarnessOptions(home, Directory.GetCurrentDirectory(), IsTui: false));
+        return await app.RunEntrypointAsync("web", new PluginEntrypointOptions(home, Directory.GetCurrentDirectory(),
+            StartLocalHost: StartLocalHostAsync, Arguments: arguments), cancellation.Token);
     }
 
-    /** Another local machine of the web bridge's fleet (a second harness home) gets its host started detached, as `dsharp session` does. */
-    private static Task StartLocalMachineHost(Dsh.Fleet.MachineSpec machine, CancellationToken cancellationToken)
-    {
-        HostAutostart.StartDetached(token: null, machine.HarnessHome);
-        return Task.CompletedTask;
-    }
 
     /**
      * `dsharp storage paths`: 打印 §18 解析后的根与各分区, 便于核对 settings.storage 是否生效。
@@ -348,6 +352,7 @@ public static class HarnessEntrypoint
                    dsharp attach <pty-id> [--gpu]   (等价 dsharp tui attach <pty-id>)
                    dsharp tui --session <id> [--gpu]   (恢复 harness 会话; --gpu 开独立窗口)
                    dsharp gui [--session <id>]
+                   dsharp web [--port N] [--print-token]   (浏览器工作台，与 GUI/TUI 并行入口)
                    dsharp headless "task"
                    dsharp host --serve [--stdio] [--token <t>]   (远端工作区宿主: 默认 loopback socket, --stdio 走 ssh)
                    dsharp host install-service   (常驻远端宿主: systemd --user 服务并尽量启用 linger; 无 systemd 时 nohup 启动)

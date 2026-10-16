@@ -23,6 +23,7 @@ public sealed class MachineConnection : IAsyncDisposable
     private readonly Dictionary<string, RemoteHostSession> _sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RemoteApprovalRequest> _approvals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RemoteQuestionRequest> _questions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, EventFeed> _eventFeeds = new(StringComparer.Ordinal);
     private readonly HashSet<string> _resolved = new(StringComparer.Ordinal);
     private readonly Queue<string> _resolvedOrder = new();
     private readonly CancellationTokenSource _lifetime = new();
@@ -101,11 +102,99 @@ public sealed class MachineConnection : IAsyncDisposable
      * When the host cannot resume from that seq, it subscribes from the start and skips what was already delivered.
      * The stream fails when the host rejects the subscription itself (for example an unknown session).
      */
-    public IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+    public async IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var channel = Channel.CreateUnbounded<RemoteEventInfo>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
-        _ = FollowEventsAsync(sessionId, new EventCursor(fromSeq), channel.Writer, cancellationToken);
-        return channel.Reader.ReadAllAsync(cancellationToken);
+        EventFeed feed;
+        EventReader reader;
+        while (true)
+        {
+            Task? stopping = null;
+            lock (_gate)
+            {
+                _lifetime.Token.ThrowIfCancellationRequested();
+                if (_eventFeeds.TryGetValue(sessionId, out feed!) && feed.Stopping)
+                    stopping = feed.Completed.Task;
+                else
+                {
+                    if (feed is null)
+                    {
+                        feed = new EventFeed(_lifetime.Token);
+                        _eventFeeds.Add(sessionId, feed);
+                        _ = Task.Run(() => FollowEventsAsync(sessionId, feed));
+                    }
+                    reader = new EventReader(fromSeq);
+                    foreach (var item in feed.Replay)
+                        Deliver(reader, item);
+                    feed.Readers.Add(reader);
+                    break;
+                }
+            }
+            await stopping!.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        try
+        {
+            await foreach (var item in reader.Channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                yield return item;
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                feed.Readers.Remove(reader);
+                if (feed.Readers.Count == 0 && !feed.Stopping)
+                {
+                    feed.Stopping = true;
+                    feed.Lifetime.Cancel();
+                }
+            }
+        }
+    }
+
+    private readonly record struct ReplayedEvent(RemoteEventInfo Info, long? Sequence);
+
+    private sealed class EventReader(long fromSeq)
+    {
+        public long Next { get; set; } = fromSeq;
+        public Channel<RemoteEventInfo> Channel { get; } = System.Threading.Channels.Channel.CreateUnbounded<RemoteEventInfo>(
+            new UnboundedChannelOptions { SingleReader = true });
+    }
+
+    /** One wire subscription per session. Replay lives only while at least one reader owns the feed. */
+    private sealed class EventFeed(CancellationToken lifetime)
+    {
+        public CancellationTokenSource Lifetime { get; } = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
+        public List<EventReader> Readers { get; } = [];
+        public List<ReplayedEvent> Replay { get; } = [];
+        public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Stopping { get; set; }
+    }
+
+    private static void Deliver(EventReader reader, ReplayedEvent item)
+    {
+        if (item.Info.Reset)
+            reader.Next = 0;
+        else if (item.Sequence is { } sequence)
+        {
+            if (sequence < reader.Next)
+                return;
+            reader.Next = sequence + 1;
+        }
+        reader.Channel.Writer.TryWrite(item.Info);
+    }
+
+    private void PublishEvent(EventFeed feed, RemoteEventInfo item, long? sequence)
+    {
+        lock (_gate)
+        {
+            if (item.Reset)
+                feed.Replay.Clear();
+            var replayed = new ReplayedEvent(item, sequence);
+            if (!item.Reset)
+                feed.Replay.Add(replayed);
+            foreach (var reader in feed.Readers)
+                Deliver(reader, replayed);
+        }
     }
 
     /**
@@ -125,7 +214,8 @@ public sealed class MachineConnection : IAsyncDisposable
      * Attaches to a PTY across reconnections: after a drop the next link attaches again and the host starts over with a full-screen snapshot.
      * Returns when the PTY ends; fails when the host does not know the PTY (for example it exited while the machine was unreachable).
      */
-    public async Task AttachPtyAsync(string ptyId, Stream input, Stream output, CancellationToken cancellationToken)
+    public async Task AttachPtyAsync(string ptyId, Stream input, Stream output, CancellationToken cancellationToken,
+        Func<RemoteHostClient, CancellationToken, Task>? prepare = null)
     {
         while (true)
         {
@@ -133,6 +223,9 @@ public sealed class MachineConnection : IAsyncDisposable
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
             try
             {
+                // Apply the view's latest geometry before the first snapshot, including changes made while offline.
+                if (prepare is not null)
+                    await prepare(lease.Client, linked.Token).ConfigureAwait(false);
                 await lease.Client.AttachPtyAsync(ptyId, input, output, linked.Token).ConfigureAwait(false);
                 return;
             }
@@ -148,6 +241,10 @@ public sealed class MachineConnection : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _lifetime.CancelAsync().ConfigureAwait(false);
+        Task[] feeds;
+        lock (_gate)
+            feeds = [.. _eventFeeds.Values.Select(feed => feed.Completed.Task)];
+        await Task.WhenAll(feeds).ConfigureAwait(false);
         try
         {
             if (_loop is { } loop)
@@ -214,7 +311,8 @@ public sealed class MachineConnection : IAsyncDisposable
         {
             SetState(MachineConnectionState.Deploying, null);
             var deployed = await RemoteDsharpInstaller.EnsureAsync(
-                Machine, _options.Deploy, step => SetState(MachineConnectionState.Deploying, step), cancellationToken, _options.ArchiveFactory).ConfigureAwait(false);
+                Machine, _options.Deploy, step => SetState(MachineConnectionState.Deploying, step), cancellationToken, _options.ArchiveFactory,
+                localProxy: _options.LocalProxy).ConfigureAwait(false);
             return _commandPath = deployed.CommandPath;
         }
 
@@ -412,7 +510,12 @@ public sealed class MachineConnection : IAsyncDisposable
     private void ApplySession(RemoteHostSession session)
     {
         lock (_gate)
-            _sessions[session.SessionId] = session;
+        {
+            if (session.Deleted)
+                _sessions.Remove(session.SessionId);
+            else
+                _sessions[session.SessionId] = session;
+        }
         SessionsChanged?.Invoke(this);
     }
 
@@ -492,8 +595,10 @@ public sealed class MachineConnection : IAsyncDisposable
         PendingChanged?.Invoke(this);
     }
 
-    private async Task FollowEventsAsync(string sessionId, EventCursor cursor, ChannelWriter<RemoteEventInfo> writer, CancellationToken cancellationToken)
+    private async Task FollowEventsAsync(string sessionId, EventFeed feed)
     {
+        var cancellationToken = feed.Lifetime.Token;
+        var cursor = new EventCursor(0);
         Exception? failure = null;
         try
         {
@@ -501,20 +606,29 @@ public sealed class MachineConnection : IAsyncDisposable
             {
                 var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
                 using var resumed = new ResumeWatch(this, sessionId);
-                await PumpEventsAsync(lease, sessionId, cursor, writer, resumed.Token, cancellationToken).ConfigureAwait(false);
+                await PumpEventsAsync(lease, sessionId, cursor, feed, resumed.Token, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await UnsubscribeAsync(sessionId).ConfigureAwait(false);
         }
-        catch (JsonRpcException error)
+        catch (Exception error)
         {
             failure = error;
         }
         finally
         {
-            writer.TryComplete(failure);
+            if (cancellationToken.IsCancellationRequested)
+                await UnsubscribeAsync(sessionId).ConfigureAwait(false);
+            lock (_gate)
+            {
+                foreach (var reader in feed.Readers)
+                    reader.Channel.Writer.TryComplete(failure);
+                _eventFeeds.Remove(sessionId);
+                feed.Stopping = true;
+            }
+            feed.Completed.TrySetResult();
+            feed.Lifetime.Dispose();
         }
     }
 
@@ -540,8 +654,8 @@ public sealed class MachineConnection : IAsyncDisposable
      * Pumps one link's subscription until the link drops or the session is resumed; a rejected resume from the middle is retried from the start once.
      * The host serves a session without a live agent from its persisted history and pushes nothing after it, so resuming the session needs a new subscription.
      */
-    private static async Task PumpEventsAsync(
-        HostLease lease, string sessionId, EventCursor cursor, ChannelWriter<RemoteEventInfo> writer, CancellationToken resumed, CancellationToken cancellationToken)
+    private async Task PumpEventsAsync(
+        HostLease lease, string sessionId, EventCursor cursor, EventFeed feed, CancellationToken resumed, CancellationToken cancellationToken)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime, resumed);
         try
@@ -549,7 +663,9 @@ public sealed class MachineConnection : IAsyncDisposable
             await foreach (var item in lease.Client.SubscribeAsync(sessionId, cursor.SubscribeFrom, linked.Token).ConfigureAwait(false))
             {
                 if (cursor.Accept(item))
-                    await writer.WriteAsync(item, cancellationToken).ConfigureAwait(false);
+                    PublishEvent(feed, item, cursor.LastSequence);
+                if (item.Reset)
+                    return; // Re-read retained history at seq 0 for every reader, including readers joining after the reset.
             }
             // The client closed the stream while its link is still up: nothing more arrives on it before the link drops or the session is resumed.
             await Task.Delay(Timeout.Infinite, linked.Token).ConfigureAwait(false);
@@ -618,14 +734,22 @@ public sealed class MachineConnection : IAsyncDisposable
         private long _next = next;
 
         public long SubscribeFrom { get; private set; } = next;
+        public long? LastSequence { get; private set; }
 
         public void RestartFromBeginning() => SubscribeFrom = 0;
 
         /** Delivers each seq once: events below the next seq were already delivered before the reconnect. */
         public bool Accept(RemoteEventInfo item)
         {
+            LastSequence = null;
+            if (item.Reset)
+            {
+                _next = SubscribeFrom = 0;
+                return true;
+            }
             if (JsonSerializer.Deserialize(item.EventJson, FleetJsonContext.Default.EventEnvelope) is not { } envelope)
                 return true;
+            LastSequence = envelope.Seq;
             if (envelope.Seq < _next)
                 return false;
             _next = envelope.Seq + 1;

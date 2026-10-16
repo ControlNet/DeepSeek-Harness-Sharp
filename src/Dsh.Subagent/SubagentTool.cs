@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
+using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Llm;
 
@@ -232,8 +233,10 @@ public static class SubagentTool
         var agentOptions = RequestedAgentOptions(parentOptions, config.AgentOptions, args);
         if (!ReferenceEquals(agentOptions, config.AgentOptions) && !provider.Capabilities.AgentOptions)
             throw new InvalidOperationException($"subagent provider \"{config.Provider}\" does not support child model selection");
+        var configuredRoute = config.AgentOptions is { Provider: not null } configured
+            && agentOptions?.Provider == configured.Provider && agentOptions.Model == configured.Model;
         if (HasConfiguredLlmSelection(agentOptions))
-            await PreflightChildLlmRoute(ctx, parentOptions, agentOptions, exec.Signal);
+            await PreflightChildLlmRoute(ctx, parentOptions, agentOptions, configuredRoute, exec.Signal);
         var subagents = ctx.Get<SubagentRuntime>(SubagentRuntime.ServiceName)!;
         if (!ReferenceEquals(subagents.GetProvider(config.Provider), provider))
         {
@@ -246,6 +249,7 @@ public static class SubagentTool
             Label = args.GetProperty("description").GetString(),
             Prompt = [new TextBlock(args.GetProperty("prompt").GetString() ?? "")],
             Parent = parent,
+            ParentCallId = exec.CallId,
             Signal = exec.Signal,
             AgentOptions = agentOptions,
             Persona = config.Persona,
@@ -312,7 +316,7 @@ public static class SubagentTool
         => options?.Provider is not null || options?.Model is not null || options?.ReasoningEffort is not null;
 
     private static async Task PreflightChildLlmRoute(
-        Context ctx, AgentOptions parentOptions, AgentOptions? requested, CancellationToken signal)
+        Context ctx, AgentOptions parentOptions, AgentOptions? requested, bool configuredRoute, CancellationToken signal)
     {
         var provider = requested?.Provider ?? parentOptions.Provider;
         var model = requested?.Model ?? parentOptions.Model;
@@ -322,7 +326,17 @@ public static class SubagentTool
         var reasoningEffort = requested?.ReasoningEffort ?? (routeChanged ? null : parentOptions.ReasoningEffort);
         var llm = ctx.Get<LlmRuntime>(LlmRuntime.ServiceName)
             ?? throw new InvalidOperationException("tool-subagent requires the llm service to preflight the child route");
-        await llm.PrepareCall(new LlmCallConfig(provider, model, reasoningEffort), signal);
+        try
+        {
+            await llm.PrepareCall(new LlmCallConfig(provider, model, reasoningEffort), signal);
+        }
+        catch (LlmException error) when (configuredRoute)
+        {
+            throw new InvalidOperationException(
+                $"{error.Message}; the child route {provider}/{model} comes from the tool's `agentOptions` or settings.yaml `subagent.default_model` "
+                + "— fix that setting, or pass a `provider` and `model` listed by `list_subagent_models`",
+                error);
+        }
     }
 
     private static async Task<object?> SettleForegroundRun(ISubagentRun run)
@@ -457,7 +471,27 @@ public static class SubagentTool
         };
     }
 
-    public static IDisposable Apply(Context ctx, object? config) => Apply(ctx, ParseConfig(config));
+    public static IDisposable Apply(Context ctx, object? config) => Apply(ctx, WithSettingsDefaultModel(ctx, ParseConfig(config)));
+
+    /** Plugin `agentOptions` naming no route fall back to settings.yaml `subagent.default_model`. */
+    private static SubagentToolConfig WithSettingsDefaultModel(Context ctx, SubagentToolConfig config)
+    {
+        if (config.AgentOptions is { Provider: not null } or { Model: not null })
+            return config;
+        if (ctx.GetProp("harnessOptions") is not HarnessOptions options)
+            return config;
+        var setting = HarnessSettings.Load(options.Home).Subagent?.DefaultModel;
+        if (HarnessSettings.ParseModelRoute(setting) is not { } route)
+        {
+            if (!string.IsNullOrWhiteSpace(setting))
+                ctx.Logger.Warn("%s", $"tool-subagent: ignoring settings.yaml `subagent.default_model: {setting}`; expected provider/model");
+            return config;
+        }
+        return config with
+        {
+            AgentOptions = (config.AgentOptions ?? new AgentOptions()) with { Provider = route.Provider, Model = route.Model },
+        };
+    }
 
     private static AgentOptions? ParseAgentOptions(object? value)
     {

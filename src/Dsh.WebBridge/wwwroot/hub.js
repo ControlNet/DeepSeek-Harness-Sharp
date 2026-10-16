@@ -303,7 +303,9 @@ export class MachineLink {
       if (generation === this.#generation)
         handler(params);
     };
-    rpc.on('host.sessions.changed', live((session) => this.#changed(() => this.sessions.set(session.SessionId, session))));
+    rpc.on('host.sessions.changed', live((session) => this.#changed(() => session.Deleted
+      ? this.sessions.delete(session.SessionId)
+      : this.sessions.set(session.SessionId, session))));
     rpc.on('host.approval', live((request) => this.#changed(() => this.#addPending(this.approvals, request))));
     rpc.on('host.question', live((request) => this.#changed(() => this.#addPending(this.questions, request))));
     rpc.on('host.pending.resolved', live((resolved) => this.#changed(() => this.#resolve(resolved))));
@@ -349,10 +351,28 @@ export class MachineLink {
   }
 
   /** Delivers each seq once: a resubscription replays from the next unseen seq, or from 0 when the host rejected that. */
-  #deliverEvent({ SessionId, EventJson }) {
+  #deliverEvent({ SessionId, EventJson, Reset }) {
     const subscription = this.#subscriptions.get(SessionId);
     if (subscription === undefined)
       return;
+    if (Reset) {
+      subscription.pending = [];
+      const pending = subscription.pending;
+      this.request('host.session.snapshot', { SessionId }).then((snapshot) => {
+        if (this.#subscriptions.get(SessionId) !== subscription || subscription.pending !== pending)
+          return;
+        subscription.pending = null;
+        subscription.next = 0;
+        subscription.log = [];
+        subscription.listeners.forEach((listener) => listener.reset?.());
+        [...snapshot.Events, ...pending].forEach((item) => this.#deliverEvent(item));
+      }).catch((error) => subscription.listeners.forEach((listener) => listener.error(describe(error))));
+      return;
+    }
+    if (subscription.pending) {
+      subscription.pending.push({ SessionId, EventJson });
+      return;
+    }
     const event = JSON.parse(EventJson);
     if (typeof event.seq !== 'number' || event.seq < subscription.next)
       return;

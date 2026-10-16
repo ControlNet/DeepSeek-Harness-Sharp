@@ -26,6 +26,8 @@ public sealed record FleetMachineStatus(string Machine, string Kind, string Targ
 public sealed class FleetClient : IAsyncDisposable
 {
     private readonly List<MachineConnection> _machines;
+    private readonly object _disposeSync = new();
+    private Task? _disposeTask;
 
     public FleetClient(IEnumerable<MachineSpec> machines, FleetOptions options)
     {
@@ -42,10 +44,11 @@ public sealed class FleetClient : IAsyncDisposable
     public static FleetClient FromStore(HarnessHome home, FleetOptions options)
     {
         var config = new MachineStore(home).Load();
-        return new FleetClient(config.AllMachines(), options with { Deploy = config.Deploy });
+        return new FleetClient([MachineSpec.Local(home.Root), .. config.Machines], options with { Deploy = config.Deploy });
     }
 
     public event Action? Changed;
+    internal event Action<FleetClient>? Disposed;
 
     public IReadOnlyList<MachineConnection> Machines => _machines;
 
@@ -84,10 +87,32 @@ public sealed class FleetClient : IAsyncDisposable
     public IReadOnlyList<FleetPendingItem> Pending()
         => [.. _machines.SelectMany(machine => PendingOf(machine.Machine.Name, machine.Pending))];
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
+        lock (_disposeSync)
+            return new ValueTask(_disposeTask ??= DisposeMachinesAsync());
+    }
+
+    private async Task DisposeMachinesAsync()
+    {
+        List<Exception>? errors = null;
         foreach (var machine in _machines)
-            await machine.DisposeAsync().ConfigureAwait(false);
+        {
+            machine.StateChanged -= OnMachineChanged;
+            machine.SessionsChanged -= OnMachineChanged;
+            machine.PendingChanged -= OnMachineChanged;
+            try
+            {
+                await machine.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                (errors ??= []).Add(error);
+            }
+        }
+        Disposed?.Invoke(this);
+        if (errors is not null)
+            throw new AggregateException(errors);
     }
 
     private static IEnumerable<FleetPendingItem> PendingOf(string machine, RemotePendingList pending)

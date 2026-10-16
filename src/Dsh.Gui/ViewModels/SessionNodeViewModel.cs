@@ -1,10 +1,9 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using Dsh.Core;
-using Dsh.Llm;
 
 namespace Dsh.Gui.ViewModels;
 
-/** 侧栏里的一个会话节点: 可能对应活跃 agent, 也可能只是磁盘上的历史会话。 */
+/** A sidebar session, projected from the Host registry or persisted history awaiting Host migration. */
 public sealed partial class SessionNodeViewModel : ObservableObject
 {
     public required SessionId SessionId { get; init; }
@@ -50,15 +49,4 @@ public sealed partial class SessionNodeViewModel : ObservableObject
 
     public bool HasMatchSnippet => MatchSnippet.Length > 0;
 
-    public AgentLoopAgent? Agent { get; set; }
-
-    public void Refresh(AgentLoopAgent? liveAgent, string title, string modelLabel)
-    {
-        Agent = liveAgent;
-        IsLive = liveAgent is not null;
-        IsRunning = liveAgent?.Status == AgentStatus.Running;
-        Title = title.Length > 0 ? title : SessionId.Value;
-        ModelLabel = modelLabel;
-        RelativeTime = RelativeTimeText.Format(CreatedAt);
-    }
 }

@@ -8,6 +8,7 @@ using Dsh.Llm;
 using Dsh.RemoteHost;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
+using Dsh.Plugins;
 
 namespace Dsh.Host;
 
@@ -117,6 +118,120 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
         ApplySelectionOnResume(handle.Agent, selection);
         _tracker.Track(handle.Agent);
         return Describe(handle.Agent);
+    }
+
+    public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        var id = SessionId.Create(sessionId);
+        var approvals = _app.Ctx.Get<ApprovalService>(ApprovalService.ServiceName, false);
+        if (Registry.Get(id) is { } agent)
+            return Task.FromResult(new RemoteSessionSnapshot(DshJson.Serialize(agent.Session.Header),
+                [.. agent.Session.SnapshotEvents().Select(item => ToInfo(sessionId, item))],
+                approvals?.EffectivePolicy(agent.Session).ToString()));
+        using var handle = Persistence?.Open(id, SessionAccess.Read)
+            ?? throw new InvalidOperationException($"unknown session: {sessionId}");
+        var events = handle.Read();
+        var restored = Session.FromRestore(id, events, handle.Header, handle.InheritedEventCount);
+        return Task.FromResult(new RemoteSessionSnapshot(DshJson.Serialize(handle.Header),
+            [.. events.Select(item => ToInfo(sessionId, item))], approvals?.EffectivePolicy(restored).ToString()));
+    }
+
+    public async Task<RemoteCommandResult> ExecuteSessionCommandAsync(string sessionId, string line, CancellationToken cancellationToken)
+    {
+        var commands = _app.Ctx.Get<CommandsService>(CommandsService.ServiceName, false);
+        var execution = commands is null ? null : await commands.Execute(Require(sessionId), line).ConfigureAwait(false);
+        return execution?.Result switch
+        {
+            CommandResult.Success result => new(true, result.Text, result.FollowupPrompt),
+            CommandResult.Error result => new(true, result.Text, result.FollowupPrompt),
+            _ => new(false, null, null),
+        };
+    }
+
+    public Task<IReadOnlyList<RemoteCommandDescriptor>> ListSessionCommandsAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        var commands = _app.Ctx.Get<CommandsService>(CommandsService.ServiceName, false)?.List(Require(sessionId)) ?? [];
+        return Task.FromResult<IReadOnlyList<RemoteCommandDescriptor>>([.. commands.Select(command => new RemoteCommandDescriptor(command.Name, command.Description))]);
+    }
+
+    public Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken)
+    {
+        var id = SessionId.Create(sessionId);
+        if (Registry.Get(id) is { } agent)
+            agent.Session.Rename(title);
+        else
+            (Persistence ?? throw new InvalidOperationException("session persistence is unavailable")).Rename(id, title);
+        Sessions.SetTitle(sessionId, title);
+        return Task.CompletedTask;
+    }
+
+    public async Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        if (Sessions.Get(sessionId) is not null)
+            await StopAgentAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        (Persistence ?? throw new InvalidOperationException("session persistence is unavailable")).Delete(SessionId.Create(sessionId));
+        Sessions.Remove(sessionId);
+    }
+
+    public Task SetSessionApprovalPolicyAsync(string sessionId, string policy, CancellationToken cancellationToken)
+    {
+        if (!Enum.TryParse<ApprovalPolicy>(policy, out var parsed) || !Enum.IsDefined(parsed))
+            throw new ArgumentException($"unknown approval policy: {policy}", nameof(policy));
+        var approvals = _app.Ctx.Get<ApprovalService>(ApprovalService.ServiceName)
+            ?? throw new InvalidOperationException("approval service is unavailable");
+        approvals.SetPolicy(Require(sessionId), parsed);
+        return Task.CompletedTask;
+    }
+
+    public async Task<IReadOnlyList<RemoteSubagentInfo>> ListSubagentsAsync(string rootSessionId, CancellationToken cancellationToken)
+    {
+        var runtime = _app.Ctx.Get<ISubagentService>(ISubagentService.ServiceName, false);
+        if (runtime is null)
+            return [];
+        var entries = await runtime.ListDescendantsAsync(SessionId.Create(rootSessionId), signal: cancellationToken).ConfigureAwait(false);
+        return [.. entries.OfType<SubagentListEntry.Child>().Select(child =>
+        {
+            var live = runtime.GetLive(child.Id);
+            var header = live?.Session.Header ?? Persistence?.Stat(child.Id)?.Header;
+            return new RemoteSubagentInfo(child.Id.Value, child.Parent?.Value, child.Depth ?? 1, child.Mode, child.Label,
+                child.HasChildren, live is not null, header?.CreatedAt ?? 0);
+        })];
+    }
+
+    public Task<IReadOnlyList<RemotePluginInfo>> ListPluginsAsync(CancellationToken cancellationToken)
+    {
+        var manager = _app.Ctx.Get<IPluginManager>("pluginManager", false)
+            ?? throw new InvalidOperationException("plugin manager is unavailable");
+        var settings = HarnessSettings.Load(_app.Home);
+        return Task.FromResult<IReadOnlyList<RemotePluginInfo>>([.. manager.PackageNames.Order(StringComparer.Ordinal).Select(package =>
+        {
+            var setting = settings.Plugins.GetValueOrDefault(package);
+            var permissions = setting?.Permissions ?? PluginPermissions.AllAllowed;
+            return new RemotePluginInfo(package, manager.Describe(package), setting?.Enabled ?? true,
+                permissions.Read, permissions.Write, permissions.Network);
+        })]);
+    }
+
+    public Task<string> SetPluginPermissionAsync(string package, string permission, bool allowed, CancellationToken cancellationToken)
+    {
+        if (!Enum.TryParse<PluginPermission>(permission, ignoreCase: true, out var parsed) || !Enum.IsDefined(parsed))
+            throw new ArgumentException($"unknown plugin permission: {permission}", nameof(permission));
+        var manager = _app.Ctx.Get<IPluginManager>("pluginManager", false)
+            ?? throw new InvalidOperationException("plugin manager is unavailable");
+        return Task.FromResult(manager.SetPermission(package, parsed, allowed));
+    }
+
+    public Task<IReadOnlyList<string>> ListReasoningEffortsAsync(string provider, string model, CancellationToken cancellationToken)
+    {
+        var llm = _app.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false);
+        return Task.FromResult<IReadOnlyList<string>>([.. (llm?.ResolveModelInfo(provider, model).Reasoning?.Efforts ?? [])
+            .Select(effort => effort.Id.Value)]);
+    }
+
+    public Task<IReadOnlyList<string>> ListProviderModelsAsync(string provider, CancellationToken cancellationToken)
+    {
+        var llm = _app.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false);
+        return Task.FromResult<IReadOnlyList<string>>([.. (llm?.ListModels(provider) ?? []).Select(model => model.Id)]);
     }
 
     /**
@@ -311,8 +426,14 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
             if (string.Equals(notification.Session.Id.Value, sessionId, StringComparison.Ordinal))
                 buffer.Writer.TryWrite(ToInfo(sessionId, notification.Event));
         });
+        void OnTruncated(Session _, long count) => buffer.Writer.TryWrite(new RemoteEventInfo(sessionId, "", Reset: true));
+        live.Session.Truncated += OnTruncated;
         var history = live.Session.SnapshotEvents(fromSeq, live.Session.Seq);
-        return Task.FromResult(LiveEventsAsync(sessionId, history, buffer, unsubscribe, cancellationToken));
+        return Task.FromResult(LiveEventsAsync(sessionId, history, buffer, () =>
+        {
+            live.Session.Truncated -= OnTruncated;
+            return unsubscribe();
+        }, cancellationToken));
     }
 
     private static async IAsyncEnumerable<RemoteEventInfo> LiveEventsAsync(

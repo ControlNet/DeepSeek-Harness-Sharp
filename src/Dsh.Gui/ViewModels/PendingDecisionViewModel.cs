@@ -91,7 +91,7 @@ public sealed partial class PendingDecisionViewModel(FleetPendingItem item, Func
         }
     }
 
-    private static AskUserQuestionItem ToItem(RemoteQuestionItem item)
+    internal static AskUserQuestionItem ToItem(RemoteQuestionItem item)
         => new(
             item.Id,
             item.Question,

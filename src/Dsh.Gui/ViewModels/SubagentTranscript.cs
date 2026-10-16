@@ -26,8 +26,8 @@ internal sealed class SubagentTranscript
     }
 
     /** 子代理卡片的内联摘要: 只取子会话的工具调用/结果流。 */
-    public static IReadOnlyList<MessageViewModel> Summarize(Session session)
-        => [.. new SubagentTranscript().Render(session.SnapshotEvents())
+    public static IReadOnlyList<MessageViewModel> Summarize(IReadOnlyList<SessionEvent> events)
+        => [.. new SubagentTranscript().Render(events)
             .Where(message => message.Kind is MessageKind.Tool or MessageKind.Result)];
 
     public void Apply(SessionEvent sessionEvent, IList<MessageViewModel> messages)

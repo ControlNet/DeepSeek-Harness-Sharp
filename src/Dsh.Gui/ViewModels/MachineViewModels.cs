@@ -185,7 +185,7 @@ public sealed partial class MachineEditorViewModel : ObservableObject
 
 /**
  * 自动部署偏好(与机器清单同在 settings.yaml 的 fleet 段, 所有 SSH 机器共用)的表单。
- * 下载代理用于本机下载, 远端代理在远端解析, 用于远端直接下载。
+ * 本机下载使用共享 network.outbound_proxy; 远端代理在远端解析, 用于远端直接下载。
  */
 public sealed partial class DeploySettingsEditorViewModel : ObservableObject
 {
@@ -201,9 +201,6 @@ public sealed partial class DeploySettingsEditorViewModel : ObservableObject
     private string _releaseVersion = DeploySettings.LatestVersion;
 
     [ObservableProperty]
-    private string _downloadProxy = "";
-
-    [ObservableProperty]
     private string _via = DownloadVia.Auto;
 
     [ObservableProperty]
@@ -214,7 +211,6 @@ public sealed partial class DeploySettingsEditorViewModel : ObservableObject
         AutoDeploy = settings.AutoDeploy,
         ReleaseBaseUrl = settings.ReleaseBaseUrl,
         ReleaseVersion = settings.ReleaseVersion,
-        DownloadProxy = settings.DownloadProxy ?? "",
         Via = settings.Via,
         ServerProxy = settings.ServerProxy ?? "",
     };
@@ -224,7 +220,6 @@ public sealed partial class DeploySettingsEditorViewModel : ObservableObject
         AutoDeploy = AutoDeploy,
         ReleaseBaseUrl = MachineEditorViewModel.Optional(ReleaseBaseUrl) ?? DeploySettings.DefaultReleaseBaseUrl,
         ReleaseVersion = MachineEditorViewModel.Optional(ReleaseVersion) ?? DeploySettings.LatestVersion,
-        DownloadProxy = MachineEditorViewModel.Optional(DownloadProxy),
         Via = ViaOptions.Contains(Via) ? Via : DownloadVia.Auto,
         ServerProxy = MachineEditorViewModel.Optional(ServerProxy),
     };

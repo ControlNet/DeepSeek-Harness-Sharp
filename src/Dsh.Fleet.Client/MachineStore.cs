@@ -102,7 +102,6 @@ public sealed class MachineStore(HarnessHome home)
             AutoDeploy = deploy.AutoDeploy ?? defaults.AutoDeploy,
             ReleaseBaseUrl = deploy.ReleaseBaseUrl ?? defaults.ReleaseBaseUrl,
             ReleaseVersion = deploy.ReleaseVersion ?? defaults.ReleaseVersion,
-            DownloadProxy = deploy.DownloadProxy,
             Via = deploy.Via ?? defaults.Via,
             ServerProxy = deploy.ServerProxy,
         };
@@ -146,7 +145,6 @@ public sealed class MachineStore(HarnessHome home)
             AutoDeploy = deploy.AutoDeploy == defaults.AutoDeploy ? null : deploy.AutoDeploy,
             ReleaseBaseUrl = deploy.ReleaseBaseUrl == defaults.ReleaseBaseUrl ? null : deploy.ReleaseBaseUrl,
             ReleaseVersion = deploy.ReleaseVersion == defaults.ReleaseVersion ? null : deploy.ReleaseVersion,
-            DownloadProxy = deploy.DownloadProxy,
             Via = deploy.Via == defaults.Via ? null : deploy.Via,
             ServerProxy = deploy.ServerProxy,
         };

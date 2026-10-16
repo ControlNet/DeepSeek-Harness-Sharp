@@ -219,6 +219,28 @@ public sealed class RemoteHostCapabilityTests
             return Task.FromResult(_sessions.TryGetValue(sessionId, out var session) ? session : throw new KeyNotFoundException(sessionId));
         }
 
+        public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<RemoteCommandResult> ExecuteSessionCommandAsync(string sessionId, string line, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<RemoteCommandDescriptor>> ListSessionCommandsAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task SetSessionApprovalPolicyAsync(string sessionId, string policy, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<RemoteSubagentInfo>> ListSubagentsAsync(string rootSessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<RemotePluginInfo>> ListPluginsAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<string> SetPluginPermissionAsync(string package, string permission, bool allowed, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<string>> ListReasoningEffortsAsync(string provider, string model, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<string>> ListProviderModelsAsync(string provider, CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public RemoteModelSelection? LastSelection { get; private set; }
 
         public RemoteProviderSpec? LastProvider { get; private set; }

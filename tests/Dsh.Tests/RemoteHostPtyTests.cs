@@ -1,5 +1,7 @@
 using System.IO.Pipelines;
 using System.Text;
+using Dsh.Fleet;
+using Dsh.Gui.Terminal;
 using Dsh.Pty;
 using Dsh.RemoteHost;
 
@@ -75,6 +77,68 @@ public sealed class RemoteHostPtyTests
         // Throttled activity pushes from the earlier output may still arrive first, so wait for the exit itself.
         await RemoteHostMultiClientTests.NextAsync(changes, session => session.SessionId == ptyId && session.Status == HostSessionStatuses.Exited);
         await lateView.Completion.WaitAsync(Arrival, Ct);
+    }
+
+    [Fact(Timeout = 90000)]
+    public async Task LocalFleet_Terminal_Registry_And_LivePty_Survive_HostRestart_And_OfflineResize()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        await using var host = await HarnessHostFixture.CreateAsync("mpr", Ct);
+        await using var machine = new MachineConnection(MachineSpec.Local(host.Root), FleetConnectionTests.TestOptions);
+        machine.Start();
+        await machine.WaitConnectedAsync(Ct);
+        await using var connection = await RemotePtyConnection.StartAsync(machine,
+            new RemotePtyStartRequest("/bin/sh", [], host.Root, Title: "persistent-local"), Ct);
+        await using var terminal = new TerminalSession(connection, new TerminalSize(80, 24));
+        terminal.Start();
+        terminal.Send("echo before-$((40+2))\n"u8);
+        await WaitForScreenLineAsync(terminal, "before-42");
+        var states = FleetConnectionTests.RecordStates(machine);
+
+        await host.StopHostAsync();
+        await FleetConnectionTests.WaitForAsync(() => machine.State != MachineConnectionState.Connected);
+        terminal.Resize(new TerminalSize(110, 35));
+        await connection.ResizeAsync(new TerminalSize(110, 35), Ct);
+        await host.StartHostAsync(Ct);
+        await FleetConnectionTests.WaitForAsync(() => states.Contains(MachineConnectionState.Reconnecting)
+            && machine.State == MachineConnectionState.Connected
+            && machine.Sessions.Any(session => session.SessionId == connection.PtyId && session.Status == HostSessionStatuses.Running));
+        await using var fresh = await host.ConnectAsync("after-restart", Ct);
+        var registered = Assert.Single(await fresh.ListHostSessionsAsync(Ct), session => session.SessionId == connection.PtyId);
+        Assert.Equal(HostSessionKinds.Terminal, registered.Kind);
+        Assert.Equal("persistent-local", registered.Title);
+
+        terminal.Send("stty size; echo after-$((50+5))\n"u8);
+        await WaitForScreenLineAsync(terminal, "35 110");
+        await WaitForScreenLineAsync(terminal, "after-55");
+        var pty = Assert.Single(await PtyDaemonClient.ListAsync(host.PtyEndpoint.SocketPath, host.PtyEndpoint.PortFile, Ct),
+            session => session.Id == connection.PtyId);
+        Assert.Equal((110, 35), (pty.Columns, pty.Rows));
+        Assert.Equal(nameof(PtySessionStatus.Running), pty.Status);
+    }
+
+    private static async Task WaitForScreenLineAsync(TerminalSession terminal, string expected)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        deadline.CancelAfter(Arrival);
+        while (true)
+        {
+            lock (terminal.Gate)
+            {
+                var frame = new TerminalFrame();
+                frame.Capture(terminal.Screen, 0);
+                for (var row = 0; row < frame.Rows; row++)
+                {
+                    var text = new StringBuilder();
+                    foreach (var cell in frame.Row(row))
+                        text.Append(cell.Character);
+                    if (text.ToString().TrimEnd() == expected)
+                        return;
+                }
+            }
+            await Task.Delay(20, deadline.Token);
+        }
     }
 
     /** 只有前台进程真的执行了才会出现的输出(算术结果), 区别于输入回显。 */

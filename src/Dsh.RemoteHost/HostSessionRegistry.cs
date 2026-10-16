@@ -104,6 +104,19 @@ public sealed class HostSessionRegistry : IAsyncDisposable
         _pending.CancelSession(sessionId);
     }
 
+    public void Remove(string sessionId)
+    {
+        lock (_gate)
+        {
+            if (!_entries.Remove(sessionId, out var entry))
+                return;
+            var removed = Project(entry) with { Deleted = true };
+            _broadcast.Publish(HostNotification.Create(HostProtocol.NotificationSessionsChanged, removed, HostProtocolJsonContext.Default.RemoteHostSession));
+            _saveRequests.Writer.TryWrite(true);
+            Changed?.Invoke(removed);
+        }
+    }
+
     /** 每个连接一份: 只推实时变化, 完整列表由 host.sessions.list 查询。 */
     public HostSubscription Subscribe() => _broadcast.Subscribe([]);
 

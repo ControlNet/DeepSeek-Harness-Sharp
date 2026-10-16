@@ -33,14 +33,16 @@ public sealed class VtScreen
     private Cell[]? _altLines;
     private int _scrollTop;
     private int _scrollBottom;
-    private int _savedX;
-    private int _savedY;
-    private int _savedScrollTop;
-    private int _savedScrollBottom;
+    private CursorState _savedCursor;
+    private CursorState _mainSavedCursor;
+    private CursorState _mainCursor;
+    private int _mainScrollTop;
+    private int _mainScrollBottom;
     private CellColor _penForeground = CellColor.Default;
     private CellColor _penBackground = CellColor.Default;
     private CellStyle _penStyle = CellStyle.None;
     private bool _wrapPending;
+    private bool _autoWrap = true;
     private bool _insertMode;
     private char _lastPrinted = ' ';
     private ParseState _state = ParseState.Ground;
@@ -139,6 +141,108 @@ public sealed class VtScreen
             Consume(character);
     }
 
+    /**
+     * 重建可继续消费原始 VT 输出的状态, 而不是仅投影可见字符。
+     * 先取消半截控制序列并复位, 再恢复主屏和备用屏, 最后恢复滚动区/输入模式/画笔。
+     */
+    public string Snapshot()
+    {
+        var output = new StringBuilder("\u0018\u001bc");
+        AppendScreen(output, _altLines ?? _lines);
+        if (_altLines is not null)
+        {
+            AppendCursor(output, _mainSavedCursor, _altLines);
+            output.Append("\u001b7");
+            AppendRegion(output, _mainScrollTop, _mainScrollBottom);
+            AppendCursor(output, _mainCursor, _altLines);
+            output.Append("\u001b[?1049h");
+            AppendScreen(output, _lines);
+        }
+        AppendCursor(output, _savedCursor, _lines);
+        output.Append("\u001b7");
+        AppendRegion(output, _scrollTop, _scrollBottom);
+        AppendModes(output);
+        AppendCursor(output, CaptureCursor(), _lines);
+        output.Append("\u001b]2;").Append(Title).Append("\u001b\\");
+        return output.ToString();
+    }
+
+    /** 独占控制台 attach 的可见屏投影: 留在宿主备用屏, detach 时才能还原调用方的 shell。 */
+    internal string ConsoleSnapshot()
+    {
+        var output = new StringBuilder("\u001b[?1049h\u001b[?7h\u001b[4l\u001b[r");
+        AppendScreen(output, _lines);
+        AppendRegion(output, _scrollTop, _scrollBottom);
+        AppendModes(output);
+        AppendCursor(output, CaptureCursor(), _lines);
+        return output.ToString();
+    }
+
+    private void AppendModes(StringBuilder output)
+    {
+        output.Append(CursorVisible ? "\u001b[?25h" : "\u001b[?25l");
+        output.Append(ApplicationCursorKeys ? "\u001b[?1h" : "\u001b[?1l");
+        output.Append(_autoWrap ? "\u001b[?7h" : "\u001b[?7l");
+        output.Append(_insertMode ? "\u001b[4h" : "\u001b[4l");
+        output.Append(BracketedPaste ? "\u001b[?2004h" : "\u001b[?2004l");
+        output.Append(FocusReporting ? "\u001b[?1004h" : "\u001b[?1004l");
+        output.Append(SgrMouse ? "\u001b[?1006h" : "\u001b[?1006l");
+        if (MouseTracking != TerminalMouseTracking.None)
+            output.Append("\u001b[?").Append(MouseTracking switch
+            {
+                TerminalMouseTracking.X10 => 9,
+                TerminalMouseTracking.Normal => 1000,
+                TerminalMouseTracking.ButtonEvent => 1002,
+                _ => 1003,
+            }).Append('h');
+        output.Append("\u001b[").Append(CursorShape switch
+        {
+            TerminalCursorShape.Block => 2,
+            TerminalCursorShape.Underline => 4,
+            TerminalCursorShape.Bar => 6,
+            _ => 0,
+        }).Append(" q");
+    }
+
+
+    private void AppendScreen(StringBuilder output, Cell[] cells)
+    {
+        output.Append("\u001b[0m\u001b[2J\u001b[H");
+        for (var y = 0; y < Height; y++)
+        {
+            output.Append("\u001b[").Append(y + 1).Append(";1H");
+            AppendRow(output, cells.AsSpan(y * Width, Width));
+            // 满行写完光标仍在最后一格; 此时 EL 会擦掉 tmux 状态栏/边框的最后一格。
+        }
+    }
+
+    private static void AppendRegion(StringBuilder output, int top, int bottom)
+        => output.Append("\u001b[").Append(top + 1).Append(';').Append(bottom + 1).Append('r');
+
+    private void AppendCursor(StringBuilder output, CursorState cursor, Cell[] cells)
+    {
+        var x = Math.Clamp(cursor.X, 0, Width - 1);
+        var y = Math.Clamp(cursor.Y, 0, Height - 1);
+        if (cursor.WrapPending && x == Width - 1)
+        {
+            // CUP 清除延迟换行; 重写最后一个字形才能把该状态一并恢复。
+            var character = cells[y * Width + x].Character;
+            if (x > 0 && (character == '\0' || char.IsLowSurrogate(character)
+                && char.IsHighSurrogate(cells[y * Width + x - 1].Character)))
+                x--;
+            var cell = cells[y * Width + x];
+            output.Append("\u001b[").Append(y + 1).Append(';').Append(x + 1).Append('H');
+            AppendSgr(output, cell);
+            output.Append(cell.Character);
+            if (char.IsHighSurrogate(cell.Character) && x + 1 < Width
+                && char.IsLowSurrogate(cells[y * Width + x + 1].Character))
+                output.Append(cells[y * Width + x + 1].Character);
+        }
+        else
+            output.Append("\u001b[").Append(y + 1).Append(';').Append(x + 1).Append('H');
+        AppendSgr(output, new Cell(' ', cursor.Foreground, cursor.Background, cursor.Style));
+    }
+
     public void Resize(int width, int height)
     {
         width = Math.Max(1, width);
@@ -204,6 +308,13 @@ public sealed class VtScreen
 
     private void Consume(char character)
     {
+        if (character is '\u0018' or '\u001a')
+        {
+            _state = ParseState.Ground;
+            _csi.Clear();
+            _osc.Clear();
+            return;
+        }
         switch (_state)
         {
             case ParseState.Ground:
@@ -374,7 +485,8 @@ public sealed class VtScreen
         _lines = NewLines(Width, Height);
         _scrollback.Clear();
         ResetScrollRegion();
-        (CursorX, CursorY, _wrapPending, _insertMode) = (0, 0, false, false);
+        (CursorX, CursorY, _wrapPending, _insertMode, _autoWrap) = (0, 0, false, false, true);
+        _savedCursor = _mainSavedCursor = _mainCursor = default;
         (_penForeground, _penBackground, _penStyle) = (CellColor.Default, CellColor.Default, CellStyle.None);
         (CursorVisible, ApplicationCursorKeys, BracketedPaste, FocusReporting, SgrMouse) = (true, false, false, false, false);
         (MouseTracking, CursorShape, Title) = (TerminalMouseTracking.None, TerminalCursorShape.Default, "");
@@ -577,6 +689,10 @@ public sealed class VtScreen
                 case "1":
                     ApplicationCursorKeys = enabled;
                     break;
+                case "7":
+                    _autoWrap = enabled;
+                    _wrapPending = false;
+                    break;
                 case "1049" or "47" or "1047" when enabled:
                     EnterAltScreen();
                     break;
@@ -617,9 +733,13 @@ public sealed class VtScreen
             return;
         _altLines = _lines;
         _lines = NewLines(Width, Height);
-        SaveCursor();
+        _mainCursor = CaptureCursor();
+        _mainSavedCursor = _savedCursor;
+        (_mainScrollTop, _mainScrollBottom) = (_scrollTop, _scrollBottom);
+        _savedCursor = default;
         CursorX = 0;
         CursorY = 0;
+        _wrapPending = false;
         ResetScrollRegion();
     }
 
@@ -629,26 +749,85 @@ public sealed class VtScreen
             return;
         _lines = _altLines;
         _altLines = null;
-        RestoreCursor();
-        ResetScrollRegion();
+        ApplyCursor(_mainCursor);
+        _savedCursor = _mainSavedCursor;
+        _scrollTop = Math.Clamp(_mainScrollTop, 0, Height - 1);
+        _scrollBottom = Math.Clamp(_mainScrollBottom, _scrollTop, Height - 1);
     }
 
-    private void SaveCursor()
+    private readonly record struct CursorState(int X, int Y, CellColor Foreground, CellColor Background, CellStyle Style, bool WrapPending);
+
+    private CursorState CaptureCursor()
+        => new(CursorX, CursorY, _penForeground, _penBackground, _penStyle, _wrapPending);
+
+    private void ApplyCursor(CursorState cursor)
     {
-        _savedX = CursorX;
-        _savedY = CursorY;
-        _savedScrollTop = _scrollTop;
-        _savedScrollBottom = _scrollBottom;
+        CursorX = Math.Clamp(cursor.X, 0, Width - 1);
+        CursorY = Math.Clamp(cursor.Y, 0, Height - 1);
+        (_penForeground, _penBackground, _penStyle) = (cursor.Foreground, cursor.Background, cursor.Style);
+        _wrapPending = cursor.WrapPending && CursorX == Width - 1;
     }
 
-    private void RestoreCursor()
+    private void SaveCursor() => _savedCursor = CaptureCursor();
+
+    private void RestoreCursor() => ApplyCursor(_savedCursor);
+
+    private static void AppendRow(StringBuilder output, ReadOnlySpan<Cell> row)
     {
-        CursorX = Math.Clamp(_savedX, 0, Width - 1);
-        CursorY = Math.Clamp(_savedY, 0, Height - 1);
-        _scrollTop = Math.Clamp(_savedScrollTop, 0, Height - 1);
-        _scrollBottom = Math.Clamp(_savedScrollBottom, _scrollTop, Height - 1);
-        _wrapPending = false;
+        var last = row.Length - 1;
+        while (last >= 0 && row[last] == default)
+            last--;
+
+        var current = default(Cell);
+        for (var x = 0; x <= last; x++)
+        {
+            var cell = row[x];
+            if (cell.Character == '\0')
+                continue;   // 宽字符的续格: 由前一个宽字符占位
+
+            if (cell.Foreground != current.Foreground || cell.Background != current.Background || cell.Style != current.Style)
+            {
+                AppendSgr(output, cell);
+                current = cell;
+            }
+
+            output.Append(cell.Character);
+        }
+
+        output.Append("\u001b[0m");
     }
+
+    private static void AppendSgr(StringBuilder output, Cell cell)
+    {
+        output.Append("\u001b[0");
+        if ((cell.Style & CellStyle.Bold) != 0)
+            output.Append(";1");
+        if ((cell.Style & CellStyle.Dim) != 0)
+            output.Append(";2");
+        if ((cell.Style & CellStyle.Italic) != 0)
+            output.Append(";3");
+        if ((cell.Style & CellStyle.Underline) != 0)
+            output.Append(";4");
+        if ((cell.Style & CellStyle.Reverse) != 0)
+            output.Append(";7");
+        if ((cell.Style & CellStyle.Strikethrough) != 0)
+            output.Append(";9");
+        if (!cell.Foreground.IsDefault)
+            output.Append(';').Append(ForegroundSegment(cell.Foreground));
+        if (!cell.Background.IsDefault)
+            output.Append(';').Append(BackgroundSegment(cell.Background));
+        output.Append('m');
+    }
+
+    private static string ForegroundSegment(CellColor color)
+        => color.IsRgb ? $"38;2;{color.R};{color.G};{color.B}" : ForegroundCode(color.IsPalette ? color.PaletteColor : AnsiColor.Default).ToString();
+
+    private static string BackgroundSegment(CellColor color)
+        => color.IsRgb ? $"48;2;{color.R};{color.G};{color.B}" : (ForegroundCode(color.IsPalette ? color.PaletteColor : AnsiColor.Default) + 10).ToString();
+
+    /** 调色板 1..8 → 30..37, 9..16 → 90..97(背景再 +10)。 */
+    private static int ForegroundCode(AnsiColor color)
+        => color <= AnsiColor.White ? 29 + (int)color : 81 + (int)color;
 
     private void SelectGraphicRendition(string body)
     {
@@ -963,7 +1142,7 @@ public sealed class VtScreen
     private void Put(char character)
     {
         var advance = TerminalTextWidth.IsWide(character) && Width > 1 ? 2 : 1;
-        if (advance == 2 && CursorX + 1 >= Width && !_wrapPending)
+        if (advance == 2 && CursorX + 1 >= Width && !_wrapPending && _autoWrap)
         {
             // 宽字符放不下行尾最后一格: 留空该格并折到下一行再写, 而不是丢掉字符。
             _lines[(CursorY * Width) + CursorX] = Cell();
@@ -980,14 +1159,14 @@ public sealed class VtScreen
         var line = _lines.AsSpan(CursorY * Width, Width);
         ClearWideRemnants(line, CursorX, advance);
         line[CursorX] = new Cell(character, _penForeground, _penBackground, _penStyle);
-        if (advance == 2)
+        if (advance == 2 && CursorX + 1 < Width)
             line[CursorX + 1] = new Cell('\0', _penForeground, _penBackground, _penStyle);
         _lastPrinted = character;
         CursorX += advance;
         if (CursorX >= Width)
         {
             CursorX = Width - 1;
-            _wrapPending = true;
+            _wrapPending = _autoWrap;
         }
     }
 

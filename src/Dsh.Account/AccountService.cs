@@ -411,7 +411,7 @@ public sealed class AccountService : Service, IAccountService, IInferenceCredent
             var settings = HarnessSettings.Load(_home);
             var existing = settings.Plugins.GetValueOrDefault(PluginPackage);
             var merged = new Dictionary<string, object?>(existing?.Parameters ?? [], StringComparer.Ordinal) { ["accountEnabled"] = enabled };
-            settings.Plugins[PluginPackage] = new PluginSetting { Enabled = existing?.Enabled ?? true, Parameters = merged };
+            settings.Plugins[PluginPackage] = (existing ?? new PluginSetting()) with { Parameters = merged };
             settings.SavePlugins(_home);
         }
         catch (Exception error)

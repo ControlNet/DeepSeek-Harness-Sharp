@@ -17,8 +17,10 @@ public sealed class RemoteHostMultiClientTests
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = 60000)]
-    public async Task Approval_IsBroadcast_FirstAnswerWins_AndResolutionReachesEveryone()
+    [Theory(Timeout = 60000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Approval_IsBroadcast_FirstAnswerWins_AndResolutionReachesEveryone(bool rememberForSession)
     {
         await using var host = await HarnessHostFixture.CreateAsync("mha", TestContext.Current.CancellationToken);
         var alice = await host.ConnectAsync("alice", Ct);
@@ -31,9 +33,9 @@ public sealed class RemoteHostMultiClientTests
         Assert.Equal(host.Environment.Agent.Id.Value, seenByAlice.SessionId);
         Assert.Equal("bash", seenByAlice.Tool);
 
-        Assert.True(await alice.RespondApprovalAsync(seenByAlice.RequestId, true, cancellationToken: Ct));
+        Assert.True(await alice.RespondApprovalAsync(seenByAlice.RequestId, true, cancellationToken: Ct, rememberForSession: rememberForSession));
         Assert.False(await bob.RespondApprovalAsync(seenByBob.RequestId, false, cancellationToken: Ct));
-        Assert.Equal(ApprovalOutcome.AllowedOnce, await decision.WaitAsync(Arrival, Ct));
+        Assert.Equal(rememberForSession ? ApprovalOutcome.AllowedForSession : ApprovalOutcome.AllowedOnce, await decision.WaitAsync(Arrival, Ct));
 
         foreach (var client in new[] { alice, bob })
         {

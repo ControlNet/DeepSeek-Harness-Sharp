@@ -15,7 +15,8 @@ public sealed class TerminalSession : IAsyncDisposable
     private const string ExitedNotice = "\r\n\u001b[0;2m[进程已退出]\u001b[0m";
 
     private readonly ITerminalConnection _connection;
-    private readonly Channel<byte[]> _outgoing = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly Channel<Outbound> _outgoing = Channel.CreateUnbounded<Outbound>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly record struct Outbound(byte[]? Bytes, TerminalSize Size);
     private readonly CancellationTokenSource _cts = new();
     private int _started;
 
@@ -52,7 +53,7 @@ public sealed class TerminalSession : IAsyncDisposable
     public void Send(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length > 0)
-            _outgoing.Writer.TryWrite(bytes.ToArray());
+            _outgoing.Writer.TryWrite(new Outbound(bytes.ToArray(), default));
     }
 
     /** 调整屏幕尺寸并通知连接; 尺寸未变时什么也不做。 */
@@ -63,8 +64,8 @@ public sealed class TerminalSession : IAsyncDisposable
             if (Screen.Width == size.Columns && Screen.Height == size.Rows)
                 return;
             Screen.Resize(size.Columns, size.Rows);
+            _outgoing.Writer.TryWrite(new Outbound(null, size));
         }
-        _ = ResizeConnectionAsync(size);
         Changed?.Invoke();
     }
 
@@ -108,8 +109,13 @@ public sealed class TerminalSession : IAsyncDisposable
     {
         try
         {
-            await foreach (var chunk in _outgoing.Reader.ReadAllAsync(_cts.Token))
-                await _connection.WriteAsync(chunk, _cts.Token);
+            await foreach (var command in _outgoing.Reader.ReadAllAsync(_cts.Token))
+            {
+                if (command.Bytes is { } bytes)
+                    await _connection.WriteAsync(bytes, _cts.Token);
+                else
+                    await ResizeConnectionAsync(command.Size);
+            }
         }
         catch (Exception error) when (error is OperationCanceledException or IOException or ObjectDisposedException)
         {

@@ -38,7 +38,7 @@ public sealed partial class SidebarView : UserControl
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(MainViewModel.IsFileSystemView))
+        if (e.PropertyName is nameof(MainViewModel.IsFileSystemView) or nameof(MainViewModel.CurrentSessionId))
             LocateCurrentSession();
     }
 
@@ -59,14 +59,14 @@ public sealed partial class SidebarView : UserControl
             return;
         }
         _locatePending = false;
-        var path = FindSessionPath(viewModel.FileSystemNodes, viewModel.CurrentAgent.Id);
+        var path = FindSessionPath(viewModel.FileSystemNodes, viewModel.CurrentSessionId);
         if (path is null)
             return;
         foreach (var ancestor in path.SkipLast(1))
             ancestor.IsExpanded = true;
         var node = path[^1];
         foreach (var session in node.Sessions)
-            session.IsSelected = session.SessionId == viewModel.CurrentAgent.Id;
+            session.IsSelected = session.SessionId == viewModel.CurrentSessionId;
         Dispatcher.UIThread.Post(() =>
         {
             FileTree.SelectedItem = node;

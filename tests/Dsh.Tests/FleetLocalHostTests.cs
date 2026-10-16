@@ -3,6 +3,7 @@ using System.Text;
 using Dsh.Fleet;
 using Dsh.Pty;
 using Dsh.RemoteHost;
+using Dsh.AgentAdapters;
 
 namespace Dsh.Tests;
 
@@ -14,6 +15,38 @@ public sealed class FleetLocalHostTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
+
+    [Theory(Timeout = 180000)]
+    [InlineData(AgentKinds.Terminal)]
+    [InlineData(AgentKinds.OpenCode)]
+    public async Task Cli_StopsExternalAndAcpAgentsThroughHostAgentStop(string kind)
+    {
+        if (kind == AgentKinds.OpenCode && AgentExecutableLocator.Resolve("opencode") is null)
+            Assert.Skip("opencode is not installed on this machine");
+        var executable = RealHostProcesses.Executable;
+        var home = RealHostProcesses.CreateHome("fs");
+        try
+        {
+            var started = await FleetCliProcess.RunAsync(executable, home, "session", "list");
+            Assert.True(started.ExitCode == 0, started.Error);
+            await using var connection = new MachineConnection(MachineSpec.Local(home), FleetConnectionTests.TestOptions);
+            connection.Start();
+            var client = (await connection.WaitConnectedAsync(Ct)).Client;
+            var session = await client.StartAgentAsync(new RemoteAgentStartRequest(kind, home,
+                Mode: kind == AgentKinds.OpenCode ? RemoteAgentModes.Acp : RemoteAgentModes.Terminal,
+                Command: kind == AgentKinds.Terminal ? new RemoteAgentCommand(TestShell.FileName, TestShell.Arguments) : null), Ct);
+            Assert.Equal(kind == AgentKinds.OpenCode ? HostSessionKinds.Acp : HostSessionKinds.External, session.Kind);
+
+            var stopped = await FleetCliProcess.RunAsync(executable, home, "session", "stop", $"local/{session.SessionId}");
+            Assert.True(stopped.ExitCode == 0, stopped.Error);
+            await WaitForSessionStatusAsync(home, session.SessionId, HostSessionStatuses.Exited);
+        }
+        finally
+        {
+            RealHostProcesses.KillAll(home);
+            TempTree.Delete(home);
+        }
+    }
     [Fact(Timeout = 120000)]
     public async Task LocalHost_IsStartedOnDemand_AndTheConnectionRecoversAfterTheHostIsKilled()
     {

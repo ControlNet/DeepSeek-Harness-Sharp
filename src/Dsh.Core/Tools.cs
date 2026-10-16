@@ -487,9 +487,9 @@ public sealed class ToolRuntime : Service
         try
         {
             var carrier = DshScope.ScopeTarget(Ctx, exec.Agent?.ScopeKey);
-            var gate = NormalizePreDecision(await Ctx.Events.Waterfall(
+            var gate = WriteRootGate(exec, NormalizePreDecision(await Ctx.Events.Waterfall(
                 carrier, new ToolPreExecuteNotification(exec),
-                () => new ValueTask<object?>(new PreToolDecision.Allow())));
+                () => new ValueTask<object?>(new PreToolDecision.Allow()))));
             var (decision, approvalCancelled) = gate is PreToolDecision.Ask ask
                 ? await ServiceAsk(exec, ask)
                 : (gate, false);
@@ -515,6 +515,18 @@ public sealed class ToolRuntime : Service
         {
             return new ScheduledToolPreparation.FinalResult(exec, ErrorResult(error));
         }
+    }
+
+    /** Writes outside the session's write permission root need approval, whatever the session's current directory is. */
+    private PreToolDecision WriteRootGate(ToolRunContext exec, PreToolDecision gate)
+    {
+        if (gate is PreToolDecision.Deny || exec.Agent is not { } agent)
+            return gate;
+        var tool = ResolveExecution(exec.Name, agent.ScopeKey, exec.Parent is not null);
+        var targets = tool?.WriteTargets?.Invoke(exec.Arguments, exec) ?? [];
+        if (SessionWorkingDirectory.OutsideRootApprovalReason(agent.Session, targets) is not { } reason)
+            return gate;
+        return new PreToolDecision.Ask(gate is PreToolDecision.Ask { Reason: { } earlier } ? $"{reason}; {earlier}" : reason);
     }
 
     private async Task<(PreToolDecision Decision, bool ApprovalCancelled)> ServiceAsk(ToolRunContext exec, PreToolDecision.Ask ask)

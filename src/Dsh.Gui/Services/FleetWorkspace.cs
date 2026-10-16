@@ -1,6 +1,7 @@
 using Avalonia.Threading;
 using Dsh.Boot;
 using Dsh.Fleet;
+using Dsh.Runtime;
 using Dsh.Notifications;
 
 namespace Dsh.Gui.Services;
@@ -56,6 +57,18 @@ public sealed class FleetWorkspace : IAsyncDisposable
             var config = store.Load();
             return new FleetClient([MachineSpec.Local(home.Root), .. config.Machines], options with { Deploy = config.Deploy });
         });
+    }
+
+    /** GUI production connections are created and tracked by the configured Fleet plugin. */
+    public static FleetWorkspace ForContext(Context context, HarnessHome home, Func<string, CancellationToken, Task>? startLocalHost)
+    {
+        var service = context.Get<FleetService>(FleetService.ServiceName)!;
+        var options = new FleetOptions
+        {
+            ClientName = GuiSettings.RemoteClientName,
+            StartLocalHost = startLocalHost is null ? null : (machine, token) => startLocalHost(machine.HarnessHome ?? home.Root, token),
+        };
+        return new FleetWorkspace(service.Store, options, () => service.CreateClient(options));
     }
 
     public MachineConnection? Find(string machine) => Client.Find(machine);

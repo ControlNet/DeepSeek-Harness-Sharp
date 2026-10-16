@@ -101,6 +101,93 @@ public sealed class FleetConnectionTests
         await reading;
     }
 
+    [Fact(Timeout = 90000)]
+    public async Task Shared_Subscription_Replays_FansOut_And_Survives_OneReader_Reset_And_Reconnect()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("ff", Ct);
+        await using var connection = new MachineConnection(MachineSpec.Local(host.Root), TestOptions);
+        connection.Start();
+        await connection.WaitConnectedAsync(Ct);
+        var session = host.Environment.Agent.Session;
+        using var firstStop = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        using var secondStop = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var first = new List<RemoteEventInfo>();
+        var second = new List<RemoteEventInfo>();
+        var firstTask = ReadEventsAsync(connection.SubscribeAsync(session.Id.Value, 0, firstStop.Token), first);
+        await WaitForAsync(() => Events(first).Count == session.Seq);
+        var sharedFrom = session.Seq;
+        session.Append(new TurnStartPayload(1));
+        await WaitForAsync(() => Events(first).Count == session.Seq);
+
+        // Joining later with a different cursor must replay from the shared feed, not replace the wire subscription.
+        var secondTask = ReadEventsAsync(connection.SubscribeAsync(session.Id.Value, sharedFrom, secondStop.Token), second);
+        await WaitForAsync(() => Events(second).Count == 1);
+        Assert.Equal(sharedFrom, EventSeq(Events(second)[0]));
+        session.Append(new TurnStartPayload(2));
+        await WaitForAsync(() => Events(second).Count == 2 && Events(first).Count == session.Seq);
+        await firstStop.CancelAsync();
+        await firstTask;
+        session.Append(new TurnStartPayload(3));
+        await WaitForAsync(() => Events(second).Count == 3);
+
+        await host.StopHostAsync();
+        await WaitForAsync(() => connection.State != MachineConnectionState.Connected);
+        session.Append(new TurnStartPayload(4));
+        await host.StartHostAsync(Ct);
+        await WaitForAsync(() => Events(second).Count == 4);
+        Assert.Equal(new[] { sharedFrom, sharedFrom + 1, sharedFrom + 2, sharedFrom + 3 }, Events(second).Select(EventSeq));
+
+        Assert.True(session.TryTruncateTo(sharedFrom));
+        await WaitForAsync(() => Events(second).Any(item => item.Reset));
+        session.Append(new TurnStartPayload(5));
+        await WaitForAsync(() => Events(second).SkipWhile(item => !item.Reset).Skip(1)
+            .Any(item => !item.Reset && EventSeq(item) == sharedFrom));
+        var afterReset = Events(second).SkipWhile(item => !item.Reset).Skip(1).Where(item => !item.Reset).Select(EventSeq).ToArray();
+        Assert.Equal(Enumerable.Range(0, (int)session.Seq).Select(index => (long)index), afterReset);
+
+        using var lateStop = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var late = new List<RemoteEventInfo>();
+        var lateTask = ReadEventsAsync(connection.SubscribeAsync(session.Id.Value, 0, lateStop.Token), late);
+        await WaitForAsync(() => Events(late).Count(item => !item.Reset) == session.Seq);
+        Assert.Equal(afterReset, Events(late).Where(item => !item.Reset).Select(EventSeq));
+        using var tailStop = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var tail = new List<RemoteEventInfo>();
+        var tailTask = ReadEventsAsync(connection.SubscribeAsync(session.Id.Value, sharedFrom, tailStop.Token), tail);
+        await WaitForAsync(() => Events(tail).Count == 1);
+        Assert.Equal(sharedFrom, EventSeq(Assert.Single(Events(tail))));
+        await tailStop.CancelAsync();
+        await tailTask;
+        await lateStop.CancelAsync();
+        await lateTask;
+        await secondStop.CancelAsync();
+        await secondTask;
+    }
+
+    private static async Task ReadEventsAsync(IAsyncEnumerable<RemoteEventInfo> events, List<RemoteEventInfo> delivered)
+    {
+        try
+        {
+            await foreach (var item in events)
+                lock (delivered)
+                    delivered.Add(item);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static List<RemoteEventInfo> Events(List<RemoteEventInfo> delivered)
+    {
+        lock (delivered)
+            return [.. delivered];
+    }
+
+    private static long EventSeq(RemoteEventInfo item)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(item.EventJson);
+        return document.RootElement.GetProperty("seq").GetInt64();
+    }
+
     /** Disposal cancels a running attempt, which can then fail with its own error (a killed ssh exits with 255); DisposeAsync must still complete. */
     [Fact(Timeout = 30000)]
     public async Task Dispose_WhileTheCancelledAttemptFailsWithItsOwnError_Completes()
