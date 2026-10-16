@@ -40,17 +40,34 @@ def run(args, index):
     if args.strace:
         command = ["strace", "-f", "-tt", "-o", str(args.output / f"trace-{index}.txt"),
                    "-e", "trace=ioctl,process", *command]
+    status_read, status_write = os.pipe()
+    release_read, release_write = os.pipe()
     pid = os.fork()
     if pid == 0:
         os.close(master)
+        os.close(status_read)
+        os.close(release_write)
         os.setsid()
         fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
         for fd in (0, 1, 2):
             os.dup2(slave, fd)
         if slave > 2:
             os.close(slave)
-        os.chdir(ROOT)
-        os.execvpe(command[0], command, env)
+        # Keep a session owner alive until after the parent inspects restored termios.
+        # Darwin revokes the controlling tty when its session leader exits.
+        app_pid = os.fork()
+        if app_pid == 0:
+            os.close(status_write)
+            os.close(release_read)
+            os.chdir(ROOT)
+            os.execvpe(command[0], command, env)
+        _, app_status = os.waitpid(app_pid, 0)
+        os.write(status_write, struct.pack("i", app_status))
+        os.close(status_write)
+        os.read(release_read, 1)
+        os._exit(0)
+    os.close(status_write)
+    os.close(release_read)
     output = bytearray()
     timeline = []
     start = time.monotonic()
@@ -108,9 +125,9 @@ def run(args, index):
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             observe()
-            waited, child_status = os.waitpid(pid, os.WNOHANG)
-            if waited:
-                status = child_status
+            ready, _, _ = select.select([status_read], [], [], 0)
+            if ready:
+                status = struct.unpack("i", os.read(status_read, struct.calcsize("i")))[0]
                 break
         if status is None:
             raise AssertionError("/exit did not terminate the real TUI")
@@ -127,7 +144,11 @@ def run(args, index):
     finally:
         if status is None:
             os.killpg(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
+        else:
+            os.write(release_write, b"x")
+        os.waitpid(pid, 0)
+        os.close(status_read)
+        os.close(release_write)
         os.close(master)
         os.close(slave)
 
