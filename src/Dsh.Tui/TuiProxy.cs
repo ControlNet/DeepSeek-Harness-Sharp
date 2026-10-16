@@ -10,7 +10,7 @@ namespace Dsh.Tui;
  */
 public static class TuiProxy
 {
-    public static async Task<int> RunAsync(HarnessApp app, bool startShell, bool gpu = false, string? gpuCard = null)
+    public static async Task<int> RunAsync(HarnessApp app, bool startShell, bool gpu = false, string? gpuCard = null, string? resumeSessionId = null)
     {
         await PtyDaemonClient.EnsureRunningAsync();
         var (columns, rows) = ConsoleSize();
@@ -19,7 +19,7 @@ public static class TuiProxy
         var arguments = new List<string>();
         if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
             arguments.Add(Environment.GetCommandLineArgs()[0]);
-        arguments.AddRange(ChildArguments(startShell));
+        arguments.AddRange(ChildArguments(startShell, resumeSessionId));
 
         var session = await PtyDaemonClient.StartAsync(new PtyDaemonStartParams
         {
@@ -36,14 +36,24 @@ public static class TuiProxy
 
         // 独立窗口形态: 窗口只渲染会话画面, 关窗口即 detach(会话继续跑)。
         // 宿主创建失败(无显示服务器/无 DRM/终端不支持图像协议)时打印原因并回退到下面的终端形态, 不抛未捕获异常。
-        if (gpu && TryRunWindow(app.Home, session.Id, gpuCard))
-            return 0;
-
-        // 终端形态: 接管本终端, 输出即会话画面, 输入原样进会话; 常驻会话发 detach 标记或退出时本进程就结束。
-        await PtyDaemonClient.AttachConsoleAsync(
-            session.Id,
-            Console.OpenStandardOutput(),
-            CancellationToken.None);
+        var windowShown = gpu && TryRunWindow(app.Home, session.Id, gpuCard);
+        if (!windowShown)
+        {
+            // 终端形态: 接管本终端, 输出即会话画面, 输入原样进会话; 常驻会话发 detach 标记或退出时本进程就结束。
+            await PtyDaemonClient.AttachConsoleAsync(
+                session.Id,
+                Console.OpenStandardOutput(),
+                CancellationToken.None);
+        }
+        foreach (var candidate in await PtyDaemonClient.ListAsync())
+        {
+            if (candidate.Id != session.Id)
+                continue;
+            var exitCode = candidate.ExitCode ?? 0;
+            if (windowShown && exitCode != 0)
+                await Console.Error.WriteLineAsync(await PtyDaemonClient.SnapshotTextAsync(session.Id));
+            return exitCode;
+        }
         return 0;
     }
 
@@ -92,18 +102,13 @@ public static class TuiProxy
 
 
     /** 只转发会影响"会话本体"的参数: --session 决定续哪个会话; home 作为结构化字段交给 daemon, 不塞进命令行。 */
-    private static List<string> ChildArguments(bool startShell)
+    private static List<string> ChildArguments(bool startShell, string? resumeSessionId)
     {
         var arguments = new List<string> { "tui" };
-        var raw = Environment.GetCommandLineArgs();
-        var start = Array.FindIndex(raw, argument => string.Equals(argument, "tui", StringComparison.Ordinal));
-        for (var position = start + 1; start >= 0 && position < raw.Length; position++)
+        if (resumeSessionId is not null)
         {
-            if (string.Equals(raw[position], "--session", StringComparison.Ordinal) && position + 1 < raw.Length)
-            {
-                arguments.Add("--session");
-                arguments.Add(raw[++position]);
-            }
+            arguments.Add("--session");
+            arguments.Add(resumeSessionId);
         }
 
         if (startShell)

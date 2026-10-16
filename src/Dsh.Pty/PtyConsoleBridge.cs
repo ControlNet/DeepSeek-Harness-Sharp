@@ -20,7 +20,7 @@ public static class PtyConsoleBridge
         {
             var inputTask = PumpInputAsync(session, cancellationToken);
             var outputTask = PumpOutputAsync(session, cancellationToken);
-            var exitTask = WaitForExitAsync(session, cancellationToken);
+            var exitTask = session.WaitForExitAsync(cancellationToken);
             await Task.WhenAny(inputTask, outputTask, exitTask);
             await session.StopAsync();
         }
@@ -68,11 +68,6 @@ public static class PtyConsoleBridge
         }
     }
 
-    private static async Task WaitForExitAsync(PtySession session, CancellationToken cancellationToken)
-    {
-        while (session.Status == PtySessionStatus.Running && !cancellationToken.IsCancellationRequested)
-            await Task.Delay(100, cancellationToken);
-    }
 }
 
 internal sealed class PtyRawMode : IDisposable

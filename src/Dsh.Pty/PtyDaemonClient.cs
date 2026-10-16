@@ -291,6 +291,11 @@ public static class PtyDaemonClient
     public static async Task<string> SnapshotAsync(string id, string socketPath, string? portFile, CancellationToken cancellationToken = default)
         => (await SendAsync(socketPath, portFile, new PtyDaemonRequest { Method = "snapshot", Id = id }, cancellationToken)).Snapshot ?? "";
 
+    public static async Task<string> SnapshotTextAsync(string id, CancellationToken cancellationToken = default)
+        => (await SendAsync(
+            PtyDaemonPaths.SocketPath(), OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile() : null,
+            new PtyDaemonRequest { Method = "snapshot", Id = id, PlainText = true }, cancellationToken)).Snapshot ?? "";
+
     public static Task<bool> IsRunningAsync(CancellationToken cancellationToken = default)
         => IsRunningAsync(PtyDaemonPaths.SocketPath(), OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile() : null, cancellationToken);
 
