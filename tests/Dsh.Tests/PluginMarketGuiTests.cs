@@ -43,12 +43,14 @@ public sealed class PluginMarketGuiTests
 
             var network = Toggle(window, Todo, "permissions.network");
             Assert.True(network.IsChecked);
+            var previousStatus = preferences.Status;
             PressSpace(window, network);
             Assert.False(Row(preferences, Todo).CanNetwork);
             try
             {
                 await GuiTestEnvironment.WaitForAsync(preferences,
-                    () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Network == false);
+                    () => preferences.Status != previousStatus
+                        && HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Network == false);
             }
             catch (TimeoutException error)
             {
