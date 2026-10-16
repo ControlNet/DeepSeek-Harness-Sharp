@@ -56,6 +56,7 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 
     `ban_write`/`enable_write` 切换该插件的写权限(`plugins."<包>".permissions.write`),`enable`/`disable` 保留权限设置,`remove` 连同参数与权限一并清除。权限目前只记录在配置里,由后续版本的插件沙箱强制执行。
     `disable` 只停用效果、保留插件(`enable` 可复原);`remove` 是卸载:摘除效果并删除 `plugins/<包名>/` 目录(内置或手工平铺的插件没有该目录,只做摘除)。更新插件:直接 `remove` 旧版(安装目录会被一并删除),再 `add` 新版;`add` 遇到同名但内容不同的文件会拒绝,以免覆盖手工放置的同名插件。
+    托管插件的配置面随其可回收加载上下文卸载而移除,不会留在后续的配置模板或设置列表中。
 4. 日志:`<home>/logs/dsh-YYYYMMDD.log`(默认开启);`logging:` 段可配置级别、内存缓冲、是否输出到控制台(TUI 下强制关闭)。
 5. 后台会话:TUI 内不带命令的 `/detach`(Ctrl+X D)保留当前对话和未发送草稿, 交由 PTY 守护进程继续运行。
    `/detach <命令>` 托管指定命令;通过 `tui list` 查找 PTY ID, 再用 `tui attach <pty-id>` 接回。

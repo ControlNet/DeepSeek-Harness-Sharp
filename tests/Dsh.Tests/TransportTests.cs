@@ -21,6 +21,19 @@ public sealed class FrameCodecTests
         Assert.Equal(payload, await FrameCodec.ReadFrameAsync(stream, cancellationToken: Ct));
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("hello 世界")]
+    public async Task WritesHeaderAndPayloadTogether(string text)
+    {
+        using var stream = new CountingWriteStream();
+        var payload = Encoding.UTF8.GetBytes(text);
+        await FrameCodec.WriteFrameAsync(stream, payload, Ct);
+        Assert.Equal(1, stream.Writes);
+        stream.Position = 0;
+        Assert.Equal(payload, await FrameCodec.ReadFrameAsync(stream, cancellationToken: Ct));
+    }
+
     [Fact]
     public async Task ReadsFramesBackToBack()
     {
@@ -63,6 +76,17 @@ public sealed class FrameCodecTests
         BinaryPrimitives.WriteInt32BigEndian(framed, payload.Length);
         payload.CopyTo(framed, FrameCodec.HeaderLength);
         return framed;
+    }
+
+    private sealed class CountingWriteStream : MemoryStream
+    {
+        public int Writes { get; private set; }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            Writes++;
+            return base.WriteAsync(buffer, cancellationToken);
+        }
     }
 
     /** 每次只吐 1 字节, 逼出拆包路径。 */

@@ -49,7 +49,7 @@ public class SessionAutoRenameTests
     [Fact]
     public async Task RenamesSessionAfterFirstCompletedTurn()
     {
-        var root = Path.Combine(Path.GetTempPath(), "dsh-autorename", Guid.NewGuid().ToString("N"));
+        var root = TempTree.CreateDirectory("autorename");
         var home = new HarnessHome(Path.Combine(root, "home"));
         var cwd = Path.Combine(root, "project");
         Directory.CreateDirectory(home.Root);
@@ -89,14 +89,14 @@ public class SessionAutoRenameTests
         }
         finally
         {
-            DeleteTempDir(root);
+            TempTree.Delete(root);
         }
     }
 
     [Fact]
     public async Task FullComposition_RenamesWithSessionModelWhenNoCompactionModel()
     {
-        var root = Path.Combine(Path.GetTempPath(), "dsh-autorename-full", Guid.NewGuid().ToString("N"));
+        var root = TempTree.CreateDirectory("autorename-full");
         var home = new HarnessHome(Path.Combine(root, "home"));
         var cwd = Path.Combine(root, "project");
         Directory.CreateDirectory(home.Root);
@@ -132,7 +132,7 @@ public class SessionAutoRenameTests
         }
         finally
         {
-            DeleteTempDir(root);
+            TempTree.Delete(root);
         }
     }
 
@@ -143,26 +143,5 @@ public class SessionAutoRenameTests
         while (DateTime.UtcNow < deadline
             && !string.Equals(agent.Session.Header.Title, expected, StringComparison.Ordinal))
             await Task.Delay(25, TestContext.Current.CancellationToken);
-    }
-
-    /** 工作区检查点会产生 Git 只读对象; 先清属性, 再沿原预算等待后台句柄释放。 */
-    private static void DeleteTempDir(string root)
-    {
-        for (var attempt = 0; attempt < 10; attempt++)
-        {
-            try
-            {
-                if (!Directory.Exists(root))
-                    return;
-                foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
-                    File.SetAttributes(file, FileAttributes.Normal);
-                Directory.Delete(root, true);
-                return;
-            }
-            catch (IOException) when (attempt < 9)
-            {
-                Thread.Sleep(100);
-            }
-        }
     }
 }

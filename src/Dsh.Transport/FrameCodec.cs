@@ -1,4 +1,5 @@
-﻿using System.Buffers.Binary;
+﻿using System.Buffers;
+using System.Buffers.Binary;
 
 namespace Dsh.Transport;
 
@@ -23,12 +24,20 @@ public static class FrameCodec
         ArgumentNullException.ThrowIfNull(stream);
         if (payload.Length > DefaultMaxFrameBytes)
             throw new ArgumentOutOfRangeException(nameof(payload), payload.Length, "帧载荷超过上限");
-        var header = new byte[HeaderLength];
-        BinaryPrimitives.WriteInt32BigEndian(header, payload.Length);
-        await stream.WriteAsync(header, cancellationToken).ConfigureAwait(false);
-        if (payload.Length > 0)
-            await stream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        // One write per frame: a separate header write left the payload behind Nagle until the peer's delayed ACK (~40 ms per frame on loopback TCP).
+        var frameLength = HeaderLength + payload.Length;
+        var frame = ArrayPool<byte>.Shared.Rent(frameLength);
+        try
+        {
+            BinaryPrimitives.WriteInt32BigEndian(frame, payload.Length);
+            payload.CopyTo(frame.AsMemory(HeaderLength));
+            await stream.WriteAsync(frame.AsMemory(0, frameLength), cancellationToken).ConfigureAwait(false);
+            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(frame);
+        }
     }
 
     /** 读到帧边界且流干净结束返回 null; 半帧 EOF 视为错误(IOException)。 */

@@ -98,11 +98,11 @@ internal sealed class PtyTuiHarness : IDisposable
     public async Task WriteBytesAsync(params byte[] bytes)
         => await Session.WriteAsync(bytes, TestContext.Current.CancellationToken);
 
-    /** 把当前输出解析成字符屏(VirtualTerminal 忽略私有模式, 重绘按 CUP 覆盖, 结果即最近一屏)。 */
+    /** 解析当前被测 proxy 的屏幕快照；不能按初始尺寸重放 resize 前的历史输出。 */
     public char[,] ReadScreen()
     {
         var terminal = new VirtualTerminal(Columns, Rows);
-        terminal.Feed(Snapshot());
+        terminal.Feed(Encoding.UTF8.GetString(Session.Snapshot()));
         return terminal.Screen;
     }
 

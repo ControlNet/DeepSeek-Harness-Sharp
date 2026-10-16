@@ -3,6 +3,10 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
 using Dsh.Acp;
@@ -54,7 +58,7 @@ public sealed class AcpClientTests
     [Fact]
     public async Task Client_CompletesProtocolRoundTrip()
     {
-        using var server = new MockDeepSeekServer(_ => SseTextOnly);
+        await using var server = await MockDeepSeekServer.StartAsync(_ => SseTextOnly);
         using var fixture = new HarnessFixture(server.BaseUrl);
         var pair = new DuplexTransportPair();
         await using var serverTransport = pair.Server;
@@ -91,7 +95,7 @@ public sealed class AcpClientTests
     public async Task Client_AcpPathAutoApprovesToolCalls()
     {
         var scriptCalls = 0;
-        using var server = new MockDeepSeekServer(_ => ++scriptCalls == 1 ? SseToolCall : SseDone);
+        await using var server = await MockDeepSeekServer.StartAsync(_ => ++scriptCalls == 1 ? SseToolCall : SseDone);
         using var fixture = new HarnessFixture(server.BaseUrl);
         _ = ApprovalService.Register(fixture.Ctx);
         var echoCalls = 0;
@@ -142,7 +146,7 @@ public sealed class AcpClientTests
     public async Task SocketServer_RequiresLocalTokenBeforeSessions()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        using var server = new MockDeepSeekServer(_ => SseTextOnly);
+        await using var server = await MockDeepSeekServer.StartAsync(_ => SseTextOnly);
         using var fixture = new HarnessFixture(server.BaseUrl);
         var root = TempTree.CreateSocketDirectory("a");
         try
@@ -269,63 +273,55 @@ public sealed class AcpClientTests
         return tcp;
     }
 
-    private sealed class MockDeepSeekServer : IDisposable
+    private sealed class MockDeepSeekServer : IAsyncDisposable
     {
-        private readonly HttpListener _listener = new();
-        private readonly CancellationTokenSource _stop = new();
+        private readonly WebApplication _application;
         private readonly Func<string, IReadOnlyList<string>> _script;
 
-        public MockDeepSeekServer(Func<string, IReadOnlyList<string>> script)
+        private MockDeepSeekServer(Func<string, IReadOnlyList<string>> script)
         {
             _script = script;
-            var probe = new TcpListener(IPAddress.Loopback, 0);
-            probe.Start();
-            Port = ((IPEndPoint)probe.LocalEndpoint).Port;
-            probe.Stop();
-            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
-            _listener.Start();
-            _ = Task.Run(Serve);
+            var builder = WebApplication.CreateSlimBuilder();
+            builder.Logging.ClearProviders();
+            builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
+            _application = builder.Build();
+            _application.Run(Serve);
         }
 
-        public int Port { get; }
-
-        public string BaseUrl => $"http://127.0.0.1:{Port}";
-
-        private async Task Serve()
+        public static async Task<MockDeepSeekServer> StartAsync(Func<string, IReadOnlyList<string>> script)
         {
-            while (!_stop.IsCancellationRequested)
+            var server = new MockDeepSeekServer(script);
+            try
             {
-                HttpListenerContext context;
-                try
-                {
-                    context = await _listener.GetContextAsync().WaitAsync(_stop.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch (HttpListenerException)
-                {
-                    break;
-                }
-                using var streamReader = new StreamReader(context.Request.InputStream);
-                var body = await streamReader.ReadToEndAsync();
-                context.Response.ContentType = "text/event-stream";
-                foreach (var line in _script(body))
-                {
-                    var bytes = Encoding.UTF8.GetBytes(line + "\n");
-                    await context.Response.OutputStream.WriteAsync(bytes);
-                    await context.Response.OutputStream.FlushAsync();
-                }
-                context.Response.Close();
+                await server._application.StartAsync(TestContext.Current.CancellationToken);
+                server.Port = new Uri(server._application.Urls.Single()).Port;
+                return server;
+            }
+            catch
+            {
+                await server.DisposeAsync();
+                throw;
             }
         }
 
-        public void Dispose()
+        public int Port { get; private set; }
+
+        public string BaseUrl => $"http://127.0.0.1:{Port}";
+
+        private async Task Serve(HttpContext context)
         {
-            _stop.Cancel();
-            _listener.Stop();
+            using var reader = new StreamReader(context.Request.Body);
+            var body = await reader.ReadToEndAsync(context.RequestAborted);
+            context.Response.ContentType = "text/event-stream";
+            foreach (var line in _script(body))
+            {
+                var bytes = Encoding.UTF8.GetBytes(line + "\n");
+                await context.Response.Body.WriteAsync(bytes, context.RequestAborted);
+                await context.Response.Body.FlushAsync(context.RequestAborted);
+            }
         }
+
+        public ValueTask DisposeAsync() => _application.DisposeAsync();
     }
 
     private sealed class HarnessFixture : IDisposable
