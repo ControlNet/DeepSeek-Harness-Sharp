@@ -563,7 +563,7 @@ public class JobsTests : IDisposable
             var tools = new ToolRuntime(ctx);
             var subprocess = new SubprocessService(ctx);
             var agents = new AgentRegistry(ctx);
-            if (!ProbeBash(subprocess)) return;
+            Assert.True(ProbeBash(subprocess), "The timeout/reset regression requires a real bash executable.");
             PersistentBashTool.Register(ctx, new PersistentBashConfig { TimeoutMs = 500 });
             var agent = new FakeAgent(ctx, _outer._tempDir, agents);
             agent.Register();
