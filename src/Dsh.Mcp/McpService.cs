@@ -63,7 +63,7 @@ public sealed class McpService(Context ctx) : Service(ctx, ServiceName), IAsyncD
     public async Task ConnectAsync(IReadOnlyList<McpServerConfig> servers, CancellationToken signal = default)
     {
         foreach (var server in servers)
-            await ConnectOneAsync(server, () => CreateTransport(server, OutboundProxy.FromContext(ctx)), signal);
+            await ConnectOneAsync(server, () => CreateTransport(server, OutboundProxy.FromContext(Ctx)), signal);
     }
 
     internal async Task ConnectAsync(McpServerConfig server, IClientTransport transport, CancellationToken signal = default)
