@@ -86,8 +86,7 @@ public sealed class FleetConnectionTests
 
         await WaitForAsync(() => Snapshot(delivered).Count == session.Seq);
         var states = RecordStates(connection);
-        await host.StopHostAsync();
-        await WaitForAsync(() => connection.State != MachineConnectionState.Connected);
+        await StopHostAndWaitForDisconnectAsync(host, connection);
         var missedFrom = session.Seq;
         session.Append(new TurnStartPayload(1));
         session.Append(new TurnStartPayload(2));
@@ -130,8 +129,7 @@ public sealed class FleetConnectionTests
         session.Append(new TurnStartPayload(3));
         await WaitForAsync(() => Events(second).Count == 3);
 
-        await host.StopHostAsync();
-        await WaitForAsync(() => connection.State != MachineConnectionState.Connected);
+        await StopHostAndWaitForDisconnectAsync(host, connection);
         session.Append(new TurnStartPayload(4));
         await host.StartHostAsync(Ct);
         await WaitForAsync(() => Events(second).Count == 4);
@@ -161,6 +159,16 @@ public sealed class FleetConnectionTests
         await lateTask;
         await secondStop.CancelAsync();
         await secondTask;
+    }
+
+    private static async Task StopHostAndWaitForDisconnectAsync(HarnessHostFixture host, MachineConnection connection)
+    {
+        var lease = await connection.WaitConnectedAsync(Ct);
+        var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Capture this link's loss before stopping; State is not the lifetime barrier for its consumers.
+        using var registration = lease.Lifetime.Register(() => disconnected.TrySetResult());
+        await host.StopHostAsync();
+        await disconnected.Task.WaitAsync(Arrival, Ct);
     }
 
     private static async Task ReadEventsAsync(IAsyncEnumerable<RemoteEventInfo> events, List<RemoteEventInfo> delivered)
