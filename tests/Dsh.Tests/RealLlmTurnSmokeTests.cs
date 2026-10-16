@@ -70,12 +70,15 @@ public sealed class RealLlmTurnSmokeTests
     [InlineData(true)]
     public async Task RealLlm_ScheduleDeliversOnceAcrossLiveAndColdSessions(bool coldResume)
     {
-        const string providerId = "deepseek-official";
-        const string modelId = "deepseek-v4-flash";
         var sourceHome = HarnessHome.Resolve();
         var settings = HarnessSettings.Load(sourceHome);
+        var route = settings.ResolveDefaultModel();
+        Assert.NotNull(route);
+        var (providerId, modelId) = route.Value;
         Assert.True(settings.Providers.TryGetValue(providerId, out var provider)
-            && !string.IsNullOrEmpty(provider.Options?.ApiKey), "The schedule smoke requires a configured real DeepSeek provider.");
+            && (!string.IsNullOrEmpty(provider.Options?.ApiKey)
+                || provider.Options?.ApiKeyEnv is { Length: > 0 } keyName && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(keyName))),
+            "The schedule smoke requires credentials for the configured default model.");
         var directory = TempTree.CreateDirectory("dsh-real-schedule");
         var home = Path.Combine(directory, "home");
         Directory.CreateDirectory(home);
