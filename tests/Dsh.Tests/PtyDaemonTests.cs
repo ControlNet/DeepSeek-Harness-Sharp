@@ -2,7 +2,7 @@ using Dsh.Pty;
 
 namespace Dsh.Tests;
 
-public class PtyDaemonTests
+public class PtyDaemonTests(ITestOutputHelper output)
 {
     private static readonly string TestRoot = Path.Combine(FindRepositoryRoot(), ".daemon-tests");
     private static readonly TimeSpan ReadReleaseTimeout = TimeSpan.FromSeconds(30);
@@ -84,10 +84,13 @@ public class PtyDaemonTests
         using var session = await host.StartAsync(new PtyStartInfo
         {
             FileName = "/bin/sh",
-            Arguments = ["-c", "read line; echo GOT:$line"],
+            Arguments = ["-c", "printf READY; read line; echo GOT:$line"],
         }, cancellationToken: TestContext.Current.CancellationToken);
+        var ready = await ReadUntilAsync(session, "READY", TimeSpan.FromSeconds(4));
+        Assert.Contains("READY", ready);
         var readTask = ReadUntilAsync(session, "GOT:hello", TimeSpan.FromSeconds(4));
-        await Task.Delay(500, TestContext.Current.CancellationToken);
+        // The real child has produced output; the next read must wait for our input, not a scheduling delay.
+        Assert.False(readTask.IsCompleted);
         await session.WriteAsync("hello\n"u8.ToArray(), TestContext.Current.CancellationToken);
         var text = await readTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Contains("GOT:hello", text);
@@ -126,17 +129,44 @@ public class PtyDaemonTests
         Assert.Contains("DONE", text.ToString());
     }
 
-    private static async Task<string> ReadUntilAsync(PtySession session, string marker, TimeSpan timeout)
+    private async Task<string> ReadUntilAsync(PtySession session, string marker, TimeSpan timeout)
     {
         var text = new System.Text.StringBuilder();
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline && !text.ToString().Contains(marker, StringComparison.Ordinal))
+        var buffer = new byte[1024];
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        using var pendingReadCancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(timeout);
+        while (!text.ToString().Contains(marker, StringComparison.Ordinal))
         {
-            var buffer = new byte[1024];
-            var read = await session.ReadAsync(buffer);
+            var pendingRead = session.ReadAsync(buffer, pendingReadCancellation.Token).AsTask();
+            int read;
+            try
+            {
+                // WaitAsync accepts an already-completed read even if its continuation ran after the deadline.
+                // This drains queued PTY bytes without extending the time allowed for new output.
+                read = await pendingRead.WaitAsync(deadline.Token);
+            }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested && !TestContext.Current.CancellationToken.IsCancellationRequested)
+            {
+                await pendingReadCancellation.CancelAsync();
+                try
+                {
+                    await pendingRead;
+                }
+                catch (OperationCanceledException) when (pendingReadCancellation.IsCancellationRequested)
+                {
+                }
+                break;
+            }
             if (read == 0)
                 break;
             text.Append(System.Text.Encoding.UTF8.GetString(buffer, 0, read));
+        }
+        if (!text.ToString().Contains(marker, StringComparison.Ordinal))
+        {
+            output.WriteLine($"PTY marker '{marker}' missing after {System.Diagnostics.Stopwatch.GetElapsedTime(started)}; Status={session.Status}; ExitCode={session.ExitCode}");
+            output.WriteLine("PTY snapshot: " + System.Text.Json.JsonSerializer.Serialize(System.Text.Encoding.UTF8.GetString(session.Snapshot())));
         }
         return text.ToString();
     }
