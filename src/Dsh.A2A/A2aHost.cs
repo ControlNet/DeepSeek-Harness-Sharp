@@ -60,7 +60,7 @@ public sealed class A2aHost : IDisposable
         _authority = $"{_host}:{((IPEndPoint)_listener.LocalEndpoint).Port}";
         Endpoint = $"http://{_authority}";
         _card = BuildCard(_options.PublicUrl ?? Endpoint, _options);
-        _loop = Task.Run(AcceptLoopAsync);
+        _loop = AcceptLoopAsync();
     }
 
     public void Dispose()
@@ -86,6 +86,7 @@ public sealed class A2aHost : IDisposable
 
     private async Task AcceptLoopAsync()
     {
+        await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         while (!_stop.IsCancellationRequested)
         {
             TcpClient client;
@@ -113,7 +114,7 @@ public sealed class A2aHost : IDisposable
         {
             try
             {
-                var request = await HttpRequestReader.ReadAsync(stream, _stop.Token, int.MaxValue, allowChunked: true).ConfigureAwait(false);
+                var request = await HttpRequestReader.ReadAsync(stream, _stop.Token, int.MaxValue, allowChunked: true, allowExpectContinue: true).ConfigureAwait(false);
                 if (request is null)
                     return;
                 // Preserve host routing so a loopback socket cannot accept a DNS-rebound browser origin.

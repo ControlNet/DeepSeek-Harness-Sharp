@@ -177,17 +177,21 @@ public sealed class A2aTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task SendMessage_Completes_WithFinalText(bool chunked)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task SendMessage_Completes_WithFinalText(bool chunked, bool expectContinue)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = await MockDeepSeekServer.StartAsync(SseTextOnly);
         using var fixture = new A2aFixture(server.BaseUrl);
-        using var http = new HttpClient(new RequestFramingHandler(chunked));
+        using var http = new HttpClient(new RequestFramingHandler(chunked, expectContinue));
         using var client = new A2AClient(new Uri(fixture.Endpoint), http);
 
-        var response = await client.SendMessageAsync(new SendMessageRequest { Message = UserMessage(chunked ? new string('x', 8 * 1024) : "hi") }, cancellationToken);
+        var response = await client.SendMessageAsync(
+            new SendMessageRequest { Message = UserMessage(chunked ? new string('x', 8 * 1024) : "hi") }, cancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
         var taskId = response.Task!.Id;
         var task = await WaitTerminalAsync(client, taskId, cancellationToken);
 
@@ -376,10 +380,13 @@ public sealed class A2aTests
         Assert.Equal(nameof(TaskState.Canceled), canceled.Task!.State);
     }
 
-    private sealed class RequestFramingHandler(bool chunked) : DelegatingHandler(new HttpClientHandler())
+    private sealed class RequestFramingHandler(bool chunked, bool expectContinue) : DelegatingHandler(
+        new SocketsHttpHandler { Expect100ContinueTimeout = Timeout.InfiniteTimeSpan })
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (expectContinue && request.Content is not null)
+                request.Headers.ExpectContinue = true;
             if (chunked && request.Content is not null)
             {
                 request.Headers.TransferEncodingChunked = true;

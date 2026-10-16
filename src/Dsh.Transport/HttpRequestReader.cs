@@ -37,9 +37,10 @@ public static class HttpRequestReader
     private const int MaxHeaderLines = 100;
 
     private static readonly byte[] HeadTerminator = "\r\n\r\n"u8.ToArray();
+    private static readonly byte[] ContinueResponse = "HTTP/1.1 100 Continue\r\n\r\n"u8.ToArray();
 
     /** Returns null when the client closed the connection before sending anything. */
-    public static async Task<HttpRequest?> ReadAsync(Stream stream, CancellationToken cancellationToken, int maxBodyBytes = MaxBodyBytes, bool allowChunked = false)
+    public static async Task<HttpRequest?> ReadAsync(Stream stream, CancellationToken cancellationToken, int maxBodyBytes = MaxBodyBytes, bool allowChunked = false, bool allowExpectContinue = false)
     {
         var buffer = new byte[MaxHeadBytes];
         var (filled, headLength) = await ReadHeadAsync(stream, buffer, cancellationToken).ConfigureAwait(false);
@@ -49,7 +50,7 @@ public static class HttpRequestReader
         var (method, path, query) = ParseRequestLine(lines[0]);
         var headers = ParseHeaders(lines.AsSpan(1));
         var bodyOffset = headLength + HeadTerminator.Length;
-        var body = await ReadBodyAsync(stream, headers, buffer, bodyOffset, filled, maxBodyBytes, allowChunked, cancellationToken).ConfigureAwait(false);
+        var body = await ReadBodyAsync(stream, headers, buffer, bodyOffset, filled, maxBodyBytes, allowChunked, allowExpectContinue, cancellationToken).ConfigureAwait(false);
         return new HttpRequest(method, path, query, headers, body);
     }
 
@@ -106,24 +107,38 @@ public static class HttpRequestReader
         int filled,
         int maxBodyBytes,
         bool allowChunked,
+        bool allowExpectContinue,
         CancellationToken cancellationToken)
     {
         if (headers.TryGetValue("Transfer-Encoding", out var encoding))
         {
             if (!allowChunked || !string.Equals(encoding, "chunked", StringComparison.OrdinalIgnoreCase) || headers.ContainsKey("Content-Length"))
                 throw new InvalidDataException("unsupported or ambiguous request body framing");
+            await WriteContinueAsync(stream, headers, allowExpectContinue, cancellationToken).ConfigureAwait(false);
             return await new ChunkedBodyReader(stream, buffer, offset, filled).ReadAsync(maxBodyBytes, cancellationToken).ConfigureAwait(false);
         }
         if (!headers.TryGetValue("Content-Length", out var declared))
             return [];
         if (!int.TryParse(declared, NumberStyles.None, CultureInfo.InvariantCulture, out var length) || length > maxBodyBytes)
             throw new InvalidDataException("request body missing a valid Content-Length within the limit");
+        if (length > 0)
+            await WriteContinueAsync(stream, headers, allowExpectContinue, cancellationToken).ConfigureAwait(false);
         var body = new byte[length];
         var leftover = buffer.AsMemory(offset, filled - offset);
         var copied = Math.Min(length, leftover.Length);
         leftover[..copied].CopyTo(body);
         await stream.ReadExactlyAsync(body.AsMemory(copied), cancellationToken).ConfigureAwait(false);
         return body;
+    }
+
+    /** Only acknowledge a supported expectation after the request's framing and declared size have been accepted. */
+    private static async Task WriteContinueAsync(Stream stream, IReadOnlyDictionary<string, string> headers, bool allowed, CancellationToken cancellationToken)
+    {
+        if (!allowed || !headers.TryGetValue("Expect", out var expectation)
+            || !string.Equals(expectation, "100-continue", StringComparison.OrdinalIgnoreCase))
+            return;
+        await stream.WriteAsync(ContinueResponse, cancellationToken).ConfigureAwait(false);
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private sealed class ChunkedBodyReader(Stream stream, byte[] buffer, int offset, int filled)
