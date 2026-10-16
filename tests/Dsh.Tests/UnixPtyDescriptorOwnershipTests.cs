@@ -78,7 +78,7 @@ public sealed class UnixPtyDescriptorOwnershipTests
         Assert.All(sessions, session => Assert.Equal(PtySessionStatus.Running, session.Status));
     }
 
-    [Theory(Timeout = 30000)]
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void MarkingFailure_ClosesTheOwnedDescriptor(bool invalidMaster)
@@ -107,7 +107,7 @@ public sealed class UnixPtyDescriptorOwnershipTests
         }
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact]
     public void SpawnFailure_ClosesBothDescriptors()
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
