@@ -201,6 +201,7 @@ jobs:
             -class Dsh.Tests.PtyDaemonTests
             -class Dsh.Tests.PtyOwnershipTests
             -class Dsh.Tests.PtyOutputReaderTests
+            -class Dsh.Tests.UnixPtyDescriptorOwnershipTests
             -class Dsh.Tests.MouseReportPtyTests
             -class Dsh.Tests.TuiOverlayCpuTests
             -class Dsh.Tests.PtySessionSubscriptionTests
