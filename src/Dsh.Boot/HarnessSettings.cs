@@ -118,9 +118,12 @@ public sealed class HarnessSettings
         SettingsFilePermissions.Restrict(path);
     }
 
-    public (string Provider, string Model)? ResolveDefaultModel()
+    public (string Provider, string Model)? ResolveDefaultModel() => ParseModelRoute(GlobalDefaultModel);
+
+    /** Split a `provider/model` setting at the first slash; null when either part is missing. */
+    public static (string Provider, string Model)? ParseModelRoute(string? value)
     {
-        if (GlobalDefaultModel is not { Length: > 0 } value)
+        if (value is not { Length: > 0 })
             return null;
         var parts = value.Split('/', 2);
         if (parts.Length != 2 || parts[0].Length == 0 || parts[1].Length == 0)

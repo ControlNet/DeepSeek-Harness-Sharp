@@ -11,6 +11,7 @@ global_default_model: deepseek-official/deepseek-v4-flash
 compaction_model: deepseek-official/deepseek-v4-flash
 
 # 子代理默认模型，格式为 provider/model
+# subagent 工具调用与插件参数 agentOptions 都未指定 provider/model 时使用；该 provider 需已配置 key，删掉此项则子代理跟随当前会话模型。
 subagent:
   default_model: deepseek-official/deepseek-v4-flash
 
