@@ -1860,6 +1860,7 @@ public sealed class ChatWindow : IDisposable
 
         try
         {
+            await _ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(pane.Agent.Session);
             await PtyDaemonClient.EnsureRunningAsync();
             var session = await PtyDaemonClient.StartAsync(new PtyDaemonStartParams
             {

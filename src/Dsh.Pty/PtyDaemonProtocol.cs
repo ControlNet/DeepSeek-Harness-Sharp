@@ -68,6 +68,8 @@ public sealed class PtyDaemonRequest
 
     public string? Id { get; set; }
 
+    public bool PlainText { get; set; }
+
     public PtyDaemonStartParams? Params { get; set; }
 
     /** method=mouse: 与 Win32 MOUSE_EVENT_RECORD 一一对应, daemon 原样注入常驻会话的控制台输入缓冲。 */
