@@ -14,12 +14,20 @@ public sealed class UnixPtyDescriptorOwnershipTests
 {
     private static readonly Type Native = typeof(PtySession).Assembly.GetType("Dsh.Pty.UnixPtyNative")!;
     private const BindingFlags NativeMembers = BindingFlags.Static | BindingFlags.NonPublic;
+    private const int FGetFd = 1;
+    private const short PollIn = 0x1;
+    private const short PollHup = 0x10;
+    private const int Ebadf = 9;
+    private const int Enoent = 2;
+    private const int InvalidDescriptor = int.MaxValue;
+    private const int SyscallFailure = -1;
+    private const int HangupWaitMilliseconds = 1000;
 
     [Fact(Timeout = 30000)]
     public async Task ConcurrentSpawns_DoNotInheritSlaves_AndOriginalSlaveClosesIndependently()
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
-            return;
+            Assert.Skip("Unix PTY 描述符语义仅适用于 Linux/macOS");
 
         var held = OpenPty();
         using var master = new SafeFileHandle((IntPtr)held.Master, ownsHandle: true);
@@ -27,10 +35,19 @@ public sealed class UnixPtyDescriptorOwnershipTests
         using var firstHost = new PtyHost();
         using var secondHost = new PtyHost();
         var cancellationToken = TestContext.Current.CancellationToken;
-        var script = "printf 'OWN:'; tty; printf 'READY\\n'; read -r peer; leaked=0; "
-            + "for descriptor in /dev/fd/*; do if [ \"$descriptor\" -ef \"$peer\" ]; then leaked=1; fi; done; "
-            + $"if [ -e /dev/fd/{held.Master} ] || [ -e /dev/fd/{held.Slave} ]; then leaked=1; fi; "
-            + "if [ \"$leaked\" -eq 0 ]; then echo FD-ISOLATED; else echo FD-LEAKED; fi; echo FD-CHECK-DONE; read -r finish";
+        var script = $"""
+            printf 'OWN:'; tty
+            printf 'READY\n'
+            read -r peer
+            leaked=0
+            for descriptor in /dev/fd/*; do
+                if [ "$descriptor" -ef "$peer" ]; then leaked=1; fi
+            done
+            if [ -e /dev/fd/{held.Master} ] || [ -e /dev/fd/{held.Slave} ]; then leaked=1; fi
+            if [ "$leaked" -eq 0 ]; then echo FD-ISOLATED; else echo FD-LEAKED; fi
+            echo FD-CHECK-DONE
+            read -r finish
+            """;
         var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var firstStart = Task.Run(async () =>
         {
@@ -48,8 +65,8 @@ public sealed class UnixPtyDescriptorOwnershipTests
         var names = ready.Select(output => output.Split('\n').Single(line => line.StartsWith("OWN:", StringComparison.Ordinal))[4..].TrimEnd('\r')).ToArray();
         Assert.All(names, name => Assert.StartsWith("/dev/", name));
         Assert.NotEqual(names[0], names[1]);
-        await sessions[0].WriteAsync(Encoding.UTF8.GetBytes(names[1] + "\n"), cancellationToken);
-        await sessions[1].WriteAsync(Encoding.UTF8.GetBytes(names[0] + "\n"), cancellationToken);
+        await sessions[0].WriteAsync(Encoding.UTF8.GetBytes($"""{names[1]}{Environment.NewLine}"""), cancellationToken);
+        await sessions[1].WriteAsync(Encoding.UTF8.GetBytes($"""{names[0]}{Environment.NewLine}"""), cancellationToken);
         var reports = await Task.WhenAll(ReadUntil(sessions[0], "FD-CHECK-DONE"), ReadUntil(sessions[1], "FD-CHECK-DONE"));
         Assert.All(reports, report =>
         {
@@ -59,7 +76,7 @@ public sealed class UnixPtyDescriptorOwnershipTests
 
         using (var process = Process.Start(new ProcessStartInfo("/bin/sh")
         {
-            ArgumentList = { "-c", $"if [ -e /dev/fd/{held.Master} ] || [ -e /dev/fd/{held.Slave} ]; then echo FD-LEAKED; else echo FD-ISOLATED; fi" },
+            ArgumentList = { "-c", $"""if [ -e /dev/fd/{held.Master} ] || [ -e /dev/fd/{held.Slave} ]; then echo FD-LEAKED; else echo FD-ISOLATED; fi""" },
             RedirectStandardOutput = true,
             UseShellExecute = false,
         })!)
@@ -72,9 +89,9 @@ public sealed class UnixPtyDescriptorOwnershipTests
 
         // Both unrelated PTYs remain alive. Their existence cannot keep the original master's stream open.
         slave.Dispose();
-        var descriptor = new PollDescriptor { FileDescriptor = held.Master, Events = 1 };
-        Assert.Equal(1, poll(ref descriptor, 1, 1000));
-        Assert.NotEqual(0, descriptor.ReturnedEvents & 0x10); // POLLHUP: no slave owner remains.
+        var descriptor = new PollDescriptor { FileDescriptor = held.Master, Events = PollIn };
+        Assert.Equal(1, poll(ref descriptor, 1, HangupWaitMilliseconds));
+        Assert.NotEqual(0, descriptor.ReturnedEvents & PollHup); // No slave owner remains.
         Assert.All(sessions, session => Assert.Equal(PtySessionStatus.Running, session.Status));
     }
 
@@ -84,7 +101,7 @@ public sealed class UnixPtyDescriptorOwnershipTests
     public void MarkingFailure_ClosesTheOwnedDescriptor(bool invalidMaster)
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
-            return;
+            Assert.Skip("Unix PTY 描述符语义仅适用于 Linux/macOS");
 
         using var file = File.Open("/dev/null", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
         var descriptor = (int)file.SafeFileHandle.DangerousGetHandle();
@@ -94,14 +111,14 @@ public sealed class UnixPtyDescriptorOwnershipTests
         try
         {
             var exception = Assert.Throws<TargetInvocationException>(() => prepare.Invoke(null,
-                [invalidMaster ? int.MaxValue : descriptor, invalidMaster ? descriptor : int.MaxValue, IntPtr.Zero]));
+                [invalidMaster ? InvalidDescriptor : descriptor, invalidMaster ? descriptor : InvalidDescriptor, IntPtr.Zero]));
             var nativeError = Assert.IsType<Win32Exception>(exception.InnerException);
-            Assert.Equal(9, nativeError.NativeErrorCode); // EBADF on Linux and Darwin.
-            Assert.Equal(-1, fcntl(descriptor, 1)); // F_GETFD: the valid descriptor was closed on either failure path.
+            Assert.Equal(Ebadf, nativeError.NativeErrorCode);
+            Assert.Equal(SyscallFailure, fcntl(descriptor, FGetFd)); // The valid descriptor was closed on either failure path.
         }
         finally
         {
-            if (fcntl(descriptor, 1) != -1)
+            if (fcntl(descriptor, FGetFd) != SyscallFailure)
                 close(descriptor);
         }
     }
@@ -110,7 +127,7 @@ public sealed class UnixPtyDescriptorOwnershipTests
     public void SpawnFailure_ClosesBothDescriptors()
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
-            return;
+            Assert.Skip("Unix PTY 描述符语义仅适用于 Linux/macOS");
 
         var warm = OpenPty();
         using (new SafeFileHandle((IntPtr)warm.Master, ownsHandle: true))
@@ -119,10 +136,10 @@ public sealed class UnixPtyDescriptorOwnershipTests
         }
         var directory = OperatingSystem.IsMacOS() ? "/dev/fd" : "/proc/self/fd";
         var spawn = Native.GetMethod("Spawn", BindingFlags.Static | BindingFlags.Public)!;
-        var command = new PtyStartInfo { FileName = "/dsh-nonexistent-" + Guid.NewGuid().ToString("N"), Arguments = [] };
+        var command = new PtyStartInfo { FileName = $"""/dsh-nonexistent-{Guid.NewGuid():N}""", Arguments = [] };
         var before = Directory.GetFileSystemEntries(directory).Length;
         var exception = Assert.Throws<TargetInvocationException>(() => spawn.Invoke(null, [command]));
-        Assert.Equal(2, Assert.IsType<Win32Exception>(exception.InnerException).NativeErrorCode); // ENOENT.
+        Assert.Equal(Enoent, Assert.IsType<Win32Exception>(exception.InnerException).NativeErrorCode);
         Assert.Equal(before, Directory.GetFileSystemEntries(directory).Length);
     }
 
