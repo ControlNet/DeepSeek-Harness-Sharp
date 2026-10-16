@@ -185,11 +185,6 @@ plugins:
 #   attachments:
 #   telemetry:
 #   run:
-# network:  # 映射(见子项)
-#   outbound_proxy:  # 映射(见子项)
-#     url:  # 留空跟随系统代理
-#     bypass:  # 列表；回环、私网和不带点的主机始终直连
-#     probe_url:  # 可选连通性自检地址
 # fleet:  # 映射(见子项)
 #   machines:  # 列表
 #   deploy:  # 映射(见子项)
@@ -198,6 +193,11 @@ plugins:
 #     releaseVersion:  # latest 或发布标签(带不带 v 前缀均可)
 #     via:  # auto / client / server: 发布包在哪里下载
 #     serverProxy:  # 远端下载发布包时用的代理
+# network:  # 映射(见子项)
+#   outbound_proxy:  # 映射(见子项)
+#     url:  # http://、https://、socks4://、socks4a://、socks5:// 代理 URL, 可带 user:pass@; 留空跟随系统代理
+#     bypass:  # 不走代理的主机(含其子域), 只在 url 非空时生效; 回环地址、不带点的主机名与私网 IP 始终直连
+#     probe_url:  # 连通性自检的探测地址; 留空用 https://www.gstatic.com/generate_204
 # sandbox:  # 映射(见子项)
 #   enabled:  # Plugin sandbox switch; false (the default) keeps plugin loading and execution unchanged.
 # plugins:  # 映射(见子项)

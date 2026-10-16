@@ -31,7 +31,7 @@ public sealed class FleetLocalHostTests
             Assert.True(started.ExitCode == 0, started.Error);
             await using var connection = new MachineConnection(MachineSpec.Local(home), FleetConnectionTests.TestOptions);
             connection.Start();
-            var client = (await connection.WaitConnectedAsync(Ct)).Client;
+            var client = (await connection.WaitConnectedAsync(TestContext.Current.CancellationToken)).Client;
             var session = await client.StartAgentAsync(new RemoteAgentStartRequest(kind, home,
                 Mode: kind == AgentKinds.OpenCode ? RemoteAgentModes.Acp : RemoteAgentModes.Terminal,
                 Command: kind == AgentKinds.Terminal ? new RemoteAgentCommand(TestShell.FileName, TestShell.Arguments) : null), Ct);

@@ -19,7 +19,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task OrdinaryChat_CreatesOnlyOnHost_AndBroadcastsComposerImagesAndCommands()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("gchat", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("gchat", TestContext.Current.CancellationToken);
         using var gui = await GuiTestEnvironment.CreateAsync();
         var observer = await host.ConnectAsync("other-client", Ct);
         await HeadlessGui.RunAsync(async () =>
@@ -58,7 +58,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task ClosingGui_DetachesOnly_AndPendingTaskCanBeAnsweredByAnotherClient()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("gclose", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("gclose", TestContext.Current.CancellationToken);
         using var gui = await GuiTestEnvironment.CreateAsync();
         var observer = await host.ConnectAsync("survivor", Ct);
         string id = "";
@@ -90,7 +90,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task PersistedPreFleetChat_IsResumedByHostWithSameIdentityAndFullTranscript()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("gmigrate", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("gmigrate", TestContext.Current.CancellationToken);
         var legacy = host.Environment.Agent.Session;
         var id = legacy.Id.Value;
         legacy.Append(new UserMessagePayload(MessageFactory.CreateUserText("persisted before fleet")), new SurfaceOp.Append());
@@ -113,7 +113,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task HostTruncation_RebuildsRichChatProjection_WithoutKeepingDiscardedMessages()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("greset", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("greset", TestContext.Current.CancellationToken);
         using var gui = await GuiTestEnvironment.CreateAsync();
         await HeadlessGui.RunAsync(async () =>
         {
@@ -136,7 +136,7 @@ public sealed class GuiHostChatIntegrationTests
     [Fact(Timeout = 120000)]
     public async Task AnotherClientAnswer_ClosesOrdinaryChatDecisionDialog_AndWinsOnce()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("gdecision", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("gdecision", TestContext.Current.CancellationToken);
         using var gui = await GuiTestEnvironment.CreateAsync();
         var observer = await host.ConnectAsync("answering-client", Ct);
         await HeadlessGui.RunAsync(async () =>

@@ -1,5 +1,6 @@
 using Dsh.Core;
 using Dsh.Interaction;
+using Dsh.Llm;
 using Dsh.RemoteHost;
 using Dsh.Runtime;
 
@@ -12,7 +13,7 @@ public sealed class HostChatProtocolTests
     [Fact(Timeout = 60000)]
     public async Task SessionEditing_UsesHostCommandsAndPersistence_AndBroadcastsDeletion()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("hce", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("hce", TestContext.Current.CancellationToken);
         var editor = await host.ConnectAsync("editor", Ct);
         var observer = await host.ConnectAsync("observer", Ct);
         var created = await editor.CreateSessionAsync(host.Environment.App.Home.Root,
@@ -40,7 +41,7 @@ public sealed class HostChatProtocolTests
     [Fact(Timeout = 60000)]
     public async Task Truncation_NotifiesOtherClientsBeforeReusedSequenceNumbers()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("hct", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("hct", TestContext.Current.CancellationToken);
         var editor = await host.ConnectAsync("editor", Ct);
         var observer = await host.ConnectAsync("observer", Ct);
         var created = await editor.CreateSessionAsync(host.Environment.App.Home.Root,
@@ -68,7 +69,7 @@ public sealed class HostChatProtocolTests
     [Fact(Timeout = 60000)]
     public async Task PluginPermissionsAndCatalog_AreReadFromAndChangedOnHost()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("hcm", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("hcm", TestContext.Current.CancellationToken);
         var editor = await host.ConnectAsync("editor", Ct);
         var observer = await host.ConnectAsync("observer", Ct);
         const string package = "@deepseek-ai/dsh-gui";

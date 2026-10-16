@@ -1,4 +1,5 @@
 using Dsh.Boot;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using Dsh.Core;
@@ -151,6 +152,9 @@ public sealed class GuiTestEnvironment : IDisposable
         }
         finally { source.PropertyChanged -= Changed; }
     }
+
+    public static Task WaitForAsync<T>(ObservableCollection<T> source, Func<bool> condition)
+        => WaitForAsync((INotifyCollectionChanged)source, condition);
 
     public static async Task WaitForAsync(INotifyCollectionChanged source, Func<bool> condition)
     {

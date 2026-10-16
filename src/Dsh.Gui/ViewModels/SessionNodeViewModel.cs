@@ -1,5 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
-using Dsh.Core;
+using Dsh.Llm;
 
 namespace Dsh.Gui.ViewModels;
 

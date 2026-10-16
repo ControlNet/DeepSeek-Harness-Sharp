@@ -84,7 +84,7 @@ public sealed class RemoteHostPtyTests
     {
         if (OperatingSystem.IsWindows())
             return;
-        await using var host = await HarnessHostFixture.CreateAsync("mpr", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("mpr", TestContext.Current.CancellationToken);
         await using var machine = new MachineConnection(MachineSpec.Local(host.Root), FleetConnectionTests.TestOptions);
         machine.Start();
         await machine.WaitConnectedAsync(Ct);

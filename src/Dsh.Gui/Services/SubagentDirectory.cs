@@ -1,4 +1,5 @@
 using Dsh.Core;
+using Dsh.Llm;
 using Dsh.RemoteHost;
 
 namespace Dsh.Gui.Services;

@@ -104,7 +104,7 @@ public sealed class FleetConnectionTests
     [Fact(Timeout = 90000)]
     public async Task Shared_Subscription_Replays_FansOut_And_Survives_OneReader_Reset_And_Reconnect()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("ff", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("ff", TestContext.Current.CancellationToken);
         await using var connection = new MachineConnection(MachineSpec.Local(host.Root), TestOptions);
         connection.Start();
         await connection.WaitConnectedAsync(Ct);
@@ -214,7 +214,7 @@ public sealed class FleetConnectionTests
             };
             var connection = new MachineConnection(MachineSpec.Local(home, "dying"), options);
             connection.Start();
-            await starting.Task.WaitAsync(Ct);
+            await starting.Task.WaitAsync(TestContext.Current.CancellationToken);
 
             await connection.DisposeAsync();
 

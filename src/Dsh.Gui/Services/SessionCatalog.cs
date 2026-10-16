@@ -1,6 +1,7 @@
 using Dsh.Core;
 using Dsh.Gui.ViewModels;
 using Dsh.Fleet;
+using Dsh.Llm;
 using Dsh.RemoteHost;
 using Dsh.Runtime;
 

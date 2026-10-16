@@ -41,7 +41,7 @@ public sealed class PluginMarketGuiTests
 
             Toggle(window, Todo, "permissions.network").IsChecked = false;
             await GuiTestEnvironment.WaitForAsync(preferences,
-                () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions.Network == false);
+                () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Network == false);
             Dispatcher.UIThread.RunJobs();
             var permissions = HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions;
             Assert.Equal(new PluginPermissions { Write = false, Network = false }, permissions);
@@ -50,7 +50,7 @@ public sealed class PluginMarketGuiTests
 
             Toggle(window, Todo, "permissions.write").IsChecked = true;
             await GuiTestEnvironment.WaitForAsync(preferences,
-                () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions.Write != false);
+                () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Write != false);
             Dispatcher.UIThread.RunJobs();
             await RunCommandAsync(environment, $"/plugins enable_write {Todo}");
             Assert.Equal(new PluginPermissions { Network = false }, HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions);
