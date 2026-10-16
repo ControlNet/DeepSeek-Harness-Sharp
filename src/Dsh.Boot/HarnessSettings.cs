@@ -133,7 +133,10 @@ public sealed class HarnessSettings
     {
         var temporary = $"{path}.tmp";
         SettingsFilePermissions.Write(temporary, content);
-        File.Move(temporary, path, overwrite: true);
+        if (File.Exists(path))
+            File.Replace(temporary, path, destinationBackupFileName: null);
+        else
+            File.Move(temporary, path);
         SettingsFilePermissions.Restrict(path);
     }
 
