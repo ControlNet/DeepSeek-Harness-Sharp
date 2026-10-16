@@ -51,8 +51,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # PR 的 merge 提交；其它事件回落到 github.sha。
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          # 开放 PR 检出实时 merge ref；关闭事件与其它事件使用 github.sha。
+          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -186,7 +186,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -273,7 +273,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
 
       - uses: actions/setup-dotnet@v4
         with:
