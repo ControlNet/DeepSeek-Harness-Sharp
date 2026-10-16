@@ -161,7 +161,7 @@ jobs:
             -class Dsh.Tests.ChatWindowKeyBindingTests
             -class Dsh.Tests.ChatWindowPaneTests
             -class 'Dsh.Tests.JobsTests*'
-            -class Dsh.Tests.PluginLifecycleTests
+            -class Dsh.Tests.Runtime.PluginLifecycleTests
             -class Dsh.Tests.ProjectMemoryTests
             -class Dsh.Tests.SessionAutoRenameTests
             -class Dsh.Tests.RemoteHostCapabilityTests

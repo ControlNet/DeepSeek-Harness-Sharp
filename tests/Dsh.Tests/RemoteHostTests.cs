@@ -64,11 +64,12 @@ public sealed class RemoteHostTests
     [Fact(Timeout = 30000)]
     public async Task DecisionsArrivingBeforeEnumerationAreRetained()
     {
+        var cancellationToken = TestContext.Current.CancellationToken;
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         using var socket = new TcpClient();
-        var accept = listener.AcceptTcpClientAsync(Ct);
-        await socket.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, Ct);
+        var accept = listener.AcceptTcpClientAsync(cancellationToken);
+        await socket.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, cancellationToken);
         using var accepted = await accept;
         await using var peer = new JsonRpcPeer(accepted.GetStream());
         peer.RequestHandler = (message, _) => ValueTask.FromResult<JsonElement?>(
@@ -76,19 +77,19 @@ public sealed class RemoteHostTests
                 ? JsonSerializer.SerializeToElement(new HostHelloResponse(true, HostProtocol.Version, "test", null), HostProtocolJsonContext.Default.HostHelloResponse)
                 : JsonSerializer.SerializeToElement(1L, HostProtocolJsonContext.Default.Int64));
         peer.Start();
-        await using var client = await RemoteHostClient.ConnectAsync(socket.GetStream(), cancellationToken: Ct);
+        await using var client = await RemoteHostClient.ConnectAsync(socket.GetStream(), cancellationToken: cancellationToken);
         var approval = new RemoteApprovalRequest("approval", "session", "bash", null, "allow?");
         var question = new RemoteQuestionRequest("question", "session", []);
         await peer.NotifyAsync(HostProtocol.NotificationApproval,
-            JsonSerializer.SerializeToElement(approval, HostProtocolJsonContext.Default.RemoteApprovalRequest), Ct);
+            JsonSerializer.SerializeToElement(approval, HostProtocolJsonContext.Default.RemoteApprovalRequest), cancellationToken);
         await peer.NotifyAsync(HostProtocol.NotificationQuestion,
-            JsonSerializer.SerializeToElement(question, HostProtocolJsonContext.Default.RemoteQuestionRequest), Ct);
+            JsonSerializer.SerializeToElement(question, HostProtocolJsonContext.Default.RemoteQuestionRequest), cancellationToken);
         // The ping reply follows both notifications on the same TCP stream, so both have arrived before enumeration begins.
-        await client.PingAsync(Ct);
-        await using var approvals = client.ApprovalsAsync(Ct).GetAsyncEnumerator(Ct);
+        await client.PingAsync(cancellationToken);
+        await using var approvals = client.ApprovalsAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
         Assert.True(await approvals.MoveNextAsync());
         Assert.Equal(approval, approvals.Current);
-        await using var questions = client.QuestionsAsync(Ct).GetAsyncEnumerator(Ct);
+        await using var questions = client.QuestionsAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
         Assert.True(await questions.MoveNextAsync());
         Assert.Equal(question.RequestId, questions.Current.RequestId);
     }
