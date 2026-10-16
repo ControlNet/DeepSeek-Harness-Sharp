@@ -16,6 +16,7 @@ internal static class McpStaleSession
             switch (current)
             {
                 case HttpRequestException { StatusCode: HttpStatusCode.NotFound }:
+                case McpNotificationStreamEndedException:
                 case ClientTransportClosedException { Details: HttpClientCompletionDetails { HttpStatusCode: HttpStatusCode.NotFound } }:
                 case OperationCanceledException:
                     return true;

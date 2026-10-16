@@ -5,8 +5,11 @@ using Dsh.Runtime;
 
 namespace Dsh.Tests.Runtime;
 
+[Collection(SettingsTemplateTests.RegistryCollection)]
 public class PluginUnloadTests
 {
+    private const int CollectionRounds = 60;
+
     [Fact]
     public async Task DynamicPlugin_UnloadCollectsLoadContext()
     {
@@ -15,7 +18,7 @@ public class PluginUnloadTests
         Assert.True(File.Exists(pluginPath), $"plugin assembly not found: {pluginPath}");
         var weak = await LoadActivateUnloadAsync(ctx, pluginPath);
         // 满负载(全量套件并行 + 128 核)下 ALC 回收是 GC 延迟问题, 不是泄漏: 放宽轮数避免假失败
-        Assert.True(PluginUnloader.WaitForCollection(weak, out var report, maxRounds: 60), report);
+        Assert.True(PluginUnloader.WaitForCollection(weak, out var report, maxRounds: CollectionRounds), report);
     }
 
     [Fact]
@@ -27,6 +30,34 @@ public class PluginUnloadTests
         Assert.Equal(ActivationState.Disposed, activation.State);
         foreach (var name in provided)
             Assert.Null(ctx.Get(name, strict: false));
+    }
+
+    [Fact]
+    public void DynamicPlugin_UnloadingOverlaysPreservesSchemaAndCollectsContexts()
+    {
+        var (first, second) = UnloadSchemaOverlays();
+        Assert.True(PluginUnloader.WaitForCollection(first, out var firstReport, maxRounds: CollectionRounds), firstReport);
+        Assert.True(PluginUnloader.WaitForCollection(second, out var secondReport, maxRounds: CollectionRounds), secondReport);
+        Assert.Contains(Dsh.Boot.SettingsSchemaCatalog.All(), provider => provider.Package == "@deepseek-ai/dsh-checkpoints");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (WeakReference First, WeakReference Second) UnloadSchemaOverlays()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Dsh.Checkpoints.dll");
+        var first = new PluginHost().TryLoad(path);
+        var second = new PluginHost().TryLoad(path);
+        try
+        {
+            var firstWeak = PluginUnloader.Unload(first.Context!);
+            Assert.Contains(Dsh.Boot.SettingsSchemaCatalog.All(), provider => provider.Package == "@deepseek-ai/dsh-checkpoints");
+            return (firstWeak, PluginUnloader.Unload(second.Context!));
+        }
+        finally
+        {
+            _ = PluginUnloader.Unload(first.Context!);
+            _ = PluginUnloader.Unload(second.Context!);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

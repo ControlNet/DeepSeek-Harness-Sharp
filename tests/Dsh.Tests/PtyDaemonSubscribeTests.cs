@@ -187,7 +187,7 @@ public sealed class PtyDaemonSubscribeTests
             // The shell exits on the subscriber's own command, so the exit always happens after the subscription exists.
             await using var session = await PtyDaemonRetry.SubscribeAsync(started.Id, socketPath, portFile, cancellationToken);
             session.Send(Encoding.UTF8.GetBytes(OperatingSystem.IsWindows() ? "exit\r" : "exit\n"));
-            await session.Completion.WaitAsync(MarkerTimeout, cancellationToken);
+            await session.Completion.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             var buffer = new byte[256];
             var read = await session.ReadAsync(buffer, cancellationToken);

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 
 namespace Dsh.Plugins;
@@ -40,24 +41,29 @@ public interface ISettingsSchemaProvider
 /**
  * 配置面登记表: 生成器在程序集的模块初始化器里注册(编译进镜像的与运行期装载的都会跑到),
  * 因此枚举配置面不需要反射、不依赖装载顺序之外的任何状态。
+ * 同包的不同加载上下文分别保留快照, 最新注册者生效; 卸载后恢复此前仍存活的注册者。
  * 登记时**拷贝数据**而不是保留 provider 实例: 动态加载的插件卸载后其 ALC 才能被回收。
  */
 public static class DshPluginSettingsRegistry
 {
     private static readonly List<Snapshot> Providers = [];
     private static readonly Lock Gate = new();
+    private static readonly ConditionalWeakTable<AssemblyLoadContext, object> Owners = new();
 
     public static void Register(ISettingsSchemaProvider provider)
     {
         ArgumentNullException.ThrowIfNull(provider);
-        var snapshot = new Snapshot(provider.Package, provider.IsPlugin, [.. provider.Settings]);
+        var context = AssemblyLoadContext.GetLoadContext(provider.GetType().Assembly) ?? AssemblyLoadContext.Default;
+        var owner = Owners.GetValue(context, static _ => new object());
+        var snapshot = new Snapshot(provider.Package, provider.IsPlugin, [.. provider.Settings], owner);
         lock (Gate)
         {
-            Providers.RemoveAll(existing => string.Equals(existing.Package, snapshot.Package, StringComparison.Ordinal));
+            Providers.RemoveAll(existing => ReferenceEquals(existing.Owner, owner)
+                && string.Equals(existing.Package, snapshot.Package, StringComparison.Ordinal));
             Providers.Add(snapshot);
         }
         // A plugin's settings leave with its load context; only the context references the handler, so the context stays collectible.
-        if (AssemblyLoadContext.GetLoadContext(provider.GetType().Assembly) is { IsCollectible: true } context)
+        if (context.IsCollectible)
             context.Unloading += _ => Forget(snapshot);
     }
 
@@ -75,13 +81,15 @@ public static class DshPluginSettingsRegistry
             return
             [
                 .. Providers
+                    .GroupBy(provider => provider.Package, StringComparer.Ordinal)
+                    .Select(group => group.Last())
                     .OrderByDescending(provider => !provider.IsPlugin)
                     .ThenBy(provider => provider.Package, StringComparer.Ordinal),
             ];
         }
     }
 
-    private sealed record Snapshot(string Package, bool IsPlugin, IReadOnlyList<PluginSettingSpec> Settings) : ISettingsSchemaProvider;
+    private sealed record Snapshot(string Package, bool IsPlugin, IReadOnlyList<PluginSettingSpec> Settings, object Owner) : ISettingsSchemaProvider;
 }
 
 /**
