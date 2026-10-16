@@ -34,6 +34,38 @@ public sealed class SubagentViewModelTests
     });
 
     [Fact]
+    public async Task Refresh_OverlappingCallers_AwaitPublishedNodesAndEvents() => await HeadlessGui.RunAsync(async () =>
+    {
+        using var environment = await GuiTestEnvironment.CreateAsync();
+        var store = environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
+        var child = SubagentTestData.AddChild(store, environment.Agent.Id, "research", createdAt: 1, withToolCall: true);
+        using var panel = new SubagentPanelViewModel(await environment.OpenChatAsync());
+        panel.SetRoot(environment.Agent.Id);
+
+        // Real Host RPCs yield to the dispatcher: a later refresh must join, not invalidate, this caller.
+        var first = panel.RefreshAsync();
+        var overlapping = panel.RefreshAsync();
+        await first;
+
+        Assert.Equal(child.Id, Assert.Single(panel.Nodes).Id);
+        var events = panel.FindEvents(child.Id);
+        Assert.NotNull(events);
+        Assert.Contains(events, item => item.Data is ToolCallPayload { Name: "bash" });
+        Assert.Contains(events, item => item.Data is ToolResultPayload result &&
+            MessageText.Flatten(result.Message.Content).Contains("child-out"));
+
+        await overlapping;
+
+        Assert.Equal(child.Id, Assert.Single(panel.Nodes).Id);
+        var published = panel.FindEvents(child.Id);
+        Assert.NotNull(published);
+        Assert.Equal(events.Select(item => item.Seq), published.Select(item => item.Seq));
+        Assert.Contains(published, item => item.Data is ToolCallPayload { Name: "bash" });
+        Assert.Contains(published, item => item.Data is ToolResultPayload result &&
+            MessageText.Flatten(result.Message.Content).Contains("child-out"));
+    });
+
+    [Fact]
     public async Task StartAndEnd_FlipLiveStateAndBadge() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
@@ -188,7 +220,7 @@ public sealed class SubagentViewModelTests
         using var environment = await GuiTestEnvironment.CreateAsync();
         var store = environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
         var parent = environment.Agent.Session;
-        SubagentTestData.AddChild(store, parent.Id, "research", createdAt: 1, withToolCall: true);
+        var child = SubagentTestData.AddChild(store, parent.Id, "research", createdAt: 1, withToolCall: true);
         parent.Append(new TurnStartPayload(1));
         var callSeq = parent.Seq;
         parent.Append(new ToolCallPayload(1, 1, ToolCallId.Create("call-sub"), "subagent",
@@ -212,7 +244,30 @@ public sealed class SubagentViewModelTests
 
         Assert.True(card.IsExpanded);
         Assert.True(card.ShowSubagentStream);
+        Assert.Equal(child.Id, card.SubagentSessionId);
         Assert.Contains(card.SubagentStream, message => message.Text.Contains("bash"));
+        Assert.Contains(card.SubagentStream, message => message.Text.Contains("child-out"));
+
+        // The refresh owner must still reload live child events after the initial card snapshot.
+        store.Release(child.Id);
+        var chat = await environment.OpenChatAsync();
+        await (await chat.ClientAsync()).ResumeSessionAsync(child.Id.Value,
+            new RemoteModelSelection("test", "test-model"), null, TestContext.Current.CancellationToken);
+        var live = (AgentLoopAgent)environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(child.Id)!;
+        await live.WhenIdle();
+        var callId = ToolCallId.Create("call-inline-live");
+        live.Session.Append(new TurnStartPayload(2));
+        var liveCallSeq = live.Session.Seq;
+        live.Session.Append(new ToolCallPayload(2, 1, callId, "bash", """{"command":"inline-live"}"""));
+        live.Session.Append(
+            new ToolResultPayload(2, 1, MessageFactory.CreateToolResultMessage(callId, [new TextBlock("inline-live-out")], false)),
+            new SurfaceOp.Append(),
+            [liveCallSeq]);
+        await viewModel.Subagents.RefreshAsync();
+
+        Assert.True(card.ShowSubagentStream);
+        Assert.Contains(card.SubagentStream, message => message.Kind == MessageKind.Tool && message.Text.Contains("inline-live"));
+        Assert.Contains(card.SubagentStream, message => message.Kind == MessageKind.Result && message.Text.Contains("inline-live-out"));
         Assert.Contains(card.SubagentStream, message => message.Text.Contains("child-out"));
     });
 }

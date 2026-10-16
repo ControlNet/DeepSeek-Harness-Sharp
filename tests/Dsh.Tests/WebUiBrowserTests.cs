@@ -140,6 +140,8 @@ public sealed class WebUiBrowserTests
             await chrome.EmulatePhoneAsync(PhoneWidthPixels, PhoneHeightPixels, Ct);
         await chrome.NavigateAsync(hub.Access.Url("/"), Ct);
         await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "login", Ct);
+        if (phone)
+            await RecordTerminalDeliveryAsync(chrome);
         await chrome.ClickAsync("#token", Ct);
         await chrome.InsertTextAsync(hub.Access.Token, Ct);
         await chrome.PressEnterAsync(Ct);
@@ -309,6 +311,118 @@ public sealed class WebUiBrowserTests
         await chrome.PressEnterAsync(Ct);
     }
 
+    /** Observe the real RPC and xterm boundaries without replacing the shell, transport or renderer. Never return their raw text. */
+    private static async Task RecordTerminalDeliveryAsync(HeadlessChrome chrome)
+    {
+        Assert.Equal("installed", await chrome.EvaluateAsync("""
+            (async () => {
+              const { HostRpc } = await import('/rpc.js');
+              const { Terminal } = await import('/vendor/xterm-6.0.0/xterm.mjs');
+              const peers = [];
+              const terminals = [];
+              const byRpc = new WeakMap();
+              const byTerminal = new WeakMap();
+              const stream = () => ({ bytes: 0, chunks: 0, tail: '', decoder: new TextDecoder() });
+              const append = (target, bytes) => {
+                target.bytes += bytes.length;
+                target.chunks++;
+                target.tail = (target.tail + target.decoder.decode(bytes, { stream: true })).slice(-65536);
+              };
+              const summary = (target, expected) => ({
+                bytes: target.bytes, chunks: target.chunks, containsExpected: target.tail.includes(expected)
+              });
+              const connect = HostRpc.connect;
+              HostRpc.connect = async function(url) {
+                const peer = { machine: new URL(url).searchParams.get('machine'), state: 'connecting', output: new Map(), requests: {} };
+                peers.push(peer);
+                try {
+                  const rpc = await connect.call(this, url);
+                  byRpc.set(rpc, peer);
+                  peer.state = 'open';
+                  rpc.onClose((event) => { peer.state = 'closed'; peer.closeCode = event.code; });
+                  return rpc;
+                } catch (error) {
+                  peer.state = 'failed';
+                  peer.closeCode = error.code;
+                  throw error;
+                }
+              };
+              const on = HostRpc.prototype.on;
+              HostRpc.prototype.on = function(method, handler) {
+                if (method !== 'host.pty.output')
+                  return on.call(this, method, handler);
+                const peer = byRpc.get(this);
+                return on.call(this, method, (output) => {
+                  let received = peer.output.get(output.PtyId);
+                  if (received === undefined) {
+                    received = stream();
+                    peer.output.set(output.PtyId, received);
+                  }
+                  append(received, Uint8Array.from(atob(output.Base64), (character) => character.charCodeAt(0)));
+                  received.eof = output.Eof;
+                  handler(output);
+                });
+              };
+              const request = HostRpc.prototype.request;
+              HostRpc.prototype.request = function(method, params) {
+                const peer = byRpc.get(this);
+                if (!method.startsWith('host.pty.'))
+                  return request.call(this, method, params);
+                const count = peer.requests[method] ??= { sent: 0, completed: 0, failed: 0 };
+                count.sent++;
+                return request.call(this, method, params).then((result) => {
+                  count.completed++;
+                  return result;
+                }, (error) => {
+                  count.failed++;
+                  throw error;
+                });
+              };
+              const open = Terminal.prototype.open;
+              Terminal.prototype.open = function(screen) {
+                const terminal = { term: this, screen, output: stream(), parsed: 0, renders: 0, sizes: [] };
+                terminals.push(terminal);
+                byTerminal.set(this, terminal);
+                this.onWriteParsed(() => terminal.parsed++);
+                this.onRender(() => terminal.renders++);
+                this.onResize(({ cols, rows }) => terminal.sizes.push({ cols, rows }));
+                return open.call(this, screen);
+              };
+              const write = Terminal.prototype.write;
+              Terminal.prototype.write = function(bytes, callback) {
+                append(byTerminal.get(this).output, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes);
+                return write.call(this, bytes, callback);
+              };
+              window.__terminalDelivery = (expected) => ({
+                peers: peers.map((peer) => ({
+                  machine: peer.machine, state: peer.state, closeCode: peer.closeCode, requests: peer.requests,
+                  output: [...peer.output].map(([ptyId, received]) => ({ ptyId, ...summary(received, expected), eof: received.eof }))
+                })),
+                terminals: terminals.map(({ term, screen, output, parsed, renders, sizes }) => {
+                  const buffer = term.buffer.active;
+                  const lines = Array.from({ length: buffer.length }, (_, row) => buffer.getLine(row).translateToString());
+                  const rect = screen.getBoundingClientRect();
+                  return {
+                    ptyId: screen.dataset.ptyId, attachedToDocument: screen.isConnected,
+                    output: summary(output, expected), parsed, renders, sizes,
+                    cols: term.cols, rows: term.rows, bufferType: buffer.type, bufferLines: buffer.length,
+                    bufferContainsExpected: lines.some((line) => line.includes(expected)),
+                    nonblankBufferLines: lines.filter((line) => line.trim().length > 0).length,
+                    viewportY: buffer.viewportY, baseY: buffer.baseY, cursorX: buffer.cursorX, cursorY: buffer.cursorY,
+                    renderedContainsExpected: screen.querySelector('.xterm-rows')?.textContent.includes(expected),
+                    renderedRows: screen.querySelector('.xterm-rows')?.children.length,
+                    renderPaused: term._core?._renderService?._isPaused,
+                    screen: { top: rect.top, left: rect.left, width: rect.width, height: rect.height,
+                      display: getComputedStyle(screen).display, visibility: getComputedStyle(screen).visibility },
+                    viewport: { width: innerWidth, height: innerHeight, visibility: document.visibilityState }
+                  };
+                })
+              });
+              return 'installed';
+            })()
+            """, Ct));
+    }
+
     /** Compare the rendered terminal with the original daemon when a real command does not return. */
     private static async Task WaitForTerminalTextAsync(HeadlessChrome chrome, string expected, string home)
     {
@@ -318,11 +432,19 @@ public sealed class WebUiBrowserTests
         }
         catch (XunitException error)
         {
-            var browser = await chrome.EvaluateAsync("""
+            var browser = await chrome.EvaluateAsync($$"""
                 JSON.stringify({
-                  rows: document.querySelector('.xterm-rows').textContent,
-                  state: document.getElementById('terminal-state').textContent,
-                  ptyId: document.getElementById('terminal-screen').dataset.ptyId
+                  terminalCount: document.querySelectorAll('#terminal-screen').length,
+                  renderedTerminalCount: document.querySelectorAll('.xterm-rows').length,
+                  containsExpected: document.querySelector('.xterm-rows').textContent.includes({{JsonSerializer.Serialize(expected)}}),
+                  renderedCharacters: document.querySelector('.xterm-rows').textContent.length,
+                  state: (() => {
+                    const text = document.getElementById('terminal-state').textContent;
+                    return { empty: text.length === 0, attaching: text === 'Attaching…', ended: text === 'The process has ended.',
+                      attachError: text.startsWith('Cannot attach:'), inputError: text.startsWith('Input not delivered:') };
+                  })(),
+                  ptyId: document.getElementById('terminal-screen').dataset.ptyId,
+                  delivery: window.__terminalDelivery?.({{JsonSerializer.Serialize(expected)}})
                 })
                 """, Ct);
             string daemon;
@@ -335,9 +457,9 @@ public sealed class WebUiBrowserTests
                 var snapshot = await PtyDaemonClient.SnapshotAsync(ptyId, socket, port, Ct);
                 daemon = JsonSerializer.Serialize(new
                 {
-                    sessions = sessions.Select(session => new { session.Id, session.Pid, session.Status, session.ExitCode }),
+                    sessions = sessions.Select(session => new { session.Id, session.Pid, session.Status, session.ExitCode, session.Columns, session.Rows }),
                     containsExpected = snapshot.Contains(expected, StringComparison.Ordinal),
-                    snapshot,
+                    snapshotBytes = System.Text.Encoding.UTF8.GetByteCount(snapshot),
                 });
             }
             catch (Exception diagnosticError)

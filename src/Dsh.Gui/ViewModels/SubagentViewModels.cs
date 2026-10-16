@@ -57,6 +57,8 @@ public sealed partial class SubagentPanelViewModel : ObservableObject, IDisposab
     private SessionId? _root;
     private bool _disposed;
     private long _refreshGeneration;
+    private Task? _refreshTask;
+    private bool _refreshRequested;
     public event Action<string>? Failed;
 
     public SubagentPanelViewModel(HostChatSession chat)
@@ -99,18 +101,37 @@ public sealed partial class SubagentPanelViewModel : ObservableObject, IDisposab
     public void SetRoot(SessionId root)
     {
         if (_root != root)
+        {
             Close();
+            ++_refreshGeneration;
+            _refreshTask = null;
+        }
         _root = root;
         Refresh();
     }
 
     public void Refresh() => _ = RefreshAsync();
 
-    public async Task RefreshAsync()
+    /** Same-root callers await one owner through publication, including refreshes requested during its RPCs. */
+    public Task RefreshAsync()
     {
+        _refreshRequested = true;
+        return _refreshTask is { IsCompleted: false } pending
+            ? pending
+            : _refreshTask = RefreshAndReportAsync();
+    }
+
+    private async Task RefreshAndReportAsync()
+    {
+        var generation = _refreshGeneration;
         try
         {
-            await RefreshCoreAsync();
+            do
+            {
+                _refreshRequested = false;
+                await RefreshCoreAsync();
+            }
+            while (!_disposed && generation == _refreshGeneration && _refreshRequested);
         }
         catch (Exception error)
         {
@@ -124,7 +145,7 @@ public sealed partial class SubagentPanelViewModel : ObservableObject, IDisposab
         if (_disposed)
             return;
         var root = _root;
-        var generation = ++_refreshGeneration;
+        var generation = _refreshGeneration;
         var entries = root is { } rootId ? await _directory.DescendantsAsync(rootId) : [];
         if (_disposed || root != _root || generation != _refreshGeneration)
             return;
