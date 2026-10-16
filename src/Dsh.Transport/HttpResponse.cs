@@ -1,9 +1,9 @@
 using System.Text;
 
-namespace Dsh.WebBridge;
+namespace Dsh.Transport;
 
 /** An HTTP status line: code plus reason phrase. */
-internal readonly record struct HttpStatus(int Code, string Reason)
+public readonly record struct HttpStatus(int Code, string Reason)
 {
     public static readonly HttpStatus Ok = new(200, "OK");
     public static readonly HttpStatus NoContent = new(204, "No Content");
@@ -12,13 +12,14 @@ internal readonly record struct HttpStatus(int Code, string Reason)
     public static readonly HttpStatus Forbidden = new(403, "Forbidden");
     public static readonly HttpStatus NotFound = new(404, "Not Found");
     public static readonly HttpStatus MethodNotAllowed = new(405, "Method Not Allowed");
+    public static readonly HttpStatus InternalServerError = new(500, "Internal Server Error");
 }
 
 /**
  * Writes one complete HTTP/1.1 response and asks the client to close the connection, so each connection carries exactly one request.
  * Every response carries the same hardening headers: no sniffing, no referrer, no framing, and a same-origin-only content security policy.
  */
-internal static class HttpResponse
+public static class HttpResponse
 {
     public const string PlainText = "text/plain; charset=utf-8";
     public const string Json = "application/json; charset=utf-8";
@@ -46,10 +47,17 @@ internal static class HttpResponse
         string extraHeaders,
         CancellationToken cancellationToken)
     {
-        var head = $"HTTP/1.1 {status.Code} {status.Reason}\r\nContent-Type: {contentType}\r\nContent-Length: {body.Length}\r\nCache-Control: no-cache\r\n{SecurityHeaders}{extraHeaders}Connection: close\r\n\r\n";
-        await stream.WriteAsync(Encoding.ASCII.GetBytes(head), cancellationToken).ConfigureAwait(false);
+        await WriteHeadAsync(stream, status, contentType, body.Length, extraHeaders, cancellationToken).ConfigureAwait(false);
         if (!body.IsEmpty)
             await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /** A null length delimits a streaming response by closing the connection after its last event. */
+    public static Task WriteHeadAsync(Stream stream, HttpStatus status, string contentType, int? contentLength, string extraHeaders, CancellationToken cancellationToken)
+    {
+        var lengthHeader = contentLength is { } length ? $"Content-Length: {length}\r\n" : "";
+        var head = $"HTTP/1.1 {status.Code} {status.Reason}\r\nContent-Type: {contentType}\r\n{lengthHeader}Cache-Control: no-cache\r\n{SecurityHeaders}{extraHeaders}Connection: close\r\n\r\n";
+        return stream.WriteAsync(Encoding.ASCII.GetBytes(head), cancellationToken).AsTask();
     }
 }

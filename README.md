@@ -146,6 +146,7 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    - 切换只影响之后的相对路径解析(包括 shell 的相对 `workdir`),以及新启动的 shell/终端的默认目录;已经存在的 `bash_persistent` / `pwsh_persistent` shell 与终端仍停在各自的目录。
    - 写权限根固定为会话的初始目录,不随切换移动:写入权限根之外的文件(`write`/`edit`/`str_replace_editor`)、在权限根之外启动 shell/终端或建 worktree,都会先弹审批,提示「目标路径在权限根之外」;审批策略为 never 时直接拒绝。
    - 两者分别对应插件 `@deepseek-ai/dsh-tool-working-directory` 与 `@deepseek-ai/dsh-tool-worktree`,可用 `/plugins disable` 关闭。
+14. A2A 宿主默认只监听回环地址；自动端口由实际 HTTP 监听器直接绑定并持有，连接时使用宿主报告的 `Endpoint`。指定端口已被占用时直接报错，不暗中换端口或重试；对非回环地址开放时必须配置认证令牌。关闭宿主会释放监听端口。
 
 ## 图形界面
 
