@@ -44,6 +44,9 @@ public sealed class HarnessSettings
     [YamlMember(Alias = "storage")]
     public StorageSettings? Storage { get; set; }
 
+    [YamlMember(Alias = "network")]
+    public NetworkSettings? Network { get; set; }
+
     [YamlMember(Alias = "sandbox")]
     public SandboxSettings? Sandbox { get; set; }
 
