@@ -28,6 +28,7 @@ internal static class PtcHostShim
     }
 }
 
+[Collection(SerialProcessCollection.Name)]
 public sealed class PtcRuntimeTests
 {
     private static JsonObject ObjectSchema(params (string Name, string Type, bool Required)[] properties)
