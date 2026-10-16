@@ -36,7 +36,10 @@ public static class RemoteHostListener
         try
         {
             await File.WriteAllTextAsync(temporary, ((IPEndPoint)listener.LocalEndpoint).Port.ToString(), cancellationToken).ConfigureAwait(false);
-            File.Move(temporary, portFile, overwrite: true);
+            if (File.Exists(portFile))
+                File.Replace(temporary, portFile, destinationBackupFileName: null);
+            else
+                File.Move(temporary, portFile);
             while (!cancellationToken.IsCancellationRequested)
             {
                 TcpClient client;
