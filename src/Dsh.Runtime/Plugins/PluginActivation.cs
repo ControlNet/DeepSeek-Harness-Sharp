@@ -8,6 +8,7 @@ public sealed class PluginActivation
     private readonly Lock _sync = new();
     private readonly Lock _inputSync = new();
     private readonly Lock _activationSync = new();
+    private readonly Lock _stateSync = new();
     private TaskCompletionSource _settled = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Dictionary<string, PluginActivation> _dependencyOwners = new(StringComparer.Ordinal);
 
@@ -22,7 +23,16 @@ public sealed class PluginActivation
     /** 失败原因:只保留字符串,不缓存插件 Exception(卸载约束)。 */
     public string? Error { get; private set; }
 
-    public ActivationState State { get; private set; } = ActivationState.Pending;
+    /** Read under the same lock that completes the settle handle: a caller that sees a settled state also sees WaitAsync completed. */
+    public ActivationState State
+    {
+        get
+        {
+            lock (_stateSync)
+                return field;
+        }
+        private set;
+    } = ActivationState.Pending;
     public bool IsActive => State == ActivationState.Active;
     public bool IsTransitioning => State is ActivationState.Activating or ActivationState.Deactivating;
 
@@ -58,7 +68,11 @@ public sealed class PluginActivation
     /** 宿主根激活:没有状态机,始终 Active。 */
     internal static PluginActivation CreateRoot() => new("root");
 
-    public Task WaitAsync() => _settled.Task;
+    public Task WaitAsync()
+    {
+        lock (_stateSync)
+            return _settled.Task;
+    }
 
     /** 终态卸载:已注册到调度器的插件走协作式卸载,否则直接驱动状态机。 */
     public async Task DeactivateAsync()
@@ -275,30 +289,41 @@ public sealed class PluginActivation
 
     internal void LifecycleEntered(ActivationState state)
     {
-        State = state;
+        PublishState(state);
         switch (state)
         {
-            case ActivationState.Activating:
-            case ActivationState.Deactivating:
+            case ActivationState.Active:
+                Ctx.LoggerFor().Info("activated");
+                Ctx.Root.Scheduler.OnActivationStateChanged(this, state);
+                break;
+            case ActivationState.Disposed:
+                Ctx.LoggerFor().Info("deactivated");
+                Ctx.Root.Scheduler.OnActivationStateChanged(this, state);
+                break;
+        }
+    }
+
+    /**
+     * State and settle handle change together under one lock.
+     * CI (macOS): AwaitTransitionsAsync saw Disposed between the state write and TrySetResult, so DeactivateAsync returned while WaitAsync was still pending.
+     */
+    private void PublishState(ActivationState state)
+    {
+        lock (_stateSync)
+        {
+            State = state;
+            if (state is ActivationState.Activating or ActivationState.Deactivating)
+            {
                 // 曾出现整套测试偶发挂死在 xunit 的 Main: 它一直等某个用例收尾, 而该用例的环境组合永不返回。
                 // 根因: 进入迁移态时若直接替换 _settled, AwaitTransitionsAsync 可能刚判到 IsTransitioning 就拿到这个即将被丢弃的旧句柄, 旧句柄从此再无完成者, Task.WhenAll 永不返回, SettleAsync/Compose 永久等待; 每个 GUI 用例都要 Compose, 于是整套挂住 Main。
                 // 修复: 换新句柄前先 TrySetResult 释放旧句柄; AwaitTransitionsAsync 会重新评估迁移状态, 因此不会提前返回。
                 (_settled, var previous) = (new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously), _settled);
                 previous.TrySetResult();
-                break;
-            case ActivationState.Active:
-                Ctx.LoggerFor().Info("activated");
+            }
+            else
+            {
                 _settled.TrySetResult();
-                Ctx.Root.Scheduler.OnActivationStateChanged(this, state);
-                break;
-            case ActivationState.Disposed:
-                Ctx.LoggerFor().Info("deactivated");
-                _settled.TrySetResult();
-                Ctx.Root.Scheduler.OnActivationStateChanged(this, state);
-                break;
-            default:
-                _settled.TrySetResult();
-                break;
+            }
         }
     }
 
