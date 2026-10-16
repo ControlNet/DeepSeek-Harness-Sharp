@@ -51,6 +51,8 @@
     <None Include="..\..\src\Dsh.Boot\Profiles\Templates\settings.yaml"
           Link="Profiles\Templates\settings.yaml"
           CopyToOutputDirectory="PreserveNewest" />
+    <!-- Search API responses captured from the real GitHub and Stack Exchange APIs; the engine tests replay them through a local handler. -->
+    <None Update="Web\ApiSamples\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -104,6 +106,7 @@
     <ProjectReference Include="..\..\src\Dsh.Transport\Dsh.Transport.csproj" />
     <ProjectReference Include="..\..\src\Dsh.RemoteHost\Dsh.RemoteHost.csproj" />
     <ProjectReference Include="..\..\Dsh.Host\Dsh.Host.csproj" />
+    <ProjectReference Include="..\..\DeepSeek-Harness-Sharp\DeepSeek-Harness-Sharp.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Dsh.Gui\Dsh.Gui.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Plugins.Generator\Dsh.Plugins.Generator.csproj" />
   </ItemGroup>

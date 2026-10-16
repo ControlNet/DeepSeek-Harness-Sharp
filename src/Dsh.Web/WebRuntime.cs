@@ -49,14 +49,20 @@ public sealed class WebRuntime : Service
 
     public async Task<WebSearchResult> Search(WebSearchRequest request, CancellationToken signal = default)
     {
-        var provider = ResolveProvider(_searchProviders, _searchProviderId);
+        var provider = request.Engine is { } engine
+            ? ResolveNamedEngine(engine)
+            : ResolveProvider(_searchProviders, _searchProviderId, candidate => candidate.ImplicitCandidate);
         var result = await provider.Search(request, signal).ConfigureAwait(false);
-        return CapSources(result, request.MaxResults);
+        return CapSources(result with { Engine = provider.Id }, request.MaxResults);
     }
+
+    /** Usable search providers ordered by id, for prompts and error hints. */
+    public IReadOnlyList<IWebSearchProvider> SearchEngines()
+        => _searchProviders.Values.Where(provider => provider.Available()).OrderBy(provider => provider.Id, StringComparer.Ordinal).ToList();
 
     public Task<WebFetchResult> Fetch(WebFetchRequest request, CancellationToken signal = default)
     {
-        var provider = ResolveProvider(_fetchProviders, _fetchProviderId);
+        var provider = ResolveProvider(_fetchProviders, _fetchProviderId, _ => true);
         return provider.Fetch(request, signal);
     }
 
@@ -73,7 +79,16 @@ public sealed class WebRuntime : Service
         }, "web.registerProvider()"));
     }
 
-    private static T ResolveProvider<T>(Dictionary<string, T> providers, string? configuredId) where T : IWebProvider
+    private IWebSearchProvider ResolveNamedEngine(string engine)
+    {
+        if (_searchProviders.TryGetValue(engine, out var named) && named.Available())
+            return named;
+        var state = named is null ? "is not registered" : $"is registered but unavailable ({named.Description})";
+        var usable = string.Join(", ", SearchEngines().Select(provider => provider.Id));
+        throw new WebError($"search engine \"{engine}\" {state}; usable engines: {(usable.Length > 0 ? usable : "none")}", WebErrorCodes.InvalidArgs);
+    }
+
+    private static T ResolveProvider<T>(Dictionary<string, T> providers, string? configuredId, Func<T, bool> implicitCandidate) where T : IWebProvider
     {
         if (configuredId is not null)
         {
@@ -88,10 +103,12 @@ public sealed class WebRuntime : Service
             return configured;
         }
 
-        var usable = providers.Values.Where(provider => provider.Available()).ToList();
+        var usable = providers.Values.Where(provider => implicitCandidate(provider) && provider.Available()).ToList();
         if (usable.Count == 0)
         {
-            throw new WebError("no usable web provider is registered", WebErrorCodes.ProviderUnavailable);
+            var named = string.Join(", ", providers.Values.Where(provider => !implicitCandidate(provider) && provider.Available()).Select(provider => provider.Id));
+            var hint = named.Length > 0 ? $"; name one of these engines instead: {named}" : "";
+            throw new WebError($"no usable web provider is registered{hint}", WebErrorCodes.ProviderUnavailable);
         }
         if (usable.Count > 1)
         {
@@ -105,6 +122,6 @@ public sealed class WebRuntime : Service
     {
         if (maxResults is null || result.Sources.Count <= maxResults.Value)
             return result;
-        return new WebSearchResult(result.Content, result.Sources.Take(maxResults.Value).ToList(), true);
+        return result with { Sources = result.Sources.Take(maxResults.Value).ToList(), Truncated = true };
     }
 }
