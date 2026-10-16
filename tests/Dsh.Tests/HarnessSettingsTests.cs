@@ -215,6 +215,41 @@ public sealed class HarnessSettingsTests
     }
 
     [Fact]
+    public void SavePlugins_ReplacesSettingsWhileASharedReaderKeepsThePreviousPermissions()
+    {
+        var home = new HarnessHome(TempTree.CreateDirectory("settings-shared-reader"));
+        var path = Path.Combine(home.Root, "settings.yaml");
+        const string original = """
+            plugins:
+              "@scope/plugin":
+                permissions:
+                  network: true
+            """;
+        File.WriteAllText(path, original);
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            var settings = HarnessSettings.Load(home);
+            Assert.True(settings.Plugins["@scope/plugin"].Permissions!.Network);
+            settings.Plugins["@scope/plugin"] = settings.Plugins["@scope/plugin"] with
+            {
+                Permissions = new PluginPermissions { Network = false },
+            };
+
+            settings.SavePlugins(home);
+
+            var permissions = HarnessSettings.Load(home).Plugins["@scope/plugin"].Permissions;
+            Assert.Equal(new PluginPermissions { Network = false }, permissions);
+            Assert.Equal(original, reader.ReadToEnd());
+        }
+        finally
+        {
+            TempTree.Delete(home.Root);
+        }
+    }
+
+    [Fact]
     public void Save_KeepsPluginsBlockWhenWritingOtherSections()
     {
         var home = Path.Combine(Path.GetTempPath(), "dsh-settings-save2", Guid.NewGuid().ToString("N"));

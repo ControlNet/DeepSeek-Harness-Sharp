@@ -77,7 +77,7 @@ public sealed class HarnessSettings
         Directory.CreateDirectory(home.Root);
         if (!File.Exists(path))
             SettingsFilePermissions.Write(path, LoadTemplate());
-        var text = File.ReadAllText(path);
+        var text = ReadSettingsTextShared(path);
         var settings = Parse(text);
         settings.Plugins = PluginSettingsSection.ParseDocument(text);
         return settings;
@@ -106,7 +106,7 @@ public sealed class HarnessSettings
             WriteAtomic(path, text);
             return;
         }
-        var existing = File.ReadAllText(path);
+        var existing = ReadSettingsTextShared(path);
         WriteAtomic(path, SettingsDocument.MergeTopLevel(existing, serializer.Serialize(Parse(existing)), text));
     }
 
@@ -116,8 +116,16 @@ public sealed class HarnessSettings
         Directory.CreateDirectory(home.Root);
         if (!File.Exists(path))
             SettingsFilePermissions.Write(path, LoadTemplate());
-        var text = File.ReadAllText(path);
+        var text = ReadSettingsTextShared(path);
         WriteAtomic(path, SettingsDocument.ReplacePluginsBlock(text, SettingsDocument.RenderPlugins(Plugins)));
+    }
+
+    /** Keep a complete snapshot while allowing WriteAtomic to replace settings.yaml on Windows. */
+    private static string ReadSettingsTextShared(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
     }
 
     /** 先写同目录临时文件再改名,避免进程中断留下半截配置; settings.yaml 一律收紧为仅属主可读写。 */
