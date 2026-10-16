@@ -19,6 +19,8 @@ internal static class PtcHostShim
     internal static void Initialize()
     {
         var args = Environment.GetCommandLineArgs();
+        if (args.Any(argument => argument == PtyConsoleResizeTests.ProbeArgument))
+            Environment.Exit(PtyConsoleResizeTests.RunProbe(args));
         if (args.Any(argument => argument == UnixPtyDescriptorOwnershipTests.SpawnFailureProbeArgument))
             Environment.Exit(UnixPtyDescriptorOwnershipTests.RunSpawnFailureProbe());
         if (args.Any(argument => argument == PtcScriptHost.HostArgument))
