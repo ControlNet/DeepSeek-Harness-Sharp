@@ -29,6 +29,6 @@ public static class McpCommand
         => statuses.Count == 0
             ? "no mcp servers enabled"
             : string.Join('\n', statuses.Select(status => status.Connected
-                ? $"{status.Name}: {status.Transport} connected ({status.ToolCount} tools registered)"
+                ? $"{status.Name}: {status.Transport} connected ({status.ToolCount} tools registered{(status.Resources ? ", resources" : "")})"
                 : $"{status.Name}: {status.Transport} error: {status.Error}"));
 }

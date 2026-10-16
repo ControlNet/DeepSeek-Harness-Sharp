@@ -44,12 +44,13 @@ public sealed class PtySessionSubscriptionTests
     {
         using var host = new PtyHost();
         using var session = await host.StartAsync(
-            StartInfo(OperatingSystem.IsWindows()
-                ? ("cmd.exe", ["/c", "echo BYE & ping -n 3 127.0.0.1 > nul"])
-                : ("/bin/sh", ["-c", "echo BYE; sleep 2"])),
-            cancellationToken: TestContext.Current.CancellationToken);
+            StartInfo(InteractiveShell()), cancellationToken: TestContext.Current.CancellationToken);
 
         using var subscription = session.Subscribe();
+        // 用订阅建立后的真实输入控制退出, 不用 ping/sleep 与 Windows 子进程启动时间赛跑。
+        await session.WriteAsync(
+            Encoding.UTF8.GetBytes(OperatingSystem.IsWindows() ? "echo BYE & exit\r" : "echo BYE; exit\n"),
+            TestContext.Current.CancellationToken);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
         var text = new StringBuilder();
