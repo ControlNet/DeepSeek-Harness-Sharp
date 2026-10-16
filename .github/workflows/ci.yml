@@ -107,16 +107,41 @@ jobs:
       - name: 安装 sqlite3（Windows；SQLitePCLRaw.provider.sqlite3 需要系统 sqlite3.dll）
         if: runner.os == 'Windows'
         shell: pwsh
+        run: ./scripts/install-sqlite-runtime.ps1
+
+      - name: 启动当前产物的独立 PTY daemon
+        shell: bash
         run: |
-          choco install sqlite --no-progress -y
-          $dll = Get-ChildItem 'C:\ProgramData\chocolatey\lib\sqlite' -Recurse -Filter 'sqlite3.dll' |
-            Select-Object -First 1
-          if (-not $dll) { throw '未找到 sqlite3.dll' }
-          foreach ($target in @('tests/Dsh.Tests/bin/Debug/net10.0', 'DeepSeek-Harness-Sharp/bin/Debug/net10.0')) {
-            New-Item -ItemType Directory -Force $target | Out-Null
-            Copy-Item $dll.FullName $target -Force
-            Write-Host "copied $($dll.FullName) to $target"
-          }
+          set -euo pipefail
+          mkdir -p .daemon-tests
+          HOME_DIR="$(mktemp -d "$PWD/.daemon-tests/qXXXXXX")"
+          cp src/Dsh.Boot/Profiles/Templates/settings.yaml "$HOME_DIR/settings.yaml"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            DSH_HOME="$(cygpath -w "$HOME_DIR")"
+          else
+            DSH_HOME="$HOME_DIR"
+          fi
+          export DSH_HOME
+          echo "DSH_HOME=$DSH_HOME" >> "$GITHUB_ENV"
+          DAEMON="DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp"
+          if [ ! -x "$DAEMON" ]; then
+            DAEMON="$DAEMON.exe"
+          fi
+          "$DAEMON" tui daemon > "$HOME_DIR/daemon.log" 2>&1 &
+          DAEMON_PID=$!
+          for ATTEMPT in {1..200}; do
+            if [ -e "$HOME_DIR/run/dsh.sock" ] || [ -e "$HOME_DIR/run/dsh.port" ]; then
+              exit 0
+            fi
+            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+              cat "$HOME_DIR/daemon.log"
+              exit 1
+            fi
+            sleep 0.05
+          done
+          echo "::error::当前构建的独立 PTY daemon 未发布端点"
+          cat "$HOME_DIR/daemon.log"
+          exit 1
 
       - name: 运行测试（排除 GpuStress / OnlyGpu / LlmSmoke / RenderBench）
         shell: bash
@@ -155,6 +180,52 @@ jobs:
           echo "运行: ${ARGS[*]}"
           "${ARGS[@]}"
 
+      - name: 偶发失败根因回归（连续三轮，不重试失败）
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ ! -x "$EXE" ]; then
+            EXE="$EXE.exe"
+          fi
+          ARGS=(-noColor
+            -class Dsh.Tests.PtyDaemonSubscribeTests
+            -class Dsh.Tests.PtyDaemonTests
+            -class Dsh.Tests.PtyOwnershipTests
+            -class Dsh.Tests.PtyOutputReaderTests
+            -class Dsh.Tests.UnixPtyDescriptorOwnershipTests
+            -class Dsh.Tests.PtyConsoleResizeTests
+            -class Dsh.Tests.MouseReportPtyTests
+            -class Dsh.Tests.TuiOverlayCpuTests
+            -class Dsh.Tests.PtySessionSubscriptionTests
+            -class Dsh.Tests.ChatWindowKeyBindingTests
+            -class Dsh.Tests.ChatWindowPaneTests
+            -class 'Dsh.Tests.JobsTests*'
+            -class Dsh.Tests.Runtime.PluginLifecycleTests
+            -class Dsh.Tests.Runtime.PluginSchedulerTests
+            -class Dsh.Tests.Runtime.RuntimePluginTests
+            -class Dsh.Tests.Runtime.PluginUnloadTests
+            -class Dsh.Tests.AcpTests
+            -class Dsh.Tests.AcpClientTests
+            -class Dsh.Tests.LspTests
+            -class Dsh.Tests.SdkTests
+            -class Dsh.Tests.Mcp.McpResourceToolsTests
+            -class Dsh.Tests.ProjectMemoryTests
+            -class Dsh.Tests.SessionAutoRenameTests
+            -class Dsh.Tests.SessionLogCompatibilityTests
+            -class Dsh.Tests.RemoteHostCapabilityTests
+            -class Dsh.Tests.RemoteHostTests
+            -class Dsh.Tests.FrameCodecTests
+            -class Dsh.Tests.PluginTemplateTests
+            -class Dsh.Tests.SettingsTemplateTests
+            -class Dsh.Tests.ExportSessionLogTests)
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ARGS+=(-parallel none)
+          fi
+          for ROUND in 1 2 3; do
+            echo "根因回归 round $ROUND/3"
+            "$EXE" "${ARGS[@]}"
+          done
       - name: 定时提醒时区回归（发布档 invariant globalization）
         shell: pwsh
         run: |

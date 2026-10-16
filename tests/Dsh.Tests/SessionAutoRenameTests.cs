@@ -49,7 +49,7 @@ public class SessionAutoRenameTests
     [Fact]
     public async Task RenamesSessionAfterFirstCompletedTurn()
     {
-        var root = Path.Combine(Path.GetTempPath(), "dsh-autorename", Guid.NewGuid().ToString("N"));
+        var root = TempTree.CreateDirectory("autorename");
         var home = new HarnessHome(Path.Combine(root, "home"));
         var cwd = Path.Combine(root, "project");
         Directory.CreateDirectory(home.Root);
@@ -89,14 +89,14 @@ public class SessionAutoRenameTests
         }
         finally
         {
-            DeleteTempDir(root);
+            TempTree.Delete(root);
         }
     }
 
     [Fact]
     public async Task FullComposition_RenamesWithSessionModelWhenNoCompactionModel()
     {
-        var root = Path.Combine(Path.GetTempPath(), "dsh-autorename-full", Guid.NewGuid().ToString("N"));
+        var root = TempTree.CreateDirectory("autorename-full");
         var home = new HarnessHome(Path.Combine(root, "home"));
         var cwd = Path.Combine(root, "project");
         Directory.CreateDirectory(home.Root);
@@ -132,7 +132,7 @@ public class SessionAutoRenameTests
         }
         finally
         {
-            DeleteTempDir(root);
+            TempTree.Delete(root);
         }
     }
 
@@ -143,24 +143,5 @@ public class SessionAutoRenameTests
         while (DateTime.UtcNow < deadline
             && !string.Equals(agent.Session.Header.Title, expected, StringComparison.Ordinal))
             await Task.Delay(25, TestContext.Current.CancellationToken);
-    }
-
-    /** 组合体的后台 worker 可能仍持有工作区文件句柄, 清理失败不掩盖断言结果。 */
-    private static void DeleteTempDir(string root)
-    {
-        for (var attempt = 0; attempt < 10; attempt++)
-        {
-            try
-            {
-                if (!Directory.Exists(root))
-                    return;
-                Directory.Delete(root, true);
-                return;
-            }
-            catch (IOException) when (attempt < 9)
-            {
-                Thread.Sleep(100);
-            }
-        }
     }
 }

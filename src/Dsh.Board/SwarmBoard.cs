@@ -76,7 +76,7 @@ public sealed record BoardPage(IReadOnlyList<BoardMessage> Messages, long Cursor
  * 谱系树共享看板：每棵以主会话为根的树一块板，sub agent 之间以小的增量消息共享发现，
  * 替代大上下文的 fork 继承。进程内实现；集群部署时替换为共享存储实现（同一接口）。
  */
-public sealed class SwarmBoard(Context ctx) : Service(ctx, ServiceName)
+public sealed class SwarmBoard(Context ctx, TimeProvider clock) : Service(ctx, ServiceName)
 {
     public const string ServiceName = "board";
 
@@ -102,7 +102,7 @@ public sealed class SwarmBoard(Context ctx) : Service(ctx, ServiceName)
     private readonly Dictionary<SessionId, BoardState> _boards = [];
     private readonly Lock _sync = new();
 
-    public static SwarmBoard Register(Context ctx) => new(ctx);
+    public static SwarmBoard Register(Context ctx, TimeProvider? clock = null) => new(ctx, clock ?? TimeProvider.System);
 
     public SessionId RootOf(IAgent agent) => agent.Session.Header.RootSession ?? agent.Id;
 
@@ -150,7 +150,7 @@ public sealed class SwarmBoard(Context ctx) : Service(ctx, ServiceName)
             var message = new BoardMessage(
                 $"board-{Guid.NewGuid():N}",
                 board.NextSeq++,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                NowMilliseconds,
                 sender.Id,
                 recipient,
                 kind,
@@ -236,7 +236,7 @@ public sealed class SwarmBoard(Context ctx) : Service(ctx, ServiceName)
         lock (_sync)
         {
             var board = BoardFor(RootOf(owner));
-            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var now = NowMilliseconds;
             board.Claims.RemoveAll(claim => claim.ExpiresAt <= now);
             var conflicts = board.Claims
                 .Where(claim => claim.Owner != owner.Id
@@ -273,7 +273,7 @@ public sealed class SwarmBoard(Context ctx) : Service(ctx, ServiceName)
         lock (_sync)
         {
             var board = BoardFor(RootOf(owner));
-            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var now = NowMilliseconds;
             board.Claims.RemoveAll(claim => claim.ExpiresAt <= now);
             return board.Claims.RemoveAll(claim =>
                 claim.Owner == owner.Id
@@ -289,11 +289,13 @@ public sealed class SwarmBoard(Context ctx) : Service(ctx, ServiceName)
         lock (_sync)
         {
             var board = BoardFor(RootOf(viewer));
-            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var now = NowMilliseconds;
             board.Claims.RemoveAll(claim => claim.ExpiresAt <= now);
             return [.. board.Claims];
         }
     }
+
+    private long NowMilliseconds => clock.GetUtcNow().ToUnixTimeMilliseconds();
 
     private BoardState BoardFor(SessionId root)
         => _boards.TryGetValue(root, out var board) ? board : _boards[root] = new BoardState();

@@ -6,6 +6,7 @@ using Dsh.Pty;
 using Dsh.Runtime;
 using Dsh.Tui;
 using Dsh.Tui.Services;
+using System.Diagnostics;
 using System.Text;
 using System.Threading.Channels;
 
@@ -22,6 +23,10 @@ public sealed class TuiThemeCollection;
 [Collection("TuiTheme")]
 public sealed class ChatWindowPaneTests : IDisposable
 {
+    /** Upper bound for a real shell to draw its prompt or the output of one command. */
+    private static readonly TimeSpan ShellOutputTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan PanePollInterval = TimeSpan.FromMilliseconds(10);
+
     private readonly string _homeDir = Path.Combine(
         Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../artifacts020/test-homes")),
         Guid.NewGuid().ToString("N"));
@@ -344,13 +349,7 @@ public sealed class ChatWindowPaneTests : IDisposable
 
         // 订阅的输出渲染进这一层; 键入写回该 pty。
         backing.Push("remote-ok\r\n");
-        var text = "";
-        for (var attempt = 0; attempt < 200 && !text.Contains("remote-ok"); attempt++)
-        {
-            text = await PaneTextAsync(chat, paneId);
-            await Task.Delay(10, TestContext.Current.CancellationToken);
-        }
-        Assert.Contains("remote-ok", text);
+        Assert.Contains("remote-ok", await WaitForPaneTextAsync(chat, paneId, text => text.Contains("remote-ok")));
 
         chat.ApplyPaneInput("text", paneId, "ls\r");
         for (var attempt = 0; attempt < 200 && !backing.Written.Any(entry => entry.Contains("ls")); attempt++)
@@ -537,7 +536,7 @@ public sealed class ChatWindowPaneTests : IDisposable
      * §19 阶段 2 端到端: 真 daemon 里的真 pty → RemoteTerminalBacking → 真 ShellPane。
      * 键入必须被前台进程执行并把输出渲染进窗格(证明"进入 pty 后能跑命令", 不是只铺了张静态快照)。
      */
-    [Fact(Timeout = 12000)]
+    [Fact(Timeout = 30000)]
     public async Task Remote_Pane_Runs_Command_Through_Real_Daemon_Pty()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -565,6 +564,7 @@ public sealed class ChatWindowPaneTests : IDisposable
             var paneId = 2;
             chat.AddPane(new ShellPane(chat, paneId, new RemoteTerminalBacking(remote), 80, 24), SplitOrientation.Vertical);
             chat.DrainUi();
+            await WaitForPaneTextAsync(chat, paneId, HasPrompt);
 
             // 只在"进程真的执行"时才出现的输出(输入回显里不含最终值)。
             var (input, expected) = OperatingSystem.IsWindows()
@@ -572,13 +572,7 @@ public sealed class ChatWindowPaneTests : IDisposable
                 : ("echo E2E-$((6*7))\r", "E2E-42");
             chat.ApplyPaneInput("text", paneId, input);
 
-            var text = "";
-            for (var attempt = 0; attempt < 400 && !text.Contains(expected); attempt++)
-            {
-                text = await PaneTextAsync(chat, paneId);
-                await Task.Delay(10, cancellationToken);
-            }
-            Assert.Contains(expected, text);
+            Assert.Contains(expected, await WaitForPaneTextAsync(chat, paneId, text => text.Contains(expected)));
             chat.Dispose();
         }
         finally
@@ -659,14 +653,9 @@ public sealed class ChatWindowPaneTests : IDisposable
             Assert.DoesNotContain(panes, entry => entry.PtyId == session.Id.Value);
 
             // 键入直达这个真 shell: 输出里回显出命令即证明往返已通。
+            await WaitForPaneTextAsync(chat, paneId, HasPrompt);
             chat.ApplyPaneInput("text", paneId, "echo STAGE1-MARK\r");
-            var text = "";
-            for (var attempt = 0; attempt < 300 && !text.Contains("STAGE1-MARK"); attempt++)
-            {
-                text = await PaneTextAsync(chat, paneId);
-                await Task.Delay(10, TestContext.Current.CancellationToken);
-            }
-            Assert.Contains("STAGE1-MARK", text);
+            Assert.Contains("STAGE1-MARK", await WaitForPaneTextAsync(chat, paneId, text => text.Contains("STAGE1-MARK")));
         }
         finally
         {
@@ -752,6 +741,26 @@ public sealed class ChatWindowPaneTests : IDisposable
         var lines = await DispatchAsync(chat, chat.SnapshotPaneLinesAsync(paneId));
         return lines is null ? "" : string.Join('\n', lines);
     }
+
+    /**
+     * Polls the pane until the condition holds or ShellOutputTimeout passes, and returns the last text for the assertion message.
+     * The bound is wall-clock time: an attempt-count loop ran far longer on Windows, where each short delay rounds up to the 15.6 ms timer tick.
+     */
+    private static async Task<string> WaitForPaneTextAsync(ChatWindow chat, int paneId, Func<string, bool> condition)
+    {
+        var deadline = Stopwatch.StartNew();
+        var text = await PaneTextAsync(chat, paneId);
+        while (!condition(text) && deadline.Elapsed < ShellOutputTimeout)
+        {
+            await Task.Delay(PanePollInterval, TestContext.Current.CancellationToken);
+            text = await PaneTextAsync(chat, paneId);
+        }
+
+        return text;
+    }
+
+    /** A shell reads typed input only after it has drawn its prompt: pwsh dropped keys typed earlier (CI: STAGE1-MARK never echoed). */
+    private static bool HasPrompt(string paneText) => paneText.Trim().Length > 0;
 
     /**
      * Ctrl+X ,/. 是"在当前 pty 的会话列表里切换"(pty 是 session 的上一层容器, 一个 pty 可挂多个会话):
