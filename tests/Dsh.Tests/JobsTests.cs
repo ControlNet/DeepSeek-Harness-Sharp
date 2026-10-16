@@ -44,7 +44,7 @@ public partial class JobsTests : IDisposable
     [Fact(Timeout = 15_000)]
     public async Task Subprocess_DefaultInput_IsEofAndNotTerminal()
     {
-        if (!BashProbe.IsAvailable)
+        if (!ShellProbe.Bash)
             Assert.Skip("bash 不可用");
         using var handle = _subprocess.Spawn(new SubprocessSpawnSpec
         {
@@ -61,7 +61,7 @@ public partial class JobsTests : IDisposable
     [Fact(Timeout = 15_000)]
     public async Task Subprocess_ExplicitInput_RemainsWritableUntilClosed()
     {
-        if (!BashProbe.IsAvailable)
+        if (!ShellProbe.Bash)
             Assert.Skip("bash 不可用");
         using var handle = _subprocess.Spawn(new SubprocessSpawnSpec
         {
