@@ -31,6 +31,7 @@ public static class SessionFork
             Cwd = string.IsNullOrWhiteSpace(cwd) ? source.Header.Cwd : cwd,
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             ParentSession = source.Id,
+            ParentCallId = null,
             IsSeeded = true,
         };
         var marker = new SessionEvent

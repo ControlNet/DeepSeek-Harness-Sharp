@@ -84,6 +84,8 @@ public sealed record SubagentStartRequest
     public string? Label { get; init; }
     public required IReadOnlyList<ContentBlock> Prompt { get; init; }
     public required IAgent Parent { get; init; }
+    /** 发起本次委派的父会话工具调用；写入子会话 header 的 parentCallId。 */
+    public ToolCallId? ParentCallId { get; init; }
     public required CancellationToken Signal { get; init; }
     public AgentOptions? AgentOptions { get; init; }
     public JsonObject? OutputSchema { get; init; }

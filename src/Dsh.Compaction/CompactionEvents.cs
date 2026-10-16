@@ -110,6 +110,12 @@ public static class CompactionEventTypes
         SessionEventCodec.Register<CompactionSummaryPayload>(Summary);
         SessionEventCodec.Register<CompactionEndPayload>(End);
         SessionEventCodec.Register<CompactionPrunePayload>(Prune);
+        SessionEventRelations.Register<CompactionStartPayload>(
+            Start,
+            payload => [new SessionEventRelation.Opens(new SessionEventCorrelation(Start, payload.CompactionId.Value))]);
+        SessionEventRelations.Register<CompactionEndPayload>(
+            End,
+            payload => [new SessionEventRelation.RefersTo(new SessionEventCorrelation(Start, payload.CompactionId.Value), SessionEventEdgeKind.Completes)]);
     }
 }
 

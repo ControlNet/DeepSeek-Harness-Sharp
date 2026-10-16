@@ -40,8 +40,9 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    TUI 的 GPU 渲染后端由 `plugins."@deepseek-ai/dsh-tui"` 的 `gpuBackend` 配置项决定(`auto|vk|gl|cpu`,缺省 `auto`，优先以 `vk` 后端启动)，`vsync` 即垂直同步默认为 `true`。
 
    Linux 上 `vk` 后端要求 glibc >= 2.33(ppy.SDL3-CS 要求), 老系统请用 `gl` 或升级 glibc; 后端不可用时 dsharp 会输出原因并自动回退(`gl` -> CPU)。
-3. 插件运维:TUI 内用 `/plugins list|add <包|dll 路径>|remove <包> [--force]|disable <包>|enable <包>`;改动写回 `settings.yaml` 的 `plugins:` 段并保留注释。
+3. 插件运维:TUI 内用 `/plugins list|add <包|dll 路径>|remove <包> [--force]|disable <包>|enable <包>|ban_write <包>|enable_write <包>`(输入 `/plugins` 后按 Tab 可从浮层选单选子命令与包名);改动写回 `settings.yaml` 的 `plugins:` 段并保留注释。
 
+    `ban_write`/`enable_write` 切换该插件的写权限(`plugins."<包>".permissions.write`),`enable`/`disable` 保留权限设置,`remove` 连同参数与权限一并清除。权限目前只记录在配置里,由后续版本的插件沙箱强制执行。
     `disable` 只停用效果、保留插件(`enable` 可复原);`remove` 是卸载:摘除效果并删除 `plugins/<包名>/` 目录(内置或手工平铺的插件没有该目录,只做摘除)。更新插件:直接 `remove` 旧版(安装目录会被一并删除),再 `add` 新版;`add` 遇到同名但内容不同的文件会拒绝,以免覆盖手工放置的同名插件。
 4. 日志:`<home>/logs/dsh-YYYYMMDD.log`(默认开启);`logging:` 段可配置级别、内存缓冲、是否输出到控制台(TUI 下强制关闭)。
 5. 后台会话:TUI 内 `/detach [命令]`(Ctrl+X D)把命令交给 PTY 守护进程托管;`tui list`/`tui attach` 会自动拉起守护进程。
@@ -67,6 +68,10 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    - 时区写 `UTC`、IANA 名称(如 `Asia/Shanghai`)或本机时区 id(系统提示里会告诉模型本机时区)。`daily`/`weekly`/`cron` 遇到夏令时跳过的本地时刻会在跳变结束时触发,重复出现的本地时刻只触发一次;`at` 指向不存在的本地时刻会被拒绝,重复时刻取较早的一次。
    - 提醒属于会话:会话关闭后不再触发;恢复该会话时提醒随之恢复,期间错过的一次性提醒补发一次,循环提醒只补发最近错过的那一次。fork 出的会话不继承提醒,子代理不能使用这些工具。`headless` 单次任务在回复结束后即退出,其中设置的提醒不会触发。
    - 提醒不是 goal:提醒消息不算用户输入,不会创建、恢复或完成 goal,也不改变 goal 的自动续跑。
+10. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
+   - 切换只影响之后的相对路径解析,以及新启动的 shell/终端的默认目录;已经存在的 `bash_persistent` shell 与终端仍停在各自的目录。
+   - 写权限根固定为会话的初始目录,不随切换移动:写入权限根之外的文件(`write`/`edit`/`str_replace_editor`)、在权限根之外启动 shell/终端或建 worktree,都会先弹审批,提示「目标路径在权限根之外」;审批策略为 never 时直接拒绝。
+   - 两者分别对应插件 `@deepseek-ai/dsh-tool-working-directory` 与 `@deepseek-ai/dsh-tool-worktree`,可用 `/plugins disable` 关闭。
 
 ## 图形界面
 
@@ -89,6 +94,7 @@ DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui --session <会话 id>
 
 - 挂到桌面环境:Windows 用 `pwsh -File scripts/install-desktop.ps1`(在桌面创建快捷方式),Linux 用 `bash scripts/install-desktop.sh`(写入 `~/.local/share/applications/dsh-gui.desktop` 并复制图标,GNOME/KDE 等桌面可直接固定到 dock/面板)。
 - 快捷键:`Enter` 发送、`Shift+Enter` 换行、`Esc` 回到对话、`Ctrl+N` 新会话、`Ctrl+B` 折叠左栏、`Ctrl+1`/`Ctrl+2` 对话/轨迹、`Ctrl+,` 设置、`Ctrl+W` 关闭(按关闭行为)、`Ctrl+Q` 直接退出。
+- 插件市场页:安装框旁的文件夹按钮可浏览选择插件库文件(`.dll`/`.so`/`.dylib`);每个插件有启用/禁用、"移除"按钮(与 `/plugins remove` 相同,托管插件移除后照常校验加载上下文回收)以及读/写/网络三个权限勾选框,写入与 `/plugins ban_write|enable_write` 相同的 `settings.yaml` 键,两端看到同一份状态。
 - 设置页改的是 GUI 插件自己的参数段(写在 `settings.yaml` 的 `plugins:` 里,不会新建 `ui:` 顶层段):
 
   ```yaml
@@ -107,6 +113,7 @@ DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui --session <会话 id>
 - 需要用户决定:工具审批与 `ask_user_question` 共用同一个窗口。审批提供「仅本次允许(y)/总是允许(a,本会话内该工具不再询问)/拒绝(n)/取消(c 或 Esc)」,并展示工具的主参数与影响提示。
 - 会话标题:首条用户消息写入会话标题(会话 id 不变),侧栏会话项的 `⋯` 菜单可重命名、导出日志、删除。
 - 消息操作:助手消息下方有复制、有帮助/没帮助、重新生成(把最后一条用户消息重新入队)。
+- 交付物:模型用 `present` 声明的文件列在会话顶栏「交付物」下拉里,可「打开」(系统默认程序)或复制路径;远端会话只列出、不在本机打开。
 - 单实例:同一份 home 只会有一个 GUI,重复启动(双击、快捷方式、`dsh-gui.exe`)只会把已有窗口调到前台,不会开第二个窗口。同一个 home 里同时跑 GUI 与 CLI/TUI 也是允许的,日志会自动共用同一个文件。
 - 显卡选择:设置页「图形与加速」列出本机识别到的显卡(Windows 读显示类驱动注册表,Linux 读 `/sys/class/drm`),默认「自动」。Windows 上通过 Avalonia 的显卡选择回调按名字匹配;Linux 上用 PRIME 选择器(`DRI_PRIME` / `__NV_PRIME_RENDER_OFFLOAD`)表达偏好,部分驱动或容器里可能不生效。保存后重启生效;想确认实际用了哪张卡,Windows 上可在任务管理器或 `nvidia-smi` 里看 `dsh-gui.exe`。
 - 关闭行为:默认「最小化到托盘」,设置页「图形与加速」可改成直接退出或每次询问。Windows 用通知区域图标;Linux 走 StatusNotifier,KDE 自带托盘宿主,GNOME 需要 AppIndicator 扩展(Ubuntu 桌面默认带)。启动时若探测不到托盘宿主(例如 GNOME 没装扩展),会按「直接退出」处理,避免窗口藏进看不见的地方。
@@ -192,6 +199,8 @@ skills:                 # 技能目录与 URL
   paths: []
   urls: []
 rules: []               # 全局规则
+sandbox:                # 插件沙箱开关,默认 false(关闭时插件装载与运行方式不变)
+  enabled: false
 plugins: {}             # 插件开关,见下
 mcp: {}                 # MCP 服务器:transport: stdio|sse|streamable-http,配 command/args/url/enabled
 memory:                 # 项目记忆(/memory on|off;file 或 mongo 后端)
@@ -218,6 +227,17 @@ safety:
 ```
 
 - `plugins:` 支持两种写法:`"@deepseek-ai/dsh-tool-todo": false`(禁用),或带参数的 `"@deepseek-ai/dsh-tool-todo": { enabled: true, ... }`(保存插件参数);插件被发现即启用,这里的禁用项与 `/plugins` 命令是仅有的两个开关来源。
+- 插件权限:`permissions` 是与 `enabled` 并列的保留键(不会作为参数交给插件),含 `read`/`write`/`network` 三项布尔值;未写 `permissions` 或未写某一项时均为允许。由 `/plugins ban_write|enable_write` 与 GUI 插件市场的勾选框写入,也可手写;拼错的键或非布尔值会在启动时报 `INVALID_PLUGIN_SETTING`。目前只记录配置,强制执行由后续版本的插件沙箱(`sandbox.enabled: true`)提供:
+
+  ```yaml
+  sandbox:
+    enabled: false
+  plugins:
+    "@acme/foo":
+      enabled: true
+      permissions: { read: true, write: false, network: true }
+  ```
 - 运行期数据:`<home>/logs/dsh-YYYYMMDD.log`(按天 + `file_max_mb` 切分、`keep_days` 清理),`<home>/sessions/<工作目录转写>/<会话 id>/session.jsonl.zstd`,`<home>/telemetry.jsonl`(agent 生命周期与错误事件,可用 `plugins: {"@deepseek-ai/dsh-telemetry": false}` 关闭)。
-- 子代理模型:模型可调用 `list_subagent_models` 查看子代理能用的模型路由,即已配置 key 的 provider 及其生效模型(`settings.yaml` 声明的模型 ∪ models.dev 目录),模型公布了推理强度时一并列出;`subagent` 工具的 `provider`/`model`/`reasoning_effort` 参数直接取用其中一行,不填则沿用该工具插件参数里的 `agentOptions`,再缺省则跟随当前会话的模型。未配置 key 的 provider 不会出现在列表中。可用 `plugins: {"@deepseek-ai/dsh-tool-subagent/list-models": false}` 关闭该工具。
+- 子代理模型:模型可调用 `list_subagent_models` 查看子代理能用的模型路由,即已配置 key 的 provider 及其生效模型(`settings.yaml` 声明的模型 ∪ models.dev 目录),模型公布了推理强度时一并列出;`subagent` 工具的 `provider`/`model`/`reasoning_effort` 参数直接取用其中一行,不填则沿用该工具插件参数里的 `agentOptions`,其次是 `settings.yaml` 的 `subagent.default_model`,再缺省则跟随当前会话的模型。未配置 key 的 provider 不会出现在列表中。可用 `plugins: {"@deepseek-ai/dsh-tool-subagent/list-models": false}` 关闭该工具。
 - 会话检索:TUI/CLI 内 `/session-query <关键词>` 搜索历史会话(命中用 `/session <id>` 打开);模型侧对应 `session_search` 工具。检索覆盖内存中的活会话与 `sessions/` 下的历史日志。
+- 交付物:模型生成报告、Office 文档、表格、幻灯片等文件后,用 `present` 工具把已存在的文件声明为最终交付物(只记录绝对路径,不复制、不转换内容;路径不存在或是目录会报错)。清单随会话日志保存,恢复会话后仍在,回退/截断会话时一并回退。TUI 会话流里显示交付物卡片(绝对路径可直接复制),`/deliverables` 列出本会话交付物,`/deliverables open <编号>` 用系统默认程序打开;GUI 见「图形界面」一节。不需要时用 `plugins: {"@deepseek-ai/dsh-tool-present": false}` 关闭。

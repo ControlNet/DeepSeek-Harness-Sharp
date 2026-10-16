@@ -20,8 +20,9 @@ public static class ChildCompositionSupport
         + "widened for this session.";
 
     public static SessionHeader ChildSessionHeader(
-        IAgent parent, int childDepth, SessionId childId, bool isSeeded, SubagentDescriptorPayload descriptor)
+        SubagentStartRequest request, int childDepth, SessionId childId, bool isSeeded, SubagentDescriptorPayload descriptor)
     {
+        var parent = request.Parent;
         var parentHeader = parent.Session.Header;
         return new SessionHeader
         {
@@ -30,6 +31,7 @@ public static class ChildCompositionSupport
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Cwd = parentHeader.Cwd,
             ParentSession = parent.Id,
+            ParentCallId = request.ParentCallId,
             IsSeeded = isSeeded,
             Origin = "subagent",
             DelegationDepth = childDepth,

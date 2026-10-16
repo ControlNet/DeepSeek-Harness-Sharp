@@ -24,12 +24,17 @@
         <Border Background="{DynamicResource Brush.Bg.Card}" CornerRadius="{DynamicResource CornerRadius.Card}" Padding="14">
           <StackPanel Spacing="8">
             <TextBlock Text="安装插件" Classes="Secondary" />
-            <Grid ColumnDefinitions="*,Auto">
-              <TextBox Text="{Binding Preferences.PluginInput}" PlaceholderText="包名或本地路径，例如 ./plugins/my-plugin" />
-              <Button Grid.Column="1" Classes="Primary" Margin="8,0,0,0" Content="安装"
+            <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="6">
+              <TextBox Text="{Binding Preferences.PluginInput}" PlaceholderText="包名或插件库路径，例如 ./build/MyPlugin.dll" />
+              <Button Grid.Column="1" Classes="Icon" Width="30" Height="30"
+                      Command="{Binding Preferences.BrowsePluginPathCommand}" IsEnabled="{Binding !Preferences.IsWorking}"
+                      ToolTip.Tip="浏览并选择插件文件">
+                <Path Classes="Icon" Data="{StaticResource Icon.Folder}" />
+              </Button>
+              <Button Grid.Column="2" Classes="Primary" Margin="2,0,0,0" Content="安装"
                       Command="{Binding Preferences.AddPluginCommand}" IsEnabled="{Binding !Preferences.IsWorking}" />
             </Grid>
-            <TextBlock Text="从本地路径或包名安装；启用/禁用立即写入 settings.yaml。" Classes="Tertiary" TextWrapping="Wrap" />
+            <TextBlock Text="从本地插件库（.dll/.so/.dylib）或包名安装；启用/禁用立即写入 settings.yaml。" Classes="Tertiary" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
 
@@ -39,10 +44,15 @@
             <ItemsControl ItemsSource="{Binding Preferences.Plugins}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="vm:PluginRowViewModel">
-                  <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,4">
+                  <Grid ColumnDefinitions="*,Auto,Auto,Auto" Margin="0,4">
                     <StackPanel Spacing="2">
                       <TextBlock Text="{Binding Package}" Classes="Mono" />
                       <TextBlock Text="{Binding Description}" Classes="Tertiary" TextWrapping="Wrap" />
+                      <StackPanel Orientation="Horizontal" Spacing="12">
+                        <CheckBox Content="读" IsChecked="{Binding CanRead, Mode=TwoWay}" ToolTip.Tip="permissions.read" />
+                        <CheckBox Content="写" IsChecked="{Binding CanWrite, Mode=TwoWay}" ToolTip.Tip="permissions.write" />
+                        <CheckBox Content="网络" IsChecked="{Binding CanNetwork, Mode=TwoWay}" ToolTip.Tip="permissions.network" />
+                      </StackPanel>
                     </StackPanel>
                     <Border Grid.Column="1" Margin="8,0" Padding="8,2" CornerRadius="999"
                             Background="{DynamicResource Brush.Accent.Soft}" VerticalAlignment="Center">
@@ -55,11 +65,14 @@
                             Content="{Binding ActionLabel}"
                             Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).Preferences.PluginActionCommand}"
                             CommandParameter="{Binding WireAction}" />
+                    <Button Grid.Column="3" Classes="Ghost" VerticalAlignment="Center" Content="移除"
+                            Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).Preferences.PluginActionCommand}"
+                            CommandParameter="{Binding RemoveAction}" />
                   </Grid>
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
-            <TextBlock Text="启用/禁用会立即写入 settings.yaml；插件参数在「设置 → 插件与 MCP」中查看。" Classes="Tertiary" TextWrapping="Wrap" />
+            <TextBlock Text="启用/禁用、移除与读/写/网络权限会立即写入 settings.yaml（plugins.&quot;包名&quot;.permissions）；权限的强制执行随插件沙箱提供。插件参数在「设置 → 插件与 MCP」中查看。" Classes="Tertiary" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
 

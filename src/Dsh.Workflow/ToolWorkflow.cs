@@ -136,6 +136,7 @@ public static class ToolWorkflow
                 ? WorkflowRealm.MaterializeFromRealm(argsElement, "args")
                 : null,
             Parent = parent,
+            ParentCallId = exec.CallId,
             Signal = exec.Signal,
         });
         var recordsRun = exec.Parent is null;

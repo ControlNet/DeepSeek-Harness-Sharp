@@ -307,5 +307,11 @@ internal static class CommandCodecRegistration
     {
         SessionEventCodec.Register<CommandRunPayload>(CommandEvents.Run);
         SessionEventCodec.Register<CommandDonePayload>(CommandEvents.Done);
+        SessionEventRelations.Register<CommandRunPayload>(
+            CommandEvents.Run,
+            payload => [new SessionEventRelation.Opens(new SessionEventCorrelation(CommandEvents.Run, payload.CommandId))]);
+        SessionEventRelations.Register<CommandDonePayload>(
+            CommandEvents.Done,
+            payload => [new SessionEventRelation.RefersTo(new SessionEventCorrelation(CommandEvents.Run, payload.CommandId), SessionEventEdgeKind.Completes)]);
     }
 }

@@ -38,11 +38,7 @@ public sealed class GuiSettings(HarnessHome home)
     {
         var settings = HarnessSettings.Load(home);
         var existing = settings.Plugins.GetValueOrDefault(Package);
-        settings.Plugins[Package] = new PluginSetting
-        {
-            Enabled = existing?.Enabled ?? true,
-            Parameters = snapshot.ToParameters(),
-        };
+        settings.Plugins[Package] = (existing ?? new PluginSetting()) with { Parameters = snapshot.ToParameters() };
         settings.SavePlugins(home);
         Changed?.Invoke();
     }
