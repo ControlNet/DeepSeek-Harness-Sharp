@@ -10,7 +10,7 @@ namespace Dsh.Tests;
 public sealed class ExportSessionLogTests
 {
     [Fact]
-    public async Task ExportSessionLog_WritesEveryEventAsJsonLine()
+    public async Task ExportSessionLog_WritesEveryEventAsJsonLine() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var session = environment.Agent.Session;
@@ -28,12 +28,7 @@ public sealed class ExportSessionLogTests
         var expected = await WaitForStoredEvents(persistence, environment.Agent.Id, 3);
         using var viewModel = new MainViewModel(environment.App, environment.Agent);
 
-        viewModel.ExportSessionLogCommand.Execute(null);
-        for (var attempt = 0; attempt < 500 && !viewModel.StatusText.Contains("导出"); attempt++)
-        {
-            Dispatcher.UIThread.RunJobs();
-            Thread.Sleep(5);
-        }
+        await viewModel.ExportSessionLogCommand.ExecuteAsync(null);
 
         Assert.StartsWith("已导出", viewModel.StatusText);
         var file = Assert.Single(Directory.GetFiles(Path.Combine(environment.App.Home.Root, "exports"), "*.jsonl"));
@@ -41,7 +36,7 @@ public sealed class ExportSessionLogTests
         Assert.Equal(expected.Count, lines.Length);
         foreach (var line in lines)
             Assert.NotNull(DshJson.Deserialize<SessionEvent>(line));
-    }
+    });
 
     private static async Task<IReadOnlyList<SessionEvent>> WaitForStoredEvents(ISessionPersistence persistence, SessionId id, int count)
     {
@@ -52,7 +47,7 @@ public sealed class ExportSessionLogTests
             if (events.Count >= count)
                 return events;
             Dispatcher.UIThread.RunJobs();
-            Thread.Sleep(5);
+            await Task.Delay(5, TestContext.Current.CancellationToken);
         }
         throw new TimeoutException($"session \"{id}\" 持久化事件数未达到 {count}");
     }
