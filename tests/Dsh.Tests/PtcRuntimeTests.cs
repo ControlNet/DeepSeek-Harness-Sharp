@@ -12,13 +12,17 @@ using Dsh.ScriptHost;
 
 namespace Dsh.Tests;
 
-/** 测试宿主同时也是 --ptc-host 脚本宿主: 真实子进程测试用 Environment.ProcessPath 重启本 exe。 */
+/** 测试宿主同时提供脚本宿主与独立原生 probe 入口;真实子进程复用当前 apphost/dotnet 入口,不启动 harness。 */
 internal static class PtcHostShim
 {
     [ModuleInitializer]
     internal static void Initialize()
     {
         var args = Environment.GetCommandLineArgs();
+        if (args.Any(argument => argument == PtyConsoleResizeTests.ProbeArgument))
+            Environment.Exit(PtyConsoleResizeTests.RunProbe(args));
+        if (args.Any(argument => argument == UnixPtyDescriptorOwnershipTests.SpawnFailureProbeArgument))
+            Environment.Exit(UnixPtyDescriptorOwnershipTests.RunSpawnFailureProbe());
         if (args.Any(argument => argument == PtcScriptHost.HostArgument))
             Environment.Exit(PtcScriptHost.RunAsync(args.Skip(1).ToArray()).GetAwaiter().GetResult());
     }

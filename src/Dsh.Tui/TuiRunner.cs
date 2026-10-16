@@ -10,6 +10,8 @@ public static class TuiRunner
 {
     /** 渲染合并窗口: leading(空闲后首事件立即渲) + trailing(窗口内到点渲最新态), 见阶段 1.4 拍板。 */
     private const int FrameIntervalMs = 10;
+    private const int DefaultColumns = 80;
+    private const int DefaultRows = 25;
 
     /** detach 交接时携带"未发送的输入"的变量名: 旧 TUI 写, 新 TUI 读一次后立即清除。 */
     internal const string DetachDraftVariable = "DSH_DETACH_DRAFT";
@@ -24,7 +26,8 @@ public static class TuiRunner
         bool shell = false,
         string? gpuScreenshot = null,
         string? gpuCard = null,
-        string? gpuCapturePlan = null)
+        string? gpuCapturePlan = null,
+        string? resumeSessionId = null)
     {
         // 渲染前先声明控制台按 UTF-8 解释: daemon 脱离终端后创建的伪控制台默认取系统 OEM 代码页, 会把画面中文读成乱码。
         ConsoleCodePage.EnsureUtf8();
@@ -34,13 +37,13 @@ public static class TuiRunner
         if (gpu && backend == TuiGpuBackend.Cpu)
             gpu = false;
         if (gpu && gpuScreenshot is null && gpuCapturePlan is null && ShouldRunAsProxy())
-            return await TuiProxy.RunAsync(app, shell, gpu: true, gpuCard: gpuCard);
+            return await TuiProxy.RunAsync(app, shell, gpu: true, gpuCard: gpuCard, resumeSessionId: resumeSessionId);
         if (gpu)
-            return RunGpuSync(app, cwd, shell, gpuScreenshot, gpuCard, gpuCapturePlan, backend);
+            return RunGpuSync(app, cwd, shell, gpuScreenshot, gpuCard, gpuCapturePlan, backend, resumeSessionId);
 
         // 终端交互形态默认走"会话常驻 daemon + 本进程当 proxy"; 常驻会话本体(DSH_PTY_CHILD)与非交互(重定向)例外。
         if (ShouldRunAsProxy())
-            return await TuiProxy.RunAsync(app, shell);
+            return await TuiProxy.RunAsync(app, shell, resumeSessionId: resumeSessionId);
 
         // 接管(raw/备用屏幕/鼠标+清陈旧输入)必须先于耗时初始化: 堵住启动窗口期吃进残留鼠标跟踪字节的洞。
         // 走到这里已不是 proxy: 本进程的终端要么是 daemon 的 ConPTY、要么被重定向, 都不是"用户终端"。
@@ -50,13 +53,13 @@ public static class TuiRunner
         var signalGuards = RegisterSignalRestore(rawMode);
         try
         {
-            var agents = app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
-            var handle = await agents.Create(new CreateAgentOptions(
-                SessionId.Create($"session-{Guid.NewGuid()}"),
-                cwd,
-                new AgentOptions(app.Provider, app.Model, app.ReasoningEffort is null ? null : ReasoningEffortId.Create(app.ReasoningEffort))));
-            var agent = (AgentLoopAgent)handle.Agent;
-            await agent.WhenIdle();
+            var (agent, resumeError) = await CreateOrResumeAgentAsync(app, cwd, resumeSessionId);
+            if (agent is null)
+            {
+                rawMode?.Dispose();
+                await Console.Error.WriteLineAsync(resumeError);
+                return 1;
+            }
 
             if (Console.IsInputRedirected)
                 return await RunNonInteractiveAsync(app, agent);
@@ -68,6 +71,25 @@ public static class TuiRunner
             if (signalGuards is not null)
                 foreach (var guard in signalGuards)
                     guard.Dispose();
+        }
+    }
+
+    private static async Task<(AgentLoopAgent? Agent, string? Error)> CreateOrResumeAgentAsync(HarnessApp app, string cwd, string? resumeSessionId)
+    {
+        var agents = app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
+        var options = new AgentOptions(app.Provider, app.Model, app.ReasoningEffort is null ? null : ReasoningEffortId.Create(app.ReasoningEffort));
+        try
+        {
+            var handle = resumeSessionId is null
+                ? await agents.Create(new CreateAgentOptions(SessionId.Create($"session-{Guid.NewGuid()}"), cwd, options))
+                : await agents.Resume(new ResumeAgentOptions(SessionId.Create(resumeSessionId), options));
+            var agent = (AgentLoopAgent)handle.Agent;
+            await agent.WhenIdle();
+            return (agent, null);
+        }
+        catch (Exception error) when (resumeSessionId is not null)
+        {
+            return (null, $"dsharp: session \"{resumeSessionId}\" cannot be resumed: {error.Message}");
         }
     }
 
@@ -152,7 +174,7 @@ public static class TuiRunner
         SetConsoleInteractive(true);
         using var inputSource = CreateInputSource();
         var renderer = new AnsiRenderer();
-        var grid = new CellGrid(80, 25);
+        var grid = new CellGrid(DefaultColumns, DefaultRows);
         var forceFull = true;
         using var chat = new ChatWindow(app.Ctx, agent, app.Home, app.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName), new TuiSettings(app.Home));
         chat.RegisterPaneTools();
@@ -311,15 +333,15 @@ public static class TuiRunner
         string? gpuScreenshot = null,
         string? gpuCard = null,
         string? gpuCapturePlan = null,
-        TuiGpuBackend backend = TuiGpuBackend.Auto)
+        TuiGpuBackend backend = TuiGpuBackend.Auto,
+        string? resumeSessionId = null)
     {
-        var agents = app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
-        var handle = agents.Create(new CreateAgentOptions(
-            SessionId.Create($"session-{Guid.NewGuid()}"),
-            cwd,
-            new AgentOptions(app.Provider, app.Model, app.ReasoningEffort is null ? null : ReasoningEffortId.Create(app.ReasoningEffort)))).GetAwaiter().GetResult();
-        var agent = (AgentLoopAgent)handle.Agent;
-        agent.WhenIdle().GetAwaiter().GetResult();
+        var (agent, resumeError) = CreateOrResumeAgentAsync(app, cwd, resumeSessionId).GetAwaiter().GetResult();
+        if (agent is null)
+        {
+            Console.Error.WriteLineAsync(resumeError).GetAwaiter().GetResult();
+            return 1;
+        }
 
         try
         {
@@ -423,15 +445,17 @@ public static class TuiRunner
 
         try
         {
-            return (Math.Max(1, Console.WindowWidth), Math.Max(1, Console.WindowHeight));
+            var width = Console.WindowWidth;
+            var height = Console.WindowHeight;
+            return (width > 0 ? width : DefaultColumns, height > 0 ? height : DefaultRows);
         }
         catch (IOException)
         {
-            return (80, 25);
+            return (DefaultColumns, DefaultRows);
         }
         catch (ArgumentOutOfRangeException)
         {
-            return (80, 25);
+            return (DefaultColumns, DefaultRows);
         }
     }
 

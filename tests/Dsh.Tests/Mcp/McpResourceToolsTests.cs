@@ -1,9 +1,12 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Mcp;
 using Dsh.Runtime;
+using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace Dsh.Tests.Mcp;
 
@@ -33,8 +36,53 @@ public sealed class McpResourceServerFixture : IAsyncLifetime
     {
         var dotnetRoot = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", ".."));
         var muxer = Path.Combine(dotnetRoot, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
-        var dll = Path.Combine(AppContext.BaseDirectory, SampleDll);
+        var dll = Path.Combine(AppContext.BaseDirectory, "mcp-resource-server", SampleDll);
         return new McpServerConfig(name, "stdio", muxer, withResources ? [dll, .. arguments] : [dll, NoResourcesFlag, .. arguments]);
+    }
+
+    public static async Task ConnectAsync(McpService service, params McpServerConfig[] servers)
+    {
+        foreach (var server in servers)
+            await service.ConnectAsync(server, () => new ReadyStdioTransport(server), TestContext.Current.CancellationToken);
+    }
+
+    private sealed class ReadyStdioTransport(McpServerConfig server) : IClientTransport
+    {
+        private const string ReadyMessage = "MCP_RESOURCE_SAMPLE_READY";
+
+        public string Name => server.Name;
+
+        public async Task<ITransport> ConnectAsync(CancellationToken cancellationToken = default)
+        {
+            var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var stdio = new StdioClientTransport(new StdioClientTransportOptions
+            {
+                Name = server.Name,
+                Command = server.Command!,
+                Arguments = [.. server.Arguments ?? []],
+                StandardErrorLines = line =>
+                {
+                    if (line == ReadyMessage)
+                        ready.TrySetResult();
+                },
+            });
+            var transport = await stdio.ConnectAsync(cancellationToken);
+            try
+            {
+                await Task.WhenAny(ready.Task, transport.MessageReader.Completion).WaitAsync(cancellationToken);
+                if (!ready.Task.IsCompletedSuccessfully)
+                {
+                    await transport.MessageReader.Completion;
+                    throw new IOException("MCP resource sample exited before its message loop was ready.");
+                }
+                return transport;
+            }
+            catch
+            {
+                await transport.DisposeAsync();
+                throw;
+            }
+        }
     }
 
     public async ValueTask InitializeAsync()
@@ -44,7 +92,7 @@ public sealed class McpResourceServerFixture : IAsyncLifetime
         Tools = new ToolRuntime(Ctx);
         _ = new FileAttachmentStore(Ctx);
         Service = new McpService(Ctx);
-        await Service.ConnectAsync([ServerConfig(ResourceServer, true, ServerArguments), ServerConfig(PlainServer, withResources: false)], TestContext.Current.CancellationToken);
+        await ConnectAsync(Service, ServerConfig(ResourceServer, true, ServerArguments), ServerConfig(PlainServer, withResources: false));
     }
 
     public Task<ToolExecutionResult> Execute(string name, string arguments)
@@ -259,6 +307,8 @@ public sealed class McpResourceToolsTests(McpResourceServerFixture fixture) : IC
     {
         await using var legacy = new McpResourceServerFixture { ServerArguments = ["--legacy"] };
         await legacy.InitializeAsync();
+        Assert.Equal("2025-11-25", await legacy.Service.Handles().Single(handle => handle.Config.Name == McpResourceServerFixture.ResourceServer)
+            .CallResourcesAsync(client => ValueTask.FromResult(client.NegotiatedProtocolVersion), TestContext.Current.CancellationToken));
         AssertSucceeded(await legacy.Execute("mcp_res_add_resource", """{ "uri": "docs://legacy-added", "text": "legacy" }"""));
         var deadline = DateTime.UtcNow + NotificationDeadline;
         while (!(await legacy.SectionText()).Contains("resource list changed on res") && DateTime.UtcNow < deadline)
@@ -321,12 +371,38 @@ public sealed class McpResourceToolsTests(McpResourceServerFixture fixture) : IC
     [InlineData(true)]
     public async Task NotificationDuringListing_IsNotConsumedEvenWhenTheListingFails(bool fail)
     {
+        var marker = Guid.NewGuid().ToString("N");
+        using var scenario = new Activity(nameof(NotificationDuringListing_IsNotConsumedEvenWhenTheListingFails))
+            .AddBaggage("test.mcp.listing", marker).Start();
+        string? connectionId = null;
+        var consumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "Experimental.ModelContextProtocol",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity =>
+            {
+                var session = activity.GetTagItem("mcp.session.id") as string;
+                if (activity.Kind == ActivityKind.Client && activity.OperationName == RequestMethods.ResourcesList
+                    && activity.GetBaggageItem("test.mcp.listing") == marker)
+                    Volatile.Write(ref connectionId, session);
+                if (activity.Kind == ActivityKind.Server && activity.OperationName == NotificationMethods.ResourceListChangedNotification
+                    && session is not null && session == Volatile.Read(ref connectionId))
+                    consumed.TrySetResult();
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
         await using var racing = new McpResourceServerFixture { ServerArguments = ["--listing-race"] };
         await racing.InitializeAsync();
+        Assert.Equal("2026-07-28", await racing.Service.Handles().Single(handle => handle.Config.Name == McpResourceServerFixture.ResourceServer)
+            .CallResourcesAsync(client => ValueTask.FromResult(client.NegotiatedProtocolVersion), TestContext.Current.CancellationToken));
         AssertSucceeded(await racing.Execute(McpResourceTools.ListResourcesName, """{ "server": "res" }"""));
+        Assert.NotNull(Volatile.Read(ref connectionId));
         AssertSucceeded(await racing.Execute("mcp_res_change_during_listing", fail ? """{ "fail": true }""" : """{ "fail": false }"""));
         var listing = await racing.Execute(McpResourceTools.ListResourcesName, """{ "server": "res" }""");
         Assert.Equal(fail, listing.IsError);
+        // The SDK dispatches responses independently; its incoming span stops after all notification handlers complete.
+        await consumed.Task.WaitAsync(NotificationDeadline, TestContext.Current.CancellationToken);
         Assert.Contains("resource list changed on res", await racing.SectionText());
         Assert.Contains("resource template list changed on res", await racing.SectionText());
         AssertSucceeded(await racing.Execute(McpResourceTools.ListResourcesName, """{ "server": "res" }"""));

@@ -32,11 +32,19 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    dsharp --gpu # 使用GPU加速渲染，会启动独立窗口
    # 无头单次任务
    dsharp -- headless "跑一遍测试"
-   # TUI 的会话管理(PTY 守护进程按需自动拉起,无需手动启动)
-   dsharp -- tui list   # 列出所有会话id
-   dsharp -- tui attach <id>  #进入某个会话
-   dsharp -- tui attach <pty-id> --gpu  #用独立 GPU 窗口接回该会话
+   # 从磁盘恢复已退出的对话
+   dsharp tui --session <session-id>
+   dsharp --session <session-id>  # 默认进入 TUI
+   dsharp tui --gpu --session <session-id>  # 在独立 GPU 窗口恢复
+   # 后台 PTY 会话管理(守护进程按需自动拉起, 无需手动启动)
+   dsharp tui list  # 列出 daemon 管理的 PTY 会话
+   dsharp tui attach <pty-id>  # 接回仍在运行的后台会话
+   dsharp tui attach <pty-id> --gpu  # 用独立 GPU 窗口接回
    ```
+   `session-id` 标识磁盘里的对话, `pty-id` 标识 daemon 管理的进程; `tui attach <session-id>` 也可以从磁盘恢复对话。
+   `--session` 可以放在 `tui` 之前, 如 `dsharp --session <session-id> tui`。
+   恢复会显示原有历史并继续使用原会话; ID 不存在或日志损坏时报告错误并以非零状态退出, 不新建替代会话。
+
    TUI 的 GPU 渲染后端由 `plugins."@deepseek-ai/dsh-tui"` 的 `gpuBackend` 配置项决定(`auto|vk|gl|cpu`,缺省 `auto`，优先以 `vk` 后端启动)，`vsync` 即垂直同步默认为 `true`。
 
    Linux 上 `vk` 后端要求 glibc >= 2.33(ppy.SDL3-CS 要求), 老系统请用 `gl` 或升级 glibc; 后端不可用时 dsharp 会输出原因并自动回退(`gl` -> CPU)。
@@ -49,7 +57,8 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
     `ban_write`/`enable_write` 切换该插件的写权限(`plugins."<包>".permissions.write`),`enable`/`disable` 保留权限设置,`remove` 连同参数与权限一并清除。权限目前只记录在配置里,由后续版本的插件沙箱强制执行。
     `disable` 只停用效果、保留插件(`enable` 可复原);`remove` 是卸载:摘除效果并删除 `plugins/<包名>/` 目录(内置或手工平铺的插件没有该目录,只做摘除)。更新插件:直接 `remove` 旧版(安装目录会被一并删除),再 `add` 新版;`add` 遇到同名但内容不同的文件会拒绝,以免覆盖手工放置的同名插件。
 4. 日志:`<home>/logs/dsh-YYYYMMDD.log`(默认开启);`logging:` 段可配置级别、内存缓冲、是否输出到控制台(TUI 下强制关闭)。
-5. 后台会话:TUI 内 `/detach [命令]`(Ctrl+X D)把命令交给 PTY 守护进程托管;`tui list`/`tui attach` 会自动拉起守护进程。
+5. 后台会话:TUI 内不带命令的 `/detach`(Ctrl+X D)保留当前对话和未发送草稿, 交由 PTY 守护进程继续运行。
+   `/detach <命令>` 托管指定命令;通过 `tui list` 查找 PTY ID, 再用 `tui attach <pty-id>` 接回。
 6. 插件目录:把插件放进 `<安装目录>/plugins/`,启动时自动加载并启用(可用 `/plugins disable <包>` 关闭)。托管插件是构建时引入 `Dsh.Plugins.Generator` 的 dll(生成清单提供入口),仅在默认 JIT 发布档可用;原生插件是 `.so`/`.dylib`/`.dll` 共享库(实现 `IDshNativePlugin` 声明包名与工具,导出握手与 ABI 胶水由生成器产出),JIT 与 AOT 发布档均可用,示例见 `tests/Dsh.NativePluginSample`。
 7. 看图:模型可调用 `read_image` 工具读取本地图片(PNG/JPEG/GIF/WebP/BMP/TIFF 等常见格式,无扩展名的文件按内容识别),图片本身随工具结果交给模型;路径解析与 `read` 相同(相对路径按会话工作目录)。
    - 长边超过 2000px 的图片自动降采样,结果里写明原始尺寸与坐标换算倍数;源文件上限 20 MiB,存入附件库的图片不超过 5 MiB(超出时改用 JPEG 压缩)。

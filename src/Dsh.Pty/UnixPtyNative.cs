@@ -10,6 +10,9 @@ internal static class UnixPtyNative
 {
     /** TIOCSWINSZ 随平台不同: Linux 0x5414, Darwin 0x80087467(_IOW('t', 103, struct winsize))。 */
     private static readonly ulong Tiocswinsz = OperatingSystem.IsMacOS() ? 0x80087467UL : 0x5414UL;
+    private static readonly ulong Tiocgwinsz = OperatingSystem.IsMacOS() ? 0x40087468UL : 0x5413UL;
+    private static readonly ulong Fioclex = OperatingSystem.IsMacOS() ? 0x20006601UL : 0x5451UL;
+    private static readonly Lock SpawnGate = new();
     private const int Sigterm = 15;
     private const int Sigkill = 9;
 
@@ -44,8 +47,10 @@ internal static class UnixPtyNative
 
     public static (int MasterFd, int Pid) Spawn(PtyStartInfo info)
     {
-        var (master, slave, slaveName) = OpenPty(info.Rows, info.Columns);
+        // openpty cannot atomically set CLOEXEC: another PTY spawn must not inherit its still-open slave before the flags are set.
+        using var spawnScope = SpawnGate.EnterScope();
         var allocated = new List<IntPtr>();
+        var (master, slave, slaveName) = OpenPty(info.Rows, info.Columns);
         try
         {
             var file = AllocAnsi(info.FileName);
@@ -109,6 +114,11 @@ internal static class UnixPtyNative
                 posix_spawn_file_actions_destroy(ref actions);
             }
         }
+        catch
+        {
+            close(master);
+            throw;
+        }
         finally
         {
             close(slave);
@@ -128,9 +138,7 @@ internal static class UnixPtyNative
         {
             if (openpty(out var master, out var slave, nameBuffer, IntPtr.Zero, winsize) != 0)
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "openpty failed");
-            var slaveName = Marshal.PtrToStringUTF8(nameBuffer)
-                ?? throw new InvalidOperationException("openpty did not report the slave name");
-            return (master, slave, slaveName);
+            return PreparePty(master, slave, nameBuffer);
         }
         finally
         {
@@ -139,10 +147,39 @@ internal static class UnixPtyNative
         }
     }
 
+    /** Takes ownership of both descriptors, including when close-on-exec initialization fails. */
+    private static (int Master, int Slave, string SlaveName) PreparePty(int master, int slave, IntPtr nameBuffer)
+    {
+        try
+        {
+            if (ioctlCloseOnExec(master, Fioclex) != 0 || ioctlCloseOnExec(slave, Fioclex) != 0)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "ioctl(FIOCLEX) failed");
+            var slaveName = Marshal.PtrToStringUTF8(nameBuffer)
+                ?? throw new InvalidOperationException("openpty did not report the slave name");
+            return (master, slave, slaveName);
+        }
+        catch
+        {
+            close(master);
+            close(slave);
+            throw;
+        }
+    }
+
     private static void ThrowIfSpawnActionError(int error, string operation)
     {
         if (error != 0)
             throw new Win32Exception(error, $"{operation} failed");
+    }
+
+    /** Read the descriptor's current kernel geometry; Console caches it until a terminal signal arrives. */
+    public static (int Columns, int Rows)? ReadWindowSize(int descriptor)
+    {
+        var size = new Winsize();
+        var result = VariadicArgumentsOnStack
+            ? ioctlAfterRegisters(descriptor, Tiocgwinsz, 0, 0, 0, 0, 0, 0, ref size)
+            : ioctl(descriptor, Tiocgwinsz, ref size);
+        return result == 0 ? (size.WsCol, size.WsRow) : null;
     }
 
     public static void Resize(SafeFileHandle master, int rows, int cols)
@@ -301,6 +338,9 @@ internal static class UnixPtyNative
     /** The same ioctl with six unused register arguments, which puts argp in the first stack slot where Darwin arm64 reads variadic arguments. */
     [DllImport("libc", EntryPoint = "ioctl", SetLastError = true)]
     private static extern int ioctlAfterRegisters(int fd, ulong request, nint x2, nint x3, nint x4, nint x5, nint x6, nint x7, ref Winsize argp);
+
+    [DllImport("libc", EntryPoint = "ioctl", SetLastError = true)]
+    private static extern int ioctlCloseOnExec(int fd, ulong request);
 
     [DllImport("libc", SetLastError = true)]
     private static extern int close(int fd);
