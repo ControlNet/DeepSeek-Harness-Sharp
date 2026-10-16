@@ -15,6 +15,7 @@ internal static class ConsoleInput
         => OperatingSystem.IsWindows() ? new WindowsRawConsoleStream() : new UnixStdinStream();
 
     private const short PollIn = 0x0001;
+    private const int InterruptedSystemCall = 4;
     private const int PollTimeoutMs = 200;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -58,7 +59,11 @@ internal static class ConsoleInput
                 var fds = new[] { new PollFd { Fd = 0, Events = PollIn } };
                 var ready = poll(fds, fds.Length, PollTimeoutMs);
                 if (ready < 0)
+                {
+                    if (Marshal.GetLastWin32Error() == InterruptedSystemCall)
+                        continue;
                     return 0;
+                }
                 if (ready == 0 || fds[0].Revents == 0)
                 {
                     // 让出执行权: 同步 poll 循环会把调用方(隧道)同一线程上的另一个泵饿死。
