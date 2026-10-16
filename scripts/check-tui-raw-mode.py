@@ -137,6 +137,12 @@ def run(args, index):
             raise AssertionError("/exit did not terminate the real TUI")
         if os.waitstatus_to_exitcode(status) != 0:
             raise AssertionError("real TUI exited unsuccessfully")
+        pending_retype = bool(termios.tcgetattr(slave)[3] & termios.PENDIN)
+        if os.uname().sysname == "Darwin" and pending_retype:
+            # XNU sets PENDIN on every raw -> canonical transition. FIONREAD
+            # runs ttypend without consuming input; never mask flags or flush.
+            # https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/tty.c
+            fcntl.ioctl(slave, termios.FIONREAD, struct.pack("i", 0))
         after = mode(slave)
         if termios.tcgetattr(slave) != original:
             raise AssertionError("normal exit did not restore original termios")
@@ -144,6 +150,7 @@ def run(args, index):
             raise AssertionError("normal exit did not restore the main screen")
         return {"run": index, "before": before, "timeline": timeline, "after": after,
                 "input_probes": 3, "exit_code": 0, "termios_restored": True,
+                "kernel_pendin_before_query": pending_retype,
                 "llm_smoke": args.llm_smoke and index == 0}
     except Exception:
         # Only terminal metadata is safe to publish; never print the screen, configuration or exec arguments.
