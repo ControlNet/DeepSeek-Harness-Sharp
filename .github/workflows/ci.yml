@@ -106,7 +106,42 @@ jobs:
           if (-not $dll) { throw '未找到 sqlite3.dll' }
           New-Item -ItemType Directory -Force tests/Dsh.Tests/bin/Debug/net10.0 | Out-Null
           Copy-Item $dll.FullName 'tests/Dsh.Tests/bin/Debug/net10.0/' -Force
+          Copy-Item $dll.FullName 'DeepSeek-Harness-Sharp/bin/Debug/net10.0/' -Force
           Write-Host "copied $($dll.FullName)"
+
+      - name: 启动当前产物的独立 PTY daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .daemon-tests
+          HOME_DIR="$(mktemp -d "$PWD/.daemon-tests/qXXXXXX")"
+          cp src/Dsh.Boot/Profiles/Templates/settings.yaml "$HOME_DIR/settings.yaml"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            DSH_HOME="$(cygpath -w "$HOME_DIR")"
+          else
+            DSH_HOME="$HOME_DIR"
+          fi
+          export DSH_HOME
+          echo "DSH_HOME=$DSH_HOME" >> "$GITHUB_ENV"
+          DAEMON="DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp"
+          if [ ! -x "$DAEMON" ]; then
+            DAEMON="$DAEMON.exe"
+          fi
+          "$DAEMON" tui daemon > "$HOME_DIR/daemon.log" 2>&1 &
+          DAEMON_PID=$!
+          for ATTEMPT in {1..200}; do
+            if [ -e "$HOME_DIR/run/dsh.sock" ] || [ -e "$HOME_DIR/run/dsh.port" ]; then
+              exit 0
+            fi
+            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+              cat "$HOME_DIR/daemon.log"
+              exit 1
+            fi
+            sleep 0.05
+          done
+          echo "::error::当前构建的独立 PTY daemon 未发布端点"
+          cat "$HOME_DIR/daemon.log"
+          exit 1
 
       - name: 运行测试（排除 GpuStress / OnlyGpu / LlmSmoke / RenderBench）
         shell: bash
@@ -156,12 +191,17 @@ jobs:
           ARGS=(-noColor
             -class Dsh.Tests.PtyDaemonSubscribeTests
             -class Dsh.Tests.PtyDaemonTests
+            -class Dsh.Tests.PtyOwnershipTests
             -class Dsh.Tests.PtyOutputReaderTests
             -class Dsh.Tests.PtySessionSubscriptionTests
             -class Dsh.Tests.ChatWindowKeyBindingTests
             -class Dsh.Tests.ChatWindowPaneTests
             -class 'Dsh.Tests.JobsTests*'
             -class Dsh.Tests.Runtime.PluginLifecycleTests
+            -class Dsh.Tests.Runtime.PluginUnloadTests
+            -class Dsh.Tests.AcpTests
+            -class Dsh.Tests.LspTests
+            -class Dsh.Tests.SdkTests
             -class Dsh.Tests.ProjectMemoryTests
             -class Dsh.Tests.SessionAutoRenameTests
             -class Dsh.Tests.RemoteHostCapabilityTests
