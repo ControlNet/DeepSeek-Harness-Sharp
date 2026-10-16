@@ -33,6 +33,9 @@ internal sealed class GpuSessionProxy : IGpuHostClient
     private char _pendingHighSurrogate;
     private Action? _wake;
     private volatile bool _sessionEnded;
+    private Task _resizeTask = Task.CompletedTask;
+    private Task? _tunnelTask;
+    private bool _sizeRequested;
 
     public GpuSessionProxy(string sessionId, GlyphAtlas atlas, IGlSurfaceHostRunner host)
     {
@@ -51,23 +54,6 @@ internal sealed class GpuSessionProxy : IGpuHostClient
     /** 后台接会话隧道(输出喂 VtScreen, 输入来自窗口), 前台跑窗口循环; 窗口关闭或会话结束即收尾。 */
     public void Run()
     {
-        var tunnel = Task.Run(async () =>
-        {
-            try
-            {
-                await PtyDaemonClient.AttachAsync(
-                    _sessionId,
-                    new InputPipe(this),
-                    new ScreenPipe(this),
-                    _tunnel.Token);
-            }
-            finally
-            {
-                // 会话自己结束(/exit、两次 Ctrl+C)时隧道会正常收流结束: 此时必须让窗口跟着关掉,
-                // 否则只剩一个黑框(会话画面已经清空)且只能手动关。_tunnel 只在窗口关闭后才取消, 指望不上。
-                _sessionEnded = true;
-            }
-        });
         try
         {
             _host.Run(this);
@@ -77,12 +63,29 @@ internal sealed class GpuSessionProxy : IGpuHostClient
             _tunnel.Cancel();
             try
             {
-                tunnel.Wait(TimeSpan.FromSeconds(2));
+                _tunnelTask?.Wait(TimeSpan.FromSeconds(2));
             }
             catch (Exception)
             {
                 // 会话侧已断开: 无需再等
             }
+        }
+    }
+
+    private async Task RunTunnelAsync()
+    {
+        try
+        {
+            Task resize;
+            lock (_screen)
+                resize = _resizeTask;
+            await resize.ConfigureAwait(false);
+            await PtyDaemonClient.AttachAsync(
+                _sessionId, new InputPipe(this), new ScreenPipe(this), _tunnel.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sessionEnded = true;
         }
     }
 
@@ -94,6 +97,7 @@ internal sealed class GpuSessionProxy : IGpuHostClient
             _wake = waker.Wake;
         var size = _host.Size;
         OnResize(size.Width, size.Height);
+        _tunnelTask = RunTunnelAsync();
     }
 
     public void OnResize(int width, int height)
@@ -103,26 +107,34 @@ internal sealed class GpuSessionProxy : IGpuHostClient
         var rows = Math.Max(1, height / _atlas.GlyphHeight);
         lock (_screen)
         {
-            if (_screen.Width == columns && _screen.Height == rows)
+            var changed = _screen.Width != columns || _screen.Height != rows;
+            if (!changed && _sizeRequested)
                 return;
-            _screen.Resize(columns, rows);
-            _grid = new CellGrid(columns, rows);
-            _lastGrid = null;
-            _packed = new uint[columns * rows];
+            if (changed)
+            {
+                _screen.Resize(columns, rows);
+                _grid = new CellGrid(columns, rows);
+                _lastGrid = null;
+                _packed = new uint[columns * rows];
+            }
+            _sizeRequested = true;
+            _resizeTask = ResizeAfterAsync(_resizeTask, rows, columns);
         }
 
-        // 窗口尺寸即 proxy 的尺寸: 立刻告诉 daemon, 会话按它重排(常驻 TUI 从尺寸文件读到)。
-        _ = Task.Run(async () =>
+    }
+
+    /** 窗口尺寸按顺序送往 daemon, 首次 attach 等待初始化尺寸交接。 */
+    private async Task ResizeAfterAsync(Task previous, int rows, int columns)
+    {
+        try
         {
-            try
-            {
-                await PtyDaemonClient.ResizeAsync(_sessionId, rows, columns);
-            }
-            catch (Exception)
-            {
-                // daemon 不可用: 会话保持原尺寸
-            }
-        });
+            await previous.ConfigureAwait(false);
+            await PtyDaemonClient.ResizeAsync(_sessionId, rows, columns, _tunnel.Token).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // daemon 不可用时保留会话原尺寸。
+        }
     }
 
     public bool OnFrame()

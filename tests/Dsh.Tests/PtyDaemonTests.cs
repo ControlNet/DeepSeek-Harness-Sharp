@@ -6,6 +6,8 @@ public class PtyDaemonTests
 {
     private static readonly string TestRoot = Path.Combine(FindRepositoryRoot(), ".daemon-tests");
     private static readonly TimeSpan ReadReleaseTimeout = TimeSpan.FromSeconds(30);
+    private const int ExitCodeAfterOutputCloses = 7;
+    private const int ExitDelayAfterOutputClosesSeconds = 1;
 
     [Fact(Timeout = 30000)]
     public async Task List_ReturnsEmpty_WhenNoSessionsExist()
@@ -122,7 +124,7 @@ public class PtyDaemonTests
             var started = await PtyDaemonClient.StartAsync(new PtyDaemonStartParams
             {
                 FileName = "/bin/sh",
-                Arguments = ["-c", "read line; echo GOT:$line"],
+                Arguments = ["-c", $"read line; echo GOT:$line; exec </dev/null >/dev/null 2>&1; sleep {ExitDelayAfterOutputClosesSeconds}; exit {ExitCodeAfterOutputCloses}"],
             }, socketPath, null, TestContext.Current.CancellationToken);
 
             using var input = new OpenEndedInputStream("hello\n"u8.ToArray());
@@ -130,6 +132,9 @@ public class PtyDaemonTests
             await PtyDaemonClient.AttachAsync(started.Id, input, output, socketPath, null, TestContext.Current.CancellationToken);
 
             Assert.Contains("GOT:hello", System.Text.Encoding.UTF8.GetString(output.ToArray()));
+            var info = Assert.Single(await PtyDaemonClient.ListAsync(socketPath, null, TestContext.Current.CancellationToken));
+            Assert.Equal("Exited", info.Status);
+            Assert.Equal(ExitCodeAfterOutputCloses, info.ExitCode);
         }
         finally
         {
