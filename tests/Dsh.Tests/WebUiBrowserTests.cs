@@ -323,7 +323,7 @@ public sealed class WebUiBrowserTests
         var terminal = state.RootElement;
         var sessions = await PtyDaemonClient.ListAsync(PtyDaemonPaths.SocketPath(home),
             OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile(home) : null, Ct);
-        var session = Assert.Single(sessions.Where(item => item.Id == terminal.GetProperty("ptyId").GetString()));
+        var session = Assert.Single(sessions, item => item.Id == terminal.GetProperty("ptyId").GetString());
         Assert.Equal(terminal.GetProperty("cols").GetInt32(), session.Columns);
         Assert.Equal(terminal.GetProperty("rows").GetInt32(), session.Rows);
         Assert.Equal(0, terminal.GetProperty("scrollTop").GetInt32());
