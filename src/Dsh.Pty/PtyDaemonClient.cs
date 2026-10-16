@@ -67,11 +67,14 @@ public static class PtyDaemonClient
         var sizeWatch = WatchConsoleSizeAsync(id, stop.Token);
         try
         {
+            var socketPath = PtyDaemonPaths.SocketPath();
+            var portFile = OperatingSystem.IsWindows() ? PtyDaemonPaths.PortFile() : null;
+            await TryResizeToConsoleAsync(id, socketPath, portFile, cancellationToken);
             var input = ConsoleInput.OpenForRead();
             if (!OperatingSystem.IsWindows())
             {
                 // Unix: 报文原件直通会话, 由 TUI 自己还原鼠标事件。
-                await AttachAsync(id, input, output, cancellationToken);
+                await AttachAsync(id, input, output, socketPath, portFile, cancellationToken);
                 return;
             }
 
@@ -82,7 +85,7 @@ public static class PtyDaemonClient
             var forward = ForwardMouseAsync(id, mouse.Reader, cancellationToken);
             try
             {
-                await AttachAsync(id, new MouseReportParsingStream(input, mouse.Writer), output, cancellationToken);
+                await AttachAsync(id, new MouseReportParsingStream(input, mouse.Writer), output, socketPath, portFile, cancellationToken);
             }
             finally
             {
@@ -220,7 +223,6 @@ public static class PtyDaemonClient
         ArgumentNullException.ThrowIfNull(output);
         // 隧道里流的是状态重建快照(UTF-8 原样字节): 不声明代码页, 控制台会按 OEM 代码页把中文读成乱码。
         ConsoleCodePage.EnsureUtf8();
-        await TryResizeToClientAsync(id, socketPath, portFile, cancellationToken);
         using var socket = await ConnectAsync(socketPath, portFile, cancellationToken);
         using var stream = new NetworkStream(socket, ownsSocket: true);
         await WriteRequestAsync(stream, new PtyDaemonRequest { Method = "attach", Id = id }, socketPath, portFile, cancellationToken);
@@ -488,8 +490,8 @@ public static class PtyDaemonClient
         await ReadResponseAsync(stream, cancellationToken);
     }
 
-    /** attach 前按客户端终端尺寸调整会话; 尺寸拿不到或会话已退出时静默跳过, 不影响 attach 主体。 */
-    private static async Task TryResizeToClientAsync(
+    /** console attach 前按宿主终端尺寸调整会话; 尺寸拿不到或会话已退出时保留原尺寸。 */
+    private static async Task TryResizeToConsoleAsync(
         string id,
         string socketPath,
         string? portFile,
@@ -507,7 +509,7 @@ public static class PtyDaemonClient
         }
         catch (Exception)
         {
-            // 尺寸查询失败/会话已退出/daemon 是不认识 resize 的旧版本: 保持会话原尺寸, 不影响 attach 主体。
+            // 尺寸查询失败或会话已退出时保留原尺寸, 由 attach 报告连接结果。
             // 这里不能往 stderr 写东西 —— 终端形态下它会落到会话画面上, 污染用户的界面。
         }
     }

@@ -40,21 +40,34 @@ public static class TuiProxy
         if (!windowShown)
         {
             // 终端形态: 接管本终端, 输出即会话画面, 输入原样进会话; 常驻会话发 detach 标记或退出时本进程就结束。
-            await PtyDaemonClient.AttachConsoleAsync(
-                session.Id,
-                Console.OpenStandardOutput(),
-                CancellationToken.None);
+            try
+            {
+                await PtyDaemonClient.AttachConsoleAsync(
+                    session.Id, Console.OpenStandardOutput(), CancellationToken.None);
+            }
+            catch (InvalidOperationException)
+            {
+                var exitCode = await ProxyExitCodeAsync(session.Id, reportFailure: true, requireExited: true);
+                if (exitCode is null)
+                    throw;
+                return exitCode.Value;
+            }
         }
+        return await ProxyExitCodeAsync(session.Id, reportFailure: windowShown) ?? 0;
+    }
+
+    private static async Task<int?> ProxyExitCodeAsync(string sessionId, bool reportFailure, bool requireExited = false)
+    {
         foreach (var candidate in await PtyDaemonClient.ListAsync())
         {
-            if (candidate.Id != session.Id)
+            if (candidate.Id != sessionId || requireExited && candidate.Status != nameof(PtySessionStatus.Exited))
                 continue;
             var exitCode = candidate.ExitCode ?? 0;
-            if (windowShown && exitCode != 0)
-                await Console.Error.WriteLineAsync(await PtyDaemonClient.SnapshotTextAsync(session.Id));
+            if (reportFailure && exitCode != 0)
+                await Console.Error.WriteLineAsync(await PtyDaemonClient.SnapshotTextAsync(sessionId));
             return exitCode;
         }
-        return 0;
+        return null;
     }
 
     /**
