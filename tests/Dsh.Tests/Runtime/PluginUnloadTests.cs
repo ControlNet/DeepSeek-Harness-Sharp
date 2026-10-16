@@ -17,7 +17,9 @@ public class PluginUnloadTests
         var pluginPath = Path.Combine(AppContext.BaseDirectory, "Dsh.Checkpoints.dll");
         Assert.True(File.Exists(pluginPath), $"plugin assembly not found: {pluginPath}");
         var weak = await LoadActivateUnloadAsync(ctx, pluginPath);
-        // 满负载(全量套件并行 + 128 核)下 ALC 回收是 GC 延迟问题, 不是泄漏: 放宽轮数避免假失败
+        // The helper's completion can inline this continuation before its live activation frame returns.
+        await Task.Yield();
+        // 显式完成卸载后，在既有有界 GC 轮数内验证上下文不再被持有；失败保留诊断。
         Assert.True(PluginUnloader.WaitForCollection(weak, out var report, maxRounds: CollectionRounds), report);
     }
 
@@ -69,6 +71,7 @@ public class PluginUnloadTests
         var definition = host.Catalog.CreateDefinition("@deepseek-ai/dsh-checkpoints");
         var activation = await ctx.Scheduler.AddAsync(definition);
         await ctx.Scheduler.UnloadAsync(activation.Name);
+        await ctx.Scheduler.SettleAsync();
         Assert.Equal(ActivationState.Disposed, activation.State);
         host.Catalog.Remove(activation.Name);
         return PluginUnloader.Unload(loaded.Context!);
