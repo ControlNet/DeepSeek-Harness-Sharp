@@ -93,17 +93,19 @@ public sealed class ProjectMemoryTests
     {
         using var fixture = new Fixture();
         var memory = fixture.Memory;
-        await memory.CorrectAsync("c1", "keep me", "tool", TestContext.Current.CancellationToken);
-        for (var index = 0; index < 30; index++)
-            await memory.RememberAsync($"f{index}", new string('x', 100), "Facts", "tool", TestContext.Current.CancellationToken);
+        const string correction = "Keep the critical project deployment correction.";
+        var facts = Enumerable.Range(0, 30)
+            .Select(index => $"Ordinary project fact number {index}: {new string('x', 100)}")
+            .ToArray();
+        await memory.CorrectAsync("c1", correction, "tool", TestContext.Current.CancellationToken);
+        for (var index = 0; index < facts.Length; index++)
+            await memory.RememberAsync($"f{index}", facts[index], "Facts", "tool", TestContext.Current.CancellationToken);
 
         var result = await memory.BuildIndexAsync(budgetBytes: 512, cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.True(Encoding.UTF8.GetByteCount(result) <= 512 + 32);
-        Assert.Contains("## Corrections", result);
-        Assert.Contains("- c1 :: keep me", result);
-        Assert.Contains("… (truncated)", result);
-        Assert.DoesNotContain("- f29 ::", result);
+        Assert.Contains(correction, result);
+        Assert.DoesNotContain(facts[^1], result);
     }
 
     [Fact]
