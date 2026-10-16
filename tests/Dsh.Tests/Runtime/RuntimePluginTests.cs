@@ -70,10 +70,10 @@ public class RuntimePluginTests
             return null;
         }, "needy", ["foo"]);
         var activation = ctx.Plugin(definition);
-        await Task.Delay(20, TestContext.Current.CancellationToken);
+        await ctx.Scheduler.SettleAsync();
         Assert.Equal(ActivationState.Pending, activation.State);
         ctx.Provide("foo", 42);
-        await activation.WaitAsync();
+        await ctx.Scheduler.SettleAsync();
         Assert.Equal(ActivationState.Active, activation.State);
         Assert.Equal(1, applied);
         Assert.Equal(42, activation.Ctx.Get("foo"));
