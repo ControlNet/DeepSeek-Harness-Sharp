@@ -26,11 +26,11 @@ public sealed class HostSessionRegistry : IAsyncDisposable
         foreach (var record in records)
             _entries[record.SessionId] = record;
         pending.CountChanged += OnPendingChanged;
-        _saver = Task.Run(SaveLoopAsync);
+        _saver = SaveLoopAsync();
     }
 
     /** Raised under the registry lock; handlers only hand the projection off. */
-    public event Action<RemoteHostSession>? Changed;
+    public event Action<RemoteHostSession>? SessionExited;
 
     /** Host-owned processes exited; surviving daemon PTYs are restored by HostPtySessions reconciliation. */
     public static async Task<HostSessionRegistry> OpenAsync(string storePath, HostPendingDecisions pending, CancellationToken cancellationToken)
@@ -64,7 +64,7 @@ public sealed class HostSessionRegistry : IAsyncDisposable
                     return;
             }
             _entries[record.SessionId] = registration;
-            Publish(registration);
+            Publish(registration, existing?.Status);
             _saveRequests.Writer.TryWrite(true);
         }
     }
@@ -98,7 +98,12 @@ public sealed class HostSessionRegistry : IAsyncDisposable
         }
     }
 
-    public HostSubscription Subscribe() => _broadcast.Subscribe([]);
+    public HostSubscription Subscribe()
+    {
+        lock (_gate)
+            return _broadcast.Subscribe([HostNotification.Create(
+                HostProtocol.NotificationSessionsChanged, new RemoteSessionChange(Snapshot: List()), HostProtocolJsonContext.Default.RemoteSessionChange)]);
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -127,17 +132,23 @@ public sealed class HostSessionRegistry : IAsyncDisposable
             if (after == before)
                 return;
             _entries[sessionId] = after;
-            Publish(after);
+            Publish(after, before.Status);
             _saveRequests.Writer.TryWrite(true);
         }
     }
 
-    private void Publish(HostSessionRegistration record) => Publish(Project(record));
+    private void Publish(HostSessionRegistration record, string? previousStatus = null)
+    {
+        var projected = Project(record);
+        Publish(projected);
+        if (previousStatus is not null and not HostSessionStatuses.Exited && record.Status == HostSessionStatuses.Exited)
+            SessionExited?.Invoke(projected);
+    }
 
     private void Publish(RemoteHostSession projected)
     {
-        _broadcast.Publish(HostNotification.Create(HostProtocol.NotificationSessionsChanged, projected, HostProtocolJsonContext.Default.RemoteHostSession));
-        Changed?.Invoke(projected);
+        _broadcast.Publish(HostNotification.Create(
+            HostProtocol.NotificationSessionsChanged, new RemoteSessionChange(Session: projected), HostProtocolJsonContext.Default.RemoteSessionChange));
     }
 
     private RemoteHostSession Project(HostSessionRegistration record)

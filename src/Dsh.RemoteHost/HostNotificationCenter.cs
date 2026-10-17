@@ -5,8 +5,7 @@ namespace Dsh.RemoteHost;
 
 /**
  * The machine's notification history (host.notify.*): the host is its only writer, every client reads it and shares one read state.
- * Sources: approvals and questions entering the pending queue, sessions exiting (with their exit code), and explicit
- * structured events through Report (such as agent errors).
+ * Sources are pending decisions, registry exit transitions, and structured events through Report.
  * Appends go through one queue, so producers that run under other locks only hand the record off.
  */
 public sealed class HostNotificationCenter : IAsyncDisposable
@@ -15,15 +14,14 @@ public sealed class HostNotificationCenter : IAsyncDisposable
 
     private const int DefaultPageSize = 50;
     private const int MaxPageSize = 500;
+    private const int SnapshotLimit = 200;
 
     private readonly NotificationHistory _history;
     private readonly HostSessionRegistry _sessions;
     private readonly HostPendingDecisions _pending;
     private readonly HostBroadcast _broadcast = new();
     private readonly Channel<NotificationRecord> _queue = Channel.CreateUnbounded<NotificationRecord>(new UnboundedChannelOptions { SingleReader = true });
-    private readonly SemaphoreSlim _markGate = new(1, 1);
-    private readonly Lock _statusGate = new();
-    private readonly Dictionary<string, string> _lastStatus = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _updates = new(1, 1);
     private readonly Task _writer;
 
     private HostNotificationCenter(NotificationHistory history, string machineId, HostSessionRegistry sessions, HostPendingDecisions pending)
@@ -32,11 +30,9 @@ public sealed class HostNotificationCenter : IAsyncDisposable
         MachineId = machineId;
         _sessions = sessions;
         _pending = pending;
-        foreach (var session in sessions.List())
-            _lastStatus[session.SessionId] = session.Status;
-        sessions.Changed += OnSessionChanged;
+        sessions.SessionExited += OnSessionExited;
         pending.Asked += OnAsked;
-        _writer = Task.Run(WriteLoopAsync);
+        _writer = WriteLoopAsync();
     }
 
     /** MachineId on every record: the host's machine name, so clients aggregating several hosts can tell them apart. */
@@ -48,8 +44,19 @@ public sealed class HostNotificationCenter : IAsyncDisposable
         return new HostNotificationCenter(history, Environment.MachineName, sessions, pending);
     }
 
-    /** One per connection: live host.notify.added and host.notify.changed pushes; the history itself comes from host.notify.list. */
-    public HostSubscription Subscribe() => _broadcast.Subscribe([]);
+    /** Snapshot and later changes share the mutation gate, so no client repairs a query/push race. */
+    public async Task<HostSubscription> SubscribeAsync(CancellationToken cancellationToken)
+    {
+        await _updates.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return _broadcast.Subscribe([Change()]);
+        }
+        finally
+        {
+            _updates.Release();
+        }
+    }
 
     public RemoteNotifyPage Query(RemoteNotifyQuery query)
     {
@@ -64,20 +71,19 @@ public sealed class HostNotificationCenter : IAsyncDisposable
     /** Marks notifications read and tells every client which ones changed; returns how many changed. */
     public async Task<int> MarkReadAsync(RemoteNotifyMarkRead request, CancellationToken cancellationToken)
     {
-        await _markGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _updates.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var changed = request.All
                 ? await _history.MarkAllReadAsync(new NotificationFilter(SessionId: request.SessionId), cancellationToken).ConfigureAwait(false)
                 : await _history.MarkReadAsync(request.Ids ?? [], cancellationToken).ConfigureAwait(false);
             if (changed.Count > 0)
-                _broadcast.Publish(HostNotification.Create(
-                    HostProtocol.NotificationNotifyChanged, new RemoteNotifyChanged(changed, _history.CountUnread()), HostProtocolJsonContext.Default.RemoteNotifyChanged));
+                _broadcast.Publish(Change(readIds: changed));
             return changed.Count;
         }
         finally
         {
-            _markGate.Release();
+            _updates.Release();
         }
     }
 
@@ -105,17 +111,9 @@ public sealed class HostNotificationCenter : IAsyncDisposable
         Report(kind, asked.SessionId, $"{Label(asked.SessionId)} {verb}", asked.Summary, new NotificationTarget(NotificationView.PendingRequest, asked.RequestId), asked.RequestId);
     }
 
-    /** Runs under the registry lock: only compares and queues. */
-    private void OnSessionChanged(RemoteHostSession session)
+    /** The registry emits only an actual live-to-exited transition. */
+    private void OnSessionExited(RemoteHostSession session)
     {
-        string? previous;
-        lock (_statusGate)
-        {
-            _lastStatus.TryGetValue(session.SessionId, out previous);
-            _lastStatus[session.SessionId] = session.Status;
-        }
-        if (session.Status != HostSessionStatuses.Exited || previous is null or HostSessionStatuses.Exited)
-            return;
         var name = session.Title ?? session.AgentKind ?? session.SessionId;
         Report(NotificationKind.SessionExited, session.SessionId, $"{name} exited", session.ExitCode is { } code ? $"exit code {code}" : null);
     }
@@ -124,18 +122,31 @@ public sealed class HostNotificationCenter : IAsyncDisposable
     {
         await foreach (var record in _queue.Reader.ReadAllAsync().ConfigureAwait(false))
         {
-            if (await _history.AppendAsync(record).ConfigureAwait(false))
-                _broadcast.Publish(HostNotification.Create(HostProtocol.NotificationNotifyAdded, record, HostProtocolJsonContext.Default.NotificationRecord));
+            await _updates.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (await _history.AppendAsync(record).ConfigureAwait(false))
+                    _broadcast.Publish(Change(added: record));
+            }
+            finally
+            {
+                _updates.Release();
+            }
         }
     }
+
+    private HostNotification Change(NotificationRecord? added = null, IReadOnlyList<string>? readIds = null)
+        => HostNotification.Create(NotificationsProtocol.NotificationNotifyChanged,
+            new RemoteNotificationChange(Query(new RemoteNotifyQuery(Limit: SnapshotLimit)), added, readIds),
+            NotificationsProtocolJsonContext.Default.RemoteNotificationChange);
 
     /** Stops listening first, so sessions ended by the host's own shutdown do not land in the history. */
     public async ValueTask DisposeAsync()
     {
-        _sessions.Changed -= OnSessionChanged;
+        _sessions.SessionExited -= OnSessionExited;
         _pending.Asked -= OnAsked;
         _queue.Writer.TryComplete();
         await _writer.ConfigureAwait(false);
-        _markGate.Dispose();
+        _updates.Dispose();
     }
 }
