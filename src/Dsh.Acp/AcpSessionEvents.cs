@@ -1,9 +1,9 @@
 using System.Text.Json;
 
-namespace Dsh.AgentAdapters.Acp;
+namespace Dsh.Acp;
 
 /**
- * One `session/update` notification; Kind is the `sessionUpdate` discriminator (AcpProtocol.Update*) and Update the raw object.
+ * One `session/update` notification; Kind is the `sessionUpdate` discriminator (AcpMethods.Update*) and Update the raw object.
  * The helpers read the fields shared by the common kinds and return null when the kind does not carry them.
  */
 public sealed record AcpSessionUpdate(string SessionId, string Kind, JsonElement Update)

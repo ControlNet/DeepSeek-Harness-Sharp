@@ -28,10 +28,13 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
     private readonly int _maxLineBytes;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<object?>> _pending = new();
     private readonly Lock _writeLock = new();
-    private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private CancellationTokenSource? _readCancellation;
+    private readonly TaskCompletionSource<Exception?> _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly CancellationTokenSource _readCancellation = new();
+    private readonly bool _ownsIo;
     private Task? _readLoop;
-    private bool _started;
+    private Exception? _terminalError;
+    private bool _stopped;
+    private int _disposed;
 
     /** maxLineBytes bounds one incoming line in UTF-8 bytes; a longer line gets an error reply and closes the transport. */
     public JsonRpcLineTransport(TextReader input, TextWriter output, int maxLineBytes = LineProtocolLimits.MaxLineBytes)
@@ -39,45 +42,56 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
         _input = input;
         _output = output;
         _maxLineBytes = maxLineBytes;
+        ConnectionClosed = _readCancellation.Token;
+    }
+
+    /** Stream endpoints are owned by this transport; text endpoints retain their existing caller-owned lifetime. */
+    public JsonRpcLineTransport(Stream input, Stream output, int maxLineBytes = LineProtocolLimits.MaxLineBytes)
+        : this(new StreamReader(input, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false),
+            new StreamWriter(output, new UTF8Encoding(false)) { NewLine = "\n" }, maxLineBytes)
+    {
+        _ownsIo = true;
     }
 
     public JsonRpcRequestHandler? RequestHandler { get; set; }
     public JsonRpcNotificationHandler? NotificationHandler { get; set; }
 
+    /** Cancels incoming work when input ends, output fails, or the transport is stopped. */
+    public CancellationToken ConnectionClosed { get; }
+
+    /** The original read/write failure, or null for EOF or an explicit stop. */
+    public Task<Exception?> Closed => _closed.Task;
+
     public void Start()
     {
-        if (_started)
-            return;
-        _started = true;
-        _readCancellation = new CancellationTokenSource();
-        _readLoop = Task.Run(() => ReadLoopAsync(_readCancellation.Token));
+        lock (_writeLock)
+        {
+            if (_readLoop is not null)
+                return;
+            if (_stopped)
+                throw _terminalError!;
+            _readLoop = Task.Run(() => ReadLoopAsync(_readCancellation.Token));
+        }
     }
 
     public Task WhenClosedAsync() => _closed.Task;
 
     public async Task StopAsync()
     {
-        if (!_started)
-            return;
-        _started = false;
-        _readCancellation?.Cancel();
-        if (_readLoop is not null)
+        Complete(null);
+        if (Interlocked.Exchange(ref _disposed, 1) == 0 && _ownsIo)
         {
-            try
-            {
-                await _readLoop;
-            }
-            catch (OperationCanceledException)
-            {
-            }
+            // Closing owned streams also releases readers whose underlying pipe ignores cancellation.
+            _input.Dispose();
+            _output.Dispose();
         }
-        FailPending(new JsonRpcTransportClosedException("JSON-RPC transport closed"));
-        _readCancellation?.Dispose();
-        _readCancellation = null;
+        if (_readLoop is { } loop)
+            await loop.ConfigureAwait(false);
     }
 
     public async Task<object?> RequestAsync(string method, object? parameters = null, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var id = $"req_{Guid.NewGuid():N}";
         var completion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pending[id] = completion;
@@ -94,12 +108,14 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
                 ["id"] = id,
                 ["method"] = method,
                 ["params"] = parameters ?? new Dictionary<string, object?>(),
-            });
+            }, cancellationToken: cancellationToken);
             return await completion.Task.ConfigureAwait(false);
         }
         catch
         {
             _pending.TryRemove(id, out _);
+            // A failed write closes all waiters, including this completion whose task was not yet awaited.
+            _ = completion.Task.Exception;
             throw;
         }
     }
@@ -117,6 +133,7 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
         var chunk = new char[ReadChunkChars];
         var pending = new StringBuilder();
         var pendingBytes = 0;
+        Exception? failure = null;
         try
         {
             int read;
@@ -126,23 +143,23 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
                 if (pendingBytes > _maxLineBytes)
                 {
                     WriteError(null, InvalidRequest, $"request line exceeds {_maxLineBytes} bytes");
+                    failure = new JsonException($"request line exceeds {_maxLineBytes} bytes");
                     return;
                 }
             }
             if (pending.Length > 0)
                 HandleLine(pending.ToString());
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
         catch (Exception error)
         {
-            FailPending(new JsonRpcTransportClosedException($"JSON-RPC input failed: {error.Message}"));
+            failure = error;
         }
         finally
         {
-            FailPending(new JsonRpcTransportClosedException("JSON-RPC input closed"));
-            _closed.TrySetResult();
+            Complete(failure);
         }
     }
 
@@ -173,60 +190,55 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
     {
         if (line.Length == 0)
             return;
-        JsonDocument document;
-        try
+        using var document = JsonDocument.Parse(line);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+            throw new JsonException("JSON-RPC message must be an object");
+        if (!root.TryGetProperty("method", out var methodElement))
         {
-            document = JsonDocument.Parse(line);
-        }
-        catch (JsonException)
-        {
+            if (!root.TryGetProperty("id", out var responseId)
+                || (!root.TryGetProperty("result", out _) && !root.TryGetProperty("error", out _)))
+                throw new JsonException("JSON-RPC response must contain an id and result or error");
+            HandleIncomingResponse(responseId, root);
             return;
         }
-
-        using (document)
+        if (methodElement.ValueKind != JsonValueKind.String)
+            throw new JsonException("JSON-RPC method must be a string");
+        var method = methodElement.GetString()!;
+        JsonElement? parameters = root.TryGetProperty("params", out var paramsElement) ? paramsElement.Clone() : null;
+        if (root.TryGetProperty("id", out var requestId))
         {
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-                return;
-            if (!root.TryGetProperty("method", out var methodElement) || methodElement.ValueKind != JsonValueKind.String)
-            {
-                if (root.TryGetProperty("id", out var responseId))
-                    HandleIncomingResponse(responseId, root);
-                return;
-            }
-
-            var method = methodElement.GetString()!;
-            JsonElement? parameters = root.TryGetProperty("params", out var paramsElement) ? paramsElement.Clone() : null;
-            if (root.TryGetProperty("id", out var requestId))
-            {
-                _ = HandleIncomingRequestAsync(requestId.Clone(), method, parameters);
-                return;
-            }
-            NotificationHandler?.Invoke(method, parameters);
+            // Only the handler's asynchronous operation is detached; notifications and responses retain wire order.
+            _ = HandleIncomingRequestAsync(requestId.Clone(), method, parameters);
+            return;
         }
+        NotificationHandler?.Invoke(method, parameters);
     }
 
     private async Task HandleIncomingRequestAsync(JsonElement id, string method, JsonElement? parameters)
     {
-        var handler = RequestHandler;
-        if (handler is null)
-        {
-            WriteError(id, -32601, $"method not found: {method}");
-            return;
-        }
         try
         {
+            var handler = RequestHandler ?? throw new JsonRpcResponseError(-32601, $"method not found: {method}");
             var result = await handler(method, parameters).ConfigureAwait(false);
             WriteFrame(new Dictionary<string, object?>
             {
                 ["jsonrpc"] = "2.0",
-                ["id"] = id.Clone(),
+                ["id"] = id,
                 ["result"] = result,
-            });
+            }, allowClosed: true);
         }
         catch (Exception error)
         {
-            WriteError(id, -32603, error.Message);
+            try
+            {
+                var code = error is JsonRpcResponseError response ? response.Code ?? -32603 : -32603;
+                WriteError(id, code, error.Message);
+            }
+            catch (Exception writeError)
+            {
+                Complete(writeError);
+            }
         }
     }
 
@@ -252,13 +264,25 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
         pending.TrySetResult(frame.TryGetProperty("result", out var resultElement) ? resultElement.Clone() : null);
     }
 
-    private void WriteFrame(IReadOnlyDictionary<string, object?> frame)
+    private void WriteFrame(IReadOnlyDictionary<string, object?> frame, bool allowClosed = false, CancellationToken cancellationToken = default)
     {
         var line = DshJson.Serialize(frame);
         lock (_writeLock)
         {
-            _output.WriteLine(line);
-            _output.Flush();
+            cancellationToken.ThrowIfCancellationRequested();
+            if ((_stopped && !allowClosed) || Volatile.Read(ref _disposed) != 0)
+                throw _terminalError ?? new JsonRpcTransportClosedException("JSON-RPC transport closed");
+            try
+            {
+                // Cancellation only applies before a frame starts; never leave a partial NDJSON line behind.
+                _output.WriteLine(line);
+                _output.Flush();
+            }
+            catch (Exception error)
+            {
+                Complete(error);
+                throw;
+            }
         }
     }
 
@@ -274,7 +298,21 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
                 ["code"] = code,
                 ["message"] = message,
             },
-        });
+        }, allowClosed: true);
+    }
+
+    private void Complete(Exception? failure)
+    {
+        lock (_writeLock)
+        {
+            if (_stopped)
+                return;
+            _stopped = true;
+            _terminalError = failure ?? new JsonRpcTransportClosedException("JSON-RPC input closed");
+            FailPending(_terminalError);
+        }
+        _readCancellation.Cancel();
+        _closed.TrySetResult(failure);
     }
 
     private void FailPending(Exception error)
@@ -286,7 +324,11 @@ public sealed class JsonRpcLineTransport : IJsonRpcPeer, IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync() => await StopAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await StopAsync().ConfigureAwait(false);
+        _readCancellation.Dispose();
+    }
 }
 
 public sealed class JsonRpcResponseError : Exception
@@ -302,7 +344,7 @@ public sealed class JsonRpcResponseError : Exception
     public JsonElement? DataValue { get; }
 }
 
-public sealed class JsonRpcTransportClosedException : Exception
+public sealed class JsonRpcTransportClosedException : IOException
 {
     public JsonRpcTransportClosedException(string message) : base(message)
     {

@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Text;
+using Dsh.Acp;
+using Dsh.Sdk;
 
 namespace Dsh.AgentAdapters.Acp;
 
@@ -22,10 +24,12 @@ public sealed class AcpAgentProcess : IAsyncDisposable
     private AcpAgentProcess(Process process)
     {
         _process = process;
-        Client = new AcpAgentClient(process.StandardOutput.BaseStream, process.StandardInput.BaseStream);
+        var transport = new JsonRpcLineTransport(process.StandardOutput.BaseStream, process.StandardInput.BaseStream);
+        Client = new AcpClient(transport);
+        transport.Start();
     }
 
-    public AcpAgentClient Client { get; }
+    public AcpClient Client { get; }
 
     public int ProcessId => _process.Id;
 

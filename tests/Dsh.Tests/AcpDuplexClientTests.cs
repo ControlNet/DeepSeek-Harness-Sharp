@@ -1,7 +1,8 @@
 using System.IO.Pipelines;
 using System.Text;
 using System.Text.Json;
-using Dsh.AgentAdapters.Acp;
+using Dsh.Acp;
+using Dsh.Sdk;
 using Dsh.Transport;
 
 namespace Dsh.Tests;
@@ -10,7 +11,7 @@ namespace Dsh.Tests;
  * Protocol tests over in-process pipes.
  * The agent side is a scripted ACP peer that writes the exact JSON lines the schema prescribes; it is wire-level test input, not an LLM.
  */
-public sealed class AcpAgentClientTests : IAsyncDisposable
+public sealed class AcpDuplexClientTests : IAsyncDisposable
 {
     private static readonly TimeSpan StepTimeout = TimeSpan.FromSeconds(10);
 
@@ -18,13 +19,15 @@ public sealed class AcpAgentClientTests : IAsyncDisposable
     private readonly Pipe _toClient = new();
     private readonly StreamReader _agentInput;
     private readonly Stream _agentOutput;
-    private readonly AcpAgentClient _client;
+    private readonly AcpClient _client;
 
-    public AcpAgentClientTests()
+    public AcpDuplexClientTests()
     {
         _agentInput = new StreamReader(_toAgent.Reader.AsStream(), Encoding.UTF8);
         _agentOutput = _toClient.Writer.AsStream();
-        _client = new AcpAgentClient(_toClient.Reader.AsStream(), _toAgent.Writer.AsStream());
+        var transport = new JsonRpcLineTransport(_toClient.Reader.AsStream(), _toAgent.Writer.AsStream());
+        _client = new AcpClient(transport);
+        transport.Start();
     }
 
     public async ValueTask DisposeAsync() => await _client.DisposeAsync();
@@ -59,10 +62,10 @@ public sealed class AcpAgentClientTests : IAsyncDisposable
     {
         var updates = new List<AcpSessionUpdate>();
         var toolCallSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _client.SessionUpdated += update =>
+        _client.SessionUpdate += update =>
         {
             updates.Add(update);
-            if (update.Kind == AcpProtocol.UpdateToolCall)
+            if (update.Kind == AcpMethods.UpdateToolCall)
                 toolCallSeen.TrySetResult();
         };
 
@@ -86,8 +89,8 @@ public sealed class AcpAgentClientTests : IAsyncDisposable
         Assert.Equal("\"perm-1\"", permissionResponse.GetProperty("id").GetRawText());
         var outcome = permissionResponse.GetProperty("result").GetProperty("outcome");
         Assert.Equal(("selected", "allow"), (outcome.GetProperty("outcome").GetString(), outcome.GetProperty("optionId").GetString()));
-        Assert.Equal(AcpProtocol.StopEndTurn, stopReason);
-        Assert.Equal([AcpProtocol.UpdateAgentMessageChunk, AcpProtocol.UpdateToolCall], updates.Select(update => update.Kind));
+        Assert.Equal(AcpMethods.StopEndTurn, stopReason);
+        Assert.Equal([AcpMethods.UpdateAgentMessageChunk, AcpMethods.UpdateToolCall], updates.Select(update => update.Kind));
         Assert.Equal("Hi", updates[0].Text);
         Assert.Equal(("call_1", "pending"), (updates[1].ToolCallId, updates[1].Status));
         Assert.Empty(_client.PendingPermissions);
@@ -113,8 +116,8 @@ public sealed class AcpAgentClientTests : IAsyncDisposable
         var answer = Assert.Single(received, message => message.TryGetProperty("result", out _));
         Assert.Equal("cancelled", answer.GetProperty("result").GetProperty("outcome").GetProperty("outcome").GetString());
         Assert.False(answer.GetProperty("result").GetProperty("outcome").TryGetProperty("optionId", out _));
-        Assert.Equal(AcpProtocol.OutcomeCancelled, (await permission.Outcome).Outcome);
-        Assert.Equal(AcpProtocol.StopCancelled, stopReason);
+        Assert.Equal(AcpMethods.OutcomeCancelled, (await permission.Outcome).Outcome);
+        Assert.Equal(AcpMethods.StopCancelled, stopReason);
     }
 
     [Fact]
@@ -138,8 +141,8 @@ public sealed class AcpAgentClientTests : IAsyncDisposable
 
         await _toClient.Writer.CompleteAsync();
 
-        await Assert.ThrowsAsync<IOException>(() => prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
-        Assert.Equal(AcpProtocol.OutcomeCancelled, (await permission.Outcome.WaitAsync(StepTimeout, TestContext.Current.CancellationToken)).Outcome);
+        await Assert.ThrowsAsync<JsonRpcTransportClosedException>(() => prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+        Assert.Equal(AcpMethods.OutcomeCancelled, (await permission.Outcome.WaitAsync(StepTimeout, TestContext.Current.CancellationToken)).Outcome);
         Assert.False(await _client.PermissionRequests.WaitToReadAsync(TestContext.Current.CancellationToken));
         Assert.Null(await _client.Closed.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
     }
@@ -148,6 +151,8 @@ public sealed class AcpAgentClientTests : IAsyncDisposable
     [InlineData("not-json")]
     [InlineData("{")]
     [InlineData("null")]
+    [InlineData("{}")]
+    [InlineData("""{"jsonrpc":"2.0","id":"broken"}""")]
     public async Task InvalidAgentOutput_FailsPendingCallsAndReleasesPermissions(string line)
     {
         var prompt = _client.PromptAsync("s1", "hello", TestContext.Current.CancellationToken);
@@ -157,9 +162,9 @@ public sealed class AcpAgentClientTests : IAsyncDisposable
 
         await AgentSendAsync(line);
 
-        await Assert.ThrowsAsync<JsonException>(() => prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
-        Assert.IsType<JsonException>(await _client.Closed.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
-        Assert.Equal(AcpProtocol.OutcomeCancelled, (await permission.Outcome.WaitAsync(StepTimeout, TestContext.Current.CancellationToken)).Outcome);
+        await Assert.ThrowsAnyAsync<JsonException>(() => prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+        Assert.IsAssignableFrom<JsonException>(await _client.Closed.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+        Assert.Equal(AcpMethods.OutcomeCancelled, (await permission.Outcome.WaitAsync(StepTimeout, TestContext.Current.CancellationToken)).Outcome);
         Assert.False(await _client.PermissionRequests.WaitToReadAsync(TestContext.Current.CancellationToken));
     }
 
@@ -171,8 +176,66 @@ public sealed class AcpAgentClientTests : IAsyncDisposable
         await AgentSendAsync("""{"jsonrpc":"2.0","method":"extension/progress","params":{"sessionId":"s1","stage":"working"}}""");
         await AgentReplyAsync(request, """{"stopReason":"end_turn"}""");
 
-        Assert.Equal(AcpProtocol.StopEndTurn, await prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+        Assert.Equal(AcpMethods.StopEndTurn, await prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
         Assert.False(_client.Closed.IsCompleted);
+    }
+
+    [Fact]
+    public async Task PendingPermissions_DoNotBlockOtherIncomingRequestsOrResponses()
+    {
+        await AgentSendAsync(PermissionRequestLine("perm-first"));
+        var first = await _client.PermissionRequests.ReadAsync(TestContext.Current.CancellationToken).AsTask().WaitAsync(StepTimeout, TestContext.Current.CancellationToken);
+        await AgentSendAsync(PermissionRequestLine("perm-second"));
+        var second = await _client.PermissionRequests.ReadAsync(TestContext.Current.CancellationToken).AsTask().WaitAsync(StepTimeout, TestContext.Current.CancellationToken);
+
+        var newSession = _client.NewSessionAsync(Directory.GetCurrentDirectory(), TestContext.Current.CancellationToken);
+        var request = await AgentReadAsync();
+        await AgentReplyAsync(request, """{"sessionId":"s2"}""");
+        var session = await newSession.WaitAsync(StepTimeout, TestContext.Current.CancellationToken);
+
+        Assert.Equal("s2", session.SessionId);
+        Assert.Equal(2, _client.PendingPermissions.Count);
+        Assert.True(second.TrySelect("deny"));
+        var secondResponse = await AgentReadAsync();
+        Assert.Equal("perm-second", secondResponse.GetProperty("id").GetString());
+        Assert.False(first.IsResolved);
+        Assert.True(first.TryCancel());
+        var firstResponse = await AgentReadAsync();
+        Assert.Equal("perm-first", firstResponse.GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task CancelledCall_IgnoresItsLateResponseAndKeepsTheConnectionUsable()
+    {
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var cancelled = _client.PromptAsync("s1", "cancelled call", cancellation.Token);
+        var firstRequest = await AgentReadAsync();
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+
+        var prompt = _client.PromptAsync("s2", "another call", TestContext.Current.CancellationToken);
+        var secondRequest = await AgentReadAsync();
+        await AgentReplyAsync(firstRequest, """{"stopReason":"cancelled"}""");
+        await AgentReplyAsync(secondRequest, """{"stopReason":"end_turn"}""");
+
+        Assert.Equal(AcpMethods.StopEndTurn, await prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+        Assert.False(_client.Closed.IsCompleted);
+    }
+
+    [Fact]
+    public async Task Dispose_FailsPendingPromptAndReleasesPermissions()
+    {
+        var prompt = _client.PromptAsync("s1", "hello", TestContext.Current.CancellationToken);
+        await AgentReadAsync();
+        await AgentSendAsync(PermissionRequestLine("perm-dispose"));
+        var permission = await _client.PermissionRequests.ReadAsync(TestContext.Current.CancellationToken).AsTask().WaitAsync(StepTimeout, TestContext.Current.CancellationToken);
+
+        await _client.DisposeAsync();
+
+        await Assert.ThrowsAsync<JsonRpcTransportClosedException>(() => prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+        Assert.Equal(AcpMethods.OutcomeCancelled, (await permission.Outcome.WaitAsync(StepTimeout, TestContext.Current.CancellationToken)).Outcome);
+        Assert.False(await _client.PermissionRequests.WaitToReadAsync(TestContext.Current.CancellationToken));
+        Assert.Null(await _client.Closed.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
     }
 
     private static string PermissionRequestLine(string id)

@@ -201,6 +201,9 @@ DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui --session <会话 id>
 ## 多机多会话
 
 一个客户端同时管理本机与多台 SSH 机器上的会话:harness 会话、外部 Agent(Codex、Claude Code、OpenCode 及任意 ACP Agent,需在目标机器上已安装对应 CLI)与终端。
+ACP 的本地 socket 与外部 Agent 进程共用 `Dsh.Acp.AcpClient`、`AcpMethods` 和 `Dsh.Sdk.JsonRpcLineTransport`，不另设 stdio 客户端或协议模型。
+权限请求等待人工回答时仍可接收后续更新、并发请求和响应；同一请求只接受第一个有效回答，取消回合或连接关闭会释放待决权限。
+客户端的文件与终端能力保持关闭，OpenCode 继续使用自身配置的模型和工具；传输写入完整 NDJSON 帧，协议损坏或写入失败会结束连接并使待决调用失败，不自动重试。
 机器清单写在 `settings.yaml` 的 `fleet:` 段,GUI、命令行与浏览器共用这一份:
 
 ```yaml

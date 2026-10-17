@@ -2,11 +2,11 @@
 
   <!--
     Catalog of external coding agents (Codex, Claude Code, OpenCode, generic ACP agents, raw terminal commands):
-    launch commands, executable probing, terminal attention rules, and an ACP client that drives an agent process over stdio.
+    launch commands, executable probing, terminal attention rules, and process integration with the shared Dsh.Acp client.
     Shared capability library without a plugin entry; command lines are verified against each installed CLI and its vendor documentation.
   -->
   <ItemGroup>
-    <ProjectReference Include="..\Dsh.Transport\Dsh.Transport.csproj" />
+    <ProjectReference Include="..\Dsh.Acp\Dsh.Acp.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -77,6 +77,50 @@ public sealed class SdkTests
         => $$$"""{"jsonrpc":"2.0","id":"{{{value}}}","method":"echo","params":{"value":"{{{value}}}"}}""";
 
     [Fact]
+    public async Task Transport_PreCancelledRequest_WritesNoFrame()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        var output = new StringWriter();
+        await using var transport = new JsonRpcLineTransport(new StringReader(""), output);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => transport.RequestAsync("cancelled", cancellationToken: cancellation.Token));
+
+        Assert.Empty(output.ToString());
+    }
+
+    [Fact]
+    public async Task Transport_StopBeforeStart_FailsPendingCallsAndCompletesClosed()
+    {
+        await using var transport = new JsonRpcLineTransport(new StringReader(""), new StringWriter());
+        var pending = transport.RequestAsync("pending", cancellationToken: TestContext.Current.CancellationToken);
+
+        await transport.StopAsync();
+
+        await Assert.ThrowsAsync<JsonRpcTransportClosedException>(() => pending.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.Null(await transport.Closed.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<JsonRpcTransportClosedException>(() => transport.RequestAsync("after-close", cancellationToken: TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Transport_OutputFailure_FailsAllPendingCallsAndPreventsFurtherFrames()
+    {
+        var output = new FailingFlushWriter();
+        await using var transport = new JsonRpcLineTransport(new StringReader(""), output);
+        var first = transport.RequestAsync("first", cancellationToken: TestContext.Current.CancellationToken);
+        output.FailFlush = true;
+
+        var second = transport.RequestAsync("second", cancellationToken: TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<IOException>(() => first.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<IOException>(() => second.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.IsType<IOException>(await transport.Closed.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        var written = output.ToString();
+        Assert.Throws<IOException>(() => transport.Notify("after-failure"));
+        Assert.Equal(written, output.ToString());
+    }
+
+    [Fact]
     public async Task Transport_ClientRequestAndNotificationFlow()
     {
         var pair = new DuplexTransportPair();
@@ -309,6 +353,17 @@ public sealed class SdkTests
         public string Describe() => Description;
 
         public void Reset() => ResetCalled = true;
+    }
+
+    private sealed class FailingFlushWriter : StringWriter
+    {
+        public bool FailFlush { get; set; }
+
+        public override void Flush()
+        {
+            if (FailFlush)
+                throw new IOException("output closed while flushing a frame");
+        }
     }
 
 

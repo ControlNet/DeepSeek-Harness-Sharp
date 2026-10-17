@@ -37,6 +37,12 @@ public sealed class PluginReferenceRulesTests
         ["Dsh.Tui.Vk"] = ["Dsh.Tui"],
     };
 
+    /** ACP 插件同时提供唯一客户端；进程适配器只消费该客户端，不重新实现协议。 */
+    private static readonly Dictionary<string, HashSet<string>> ProtocolClientConsumers = new()
+    {
+        ["Dsh.Acp"] = ["Dsh.AgentAdapters"],
+    };
+
     private static readonly Dictionary<string, HashSet<string>> LayerAllowed = new()
     {
         ["Dsh.Runtime"] = [],
@@ -76,6 +82,7 @@ public sealed class PluginReferenceRulesTests
             violations.AddRange(references
                 .Where(target => !HostInfraModules.Contains(target))
                 .Where(target => !ContractLayers.Contains(target) && !SharedLibraries.Contains(target) && !owners.Contains(target))
+                .Where(target => !ProtocolClientConsumers.TryGetValue(target, out var consumers) || !consumers.Contains(project))
                 .Order(StringComparer.Ordinal)
                 .Select(target => $"{project} -> {target}"));
         }
@@ -92,6 +99,8 @@ public sealed class PluginReferenceRulesTests
             .Concat(SatelliteOwners.Keys)
             .Concat(SatelliteOwners.Values.SelectMany(owners => owners))
             .Concat(LayerAllowed.Keys)
+            .Concat(ProtocolClientConsumers.Keys)
+            .Concat(ProtocolClientConsumers.Values.SelectMany(consumers => consumers))
             .Where(name => !projects.ContainsKey(name))
             .Distinct()
             .ToList();
