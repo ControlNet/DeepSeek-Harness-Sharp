@@ -11,9 +11,6 @@ internal static class TestShell
     /** /v:on makes cmd expand !var! when the command runs instead of when the line is parsed. */
     public static string[] Arguments => OperatingSystem.IsWindows() ? ["/v:on"] : [];
 
-    /** The shell as one command line, as the web UI's New session form takes it. */
-    public static string CommandLine => string.Join(' ', [FileName, .. Arguments]);
-
     /** A line that prints label-42. */
     public static string EchoAnswer(string label)
         => OperatingSystem.IsWindows() ? $"set /a n=6*7 & echo {label}-!n!" : $"echo {label}-$((6*7))";

@@ -11,10 +11,9 @@ using Dsh.WebBridge;
 namespace Dsh.Tests;
 
 /**
- * Hub mode of the web bridge against real `dsharp host serve` processes: two harness homes stand in for two machines (the bridge's own and a second local one), plus an unreachable SSH machine whose spec carries secrets.
+ * Hub mode of the web bridge over the shared real host/PTY fixture: two harness homes stand in for two machines, plus an unreachable SSH machine whose spec carries secrets.
  * Covers the machine list endpoint (login, states, no secrets), choosing the target machine of a WebSocket, and refusing unknown or offline machines.
  */
-[Collection(SerialProcessCollection.Name)]
 public sealed class WebBridgeHubTests
 {
     internal const string SecondMachine = "second";
@@ -58,11 +57,11 @@ public sealed class WebBridgeHubTests
         await HelloAsync(local);
         await HelloAsync(second);
 
-        Assert.Equal(hub.LocalHome, (await WebSocketRpc.RequestAsync(local, 2, HostProtocol.MethodInfo, null)).GetProperty("HomeRoot").GetString());
-        Assert.Equal(hub.SecondHome, (await WebSocketRpc.RequestAsync(second, 2, HostProtocol.MethodInfo, null)).GetProperty("HomeRoot").GetString());
+        Assert.Equal(hub.Local.Environment.App.Home.Root, (await WebSocketRpc.RequestAsync(local, 2, HostProtocol.MethodInfo, null)).GetProperty("HomeRoot").GetString());
+        Assert.Equal(hub.Second.Environment.App.Home.Root, (await WebSocketRpc.RequestAsync(second, 2, HostProtocol.MethodInfo, null)).GetProperty("HomeRoot").GetString());
 
         var arguments = TestShell.RunThenWait(TestShell.EchoAnswer("hub"), 30);
-        var started = await WebSocketRpc.RequestAsync(second, 3, PtyProtocol.MethodPtyStart, $$"""{"FileName":{{JsonSerializer.Serialize(TestShell.FileName)}},"Arguments":{{JsonSerializer.Serialize(arguments)}},"Cwd":{{JsonSerializer.Serialize(hub.SecondHome)}},"Title":"hub-shell"}""");
+        var started = await WebSocketRpc.RequestAsync(second, 3, PtyProtocol.MethodPtyStart, $$"""{"FileName":{{JsonSerializer.Serialize(TestShell.FileName)}},"Arguments":{{JsonSerializer.Serialize(arguments)}},"Cwd":{{JsonSerializer.Serialize(hub.Second.Environment.App.Home.Root)}},"Title":"hub-shell"}""");
         var ptyId = started.GetProperty("PtyId").GetString()!;
         // The snapshot push can overtake attach's own response, so the reply is not awaited before reading output.
         await WebSocketRpc.SendAsync(second, 4, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"hub-terminal"}""");
@@ -131,25 +130,25 @@ public sealed class WebBridgeHubTests
     }
 
     /**
-     * Two real hosts under their own harness homes, a bridge on the first one serving both plus an SSH machine on a closed port.
+     * Two shared host fixtures and a bridge serving both plus an SSH machine on a closed port.
      * The SSH machine stores a password, a proxy with credentials and an extra ssh option, none of which may reach the browser.
      */
     internal sealed class HubFixture : IAsyncDisposable
     {
         private readonly WebBridgeServer _bridge;
 
-        private HubFixture(string localHome, string secondHome, int closedPort, WebBridgeServer bridge)
+        private HubFixture(HarnessHostFixture local, HarnessHostFixture second, int closedPort, WebBridgeServer bridge)
         {
-            LocalHome = localHome;
-            SecondHome = secondHome;
+            Local = local;
+            Second = second;
             ClosedPort = closedPort;
             _bridge = bridge;
-            Access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(localHome)) ?? throw new InvalidOperationException("bridge issued no token"));
+            Access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(local.Root)) ?? throw new InvalidOperationException("bridge issued no token"));
         }
 
-        public string LocalHome { get; }
+        public HarnessHostFixture Local { get; }
 
-        public string SecondHome { get; }
+        public HarnessHostFixture Second { get; }
 
         public int ClosedPort { get; }
 
@@ -157,19 +156,29 @@ public sealed class WebBridgeHubTests
 
         public static async Task<HubFixture> StartAsync()
         {
-            var executable = RealHostProcesses.Executable;
-            var localHome = await StartHostAsync(executable, "hl");
-            var secondHome = await StartHostAsync(executable, "hs");
-            var closedPort = ClosedLoopbackPort();
-            MachineSpec[] machines = [MachineSpec.Local(localHome), MachineSpec.Local(secondHome, SecondMachine), SecretBearingMachine(closedPort)];
-            var options = FleetConnectionTests.TestOptions with { Deploy = new DeploySettings { AutoDeploy = false } };
-            return new HubFixture(localHome, secondHome, closedPort, WebBridgeServer.Start(new WebBridgeOptions(localHome, 0, machines, options)));
+            var local = await HarnessHostFixture.CreateAsync("hl", Ct);
+            HarnessHostFixture? second = null;
+            try
+            {
+                second = await HarnessHostFixture.CreateAsync("hs", Ct);
+                var closedPort = ClosedLoopbackPort();
+                MachineSpec[] machines = [MachineSpec.Local(local.Root), MachineSpec.Local(second.Root, SecondMachine), SecretBearingMachine(closedPort)];
+                var options = FleetConnectionTests.TestOptions with { Deploy = new DeploySettings { AutoDeploy = false } };
+                return new HubFixture(local, second, closedPort, WebBridgeServer.Start(new WebBridgeOptions(local.Root, 0, machines, options)));
+            }
+            catch
+            {
+                if (second is not null)
+                    await second.DisposeAsync();
+                await local.DisposeAsync();
+                throw;
+            }
         }
 
         public Task<string> WaitForMachinesAsync(Func<Dictionary<string, string>, bool> condition)
             => Access.WaitForMachinesAsync(condition, TimeSpan.FromSeconds(30), Ct);
 
-        /** The hosts are killed even when the bridge fails to shut down, so a failing test does not leave them running. */
+        /** Release the real host/PTY resources even when bridge shutdown fails. */
         public async ValueTask DisposeAsync()
         {
             try
@@ -178,22 +187,15 @@ public sealed class WebBridgeHubTests
             }
             finally
             {
-                foreach (var home in new[] { LocalHome, SecondHome })
+                try
                 {
-                    RealHostProcesses.KillAll(home);
-                    TempTree.Delete(home);
+                    await Second.DisposeAsync();
+                }
+                finally
+                {
+                    await Local.DisposeAsync();
                 }
             }
-        }
-
-        private static async Task<string> StartHostAsync(string executable, string prefix)
-        {
-            var home = RealHostProcesses.CreateHome(prefix);
-            TempTree.AssertFitsMacOsSocketLimit(RemoteHostEndpoint.SocketPath(home));
-            TempTree.AssertFitsMacOsSocketLimit(WebBridgeEndpoint.PortFile(home));
-            RealHostProcesses.StartHost(executable, home);
-            await using (await RemoteHostListener.ConnectAsync(home, Ct, attempts: 300))
-                return home;
         }
 
         private static MachineSpec SecretBearingMachine(int closedPort)
