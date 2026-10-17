@@ -290,6 +290,7 @@ SSH-over-iroh 使用独立的主机密钥别名，不借用普通 TCP SSH 的已
 可在目标端 `remote enable`、客户端 `machine add` 或 `machine enable-iroh` 上重复传入 `--relay-url https://relay.example.net/`，GUI 中每行填写一个 relay URL。
 机器配置对应 `kind: iroh`、`endpointId` 与 `relayUrls`；未指定时使用上游默认 relay。
 双方需要可用的出站网络，无法直连时必须能访问所选 relay；公共 relay 没有本产品的可用性保证，带宽和服务限制以[上游说明](https://docs.iroh.computer/concepts/relays)为准。
+Relay 也参与设备发现，“可直连”不等于可以禁用全部 relay；仅依赖局域网 mDNS 的发现会受平台和网络条件限制。
 
 | 发行平台 | 从已有 SSH 自动启用目标 | 目标端后台运行机制 |
 |---|---|---|
@@ -298,7 +299,7 @@ SSH-over-iroh 使用独立的主机密钥别名，不借用普通 TCP SSH 的已
 | Windows x64 | 不扩大现有 Windows 远端自动部署范围；在目标本地启用 | 当前用户登录启动的计划任务，不静默提权 |
 
 Linux systemd 用户服务跨退出登录或开机运行需要管理员按系统策略启用该用户的 linger，命令输出会说明当前机制。
-完整发行包以实际提供的 RID 资产为准；从源码构建会获取固定源码版本的 iroh-ssh，跨架构构建还需要相应编译器与目标工具链。
+完整发行包以实际提供的 RID 资产为准；从源码构建会获取固定源码版本的 iroh-ssh，Windows 构建使用 PowerShell 7，跨架构构建还需要相应编译器与目标工具链。
 
 
 ## 发布形态

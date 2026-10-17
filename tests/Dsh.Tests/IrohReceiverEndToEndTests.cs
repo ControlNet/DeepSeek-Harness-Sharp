@@ -12,9 +12,10 @@ public sealed class IrohReceiverEndToEndTests
         var ct = TestContext.Current.CancellationToken;
         await using var server = await TestSshServer.StartAsync(ct);
         var root = TempTree.CreateSocketDirectory("ie");
-        var direct = server.Machine("receiver", root) with { RelayUrls = ["http://127.0.0.1:9"] };
+        // Exercise production discovery; an unreachable relay would make this lifecycle test depend on runner multicast.
+        var direct = server.Machine("receiver", root);
         var command = $"{RemoteShell.Prelude(direct)}{RemoteShell.Quote(executable)} remote";
-        var enable = $"{command} enable --ssh-port {direct.Port} --relay-url http://127.0.0.1:9";
+        var enable = $"{command} enable --ssh-port {direct.Port}";
         var activation = Guid.NewGuid().ToString("N");
         try
         {

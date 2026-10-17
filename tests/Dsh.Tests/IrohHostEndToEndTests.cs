@@ -14,10 +14,10 @@ public sealed class IrohHostEndToEndTests
         var ct = TestContext.Current.CancellationToken;
         await using var server = await TestSshServer.StartAsync(ct);
         var root = TempTree.CreateSocketDirectory("ih");
-        var source = server.Machine("iroh-host", root) with { RelayUrls = ["http://127.0.0.1:9"] };
+        var source = server.Machine("iroh-host", root);
         try
         {
-            var receiver = IrohRemoteInstaller.ParseStatus(await SshHostLauncher.RunRemoteAsync(source, $"{RemoteShell.Prelude(source)}{RemoteShell.Quote(executable)} remote enable --ssh-port {source.Port} --relay-url http://127.0.0.1:9", ct));
+            var receiver = IrohRemoteInstaller.ParseStatus(await SshHostLauncher.RunRemoteAsync(source, $"{RemoteShell.Prelude(source)}{RemoteShell.Quote(executable)} remote enable --ssh-port {source.Port}", ct));
             var endpoint = source with { Kind = MachineKinds.Iroh, Host = "192.0.2.1", EndpointId = receiver.EndpointId };
             var options = FleetConnectionTests.TestOptions with
             {

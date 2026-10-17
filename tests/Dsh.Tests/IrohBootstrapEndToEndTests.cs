@@ -14,12 +14,12 @@ public sealed class IrohBootstrapEndToEndTests
         var ct = TestContext.Current.CancellationToken;
         await using var server = await TestSshServer.StartAsync(ct);
         var root = TempTree.CreateSocketDirectory("ib");
-        var original = server.Machine("bootstrap", root) with { RelayUrls = ["http://127.0.0.1:9"] };
+        var original = server.Machine("bootstrap", root);
         try
         {
             Assert.Equal("ordinary-ssh", await SshHostLauncher.RunRemoteAsync(original, "printf '%s' ordinary-ssh", ct));
             if (preexistingReceiver)
-                await SshHostLauncher.RunRemoteAsync(original, $"{RemoteShell.Prelude(original)}{RemoteShell.Quote(executable)} remote enable --ssh-port {original.Port} --relay-url http://127.0.0.1:9", ct);
+                await SshHostLauncher.RunRemoteAsync(original, $"{RemoteShell.Prelude(original)}{RemoteShell.Quote(executable)} remote enable --ssh-port {original.Port}", ct);
             var previous = await IrohReceiver.InfoAsync(new HarnessHome(root), ct);
             var wrongKey = Path.Combine(server.Root, "untrusted_key");
             await TestSshServer.RunAsync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", wrongKey], ct);

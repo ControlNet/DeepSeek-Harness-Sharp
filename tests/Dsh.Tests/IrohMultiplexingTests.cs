@@ -10,8 +10,9 @@ public sealed class IrohMultiplexingTests
         _ = FleetSshEndToEndTests.RequireEnvironment();
         var ct = TestContext.Current.CancellationToken;
         await using var server = await TestSshServer.StartAsync(ct);
-        var shared = TempTree.CreateSocketDirectory("im");
-        var socket = Path.Combine(shared, "master.sock");
+        // OpenSSH adds a random suffix while binding, so the socket itself uses the shallow unique path.
+        var socket = TempTree.CreateSocketDirectory("m");
+        Directory.Delete(socket);
         var source = server.Machine("master", server.Home);
         var master = source with
         {
@@ -38,8 +39,9 @@ public sealed class IrohMultiplexingTests
         }
         finally
         {
-            await TestSshServer.RunAsync("ssh", ["-S", socket, "-O", "exit", source.Target], CancellationToken.None);
-            TempTree.Delete(shared);
+            if (File.Exists(socket))
+                await TestSshServer.RunAsync("ssh", ["-S", socket, "-O", "exit", source.Target], CancellationToken.None);
+            File.Delete(socket);
         }
     }
 }

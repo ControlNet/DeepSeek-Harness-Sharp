@@ -1,4 +1,6 @@
+#requires -Version 7
 # Build the bundled component from one verified source revision for every RID.
+# Windows builds require PowerShell 7: pwsh -NoProfile -File scripts/fetch-iroh-ssh.ps1 -Rid win-x64
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('linux-x64', 'linux-arm64', 'osx-x64', 'osx-arm64', 'win-x64', 'win-arm64')]

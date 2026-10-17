@@ -18,7 +18,7 @@
 
   <Target Name="AcquireIrohSshComponent" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">
     <Error Condition="'$(_IrohRid)' != 'linux-x64' and '$(_IrohRid)' != 'linux-arm64' and '$(_IrohRid)' != 'osx-x64' and '$(_IrohRid)' != 'osx-arm64' and '$(_IrohRid)' != 'win-x64' and '$(_IrohRid)' != 'win-arm64'" Text="Bundled iroh-ssh does not support executable RID '$(_IrohRid)'." />
-    <Exec Condition="$([MSBuild]::IsOSPlatform('Windows'))" Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(_IrohRoot)scripts\fetch-iroh-ssh.ps1&quot; -Rid &quot;$(_IrohRid)&quot;" />
+    <Exec Condition="$([MSBuild]::IsOSPlatform('Windows'))" Command="pwsh -NoProfile -ExecutionPolicy Bypass -File &quot;$(_IrohRoot)scripts\fetch-iroh-ssh.ps1&quot; -Rid &quot;$(_IrohRid)&quot;" />
     <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))" Command="bash &quot;$(_IrohRoot)scripts/fetch-iroh-ssh.sh&quot; &quot;$(_IrohRid)&quot;" />
   </Target>
 
