@@ -5,6 +5,7 @@ using Dsh.Llm;
 using Dsh.Persistence;
 using Dsh.Runtime;
 using Dsh.SessionQuery;
+using Microsoft.Data.Sqlite;
 
 namespace Dsh.Tests;
 
@@ -16,7 +17,6 @@ public sealed class SessionQueryTests
         var session = CreateSession("s1", "hello world", "the quick brown fox");
 
         using var index = new SessionQueryIndex();
-        Assert.True(index.UsesFullText);
         index.IndexSession(session);
 
         var hits = index.Search("quick");
@@ -30,12 +30,49 @@ public sealed class SessionQueryTests
     {
         var session = CreateSession("s2", "hello world", "the quick -brown \"fox\" OR wolf");
         using var index = new SessionQueryIndex();
-        Assert.True(index.UsesFullText);
         index.IndexSession(session);
 
         var hits = index.Search("-brown \"fox\"");
 
         Assert.NotEmpty(hits);
+    }
+
+    [Fact]
+    public void FullText_WhenSystemFts5IsAvailable_UsesTokenization()
+    {
+        using var index = new SessionQueryIndex();
+        if (!index.UsesFullText)
+            Assert.Skip("The optional system SQLite FTS5 backend is unavailable.");
+
+        // unicode61 removes Latin diacritics; the local substring backend does not.
+        index.IndexSession(CreateSession("fts", "a café nearby", "answer"));
+        Assert.Equal("fts", Assert.Single(index.Search("cafe")).SessionId);
+        Assert.Empty(index.Search("caf"));
+    }
+
+    [Fact]
+    public void MemorySearch_MatchesAllTermsAndReplacesSessionEvents()
+    {
+        using var search = new InMemorySessionTextSearch();
+        search.IndexSession(CreateSession("memory", "a café nearby", "the quick -brown fox"));
+        Assert.Equal("memory", Assert.Single(search.Search("QUICK \"fox\"", 20)).SessionId);
+        Assert.Empty(search.Search("quick missing", 20));
+        Assert.Empty(search.Search("cafe", 20));
+
+        search.IndexSession(CreateSession("memory", "replacement keyword", "new answer"));
+        Assert.Empty(search.Search("quick", 20));
+        Assert.Equal("memory", Assert.Single(search.Search("replacement", 20)).SessionId);
+    }
+
+    [Fact]
+    public void Index_DoesNotHideDatabaseOpenErrorsAsMissingFts()
+    {
+        using var available = new SessionQueryIndex();
+        if (!available.UsesFullText)
+            Assert.Skip("The optional system SQLite FTS5 backend is unavailable.");
+
+        var path = Path.Combine(Path.GetTempPath(), $"dsh-query-missing-{Guid.NewGuid():N}", "search.db");
+        Assert.Throws<SqliteException>(() => new SessionQueryIndex(path));
     }
 
     [Fact]

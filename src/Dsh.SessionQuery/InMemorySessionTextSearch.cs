@@ -2,7 +2,7 @@ using Dsh.Core;
 
 namespace Dsh.SessionQuery;
 
-/** 无 SQLite 时的退路:在会话事件文本上做不区分大小写的整词包含匹配(AND 语义,与 FTS 的按词匹配一致)。 */
+/** 无 SQLite/FTS5 时在会话事件文本上做不区分大小写的子串匹配,多个词以 AND 组合。 */
 public sealed class InMemorySessionTextSearch : ISessionTextSearch
 {
     private const int SnippetWindow = 60;

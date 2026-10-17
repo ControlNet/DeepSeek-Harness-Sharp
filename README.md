@@ -16,7 +16,7 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 
 安装后新开终端,在任意目录运行 `dsharp` 即可启动 TUI。可用环境变量覆盖: `DSHARP_VERSION`(版本号或 latest)、`DSHARP_HOME`(安装目录)、`DSHARP_BASE_URL`(镜像基址)、`DSHARP_PROXY`(下载代理)。Release 资产命名为 `dsharp-<rid>.tar.gz`(Linux/macOS)与 `dsharp-win-<arch>.zip`(Windows)。
 
-发布包包含会话全文检索所需的 SQLite FTS5 原生库；安装或移动程序时保留完整发布目录，无需另行安装系统 SQLite。
+SQLite 是可选的系统依赖,发布包不捆绑或自动下载 SQLite 原生库。Linux 使用系统 `libsqlite3.so.0`(例如发行版的 `libsqlite3-0`/`sqlite-libs` 运行库),macOS 使用系统 `/usr/lib/libsqlite3.dylib`,Windows 使用系统 `winsqlite3.dll`。只有该系统库支持 FTS5 时才启用会话全文索引;不同系统版本的能力可能不同,尤其不能假定 Windows 自带 SQLite 支持 FTS5。没有系统 SQLite、缺少所需入口或未编入 FTS5 时,会话搜索自动使用进程内、不区分大小写的文本匹配(多词 AND),`/session-query` 和 `session_search` 仍可查询历史与活会话,不会阻断正常会话、ACP 或 TUI 启动。全文分词匹配与本地子串匹配的结果可能不同;会话文件仍是数据来源,切换后端不迁移或丢弃会话。
 
 ## 运行
 
@@ -470,5 +470,5 @@ network:
   ```
 - 运行期数据:`<home>/logs/dsh-YYYYMMDD.log`(按天 + `file_max_mb` 切分、`keep_days` 清理),`<home>/sessions/<工作目录转写>/<会话 id>/session.jsonl.zstd`,`<home>/telemetry.jsonl`(agent 生命周期与错误事件,可用 `plugins: {"@deepseek-ai/dsh-telemetry": false}` 关闭)。
 - 子代理模型:模型可调用 `list_subagent_models` 查看子代理能用的模型路由,即已配置 key 的 provider 及其生效模型(`settings.yaml` 声明的模型 ∪ models.dev 目录),模型公布了推理强度时一并列出;`subagent` 工具的 `provider`/`model`/`reasoning_effort` 参数直接取用其中一行,不填则沿用该工具插件参数里的 `agentOptions`,其次是 `settings.yaml` 的 `subagent.default_model`,再缺省则跟随当前会话的模型。未配置 key 的 provider 不会出现在列表中。可用 `plugins: {"@deepseek-ai/dsh-tool-subagent/list-models": false}` 关闭该工具。
-- 会话检索:TUI/CLI 内 `/session-query <关键词>` 搜索历史会话(命中用 `/session <id>` 打开);模型侧对应 `session_search` 工具。检索覆盖内存中的活会话与 `sessions/` 下的历史日志。
+- 会话检索:TUI/CLI 内 `/session-query <关键词>` 搜索历史会话(命中用 `/session <id>` 打开);模型侧对应 `session_search` 工具。检索覆盖内存中的活会话与 `sessions/` 下的历史日志。系统 SQLite 提供 FTS5 时使用全文分词索引,否则使用本地文本匹配;无需为普通会话查询单独安装 SQLite,平台依赖与匹配差异见「安装」。
 - 交付物:模型生成报告、Office 文档、表格、幻灯片等文件后,用 `present` 工具把已存在的文件声明为最终交付物(只记录绝对路径,不复制、不转换内容;路径不存在或是目录会报错)。清单随会话日志保存,恢复会话后仍在,回退/截断会话时一并回退。TUI 会话流里显示交付物卡片(绝对路径可直接复制),`/deliverables` 列出本会话交付物,`/deliverables open <编号>` 用系统默认程序打开;GUI 见「图形界面」一节。不需要时用 `plugins: {"@deepseek-ai/dsh-tool-present": false}` 关闭。

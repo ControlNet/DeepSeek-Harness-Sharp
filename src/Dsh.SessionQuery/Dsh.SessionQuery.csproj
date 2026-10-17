@@ -18,9 +18,9 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.12" />
-    <!-- FtsSessionTextSearch 初始化唯一 provider，SourceGear 按 RID 提供匹配且含 FTS5 的原生库。 -->
-    <PackageReference Include="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.5" />
-    <PackageReference Include="SourceGear.sqlite3" Version="3.53.4" />
+    <!-- Managed, static P/Invoke providers only; SQLite itself is an optional system dependency. -->
+    <PackageReference Include="SQLitePCLRaw.provider.sqlite3" Version="3.0.5" />
+    <PackageReference Include="SQLitePCLRaw.provider.winsqlite3" Version="3.0.5" />
   </ItemGroup>
 
 </Project>

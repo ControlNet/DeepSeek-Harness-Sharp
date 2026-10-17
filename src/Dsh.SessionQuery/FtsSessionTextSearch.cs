@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Dsh.Core;
 using Microsoft.Data.Sqlite;
 
@@ -10,14 +11,34 @@ public sealed class FtsSessionTextSearch : ISessionTextSearch
 
     static FtsSessionTextSearch()
     {
-        SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_e_sqlite3());
+        if (OperatingSystem.IsWindows())
+        {
+            SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_winsqlite3());
+            return;
+        }
+
+        // Resolve the runtime library, not the development-package libsqlite3.so symlink.
+        // Both providers use static P/Invoke entry points and remain usable under NativeAOT.
+        NativeLibrary.SetDllImportResolver(typeof(SQLitePCL.SQLite3Provider_sqlite3).Assembly,
+            (name, assembly, searchPath) => name == "sqlite3"
+                ? NativeLibrary.Load(OperatingSystem.IsMacOS() ? "/usr/lib/libsqlite3.dylib" : "libsqlite3.so.0", assembly, searchPath)
+                : IntPtr.Zero);
+        SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_sqlite3());
     }
 
     public FtsSessionTextSearch(string databasePath)
     {
         _connection = new SqliteConnection(databasePath == ":memory:" ? "Data Source=:memory:" : $"Data Source={databasePath}");
-        _connection.Open();
-        Initialize();
+        try
+        {
+            _connection.Open();
+            Initialize();
+        }
+        catch
+        {
+            _connection.Dispose();
+            throw;
+        }
     }
 
     public void IndexSession(Session session)
