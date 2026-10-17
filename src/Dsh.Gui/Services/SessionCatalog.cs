@@ -1,11 +1,14 @@
 using Dsh.Core;
 using Dsh.Gui.ViewModels;
+using Dsh.Fleet;
+using Dsh.Llm;
+using Dsh.RemoteHost;
 using Dsh.Runtime;
 
 namespace Dsh.Gui.Services;
 
-/** 侧栏数据源: 合并活跃 agent 与磁盘上的历史会话, 按 cwd 归并为工作区。 */
-public sealed class SessionCatalog(Context ctx)
+/** Sidebar history merges persisted pre-Fleet sessions with the local Host registry; only Host writes sessions. */
+public sealed class SessionCatalog(Context ctx, FleetWorkspace fleet)
 {
     /** 空 cwd 会话的占位分组名。 */
     public const string UnspecifiedWorkspace = "未指定目录";
@@ -18,23 +21,33 @@ public sealed class SessionCatalog(Context ctx)
         {
             if (snapshot.Header.IsSubagent)
                 continue;
-            nodes[snapshot.Header.Id.Value] = Create(snapshot.Header, null);
+            nodes[snapshot.Header.Id.Value] = Create(snapshot.Header);
         }
 
-        foreach (var agent in LiveAgents())
+        foreach (var session in fleet.Find(MachineSpec.LocalName)?.Sessions ?? [])
         {
-            if (agent.Session.Header.IsSubagent)
+            if (session.Kind != HostSessionKinds.Harness)
                 continue;
-            nodes[agent.Id.Value] = Create(agent.Session.Header, agent);
+            var path = WorkspacePath(session.ProjectPath);
+            nodes[session.SessionId] = new SessionNodeViewModel
+            {
+                SessionId = SessionId.Create(session.SessionId),
+                Workspace = WorkspaceDisplayName(path),
+                WorkspacePath = path,
+                Cwd = session.ProjectPath ?? "",
+                CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(session.CreatedAt),
+                Title = session.Title ?? session.SessionId,
+                IsLive = session.Status != HostSessionStatuses.Exited,
+                IsRunning = session.Status == HostSessionStatuses.Running,
+                RelativeTime = RelativeTimeText.Format(DateTimeOffset.FromUnixTimeMilliseconds(session.LastActivityAt)),
+            };
         }
 
         return [.. nodes.Values.OrderByDescending(node => node.CreatedAt)];
     }
 
-    private IReadOnlyList<AgentLoopAgent> LiveAgents()
-        => ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)?.List().OfType<AgentLoopAgent>().ToList() ?? [];
 
-    private static SessionNodeViewModel Create(SessionHeader header, AgentLoopAgent? agent)
+    private static SessionNodeViewModel Create(SessionHeader header)
     {
         var workspacePath = WorkspacePath(header.Cwd);
         var node = new SessionNodeViewModel
@@ -44,8 +57,9 @@ public sealed class SessionCatalog(Context ctx)
             WorkspacePath = workspacePath,
             Cwd = header.Cwd ?? "",
             CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(header.CreatedAt),
+            Title = header.Title ?? header.Id.Value,
+            RelativeTime = RelativeTimeText.Format(DateTimeOffset.FromUnixTimeMilliseconds(header.CreatedAt)),
         };
-        node.Refresh(agent, header.Title ?? "", agent is null ? "" : $"{agent.Options.Provider}/{agent.Options.Model}");
         return node;
     }
 

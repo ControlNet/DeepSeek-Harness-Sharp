@@ -7,7 +7,7 @@
 # 就会把一份 JIT 产物当成 AOT 发出去。本脚本用**结构特征**判别，不用体积阈值：
 #   AOT 镜像不含托管主程序集、运行时配置与 CoreCLR 运行时文件。
 #
-# 用法: assert-aot-output.sh <publish-dir>
+# 用法: assert-aot-output.sh <publish-dir> [app-name]
 set -euo pipefail
 
 DIR="${1:?用法: assert-aot-output.sh <publish-dir>}"
@@ -16,7 +16,7 @@ if [ ! -d "$DIR" ]; then
     exit 1
 fi
 
-APP="dsharp"
+APP="${2:-dsharp}"
 
 if [ ! -f "$DIR/$APP" ] && [ ! -f "$DIR/$APP.exe" ]; then
     echo "::error::AOT 输出里没有可执行文件 $APP（或 $APP.exe）: $DIR" >&2

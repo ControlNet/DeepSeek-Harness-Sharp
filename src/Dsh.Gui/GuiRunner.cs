@@ -2,19 +2,19 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Dsh.Boot;
-using Dsh.Core;
 using Dsh.Gui.Services;
 using Dsh.Gui.Views;
-using Dsh.Llm;
 
 namespace Dsh.Gui;
 
 public static class GuiRunner
 {
+    /** startLocalHost launches `host serve` for this computer's machine when its host is not running yet (see FleetOptions.StartLocalHost). */
     public static async Task<int> Run(
         HarnessApp app,
         string cwd,
-        string? resumeSessionId = null)
+        string? resumeSessionId = null,
+        Func<string, CancellationToken, Task>? startLocalHost = null)
     {
         using var instance = SingleInstance.Acquire(app.Home.Root);
         if (instance is null)
@@ -23,13 +23,7 @@ public static class GuiRunner
         var settings = new GuiSettings(app.Home).Load();
         // 显式设置的工作区盖过进程启动目录: 双击桌面快捷方式启动时 cwd 会落在安装目录/System32
         var workspace = settings.DefaultWorkspace ?? cwd;
-        var agents = app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
-        var agent = await OpenAgentAsync(app, agents, workspace, resumeSessionId);
-
-        var (exitCode, lastSession) = await RunAvaloniaAsync(app, agent, settings, instance);
-        var sessions = app.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
-        await sessions.Flush(lastSession);
-        return exitCode;
+        return await RunAvaloniaAsync(app, workspace, resumeSessionId, settings, instance, startLocalHost);
     }
 
     /**
@@ -40,7 +34,8 @@ public static class GuiRunner
     public static int RunOnMainThread(
         HarnessApp app,
         string cwd,
-        string? resumeSessionId = null)
+        string? resumeSessionId = null,
+        Func<string, CancellationToken, Task>? startLocalHost = null)
     {
         using var instance = SingleInstance.Acquire(app.Home.Root);
         if (instance is null)
@@ -48,55 +43,42 @@ public static class GuiRunner
 
         var settings = new GuiSettings(app.Home).Load();
         var workspace = settings.DefaultWorkspace ?? cwd;
-        var agents = app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
-        var agent = OpenAgentAsync(app, agents, workspace, resumeSessionId).GetAwaiter().GetResult();
-
-        var (exitCode, lastSession) = RunAvalonia(app, agent, settings, instance);
-        app.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(lastSession).GetAwaiter().GetResult();
-        return exitCode;
+        return RunAvalonia(app, workspace, resumeSessionId, settings, instance, startLocalHost);
     }
 
-    /** --session 指定时直接打开历史会话; 恢复失败则退回新建, 不让 GUI 起不来。 */
-    private static async Task<AgentLoopAgent> OpenAgentAsync(
-        HarnessApp app,
-        AgentRegistry agents,
-        string cwd,
-        string? resumeSessionId)
+    /** A persisted pre-Fleet session is resumed by Host under the same id; GUI never opens a writer. */
+    private static async Task<HostChatSession> OpenChatAsync(
+        HarnessApp app, string cwd, string? resumeSessionId,
+        Func<string, CancellationToken, Task>? startLocalHost)
     {
-        var options = new AgentOptions(app.Provider, app.Model, app.ReasoningEffort is null ? null : ReasoningEffortId.Create(app.ReasoningEffort));
-        if (resumeSessionId is not null)
+        var fleet = FleetWorkspace.ForContext(app.Ctx, app.Home, startLocalHost);
+        var model = new HarnessModelChoice(
+            new Dsh.RemoteHost.RemoteModelSelection(app.Provider, app.Model, app.ReasoningEffort), null);
+        try
         {
-            try
-            {
-                var resumed = (AgentLoopAgent)(await agents.Resume(new ResumeAgentOptions(SessionId.Create(resumeSessionId), options))).Agent;
-                await resumed.WhenIdle();
-                return resumed;
-            }
-            catch (Exception error)
-            {
-                await Console.Error.WriteLineAsync($"dsharp: session \"{resumeSessionId}\" cannot be resumed: {error.Message}");
-            }
+            return await HostChatSession.OpenAsync(fleet, cwd, resumeSessionId, model);
         }
-        var created = (AgentLoopAgent)(await agents.Create(new CreateAgentOptions(
-            SessionId.Create($"session-{Guid.NewGuid()}"),
-            cwd,
-            options))).Agent;
-        await created.WhenIdle();
-        return created;
+        catch
+        {
+            await fleet.DisposeAsync();
+            throw;
+        }
     }
 
-    private static Task<(int ExitCode, Session Session)> RunAvaloniaAsync(
+    private static Task<int> RunAvaloniaAsync(
         HarnessApp app,
-        AgentLoopAgent agent,
+        string cwd,
+        string? resumeSessionId,
         GuiSettingsSnapshot settings,
-        SingleInstance instance)
+        SingleInstance instance,
+        Func<string, CancellationToken, Task>? startLocalHost)
     {
-        var done = new TaskCompletionSource<(int, Session)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var done = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
             try
             {
-                done.TrySetResult(RunAvalonia(app, agent, settings, instance));
+                done.TrySetResult(RunAvalonia(app, cwd, resumeSessionId, settings, instance, startLocalHost));
             }
             catch (Exception error)
             {
@@ -110,11 +92,13 @@ public static class GuiRunner
     }
 
     /** 在同一线程内跑 Avalonia 消息循环; 该线程必须是 UI 线程(macOS 上必须是进程主线程)。 */
-    private static (int ExitCode, Session Session) RunAvalonia(
+    private static int RunAvalonia(
         HarnessApp app,
-        AgentLoopAgent agent,
+        string cwd,
+        string? resumeSessionId,
         GuiSettingsSnapshot settings,
-        SingleInstance instance)
+        SingleInstance instance,
+        Func<string, CancellationToken, Task>? startLocalHost)
     {
         MainWindow? window = null;
         instance.ActivationRequested += () =>
@@ -125,11 +109,13 @@ public static class GuiRunner
         App.StartupAppearance = application => ThemeService.Apply(application, settings);
         App.StartupWindowFactory = () =>
         {
-            window = new MainWindow(app, agent);
+            // Platform/dispatcher must exist before FleetWorkspace starts posting UI events.
+            // Connection setup runs without the UI synchronization context while this synchronous factory waits.
+            var chat = Task.Run(() => OpenChatAsync(app, cwd, resumeSessionId, startLocalHost)).GetAwaiter().GetResult();
+            window = new MainWindow(app, chat);
             return window;
         };
-        var exitCode = BuildApp(settings).StartWithClassicDesktopLifetime([], ShutdownMode.OnExplicitShutdown);
-        return (exitCode, window?.ViewModel?.CurrentAgent.Session ?? agent.Session);
+        return BuildApp(settings).StartWithClassicDesktopLifetime([], ShutdownMode.OnExplicitShutdown);
     }
 
     private static AppBuilder BuildApp(GuiSettingsSnapshot settings)

@@ -1,4 +1,6 @@
-﻿namespace Dsh.RemoteHost;
+﻿using Dsh.Transport;
+
+namespace Dsh.RemoteHost;
 
 /**
  * 远端宿主的端点约定(与 Pty daemon 同款: DSH_HOME/run 下的 Unix socket / Windows 端口文件)。
@@ -6,13 +8,8 @@
  */
 public static class RemoteHostEndpoint
 {
-    public static string DefaultRoot()
-    {
-        var home = Environment.GetEnvironmentVariable("DSH_HOME");
-        if (!string.IsNullOrWhiteSpace(home))
-            return home;
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh");
-    }
+    /** 与 PTY daemon 同一个根(含 .storage-root 重定向), 两处共用 LocalEndpointRoot。 */
+    public static string DefaultRoot() => LocalEndpointRoot.Resolve();
 
     public static string RunDirectory(string? root = null) => Path.Combine(root ?? DefaultRoot(), "run");
 

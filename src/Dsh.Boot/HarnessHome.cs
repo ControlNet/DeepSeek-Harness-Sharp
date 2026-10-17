@@ -38,6 +38,9 @@ public sealed record HarnessHome(string Root)
 
     public string TelemetryPath => SubPath("telemetry");
 
+    /** 远端 host 自己的持久状态(会话登记表)。 */
+    public string HostPath => SubPath("host");
+
     public string AgentPresetsPath => SubPath(".agent-presets");
 
     public string SettingsFile => Path.Combine(Root, "settings.yaml");
@@ -55,7 +58,8 @@ public sealed record HarnessHome(string Root)
         "run",
         "logs",
         "cache",
-        ".agent-presets"
+        ".agent-presets",
+        "host"
     ];
 
     public void Ensure()

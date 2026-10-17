@@ -4,7 +4,7 @@ using System.Threading.Channels;
 
 namespace Dsh.Pty;
 
-public sealed class PtySession : IDisposable
+public sealed class PtySession : IDisposable, ITerminalConnection
 {
     private readonly PtyStartInfo _startInfo;
     private readonly object _gate = new();
@@ -115,34 +115,15 @@ public sealed class PtySession : IDisposable
     public Task WaitForExitAsync(CancellationToken cancellationToken = default)
         => (_completion ?? throw new InvalidOperationException("PTY process has not been started")).WaitAsync(cancellationToken);
 
-    /**
-     * attach 时的**状态重建**: 用会话自己的 VT 屏做全量重绘(进备用屏 + 清屏 + 逐行定位输出 + SGR/光标状态),
-     * 而不是把原始字节再放一遍 —— 这样 vim/htop 这类全屏程序接管后也是正确画面(与 tmux 行为一致)。
-     */
     /** 丢掉尚在输出队列里的历史字节: 新 proxy attach 时先清空, 否则早先的 detach 标记会让它立刻退出。 */
-    public void DrainPendingOutput()
-    {
-        while (_output.Reader.TryRead(out _))
-        {
-        }
-    }
+    public void DrainPendingOutput() => _outputReader.DrainPendingOutput();
 
+    /** 当前 VT 状态的完整重建: 主/备用屏、光标、画笔和输入模式均与之后的原始输出一致。 */
     public byte[] Snapshot()
     {
         lock (_gate)
         {
-            var output = new StringBuilder();
-            output.Append("\u001b[?1049h\u001b[2J\u001b[H");
-            output.Append(_screen.CursorVisible ? "\u001b[?25h" : "\u001b[?25l");
-            for (var y = 0; y < _screen.Height; y++)
-            {
-                output.Append('\u001b').Append('[').Append(y + 1).Append(";1H");
-                AppendRow(output, _screen.Row(y));
-                output.Append("\u001b[K");
-            }
-
-            output.Append('\u001b').Append('[').Append(_screen.CursorY + 1).Append(';').Append(_screen.CursorX + 1).Append('H');
-            return Encoding.UTF8.GetBytes(output.ToString());
+            return Encoding.UTF8.GetBytes(_screen.Snapshot());
         }
     }
 
@@ -168,56 +149,13 @@ public sealed class PtySession : IDisposable
         }
     }
 
-    private static void AppendRow(StringBuilder output, ReadOnlySpan<Cell> row)
+    /** 独占 CLI attach 使用备用屏投影, GUI/host 订阅使用保留主/备用屏状态的 Snapshot。 */
+    internal byte[] ConsoleSnapshot()
     {
-        var last = row.Length - 1;
-        while (last >= 0 && row[last] == default)
-            last--;
-
-        var current = default(Cell);
-        for (var x = 0; x <= last; x++)
-        {
-            var cell = row[x];
-            if (cell.Character == '\0')
-                continue;   // 宽字符的续格: 由前一个宽字符占位
-
-            if (cell.Foreground != current.Foreground || cell.Background != current.Background || cell.Style != current.Style)
-            {
-                AppendSgr(output, cell);
-                current = cell;
-            }
-
-            output.Append(cell.Character);
-        }
-
-        output.Append("\u001b[0m");
+        lock (_gate)
+            return Encoding.UTF8.GetBytes(_screen.ConsoleSnapshot());
     }
 
-    private static void AppendSgr(StringBuilder output, Cell cell)
-    {
-        output.Append("\u001b[0");
-        if ((cell.Style & CellStyle.Bold) != 0)
-            output.Append(";1");
-        if ((cell.Style & CellStyle.Dim) != 0)
-            output.Append(";2");
-        if ((cell.Style & CellStyle.Reverse) != 0)
-            output.Append(";7");
-        if (!cell.Foreground.IsDefault)
-            output.Append(';').Append(ForegroundSegment(cell.Foreground));
-        if (!cell.Background.IsDefault)
-            output.Append(';').Append(BackgroundSegment(cell.Background));
-        output.Append('m');
-    }
-
-    private static string ForegroundSegment(CellColor color)
-        => color.IsRgb ? $"38;2;{color.R};{color.G};{color.B}" : ForegroundCode(color.IsPalette ? color.PaletteColor : AnsiColor.Default).ToString();
-
-    private static string BackgroundSegment(CellColor color)
-        => color.IsRgb ? $"48;2;{color.R};{color.G};{color.B}" : (ForegroundCode(color.IsPalette ? color.PaletteColor : AnsiColor.Default) + 10).ToString();
-
-    /** 调色板 1..8 → 30..37, 9..16 → 90..97(背景再 +10)。 */
-    private static int ForegroundCode(AnsiColor color)
-        => color <= AnsiColor.White ? 29 + (int)color : 81 + (int)color;
 
     private void PumpAsync() => Task.Factory.StartNew(PumpLoop, TaskCreationOptions.LongRunning);
 
@@ -334,6 +272,12 @@ public sealed class PtySession : IDisposable
         throw new ObjectDisposedException(nameof(PtySession));
     }
 
+    ValueTask ITerminalConnection.ResizeAsync(TerminalSize size, CancellationToken cancellationToken)
+    {
+        Resize(size.Rows, size.Columns);
+        return ValueTask.CompletedTask;
+    }
+
     public void Attach()
     {
         lock (_gate)
@@ -395,7 +339,7 @@ public sealed class PtySession : IDisposable
         var unix = _unix;
         if (unix is not null)
         {
-            await unix.StopAsync();
+            await unix.StopAsync().ConfigureAwait(false);
             lock (_gate)
             {
                 _status = PtySessionStatus.Exited;
@@ -408,13 +352,15 @@ public sealed class PtySession : IDisposable
         var conPty = _conPty;
         if (conPty is not null)
         {
-            await conPty.StopAsync();
+            await conPty.StopAsync().ConfigureAwait(false);
             lock (_gate)
             {
                 _status = PtySessionStatus.Exited;
                 _exitCode ??= 0;
             }
 
+            // The ConPTY output pipe does not reach EOF when the process ends (see OnConPtyExited), so the pump cannot end the pane subscriptions.
+            CompleteSubscribers();
             return;
         }
 
@@ -424,7 +370,7 @@ public sealed class PtySession : IDisposable
             try
             {
                 process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync();
+                await process.WaitForExitAsync().ConfigureAwait(false);
             }
             catch (InvalidOperationException)
             {

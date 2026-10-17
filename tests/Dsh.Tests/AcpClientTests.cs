@@ -71,11 +71,11 @@ public sealed class AcpClientTests
         var updates = new List<AcpSessionUpdate>();
         client.SessionUpdate += updates.Add;
 
-        var initialize = await client.InitializeAsync(TestContext.Current.CancellationToken);
-        Assert.Equal(AcpMethods.ProtocolVersion, initialize.GetProperty("protocolVersion").GetInt32());
-        Assert.Equal("deepseek-harness-acp", initialize.GetProperty("agentInfo").GetProperty("name").GetString());
+        var initialize = await client.InitializeAsync(cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(AcpMethods.ProtocolVersion, initialize.ProtocolVersion);
+        Assert.Equal("deepseek-harness-acp", initialize.AgentInfo?.Name);
 
-        var sessionId = await client.NewSessionAsync(Directory.GetCurrentDirectory(), TestContext.Current.CancellationToken);
+        var sessionId = (await client.NewSessionAsync(Directory.GetCurrentDirectory(), TestContext.Current.CancellationToken)).SessionId!;
         Assert.False(string.IsNullOrWhiteSpace(sessionId));
 
         var stopReason = await client.PromptAsync(sessionId, "hi", TestContext.Current.CancellationToken);
@@ -129,8 +129,8 @@ public sealed class AcpClientTests
         var updates = new List<AcpSessionUpdate>();
         client.SessionUpdate += updates.Add;
 
-        await client.InitializeAsync(TestContext.Current.CancellationToken);
-        var sessionId = await client.NewSessionAsync(Directory.GetCurrentDirectory(), TestContext.Current.CancellationToken);
+        await client.InitializeAsync(cancellationToken: TestContext.Current.CancellationToken);
+        var sessionId = (await client.NewSessionAsync(Directory.GetCurrentDirectory(), TestContext.Current.CancellationToken)).SessionId!;
         var stopReason = await client.PromptAsync(sessionId, "echo please", TestContext.Current.CancellationToken);
 
         Assert.Equal("end_turn", stopReason);
@@ -160,15 +160,15 @@ public sealed class AcpClientTests
             var client = new AcpClient(transport);
             var cwd = Directory.GetCurrentDirectory();
 
-            var initialize = await client.InitializeAsync(cancellationToken);
-            Assert.Equal(AcpMethods.LocalTokenAuthMethod, initialize.GetProperty("authMethods")[0].GetProperty("id").GetString());
+            var initialize = await client.InitializeAsync(cancellationToken: cancellationToken);
+            Assert.Equal(AcpMethods.LocalTokenAuthMethod, Assert.Single(initialize.AuthMethods!).Id);
             await Assert.ThrowsAsync<JsonRpcResponseError>(() => client.NewSessionAsync(cwd, cancellationToken));
             await Assert.ThrowsAsync<JsonRpcResponseError>(() => client.AuthenticateAsync("not-the-token", cancellationToken));
             await Assert.ThrowsAsync<JsonRpcResponseError>(() => client.NewSessionAsync(cwd, cancellationToken));
 
             var token = Dsh.Transport.LocalEndpointToken.Read(Path.Combine(root, "run", "dsh-acp.sock"));
             await client.AuthenticateAsync(token!, cancellationToken);
-            var sessionId = await client.NewSessionAsync(cwd, cancellationToken);
+            var sessionId = (await client.NewSessionAsync(cwd, cancellationToken)).SessionId!;
 
             Assert.False(string.IsNullOrWhiteSpace(sessionId));
             await client.CloseSessionAsync(sessionId, cancellationToken);
@@ -208,8 +208,8 @@ public sealed class AcpClientTests
             await using var nextStream = new NetworkStream(next, ownsSocket: false);
             await using var transport = new JsonRpcLineTransport(new StreamReader(nextStream), new StreamWriter(nextStream) { AutoFlush = true });
             transport.Start();
-            var initialize = await new AcpClient(transport).InitializeAsync(cancellationToken);
-            Assert.Equal(JsonValueKind.Object, initialize.ValueKind);
+            var initialize = await new AcpClient(transport).InitializeAsync(cancellationToken: cancellationToken);
+            Assert.Equal(AcpMethods.ProtocolVersion, initialize.ProtocolVersion);
         }
         finally
         {

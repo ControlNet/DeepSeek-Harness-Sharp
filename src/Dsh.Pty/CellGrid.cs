@@ -7,6 +7,9 @@ public enum CellStyle : byte
     Bold = 1,
     Dim = 2,
     Reverse = 4,
+    Italic = 8,
+    Underline = 16,
+    Strikethrough = 32,
 }
 
 public enum AnsiColor : byte

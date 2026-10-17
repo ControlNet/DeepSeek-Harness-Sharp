@@ -13,6 +13,9 @@ public enum RemotePathStyle
  */
 public static class RemotePaths
 {
+    /** 远端用户的家目录: 每个路径参数都接受它, 由远端后端展开。 */
+    public const string Home = "~";
+
     public static RemotePathStyle StyleFor(string? platform)
         => string.Equals(platform, "windows", StringComparison.OrdinalIgnoreCase) ? RemotePathStyle.Windows : RemotePathStyle.Posix;
 

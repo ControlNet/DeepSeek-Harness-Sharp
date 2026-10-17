@@ -42,6 +42,7 @@ public sealed class JsonRpcPeer : IAsyncDisposable
     private long _nextId;
     private int _disposed;
     private Task? _readLoop;
+    private Exception? _requestFailure;
 
     public JsonRpcPeer(Stream stream, int maxFrameBytes = FrameCodec.DefaultMaxFrameBytes)
     {
@@ -51,6 +52,9 @@ public sealed class JsonRpcPeer : IAsyncDisposable
 
     /** 入向请求处理: 返回 result 原样回填; 抛 JsonRpcException 回该 error; null 表示不支持(回 method not found)。 */
     public Func<JsonRpcMessage, CancellationToken, ValueTask<JsonElement?>>? RequestHandler { get; set; }
+
+    /** Optional lightweight registration in frame-receive order; null delegates to RequestHandler, otherwise the returned operation supplies this request's result. */
+    public Func<JsonRpcMessage, CancellationToken, ValueTask<JsonElement?>?>? RequestPreparation { get; set; }
 
     /** 入向通知(无需响应)。 */
     public event Action<JsonRpcMessage>? NotificationReceived;
@@ -104,7 +108,8 @@ public sealed class JsonRpcPeer : IAsyncDisposable
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await FrameCodec.WriteFrameAsync(_stream, payload, cancellationToken).ConfigureAwait(false);
+            // A frame cancelled halfway leaves the peer reading the next frames as its body (a cancelled 1 MiB upload chunk hung the connection), so a started frame is always written whole.
+            await FrameCodec.WriteFrameAsync(_stream, payload, CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
@@ -135,7 +140,11 @@ public sealed class JsonRpcPeer : IAsyncDisposable
                     break;
                 }
 
-                await DispatchAsync(message, cancellationToken).ConfigureAwait(false);
+                var dispatch = DispatchAsync(message, cancellationToken);
+                if (message.IsRequest && !dispatch.IsCompletedSuccessfully)
+                    _ = ObserveRequestAsync(dispatch);
+                else
+                    await dispatch.ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -147,8 +156,49 @@ public sealed class JsonRpcPeer : IAsyncDisposable
         }
         finally
         {
+            _cts.Cancel();
+            failure = _requestFailure ?? failure;
             FailPending(failure);
             Closed?.Invoke(failure);
+        }
+    }
+
+    /** A slow inbound request must not stop reading replies, notifications or the next request. */
+    private async Task ObserveRequestAsync(ValueTask request)
+    {
+        try
+        {
+            await request.ConfigureAwait(false);
+        }
+        catch (Exception error) when (_cts.IsCancellationRequested
+            && error is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+        }
+        catch (Exception error)
+        {
+            Interlocked.CompareExchange(ref _requestFailure, error, null);
+            try
+            {
+                _cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Disposal may have won the race with this failed response.
+            }
+            await CloseStreamAsync().ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask CloseStreamAsync()
+    {
+        // Closing the stream interrupts reads which do not promptly observe cancellation.
+        try
+        {
+            await _stream.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Preserve the original failure even when closing the stream fails.
         }
     }
 
@@ -169,13 +219,31 @@ public sealed class JsonRpcPeer : IAsyncDisposable
 
         if (message.IsRequest && message.Id is { } requestId)
         {
+            ValueTask<JsonElement?>? prepared;
+            try
+            {
+                prepared = RequestPreparation?.Invoke(message, cancellationToken);
+            }
+            catch (Exception error)
+            {
+                prepared = ValueTask.FromException<JsonElement?>(error);
+            }
+            // A handler's synchronous prelude must not occupy the frame reader either.
+            await Task.Yield();
+            if (cancellationToken.IsCancellationRequested && prepared is null)
+                return;
             var response = new JsonRpcMessage { Id = requestId };
             try
             {
-                var handler = RequestHandler;
-                response.Result = handler is null
-                    ? throw new JsonRpcException(MethodNotFound, $"method not found: {message.Method}")
-                    : await handler(message, cancellationToken).ConfigureAwait(false) ?? JsonNull;
+                if (prepared is { } operation)
+                    response.Result = await operation.ConfigureAwait(false) ?? JsonNull;
+                else
+                {
+                    var handler = RequestHandler;
+                    response.Result = handler is null
+                        ? throw new JsonRpcException(MethodNotFound, $"method not found: {message.Method}")
+                        : await handler(message, cancellationToken).ConfigureAwait(false) ?? JsonNull;
+                }
             }
             catch (JsonRpcException error)
             {
@@ -188,7 +256,8 @@ public sealed class JsonRpcPeer : IAsyncDisposable
                 response.Error = new JsonRpcError { Code = InternalError, Message = error.Message };
             }
 
-            await SendAsync(response, cancellationToken).ConfigureAwait(false);
+            if (!cancellationToken.IsCancellationRequested)
+                await SendAsync(response, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -207,15 +276,7 @@ public sealed class JsonRpcPeer : IAsyncDisposable
             return;
 
         _cts.Cancel();
-        // 关闭底层流以打断阻塞中的读(Socket/管道读未必及时响应 token 取消)。
-        try
-        {
-            await _stream.DisposeAsync().ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            // 关流失败不影响收尾。
-        }
+        await CloseStreamAsync().ConfigureAwait(false);
 
         if (_readLoop is { } loop)
         {

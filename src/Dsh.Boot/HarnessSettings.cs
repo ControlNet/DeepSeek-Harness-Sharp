@@ -44,6 +44,9 @@ public sealed class HarnessSettings
     [YamlMember(Alias = "storage")]
     public StorageSettings? Storage { get; set; }
 
+    [YamlMember(Alias = "fleet")]
+    public FleetSettings? Fleet { get; set; }
+
     [YamlMember(Alias = "network")]
     public NetworkSettings? Network { get; set; }
 
@@ -74,7 +77,7 @@ public sealed class HarnessSettings
         Directory.CreateDirectory(home.Root);
         if (!File.Exists(path))
             SettingsFilePermissions.Write(path, LoadTemplate());
-        var text = File.ReadAllText(path);
+        var text = ReadSettingsTextShared(path);
         var settings = Parse(text);
         settings.Plugins = PluginSettingsSection.ParseDocument(text);
         return settings;
@@ -92,8 +95,10 @@ public sealed class HarnessSettings
     {
         var path = Path.Combine(home.Root, "settings.yaml");
         Directory.CreateDirectory(home.Root);
+        // Strings that read back as another type (a password "null", a key "123") are quoted, or they would not round-trip.
         var serializer = new StaticSerializerBuilder(new DshYamlStaticContext())
             .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
+            .WithQuotingNecessaryStrings()
             .Build();
         var text = serializer.Serialize(this);
         if (!File.Exists(path))
@@ -101,7 +106,7 @@ public sealed class HarnessSettings
             WriteAtomic(path, text);
             return;
         }
-        var existing = File.ReadAllText(path);
+        var existing = ReadSettingsTextShared(path);
         WriteAtomic(path, SettingsDocument.MergeTopLevel(existing, serializer.Serialize(Parse(existing)), text));
     }
 
@@ -111,8 +116,16 @@ public sealed class HarnessSettings
         Directory.CreateDirectory(home.Root);
         if (!File.Exists(path))
             SettingsFilePermissions.Write(path, LoadTemplate());
-        var text = File.ReadAllText(path);
+        var text = ReadSettingsTextShared(path);
         WriteAtomic(path, SettingsDocument.ReplacePluginsBlock(text, SettingsDocument.RenderPlugins(Plugins)));
+    }
+
+    /** Keep a complete snapshot while allowing WriteAtomic to replace settings.yaml on Windows. */
+    private static string ReadSettingsTextShared(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
     }
 
     /** 先写同目录临时文件再改名,避免进程中断留下半截配置; settings.yaml 一律收紧为仅属主可读写。 */
@@ -120,7 +133,10 @@ public sealed class HarnessSettings
     {
         var temporary = $"{path}.tmp";
         SettingsFilePermissions.Write(temporary, content);
-        File.Move(temporary, path, overwrite: true);
+        if (File.Exists(path))
+            File.Replace(temporary, path, destinationBackupFileName: null);
+        else
+            File.Move(temporary, path);
         SettingsFilePermissions.Restrict(path);
     }
 

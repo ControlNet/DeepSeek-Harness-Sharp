@@ -18,7 +18,7 @@ public sealed class SessionQueryService : Service, ISessionQueryService, IDispos
     {
         _index = new SessionQueryIndex();
         if (!_index.UsesFullText)
-            Ctx.Logger.Warn("%s", "sqlite3 is unavailable: session search falls back to local text matching");
+            Ctx.Logger.Warn("%s", "system SQLite FTS5 is unavailable: session search uses local text matching");
         // 活会话以事件数作版本, 截断后再长回同样长度时版本相同而内容已变; 截断即作废版本, 下次检索重建该会话索引。
         _unsubscribeTruncate = ctx.On<SessionTruncateNotification>(notification =>
         {

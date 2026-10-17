@@ -172,3 +172,9 @@ public static class SessionEventTypes
         UserMessage, SystemMessage, AssistantMessage, ToolResult,
     };
 }
+
+/** Producer markers carried by system messages, available to every client renderer. */
+public static class SessionEventSources
+{
+    public const string AcpPlan = "acp-plan";
+}

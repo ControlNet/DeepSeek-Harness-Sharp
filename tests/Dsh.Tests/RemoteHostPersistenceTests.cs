@@ -1,5 +1,6 @@
 ﻿using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
 using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
@@ -8,6 +9,32 @@ public sealed class RemoteHostPersistenceTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
+
+    [Theory]
+    [InlineData("[")]
+    [InlineData("null")]
+    public async Task InvalidSessionRegistry_FailsWithoutReplacingTheStoredSessions(string contents)
+    {
+        var root = TempTree.CreateDirectory("registry");
+        try
+        {
+            var storePath = Path.Combine(root, "sessions.json");
+            await File.WriteAllTextAsync(storePath, contents, Ct);
+
+            await Assert.ThrowsAsync<JsonException>(async () =>
+            {
+                await using var registry = await HostSessionRegistry.OpenAsync(storePath, new HostPendingDecisions(), Ct);
+            });
+
+            Assert.Equal(contents, await File.ReadAllTextAsync(storePath, Ct));
+            Assert.False(File.Exists($"{storePath}.tmp"));
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
     /** 常驻 daemon + stdio 桥: 客户端断开后再接回来, 会话仍在(脱钩/重连)。 */
     [Fact(Timeout = 30000)]
     public async Task SessionsSurviveClientReconnectThroughBridge()
@@ -15,7 +42,8 @@ public sealed class RemoteHostPersistenceTests
         // 套接字路径有 108 字符上限: 用仓库内浅目录, 否则 <root>/run/host.sock 超长, daemon 绑不上。
         var root = TempTree.CreateSocketDirectory("rh");
         TempTree.AssertFitsMacOsSocketLimit(RemoteHostEndpoint.SocketPath(root));
-        var server = new RemoteHostServer(new RemoteHostServerOptions(null), new SessionBackend());
+        await using var backend = await SessionBackend.CreateAsync(root, Ct);
+        var server = new RemoteHostServer(new RemoteHostServerOptions(null), backend);
         using var daemonCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var daemon = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(server, root, daemonCts.Token), Ct);
         try
@@ -53,7 +81,8 @@ public sealed class RemoteHostPersistenceTests
         // 套接字路径有 108 字符上限: 用仓库内浅目录, 否则 <root>/run/host.sock 超长, daemon 绑不上。
         var root = TempTree.CreateSocketDirectory("rh");
         TempTree.AssertFitsMacOsSocketLimit(RemoteHostEndpoint.SocketPath(root));
-        var server = new RemoteHostServer(new RemoteHostServerOptions(null), new SessionBackend());
+        await using var backend = await SessionBackend.CreateAsync(root, Ct);
+        var server = new RemoteHostServer(new RemoteHostServerOptions(null), backend);
         using var daemonCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var daemon = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(server, root, daemonCts.Token), Ct);
         try
@@ -127,10 +156,37 @@ public sealed class RemoteHostPersistenceTests
         }
     }
 
-    /** 只实现本用例用到的会话能力; 其余为只读/空实现。 */
-    private sealed class SessionBackend : IRemoteHostBackend
+    /** Reconnect fixture supplies only core sessions; optional methods must not become empty services. */
+    private sealed class SessionBackend : IRemoteHostBackend, IRemoteSessionBackend, IAsyncDisposable
     {
         private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
+
+        private SessionBackend(HostPendingDecisions pending, HostSessionRegistry sessions)
+        {
+            Pending = pending;
+            Sessions = sessions;
+        }
+
+        public static async Task<SessionBackend> CreateAsync(string root, CancellationToken cancellationToken)
+        {
+            var pending = new HostPendingDecisions();
+            var sessions = await HostSessionRegistry.OpenAsync(Path.Combine(root, "sessions.json"), pending, cancellationToken);
+            return new SessionBackend(pending, sessions);
+        }
+
+        public HostPendingDecisions Pending { get; }
+
+        public HostSessionRegistry Sessions { get; }
+
+        public IRemoteSessionBackend Session => this;
+        public IRemoteAgentBackend? Agent => null;
+        public IRemotePtyBackend? Pty => null;
+        public HostFileSystem? Files => null;
+        public HostGitService? Git => null;
+        public HostNotificationCenter? Notifications => null;
+        public IRemoteSessionEditingBackend? SessionEditing => null;
+        public IRemotePluginsBackend? Plugins => null;
+        public IRemoteModelsBackend? Models => null;
 
         public Task<HostInfo> InfoAsync(CancellationToken cancellationToken)
             => Task.FromResult(new HostInfo(HostProtocol.Version, "test", "test", "/home"));
@@ -148,6 +204,8 @@ public sealed class RemoteHostPersistenceTests
         public Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken)
             => Task.FromResult(_sessions.TryGetValue(sessionId, out var session) ? session : throw new KeyNotFoundException(sessionId));
 
+        public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task InterruptAsync(string sessionId, CancellationToken cancellationToken) => Task.CompletedTask;
@@ -155,43 +213,13 @@ public sealed class RemoteHostPersistenceTests
         public Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<string>>([]);
 
-        public Task RespondApprovalAsync(string requestId, bool allow, string? reason, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+            => Task.FromResult(new RemoteHostStream<RemoteEventInfo>(AsyncEnumerable.Empty<RemoteEventInfo>()));
 
-        public Task RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public async IAsyncEnumerable<RemoteQuestionRequest> QuestionsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        public async ValueTask DisposeAsync()
         {
-            await Task.CompletedTask;
-            yield break;
-        }
-
-        public Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken) => Task.FromResult(Array.Empty<byte>());
-        public Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken)
-            => Task.FromResult(new RemoteDirectoryListing(path, null, []));
-        public Task WriteFileAsync(string path, byte[] content, CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public Task<string> StartPtyAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken) => Task.FromResult("");
-
-        public Task WritePtyAsync(string ptyId, byte[] data, CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public Task StopPtyAsync(string ptyId, CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public async IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            await Task.CompletedTask;
-            yield break;
-        }
-
-        public async IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            await Task.CompletedTask;
-            yield break;
-        }
-
-        public async IAsyncEnumerable<RemotePtyOutput> PtyOutputAsync(string ptyId, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            await Task.CompletedTask;
-            yield break;
+            Pending.Dispose();
+            await Sessions.DisposeAsync();
         }
     }
 }

@@ -28,12 +28,45 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify the checkout contains the current PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
           cache: true
           cache-dependency-path: '**/*.csproj'
+
+      - name: Download the native iroh-ssh built for this run
+        uses: actions/download-artifact@v4
+        with:
+          name: iroh-ssh-${{ inputs.os }}
+          path: artifacts
+
+      - name: Extract the native component without a consumer cache
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/iroh-ssh | Out-Null
+          $tar = if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe' } else { 'tar' }
+          & $tar -xf artifacts/iroh-ssh-component.tar -C artifacts/iroh-ssh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $rid = switch ($env:RUNNER_OS) {
+            'Windows' { 'win-x64' }
+            'Linux' { 'linux-x64' }
+            'macOS' { 'osx-arm64' }
+            default { throw "Unsupported runner OS: $env:RUNNER_OS" }
+          }
+          "IROH_RID=$rid" >> $env:GITHUB_ENV
 
       - name: Prepare local NuGet feed (packages/, DryIoc.dll)
         shell: bash
@@ -66,27 +99,44 @@ jobs:
             clang --version
           fi
 
+      - name: Install real SSH end-to-end prerequisites (Linux)
+        if: inputs.suite != 'raw' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends openssh-server openssh-sftp-server
+          sudo mkdir -p /run/sshd
+
       - name: Build tests (Debug, plugin fixtures and fault probe)
-        if: inputs.suite != 'raw'
         run: >
           dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
           -p:DshNativeCompiler=${{ inputs.native-cc }}
 
-      - name: Check real Unix TUI raw input and exit restoration
-        if: inputs.suite == 'raw' && runner.os != 'Windows'
+      - name: Check bundled native iroh-ssh, licenses, and readiness patch
         shell: bash
         run: |
           set -euo pipefail
-          dotnet build DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -c Debug --nologo -m:2 -p:DshNativeCompiler=${{ inputs.native-cc }}
-          python3 scripts/check-tui-raw-mode.py --runs 8 --home-template artifacts/raw/empty-template
+          # Consumers only extract this run's artifact; rebuilding the component must fail this check.
+          test ! -d "artifacts/iroh-ssh/$IROH_RID/target"
+          test ! -f "artifacts/iroh-ssh/$IROH_RID/source.tar.gz"
+          FILE=iroh-ssh
+          if [ "$RUNNER_OS" = "Windows" ]; then FILE=iroh-ssh.exe; fi
+          OUTPUTS=(DeepSeek-Harness-Sharp/bin/Debug/net10.0 tests/Dsh.Tests/bin/Debug/net10.0)
+          for OUTPUT in "${OUTPUTS[@]}"; do
+            "$OUTPUT/tools/$FILE" version
+            test -s "$OUTPUT/tools/iroh-ssh.LICENSE.txt"
+            test -s "$OUTPUT/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
+            test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
+            cmp scripts/iroh-ssh-readiness.patch "$OUTPUT/tools/iroh-ssh.READINESS.patch"
+          done
 
-      - name: Install system sqlite3 for the Windows test runner
-        if: inputs.suite != 'raw' && runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/install-sqlite-runtime.ps1
 
+      - name: Check macOS non-admin headless SSH LAN receiver
+        if: inputs.suite == 'quick' && runner.os == 'macOS'
+        shell: bash
+        run: bash scripts/test-iroh-macos-lan.sh
       - name: Start a standalone PTY daemon from the current build
-        if: inputs.suite != 'raw'
         shell: bash
         run: |
           set -euo pipefail
@@ -119,6 +169,23 @@ jobs:
           echo "::error::The standalone PTY daemon from the current build did not publish an endpoint"
           cat "$HOME_DIR/daemon.log"
           exit 1
+      - name: Check real Unix TUI raw input and exit restoration
+        if: inputs.suite == 'raw' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests -noColor \
+            -class Dsh.Tests.TuiRawModeEndToEndTests \
+            -trait- "Category=LlmSmoke"
+
+      - name: Check real Unix TUI raw input and exit restoration (eight native rounds)
+        if: inputs.suite == 'raw' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests -noColor \
+            -class Dsh.Tests.TuiRawModeEndToEndTests \
+            -trait- "Category=LlmSmoke" -failSkips
 
       - name: Run quick tests (excluding GpuStress / OnlyGpu / LlmSmoke / RenderBench)
         if: inputs.suite == 'quick'
@@ -136,11 +203,18 @@ jobs:
             -trait- "Category=GpuStress"
             -trait- "Category=OnlyGpu"
             -trait- "Category=LlmSmoke"
-            -trait- "Category=RenderBench")
+            -trait- "Category=RenderBench"
+            -class- Dsh.Tests.TuiRawModeEndToEndTests)
+          # The native eight-round raw regression runs in its own Unix suite.
           # macOS PTY reads block their calling thread and can starve the parallel test thread pool.
           # Keep serial execution and the existing watchdog budget.
+          # Raw input and the exact headless SSH LAN Fact run in their dedicated stages.
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            ARGS+=(-class- Dsh.Tests.TuiRawModeEndToEndTests)
+          fi
           if [ "$RUNNER_OS" = "macOS" ]; then
-            ARGS+=(-parallel none)
+            ARGS+=(-parallel none
+              -method- Dsh.Tests.IrohReceiverEndToEndTests.TargetCli_Lan_Readiness_And_Restart_Work_Without_A_Relay)
             echo "Running: ${ARGS[*]}"
             "${ARGS[@]}" &
             TESTPID=$!

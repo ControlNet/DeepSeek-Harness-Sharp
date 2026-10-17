@@ -1,6 +1,8 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Input;
+using Avalonia.Input.Raw;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -26,7 +28,7 @@ public sealed class PluginMarketGuiTests
     {
         var environment = await GuiTestEnvironment.CreateAsync();
         using var environmentScope = environment;
-        var window = OpenMarket(environment);
+        var window = await OpenMarketAsync(environment);
         try
         {
             var preferences = window.ViewModel!.Preferences;
@@ -34,17 +36,36 @@ public sealed class PluginMarketGuiTests
 
             await RunCommandAsync(environment, $"/plugins ban_write {Todo}");
             await preferences.RefreshPluginsCommand.ExecuteAsync(null);
+            await GuiTestEnvironment.WaitForAsync(preferences.Plugins,
+                () => preferences.Plugins.Any(row => row.Package == Todo && !row.CanWrite));
             Dispatcher.UIThread.RunJobs();
             Assert.False(Row(preferences, Todo).CanWrite);
 
-            Toggle(window, Todo, "permissions.network").IsChecked = false;
+            var network = Toggle(window, Todo, "permissions.network");
+            Assert.True(network.IsChecked);
+            PressSpace(window, network);
+            Assert.False(Row(preferences, Todo).CanNetwork);
+            try
+            {
+                await GuiTestEnvironment.WaitForAsync(preferences,
+                    () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Network == false);
+            }
+            catch (TimeoutException error)
+            {
+                var status = preferences.Status.Replace(environment.App.Home.Root, "<test-home>", StringComparison.OrdinalIgnoreCase);
+                throw new TimeoutException($"Network permission did not persist; status: {status}", error);
+            }
             Dispatcher.UIThread.RunJobs();
             var permissions = HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions;
             Assert.Equal(new PluginPermissions { Write = false, Network = false }, permissions);
-            Assert.Contains("network", preferences.Status, StringComparison.Ordinal);
             Capture(window, "headless-market-permissions");
 
-            Toggle(window, Todo, "permissions.write").IsChecked = true;
+            var write = Toggle(window, Todo, "permissions.write");
+            Assert.False(write.IsChecked);
+            PressSpace(window, write);
+            Assert.True(Row(preferences, Todo).CanWrite);
+            await GuiTestEnvironment.WaitForAsync(preferences,
+                () => HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions?.Write != false);
             Dispatcher.UIThread.RunJobs();
             await RunCommandAsync(environment, $"/plugins enable_write {Todo}");
             Assert.Equal(new PluginPermissions { Network = false }, HarnessSettings.Load(environment.App.Home).Plugins[Todo].Permissions);
@@ -61,7 +82,7 @@ public sealed class PluginMarketGuiTests
     {
         var environment = await GuiTestEnvironment.CreateAsync();
         using var environmentScope = environment;
-        var window = OpenMarket(environment);
+        var window = await OpenMarketAsync(environment);
         try
         {
             var preferences = window.ViewModel!.Preferences;
@@ -75,6 +96,8 @@ public sealed class PluginMarketGuiTests
             var remove = RowButtons(window, Todo).Single(button => Equals(button.Content, "移除"));
             ClickAndWait(remove);
             await preferences.PluginActionCommand.ExecutionTask!;
+            await GuiTestEnvironment.WaitForAsync(preferences.Plugins,
+                () => preferences.Plugins.Any(row => row.Package == Todo && !row.Enabled));
 
             Assert.Null(environment.App.Composition!.Find(Todo));
             Assert.False(HarnessSettings.Load(environment.App.Home).Plugins[Todo].Enabled);
@@ -88,11 +111,13 @@ public sealed class PluginMarketGuiTests
         }
     });
 
-    private static MainWindow OpenMarket(GuiTestEnvironment environment)
+    private static async Task<MainWindow> OpenMarketAsync(GuiTestEnvironment environment)
     {
-        var window = new MainWindow(environment.App, environment.Agent);
+        var window = new MainWindow(environment.App, await environment.OpenChatAsync());
         window.Show();
         window.ViewModel!.ShowMarketCommand.Execute(null);
+        await GuiTestEnvironment.WaitForAsync(window.ViewModel.Preferences.Plugins,
+            () => window.ViewModel.Preferences.Plugins.Any(row => row.Package == Todo));
         Dispatcher.UIThread.RunJobs();
         return window;
     }
@@ -108,8 +133,23 @@ public sealed class PluginMarketGuiTests
     private static IReadOnlyList<Button> RowButtons(Window window, string package)
         => [.. RowControls(window, package).OfType<Button>()];
 
-    private static CheckBox Toggle(Window window, string package, string tip)
-        => RowControls(window, package).OfType<CheckBox>().Single(box => Equals(ToolTip.GetTip(box), tip));
+    private static CheckBox Toggle(MainWindow window, string package, string tip)
+    {
+        // A collection refresh completes before ItemsControl's layout/materialization pass.
+        window.CaptureRenderedFrame()?.Dispose();
+        var toggle = RowControls(window, package).OfType<CheckBox>().Single(box => Equals(ToolTip.GetTip(box), tip));
+        Assert.Same(Row(window.ViewModel!.Preferences, package), toggle.DataContext);
+        return toggle;
+    }
+
+    /** Use CheckBox.OnClick/Toggle, which preserves its TwoWay binding, rather than a local property assignment. */
+    private static void PressSpace(Window window, CheckBox toggle)
+    {
+        Assert.True(toggle.IsEffectivelyEnabled);
+        Assert.True(toggle.Focus());
+        window.KeyPress(Key.Space, RawInputModifiers.None, PhysicalKey.Space, null);
+        window.KeyRelease(Key.Space, RawInputModifiers.None, PhysicalKey.Space, null);
+    }
 
     /** Runs the button's bound command with its bound parameter, as a click does. */
     private static void ClickAndWait(Button button)

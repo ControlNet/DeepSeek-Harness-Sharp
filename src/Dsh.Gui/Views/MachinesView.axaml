@@ -1,0 +1,198 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Dsh.Gui.ViewModels"
+             xmlns:views="using:Dsh.Gui.Views"
+             x:Class="Dsh.Gui.Views.MachinesView"
+             x:DataType="vm:MachinesViewModel"
+             x:CompileBindings="True"
+             FontFamily="{DynamicResource Font.Ui}"
+             FontSize="{DynamicResource FontSize.Body}">
+  <UserControl.Styles>
+    <Style Selector="TextBlock.Label">
+      <Setter Property="Foreground" Value="{DynamicResource Brush.Text.Tertiary}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.Outcome.Ok">
+      <Setter Property="Foreground" Value="{DynamicResource Brush.Status.Success}" />
+    </Style>
+    <Style Selector="TextBlock.Outcome.Warning">
+      <Setter Property="Foreground" Value="{DynamicResource Brush.Status.Warning}" />
+    </Style>
+    <Style Selector="TextBlock.Outcome.Failed">
+      <Setter Property="Foreground" Value="{DynamicResource Brush.Status.Error}" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid ColumnDefinitions="360,6,*" Margin="12">
+    <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8">
+      <WrapPanel Orientation="Horizontal" ItemSpacing="6" LineSpacing="6" IsEnabled="{Binding !Busy}">
+        <Button Classes="Primary" Content="新增 SSH 机器" Command="{Binding NewSshCommand}" />
+        <Button Classes="Ghost" Content="新增 Iroh 机器" Command="{Binding NewIrohCommand}" />
+        <Button Classes="Ghost" Content="新增本机 home" Command="{Binding NewLocalCommand}" />
+        <Button Classes="Ghost" Content="删除" Command="{Binding DeleteCommand}" />
+      </WrapPanel>
+
+      <ListBox Grid.Row="1" ItemsSource="{Binding Machines}" SelectedItem="{Binding Selected, Mode=TwoWay}"
+               Background="{DynamicResource Brush.Bg.Inset}" IsEnabled="{Binding !Busy}">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="vm:MachineRowViewModel">
+            <StackPanel Spacing="2">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock FontWeight="SemiBold" Text="{Binding Name}" />
+                <TextBlock Classes="Tertiary" Text="{Binding KindText}" />
+                <TextBlock Classes="Secondary" Text="{Binding StateText}" />
+              </StackPanel>
+              <TextBlock Classes="Tertiary Mono" Text="{Binding Target}" TextTrimming="CharacterEllipsis" />
+              <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding HostVersion, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                <TextBlock Classes="Tertiary" Text="{Binding HostVersion, StringFormat='host {0}'}" />
+                <TextBlock Classes="Tertiary" Text="{Binding Platform}" />
+              </StackPanel>
+              <TextBlock Classes="Tertiary" Text="{Binding Detail}" TextWrapping="Wrap"
+                         IsVisible="{Binding Detail, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            </StackPanel>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+
+      <views:OperationStatusBar Grid.Row="2" />
+    </Grid>
+
+    <GridSplitter Grid.Column="1" ResizeDirection="Columns" Background="Transparent" />
+
+    <ScrollViewer Grid.Column="2" Margin="6,0,0,0">
+      <StackPanel Spacing="14" Margin="0,0,12,0">
+        <TextBlock TextWrapping="Wrap" Classes="Secondary"
+                   IsVisible="{Binding Editor, Converter={x:Static ObjectConverters.IsNull}}"
+                   Text="本机（默认 harness home）隐式存在，不能编辑或删除；可以对它测试连接与运行诊断。" />
+
+        <StackPanel Spacing="8" DataContext="{Binding Editor}" x:DataType="vm:MachineEditorViewModel"
+                    IsEnabled="{Binding !$parent[UserControl].((vm:MachinesViewModel)DataContext).Busy}"
+                    IsVisible="{Binding $parent[UserControl].((vm:MachinesViewModel)DataContext).Editor, Converter={x:Static ObjectConverters.IsNotNull}, FallbackValue=False}">
+          <TextBlock Classes="Title" Text="机器" />
+          <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto" RowSpacing="8">
+            <TextBlock Classes="Label" Text="名称" />
+            <TextBox Grid.Column="1" Text="{Binding Name, Mode=TwoWay}" PlaceholderText="唯一，不能叫 local，不能含 /" />
+            <TextBlock Grid.Row="1" Classes="Label" Text="类型" />
+            <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{x:Static vm:MachineEditorViewModel.Kinds}" SelectedItem="{Binding Kind, Mode=TwoWay}" />
+          </Grid>
+          <TextBlock Classes="Tertiary" TextWrapping="Wrap" Text="ssh：普通 SSH；iroh：SSH-over-iroh；local：本机 home。两种远端连接共用 SSH 认证。" />
+
+          <Grid ColumnDefinitions="140,*" IsVisible="{Binding IsSsh}">
+            <TextBlock Classes="Label" Text="SSH 主机" />
+            <TextBox Grid.Column="1" Text="{Binding Host, Mode=TwoWay}" PlaceholderText="主机名、IP 或 ~/.ssh/config 里的 Host；也用于首次引导 iroh" />
+          </Grid>
+          <Grid ColumnDefinitions="140,*" IsVisible="{Binding IsIroh}">
+            <TextBlock Classes="Label" Text="Endpoint ID" />
+            <TextBox Grid.Column="1" Text="{Binding EndpointId, Mode=TwoWay}" PlaceholderText="目标端 dsharp remote enable 输出的 64 位十六进制 ID" FontFamily="{DynamicResource Font.Mono}" />
+          </Grid>
+
+          <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="8" IsVisible="{Binding IsRemote}">
+            <TextBlock Classes="Label" Text="SSH 端口" />
+            <TextBox Grid.Column="1" Text="{Binding Port, Mode=TwoWay}" />
+            <TextBlock Grid.Row="1" Classes="Label" Text="用户" />
+            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding User, Mode=TwoWay}" PlaceholderText="留空 = ssh 默认用户" />
+            <TextBlock Grid.Row="2" Classes="Label" Text="认证方式" />
+            <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{x:Static vm:MachineEditorViewModel.AuthModes}" SelectedItem="{Binding Auth, Mode=TwoWay}" />
+            <TextBlock Grid.Row="3" Classes="Label" Text="密钥路径" IsVisible="{Binding IsKey}" />
+            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding KeyPath, Mode=TwoWay}" PlaceholderText="~/.ssh/id_ed25519" IsVisible="{Binding IsKey}" />
+            <TextBlock Grid.Row="3" Classes="Label" Text="密码" IsVisible="{Binding IsPassword}" />
+            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Password, Mode=TwoWay}" PasswordChar="●" IsVisible="{Binding IsPassword}" />
+            <TextBlock Grid.Row="4" Classes="Label" Text="ProxyCommand" IsVisible="{Binding IsSsh}" />
+            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding Proxy, Mode=TwoWay}" PlaceholderText="可选，如 ssh -W %h:%p jump" IsVisible="{Binding IsSsh}" />
+            <TextBlock Grid.Row="5" Classes="Label" Text="远端目录" />
+            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding RemotePath, Mode=TwoWay}" PlaceholderText="留空 = 远端家目录" />
+            <TextBlock Grid.Row="6" Classes="Label" Text="额外 ssh 选项" VerticalAlignment="Top" />
+            <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding SshOptions, Mode=TwoWay}" AcceptsReturn="True" MinHeight="60"
+                     PlaceholderText="每行一个 Key=Value；Iroh 不允许覆盖 ProxyCommand" FontFamily="{DynamicResource Font.Mono}" />
+            <TextBlock Grid.Row="7" Classes="Label" Text="Relay URLs" VerticalAlignment="Top" />
+            <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding RelayUrls, Mode=TwoWay}" AcceptsReturn="True" MinHeight="60"
+                     PlaceholderText="每行一个 http(s) URL；留空使用默认 relay；普通 SSH 中用于首次引导" FontFamily="{DynamicResource Font.Mono}" />
+          </Grid>
+
+          <Grid ColumnDefinitions="140,*">
+            <TextBlock Classes="Label" Text="harness home" />
+            <TextBox Grid.Column="1" Text="{Binding HarnessHome, Mode=TwoWay}" PlaceholderText="SSH：留空 = 远端默认（~/.dsh）；本机条目必填" />
+          </Grid>
+          <TextBlock Classes="Tertiary" TextWrapping="Wrap" IsVisible="{Binding IsPassword}"
+                     Text="密码以明文保存在本机 harness home 下仅本人可读的 settings.yaml（fleet 段）中，请自行评估风险。" />
+          <Button Classes="Primary" Content="保存" HorizontalAlignment="Left"
+                  Command="{Binding $parent[UserControl].((vm:MachinesViewModel)DataContext).SaveCommand}" />
+        </StackPanel>
+
+        <StackPanel Spacing="8">
+          <TextBlock Classes="Title" Text="操作" />
+          <TextBlock Classes="Tertiary" TextWrapping="Wrap" Text="作用于上面的表单（可以尚未保存）；未选表单时作用于选中的本机。测试连接只连接不部署，也不会拉起本机 host。" />
+          <WrapPanel Orientation="Horizontal" ItemSpacing="6" LineSpacing="6">
+            <Button Classes="Ghost" Content="测试连接" Command="{Binding TestConnectionCommand}" IsEnabled="{Binding !Busy}" />
+            <Button Classes="Ghost" Content="部署 / 升级" Command="{Binding DeployCommand}" IsEnabled="{Binding !Busy}" />
+            <CheckBox Content="强制重新部署" IsChecked="{Binding ForceDeploy, Mode=TwoWay}" VerticalAlignment="Center" IsEnabled="{Binding !Busy}" />
+            <Button Classes="Ghost" Content="通过现有 SSH 启用 Iroh" Command="{Binding EnableIrohCommand}" IsEnabled="{Binding !Busy}"
+                    IsVisible="{Binding Editor.IsSsh, FallbackValue=False}" />
+            <Button Classes="Ghost" Content="运行诊断" Command="{Binding RunDoctorCommand}" IsEnabled="{Binding !Busy}" />
+            <Button Classes="Ghost" Content="取消操作" Command="{Binding CancelOperationCommand}" IsEnabled="{Binding Busy}" />
+          </WrapPanel>
+          <Border Background="{DynamicResource Brush.Bg.Inset}" CornerRadius="{DynamicResource CornerRadius.Control}" Padding="8"
+                  IsVisible="{Binding OperationLog.Count}">
+            <ItemsControl ItemsSource="{Binding OperationLog}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="x:String">
+                  <SelectableTextBlock Text="{Binding}" FontFamily="{DynamicResource Font.Mono}" TextWrapping="Wrap" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </Border>
+        </StackPanel>
+
+        <Expander Header="目标端本地设置 Iroh">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="Secondary" TextWrapping="Wrap" Text="目标端需已有可用的 SSH 服务。若无法从此客户端通过普通 SSH 引导，请在目标端终端运行以下命令，再将输出的 Endpoint ID 填入“新增 Iroh 机器”。" />
+            <SelectableTextBlock Text="dsharp remote enable" FontFamily="{DynamicResource Font.Mono}" />
+            <TextBlock Classes="Tertiary" TextWrapping="Wrap" Text="SSH 不是默认 22 端口时追加 --ssh-port N；自定义 relay 时追加 --relay-url URL（可重复），客户端需填写相同的 Relay URLs。SSH 用户、密码或密钥认证方式不变。" />
+            <SelectableTextBlock Text="dsharp remote info&#10;dsharp remote disable" FontFamily="{DynamicResource Font.Mono}" />
+            <TextBlock Classes="Tertiary" TextWrapping="Wrap" Text="info 查看接收端状态与 ID；disable 关闭 Iroh 接收端，不停止 SSH 服务或 dsharp Host。普通 SSH 可达时可直接使用上方“通过现有 SSH 启用 Iroh”，仅验证隧道成功后才保存连接类型。" />
+          </StackPanel>
+        </Expander>
+
+        <StackPanel Spacing="6" IsVisible="{Binding DoctorChecks.Count}">
+          <TextBlock Classes="Title" Text="诊断结果" />
+          <ItemsControl ItemsSource="{Binding DoctorChecks}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:DoctorCheckRow">
+                <Grid ColumnDefinitions="110,48,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" Margin="0,3">
+                  <TextBlock FontWeight="SemiBold" Text="{Binding Name}" />
+                  <TextBlock Grid.Column="1" Classes="Outcome" Classes.Ok="{Binding IsOk}" Classes.Warning="{Binding IsWarning}"
+                             Classes.Failed="{Binding IsFailed}" Text="{Binding OutcomeText}" />
+                  <SelectableTextBlock Grid.Column="2" Text="{Binding Detail}" TextWrapping="Wrap" />
+                  <Grid Grid.Row="1" Grid.Column="2" ColumnDefinitions="*,Auto" ColumnSpacing="6" IsVisible="{Binding HasFix}" Margin="0,4,0,0">
+                    <Border Background="{DynamicResource Brush.Bg.Inset}" CornerRadius="{DynamicResource CornerRadius.Control}" Padding="6,4">
+                      <SelectableTextBlock Text="{Binding Fix}" FontFamily="{DynamicResource Font.Mono}" TextWrapping="Wrap" />
+                    </Border>
+                    <Button Grid.Column="1" Classes="Ghost" Content="复制" Click="OnCopyFixClick" VerticalAlignment="Top" />
+                  </Grid>
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+
+        <StackPanel Spacing="8" DataContext="{Binding Deploy}" x:DataType="vm:DeploySettingsEditorViewModel">
+          <TextBlock Classes="Title" Text="自动部署设置（所有 SSH 机器共用）" />
+          <CheckBox Content="远端缺少 dsharp 或版本较旧时自动下载并部署" IsChecked="{Binding AutoDeploy, Mode=TwoWay}" />
+          <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="8">
+            <TextBlock Classes="Label" Text="发布地址" />
+            <TextBox Grid.Column="1" Text="{Binding ReleaseBaseUrl, Mode=TwoWay}" />
+            <TextBlock Grid.Row="1" Classes="Label" Text="版本" />
+            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ReleaseVersion, Mode=TwoWay}" PlaceholderText="latest 或 vX.Y.Z" />
+            <TextBlock Grid.Row="2" Classes="Label" Text="下载位置" />
+            <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{x:Static vm:DeploySettingsEditorViewModel.ViaOptions}" SelectedItem="{Binding Via, Mode=TwoWay}" />
+            <TextBlock Grid.Row="3" Grid.ColumnSpan="2" Classes="Muted" Text="本机下载使用共享 network.outbound_proxy 设置" TextWrapping="Wrap" />
+            <TextBlock Grid.Row="4" Classes="Label" Text="远端下载代理" />
+            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding ServerProxy, Mode=TwoWay}" PlaceholderText="在远端解析；留空 = 远端自带代理或直连" />
+          </Grid>
+          <Button Classes="Ghost" Content="保存部署设置" HorizontalAlignment="Left"
+                  Command="{Binding $parent[UserControl].((vm:MachinesViewModel)DataContext).SaveDeploySettingsCommand}" />
+        </StackPanel>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

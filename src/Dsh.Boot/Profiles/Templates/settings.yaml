@@ -48,15 +48,35 @@ skills:
 # 全局规则
 rules: []
 
-# 网络:只放本机自身的出口;每台远程服务器自己的 SSH 连接代理与出口代理随它的机器条目配置。
+# 本机统一 HTTP 出口由 network.outbound_proxy 配置；fleet.deploy.serverProxy 只用于远端下载部署包，不设置远端机器的一般网络出口。
 # outbound_proxy 是本机出口代理:web_search/web_fetch、LLM 请求、models.dev 目录、MCP(HTTP)、A2A、账号、E2B 与本机下载远端 dsharp 都经它访问外网。
 # url 留空(或不写本段)跟随系统代理;支持 http/https/socks4/socks4a/socks5,可带 user:pass@(日志与报错会脱敏)。
 # bypass 是直连的主机(含子域),回环地址、不带点的主机名与私网 IP 总是直连;probe_url 是 GUI 设置页与 /proxy test 自检的探测地址。
 # network:
 #   outbound_proxy:
-#     url: socks5://user:pass@127.0.0.1:1080
-#     bypass: [api.deepseek.com]
+#     url: http://127.0.0.1:7890
+#     bypass: [example.com, "*.example.org"]
 #     probe_url: https://www.gstatic.com/generate_204
+
+# 机器清单与远端自动部署偏好: GUI 的“机器”页、`dsharp machine` 与 `dsharp host web` 共用, 也会改写本段。
+# 本机(local)是隐式的, 不用写; 省略的字段取默认值。密码认证的 password 以明文保存(本文件仅属主可读写)。
+# fleet:
+#   machines:
+#     - name: build
+#       kind: ssh
+#       host: build.internal
+#       user: dev
+#       auth: key            # agent | key | password
+#       keyPath: ~/.ssh/id_ed25519
+#       harnessHome: ~/.dsh-build
+#     - name: second
+#       kind: local
+#       harnessHome: /srv/second-home
+#   deploy:
+#     autoDeploy: false      # 默认 true: 连接前在远端安装/升级 dsharp
+#     releaseVersion: latest
+#     via: auto              # auto | client | server
+#     serverProxy: http://127.0.0.1:7890  # 仅供远端 curl/wget 下载部署包，在远端解析；留空跟随远端自身代理或直连。
 
 # 插件沙箱开关:默认 false;关闭时插件的装载与运行方式不变。
 # 单个插件的读/写/网络权限写在 plugins."<包名>".permissions(见下方插件段说明);权限的强制执行随插件沙箱提供。
@@ -193,6 +213,14 @@ plugins:
 #   attachments:
 #   telemetry:
 #   run:
+# fleet:  # 映射(见子项)
+#   machines:  # 列表
+#   deploy:  # 映射(见子项)
+#     autoDeploy:
+#     releaseBaseUrl:
+#     releaseVersion:  # latest 或发布标签(带不带 v 前缀均可)
+#     via:  # auto / client / server: 发布包在哪里下载
+#     serverProxy:  # 远端下载发布包时用的代理
 # network:  # 映射(见子项)
 #   outbound_proxy:  # 映射(见子项)
 #     url:  # http://、https://、socks4://、socks4a://、socks5:// 代理 URL, 可带 user:pass@; 留空跟随系统代理

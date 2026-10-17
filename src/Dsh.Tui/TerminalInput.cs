@@ -285,7 +285,8 @@ public sealed class TerminalInputParser
             'D' => ConsoleKey.LeftArrow,
             'H' => ConsoleKey.Home,
             'F' => ConsoleKey.End,
-            '~' => parameters switch
+            // xterm 修饰键形式 `ESC [ n ; m ~` 只看键码 n, 否则 Ctrl/Shift+Delete 之类会认不出键。
+            '~' => parameters.Split(';')[0] switch
             {
                 "1" or "7" => ConsoleKey.Home,
                 "2" => ConsoleKey.Insert,

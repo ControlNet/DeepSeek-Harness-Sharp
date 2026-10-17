@@ -92,13 +92,17 @@ internal sealed class ConPtySession : IDisposable
             if (info.Environment is not null)
             {
                 flags |= CreateUnicodeEnvironment;
-                environment = BuildEnvironmentBlock(info.Environment);
+                environment = WindowsProcessLaunch.EnvironmentBlock(info.Environment);
             }
 
-            var commandLine = BuildCommandLine(info);
+            var commandLine = WindowsProcessLaunch.CommandLine(info.FileName, info.Arguments);
+            // Children inherit "ignore Ctrl+C" (set for processes started in a new process group, as the GitHub runner starts its steps), and then Ctrl+C typed into the terminal stopped nothing.
+            // The attribute is per process, so normal Ctrl+C processing is restored here, as the Unix spawn restores default signal handling.
+            SetConsoleCtrlHandler(IntPtr.Zero, false);
             ProcessInformation processInfo;
-            // The std handles are process-wide: concurrent starts must not interleave park and restore.
-            // CI (Windows): two sessions started in parallel, one restored the real handles before the other created its child, which then inherited the test runner's redirected stdout/stdin, printed its prompt there and exited at once.
+            // The standard handles are process-wide. Keep parking, child creation and
+            // restoration atomic so another session cannot restore handles mid-launch
+            // or save the parked handles and leave the parent with null handles.
             lock (StdHandleGate)
             {
                 var (savedInput, savedOutput, savedError) = ParkStdHandles();
@@ -150,7 +154,7 @@ internal sealed class ConPtySession : IDisposable
         try
         {
             TerminateProcess(_processHandle, 0);
-            await Task.Run(() => WaitForSingleObject(_processHandle, 5000));
+            await Task.Run(() => WaitForSingleObject(_processHandle, 5000)).ConfigureAwait(false);
         }
         catch
         {
@@ -178,48 +182,6 @@ internal sealed class ConPtySession : IDisposable
         if (GetExitCodeProcess(_processHandle, out var code))
             exitCode = (int)code;
         return exitCode;
-    }
-
-    private static string BuildCommandLine(PtyStartInfo info)
-    {
-        var builder = new StringBuilder();
-        AppendQuoted(builder, info.FileName);
-        foreach (var argument in info.Arguments)
-        {
-            builder.Append(' ');
-            AppendQuoted(builder, argument);
-        }
-        return builder.ToString();
-    }
-
-    private static void AppendQuoted(StringBuilder builder, string value)
-    {
-        if (value.Length > 0 && !value.Any(char.IsWhiteSpace) && !value.Contains('"'))
-        {
-            builder.Append(value);
-            return;
-        }
-        builder.Append('"');
-        builder.Append(value.Replace("\\\"", "\\\\\"", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal));
-        builder.Append('"');
-    }
-
-    private static IntPtr BuildEnvironmentBlock(IReadOnlyDictionary<string, string?> environment)
-    {
-        var merged = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
-            merged[(string)entry.Key] = (string?)entry.Value;
-        foreach (var (key, value) in environment)
-            merged[key] = value;
-        var builder = new StringBuilder();
-        foreach (var (key, value) in merged)
-        {
-            if (value is null)
-                continue;
-            builder.Append(key).Append('=').Append(value).Append('\0');
-        }
-        builder.Append('\0');
-        return Marshal.StringToHGlobalUni(builder.ToString());
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -339,4 +301,7 @@ internal sealed class ConPtySession : IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCtrlHandler(IntPtr handlerRoutine, bool add);
 }

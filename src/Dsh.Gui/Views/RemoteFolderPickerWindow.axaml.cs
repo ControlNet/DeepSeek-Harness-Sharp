@@ -4,7 +4,7 @@ using Dsh.RemoteHost;
 
 namespace Dsh.Gui.Views;
 
-/** “选择远端目录”对话框: 传入已连接的远端宿主, 返回用户选中的目录(取消返回 null)。 */
+/** “选择远端目录”对话框: 传入已连接的远端文件域, 返回用户选中的目录(取消返回 null)。 */
 public sealed partial class RemoteFolderPickerWindow : Window
 {
     private readonly string? _initial;
@@ -12,10 +12,10 @@ public sealed partial class RemoteFolderPickerWindow : Window
     /** XAML 编译器要求存在无参构造, 实际启动路径走下面的带参构造。 */
     public RemoteFolderPickerWindow() => InitializeComponent();
 
-    public RemoteFolderPickerWindow(IRemoteHost host, string? initial) : this()
+    public RemoteFolderPickerWindow(IRemoteFiles files, string? initial) : this()
     {
         _initial = initial;
-        ViewModel = new RemoteFolderPickerViewModel(host);
+        ViewModel = new RemoteFolderPickerViewModel(files);
         DataContext = ViewModel;
         ViewModel.Accepted += () => Close(ViewModel.Result);
         ViewModel.Cancelled += () => Close(null);

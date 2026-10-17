@@ -277,13 +277,13 @@ public sealed class AcpServer
         }
         return end switch
         {
-            TurnEndReason.Completed => "end_turn",
-            TurnEndReason.MaxTokens => "max_tokens",
-            TurnEndReason.Aborted => "end_turn",
-            TurnEndReason.Interrupted => "cancelled",
-            TurnEndReason.Blocked => "end_turn",
-            TurnEndReason.Error => "end_turn",
-            _ => "cancelled",
+            TurnEndReason.Completed => AcpMethods.StopEndTurn,
+            TurnEndReason.MaxTokens => AcpMethods.StopMaxTokens,
+            TurnEndReason.Aborted => AcpMethods.StopEndTurn,
+            TurnEndReason.Interrupted => AcpMethods.StopCancelled,
+            TurnEndReason.Blocked => AcpMethods.StopEndTurn,
+            TurnEndReason.Error => AcpMethods.StopEndTurn,
+            _ => AcpMethods.StopCancelled,
         };
     }
 

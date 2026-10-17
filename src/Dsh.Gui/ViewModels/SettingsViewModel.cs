@@ -9,6 +9,7 @@ using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Plugins;
 using Dsh.Runtime;
+using Dsh.RemoteHost;
 
 namespace Dsh.Gui.ViewModels;
 
@@ -35,31 +36,36 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private readonly Context _ctx;
     private readonly HarnessHome _home;
-    private readonly Func<AgentLoopAgent> _agent;
-    private readonly CommandBridge _bridge;
+    private readonly Func<HarnessModelChoice> _model;
+    private readonly Func<string, Task<string>> _run;
     private readonly GuiSettings _gui;
     private readonly SettingsFacade _facade;
+    private readonly Func<Task<IRemoteModels>> _models;
+    private readonly Func<Task<IRemotePlugins>> _plugins;
 
     public SettingsViewModel(
         Context ctx,
         HarnessHome home,
-        Func<AgentLoopAgent> agent,
-        CommandBridge bridge,
+        Func<HarnessModelChoice> model,
+        Func<string, Task<string>> run,
         GuiSettings gui,
-        SettingsFacade facade)
+        SettingsFacade facade,
+        Func<Task<IRemoteModels>> models,
+        Func<Task<IRemotePlugins>> plugins)
     {
         _ctx = ctx;
         _home = home;
-        _agent = agent;
-        _bridge = bridge;
+        _model = model;
+        _run = run;
         _gui = gui;
         _facade = facade;
+        _models = models;
+        _plugins = plugins;
         Account = new AccountPanelViewModel(_ctx.Get<IAccountService>(IAccountService.ServiceName, false));
         foreach (var section in Sections)
             section.SelectCommand = new RelayCommand<SettingsNavItemViewModel>(SelectSection);
         Sections[0].IsSelected = true;
         Reload();
-        LoadRemoteWorkspaces();
     }
 
     /** 主题/字号等外观项变化后由视图重新应用 App 资源。 */
@@ -455,10 +461,9 @@ public sealed partial class SettingsViewModel : ObservableObject
         IsWorking = true;
         try
         {
-            var llm = _ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false);
-            var models = llm?.ListModels(provider) ?? [];
+            var models = await (await _models()).ListProviderModelsAsync(provider);
             Status = models.Count > 0
-                ? $"Provider {provider} 可用: {models.Count} 个模型（{string.Join(", ", models.Take(3).Select(model => model.Id))}…）"
+                ? $"Provider {provider} 可用: {models.Count} 个模型（{string.Join(", ", models.Take(3))}…）"
                 : $"Provider {provider} 未返回模型，检查 baseUrl/apiKey 与适配器是否加载";
         }
         catch (Exception error)
@@ -520,19 +525,20 @@ public sealed partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task RefreshPluginsAsync()
     {
-        LoadHarnessSettings();
-        await Task.CompletedTask;
+        LoadHarnessSettings(loadMetadata: false);
+        await LoadReasoningEffortsAsync();
+        await LoadPluginRowsAsync();
     }
 
     [RelayCommand]
     private async Task AddPluginAsync()
     {
-        if (PluginInput.Trim().Length == 0 || Manager() is not { } manager)
+        if (PluginInput.Trim().Length == 0)
             return;
         IsWorking = true;
         try
         {
-            Status = await manager.AddAsync(PluginInput.Trim());
+            Status = await RunAsync($"/plugins add {PluginInput.Trim()}");
             PluginInput = "";
             await RefreshPluginsAsync();
         }
@@ -558,12 +564,13 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     /** Market permission toggles: the same settings mutation as /plugins ban_write|enable_write. */
     private void SetPluginPermission(string package, PluginPermission permission, bool allowed)
+        => _ = SetPluginPermissionAsync(package, permission, allowed);
+
+    private async Task SetPluginPermissionAsync(string package, PluginPermission permission, bool allowed)
     {
-        if (Manager() is not { } manager)
-            return;
         try
         {
-            Status = manager.SetPermission(package, permission, allowed);
+            Status = await (await _plugins()).SetPluginPermissionAsync(package, permission.ToString(), allowed);
         }
         catch (Exception error)
         {
@@ -574,21 +581,15 @@ public sealed partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task PluginActionAsync(string action)
     {
-        if (Manager() is not { } manager)
-            return;
         var parts = action.Split(':', 2);
         if (parts.Length != 2)
             return;
         IsWorking = true;
         try
         {
-            Status = parts[0] switch
-            {
-                "enable" => await manager.EnableAsync(parts[1]),
-                "disable" => await manager.DisableAsync(parts[1]),
-                "remove" => await manager.RemoveAsync(parts[1]),
-                _ => "未知操作",
-            };
+            Status = parts[0] is "enable" or "disable" or "remove"
+                ? await RunAsync($"/plugins {parts[0]} {parts[1]}")
+                : "未知操作";
             await RefreshPluginsAsync();
         }
         catch (Exception error)
@@ -659,159 +660,6 @@ public sealed partial class SettingsViewModel : ObservableObject
         ProxyCheckResult = (await OutboundProxyProbe.RunAsync(DraftOutboundProxy(), CancellationToken.None)).Message;
     }
 
-    public ObservableCollection<SshWorkspaceRowViewModel> RemoteWorkspaces { get; } = [];
-
-    /** 右下角气泡回调(由 MainViewModel 注入): (标题, 正文, 是否错误)。 */
-    public Action<string, string, bool>? Notify { get; set; }
-
-    /** 远端目录选择器(由视图注入): 给定工作区与初始目录, 返回选中目录; 取消返回 null。 */
-    public Func<SshWorkspace, string?, Task<string?>>? RemoteFolderPicker { get; set; }
-
-    /** 远端缺少 dsharp 时自动下载并部署(仿 VS Code Server; 不注册 PATH 命令)。 */
-    [ObservableProperty]
-    private bool _remoteAutoDeploy = true;
-
-    [ObservableProperty]
-    private string _remoteReleaseBaseUrl = GuiSettings.DefaultReleaseBaseUrl;
-
-    [ObservableProperty]
-    private string _remoteReleaseVersion = GuiSettings.DefaultReleaseVersion;
-
-    /** 下载位置: auto(先远端后本地)/client(仅本地下发)/server(仅远端直下)。 */
-    [ObservableProperty]
-    private string _remoteDownloadVia = "auto";
-
-    /** 远端直下时的代理(为空则用远端自带代理/直连)。 */
-    [ObservableProperty]
-    private string _remoteServerProxy = "";
-
-    internal RemoteDsharpInstaller.Options BuildDeployOptions()
-        => new(
-            RemoteReleaseBaseUrl,
-            RemoteReleaseVersion,
-            OutboundProxy.FromContext(_ctx),
-            string.IsNullOrWhiteSpace(RemoteDownloadVia) ? "auto" : RemoteDownloadVia,
-            string.IsNullOrWhiteSpace(RemoteServerProxy) ? null : RemoteServerProxy);
-
-    /** 下载位置可选项(auto=先远端后本地)。 */
-    public IReadOnlyList<string> DownloadViaOptions { get; } = ["auto", "client", "server"];
-
-    /** 远程连接类操作进行中(测试连接/浏览目录), 期间禁用按钮避免重入。 */
-    [ObservableProperty]
-    private bool _remoteBusy;
-
-    partial void OnRemoteBusyChanged(bool value) => OnPropertyChanged(nameof(RemoteIdle));
-
-    public bool RemoteIdle => !RemoteBusy;
-
-    [ObservableProperty]
-    private SshWorkspaceRowViewModel? _selectedRemoteWorkspace;
-
-    [ObservableProperty]
-    private bool _hasSelectedRemoteWorkspace;
-
-    partial void OnSelectedRemoteWorkspaceChanged(SshWorkspaceRowViewModel? value)
-        => HasSelectedRemoteWorkspace = value is not null;
-
-    [RelayCommand]
-    private void AddRemoteWorkspace()
-    {
-        var row = new SshWorkspaceRowViewModel { Name = "新远程工作区", Owner = this };
-        RemoteWorkspaces.Add(row);
-        SelectedRemoteWorkspace = row;
-    }
-
-    [RelayCommand]
-    private void RemoveRemoteWorkspace(SshWorkspaceRowViewModel? row)
-    {
-        if (row is null)
-            return;
-        RemoteWorkspaces.Remove(row);
-        if (ReferenceEquals(SelectedRemoteWorkspace, row))
-            SelectedRemoteWorkspace = RemoteWorkspaces.FirstOrDefault();
-    }
-
-    [RelayCommand]
-    private void SaveRemoteWorkspaces()
-    {
-        _gui.Save(_gui.Load() with
-        {
-            RemoteWorkspaces = [.. RemoteWorkspaces.Select(row => row.ToModel())],
-            RemoteAutoDeploy = RemoteAutoDeploy,
-            RemoteReleaseBaseUrl = RemoteReleaseBaseUrl,
-            RemoteReleaseVersion = RemoteReleaseVersion,
-            RemoteDownloadVia = RemoteDownloadVia,
-            RemoteServerProxy = RemoteServerProxy,
-        });
-        Status = $"远程工作区已保存（{RemoteWorkspaces.Count} 个）";
-    }
-
-    private void LoadRemoteWorkspaces()
-    {
-        var snapshot = _gui.Load();
-        RemoteAutoDeploy = snapshot.RemoteAutoDeploy;
-        RemoteReleaseBaseUrl = snapshot.RemoteReleaseBaseUrl;
-        RemoteReleaseVersion = snapshot.RemoteReleaseVersion;
-        RemoteDownloadVia = snapshot.RemoteDownloadVia;
-        RemoteServerProxy = snapshot.RemoteServerProxy;
-        RemoteWorkspaces.Clear();
-        foreach (var workspace in snapshot.RemoteWorkspaces)
-        {
-            var row = SshWorkspaceRowViewModel.From(workspace);
-            row.Owner = this;
-            RemoteWorkspaces.Add(row);
-        }
-
-        SelectedRemoteWorkspace = RemoteWorkspaces.FirstOrDefault();
-    }
-
-    /** “测试连接”: 走真实 ssh 连接(必要时先自动部署 dsharp), 成功/失败都经右下角气泡反馈。 */
-    internal async Task TestRemoteWorkspaceAsync(SshWorkspaceRowViewModel row)
-    {
-        if (RemoteBusy)
-            return;
-        RemoteBusy = true;
-        try
-        {
-            Notify?.Invoke("测试连接", $"正在连接 {row.Summary}…", false);
-            var workspace = row.ToModel();
-            string? hostCommand = null;
-            if (RemoteAutoDeploy)
-                hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, BuildDeployOptions(), message => Notify?.Invoke("远端部署", message, false), CancellationToken.None)).CommandPath;
-            Notify?.Invoke("连接成功", await SshRemoteWorkspaceLauncher.TestAsync(workspace, hostCommand, CancellationToken.None), false);
-        }
-        catch (Exception error)
-        {
-            Notify?.Invoke("连接失败", error.Message, true);
-        }
-        finally
-        {
-            RemoteBusy = false;
-        }
-    }
-
-    /** “选择远端目录”: 先连上远端, 再由选择的对话框浏览远端目录树。 */
-    internal async Task BrowseRemotePathAsync(SshWorkspaceRowViewModel row)
-    {
-        if (RemoteBusy || RemoteFolderPicker is null)
-            return;
-        RemoteBusy = true;
-        try
-        {
-            var picked = await RemoteFolderPicker(row.ToModel(), row.RemotePath);
-            if (!string.IsNullOrEmpty(picked))
-                row.RemotePath = picked;
-        }
-        catch (Exception error)
-        {
-            Notify?.Invoke("选择远端目录失败", error.Message, true);
-        }
-        finally
-        {
-            RemoteBusy = false;
-        }
-    }
-
     private void SelectSection(SettingsNavItemViewModel? section)
     {
         if (section is null)
@@ -842,11 +690,11 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private async Task<string> RunAsync(string line)
     {
-        var text = await _bridge.RunAsync(_agent(), line);
+        var text = await _run(line);
         return text.Length > MaxStatusChars ? text[..MaxStatusChars] + "…" : text;
     }
 
-    private void LoadHarnessSettings()
+    private void LoadHarnessSettings(bool loadMetadata = true)
     {
         var settings = HarnessSettings.Load(_home);
         Models.Clear();
@@ -878,44 +726,50 @@ public sealed partial class SettingsViewModel : ObservableObject
         var compaction = settings.Plugins.GetValueOrDefault(CompactionPackage)?.Parameters;
         if (compaction?.GetValueOrDefault("thresholdRatio") is double ratio)
             CompactionThreshold = ratio * 100;
-        LoadReasoningEfforts();
-        LoadPluginRows();
+        if (loadMetadata)
+        {
+            LoadReasoningEfforts();
+            LoadPluginRows();
+        }
     }
 
-    private void LoadReasoningEfforts()
+    private void LoadReasoningEfforts() => _ = LoadReasoningEffortsAsync();
+
+    private async Task LoadReasoningEffortsAsync()
     {
-        ReasoningEfforts.Clear();
-        var agent = _agent();
-        var llm = _ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false);
-        var header = agent.Session.RequestHeader();
-        var provider = header?.Config.Provider ?? agent.Options.Provider ?? "";
-        var model = header?.Config.Model ?? agent.Options.Model ?? "";
+        var selection = _model().Selection;
+        if (selection is null)
+            return;
         try
         {
-            foreach (var effort in llm?.ResolveModelInfo(provider, model).Reasoning?.Efforts ?? [])
-                ReasoningEfforts.Add(effort.Id.Value);
-        }
-        catch (Exception)
-        {
+            var efforts = await (await _models()).ListReasoningEffortsAsync(selection.Provider, selection.Model);
+            if (selection != _model().Selection)
+                return;
             ReasoningEfforts.Clear();
+            foreach (var effort in efforts)
+                ReasoningEfforts.Add(effort);
+        }
+        catch (Exception error)
+        {
+            Status = $"推理选项读取失败: {error.Message}";
         }
     }
 
-    private void LoadPluginRows()
+    private void LoadPluginRows() => _ = LoadPluginRowsAsync();
+
+    private async Task LoadPluginRowsAsync()
     {
-        Plugins.Clear();
-        if (Manager() is not { } manager)
-            return;
-        var settings = HarnessSettings.Load(_home);
-        foreach (var package in manager.PackageNames.OrderBy(name => name, StringComparer.Ordinal))
+        try
         {
-            var setting = settings.Plugins.GetValueOrDefault(package);
-            Plugins.Add(new PluginRowViewModel(
-                package,
-                manager.Describe(package),
-                setting?.Enabled ?? true,
-                setting?.Permissions ?? PluginPermissions.AllAllowed,
-                SetPluginPermission));
+            var plugins = await (await _plugins()).ListPluginsAsync();
+            Plugins.Clear();
+            foreach (var plugin in plugins.OrderBy(item => item.Package, StringComparer.Ordinal))
+                Plugins.Add(new PluginRowViewModel(plugin.Package, plugin.Description, plugin.Enabled,
+                    new PluginPermissions { Read = plugin.ReadAllowed, Write = plugin.WriteAllowed, Network = plugin.NetworkAllowed }, SetPluginPermission));
+        }
+        catch (Exception error)
+        {
+            Status = $"插件列表读取失败: {error.Message}";
         }
     }
 
@@ -929,7 +783,6 @@ public sealed partial class SettingsViewModel : ObservableObject
         Status = "";
     }
 
-    private IPluginManager? Manager() => _ctx.Get<IPluginManager>("pluginManager", false);
 }
 
 public sealed partial class SettingsNavItemViewModel(SettingsSection section, string label) : ObservableObject
@@ -1014,88 +867,4 @@ public sealed partial class PluginRowViewModel(
     partial void OnCanWriteChanged(bool value) => setPermission(Package, PluginPermission.Write, value);
 
     partial void OnCanNetworkChanged(bool value) => setPermission(Package, PluginPermission.Network, value);
-}
-
-/** “远程”分页的一行: 可编辑字段, 保存时转回 SshWorkspace。 */
-public sealed partial class SshWorkspaceRowViewModel : ObservableObject
-{
-    public static IReadOnlyList<string> AuthModes { get; } = [SshAuth.Password, SshAuth.Key, SshAuth.Agent];
-
-    [ObservableProperty]
-    private string _name = "";
-
-    [ObservableProperty]
-    private string _host = "";
-
-    [ObservableProperty]
-    private string _port = "22";
-
-    [ObservableProperty]
-    private string _user = "";
-
-    [ObservableProperty]
-    private string _auth = SshAuth.Agent;
-
-    [ObservableProperty]
-    private string? _password;
-
-    [ObservableProperty]
-    private string? _keyPath;
-
-    [ObservableProperty]
-    private string? _proxy;
-
-    [ObservableProperty]
-    private string? _remotePath;
-
-    public bool IsPassword => Auth == SshAuth.Password;
-
-    public bool IsKey => Auth == SshAuth.Key;
-
-    public string Summary => $"{User}@{Host}:{Port}";
-
-    /** 所属设置页: 供“测试连接/选择远端目录”回连父级(连接、通知与选择器都在父级)。 */
-    public SettingsViewModel? Owner { get; set; }
-
-    [RelayCommand]
-    private Task TestConnectionAsync() => Owner?.TestRemoteWorkspaceAsync(this) ?? Task.CompletedTask;
-
-    [RelayCommand]
-    private Task BrowseRemotePathAsync() => Owner?.BrowseRemotePathAsync(this) ?? Task.CompletedTask;
-
-    partial void OnAuthChanged(string value)
-    {
-        OnPropertyChanged(nameof(IsPassword));
-        OnPropertyChanged(nameof(IsKey));
-    }
-
-    partial void OnUserChanged(string value) => OnPropertyChanged(nameof(Summary));
-
-    partial void OnHostChanged(string value) => OnPropertyChanged(nameof(Summary));
-
-    partial void OnPortChanged(string value) => OnPropertyChanged(nameof(Summary));
-
-    public SshWorkspace ToModel() => new(
-        Name,
-        Host,
-        int.TryParse(Port, out var port) ? port : 22,
-        User,
-        Auth,
-        KeyPath,
-        Proxy,
-        RemotePath,
-        Password);
-
-    public static SshWorkspaceRowViewModel From(SshWorkspace workspace) => new()
-    {
-        Name = workspace.Name,
-        Host = workspace.Host,
-        Port = workspace.Port.ToString(),
-        User = workspace.User,
-        Auth = workspace.Auth,
-        Password = workspace.Password,
-        KeyPath = workspace.KeyPath,
-        Proxy = workspace.Proxy,
-        RemotePath = workspace.RemotePath,
-    };
 }

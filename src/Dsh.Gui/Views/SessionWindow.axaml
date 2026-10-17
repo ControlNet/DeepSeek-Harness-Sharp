@@ -1,0 +1,15 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Dsh.Gui.ViewModels"
+        xmlns:views="using:Dsh.Gui.Views"
+        x:Class="Dsh.Gui.Views.SessionWindow"
+        x:DataType="vm:FleetSessionViewModel"
+        x:CompileBindings="True"
+        Title="{Binding Card.Title}"
+        Width="1000" Height="720"
+        WindowStartupLocation="CenterOwner"
+        FontFamily="{DynamicResource Font.Ui}"
+        FontSize="{DynamicResource FontSize.Body}"
+        Background="{DynamicResource Brush.Bg.Window}">
+  <views:FleetSessionView />
+</Window>

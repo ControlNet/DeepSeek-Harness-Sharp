@@ -8,8 +8,14 @@ namespace Dsh.RemoteHost;
  */
 public static class HostProtocol
 {
-    /** 协议版本: 不匹配时握手显式拒绝, 避免跨版本静默半功能/解析错位。 */
-    public const int Version = 1;
+    /**
+     * 线协议版本: 只在帧格式/握手/既有方法的语义发生不兼容变化时递增, 不匹配时握手显式拒绝。
+     * 新增的方法、推送与可选字段不改版本, 由握手响应与 host.info 里的 capabilities 声明(见 HostProtocolCatalog)。
+     */
+    public const int Version = 2;
+
+    public const string PendingBroadcastCapability = "pending.broadcast";
+    public const string SessionRegistryCapability = "sessions.registry";
 
     public const string MethodHello = "host.hello";
     public const string MethodPing = "host.ping";
@@ -22,38 +28,41 @@ public static class HostProtocol
     public const string MethodSessionUnsubscribe = "host.session.unsubscribe";
     public const string MethodSessionMessage = "host.session.message";
     public const string MethodSessionInterrupt = "host.session.interrupt";
+    public const string MethodSessionSnapshot = "host.session.snapshot";
 
     public const string MethodToolsList = "host.tools.list";
     public const string MethodApprovalRespond = "host.approval.respond";
     public const string MethodQuestionRespond = "host.question.respond";
 
-    public const string MethodFileRead = "host.file.read";
-    public const string MethodFileWrite = "host.file.write";
-    public const string MethodFileList = "host.file.list";
 
-    public const string MethodPtyStart = "host.pty.start";
-    public const string MethodPtyWrite = "host.pty.write";
-    public const string MethodPtyStop = "host.pty.stop";
-    public const string MethodPtyAttach = "host.pty.attach";
+    public const string MethodPendingList = "host.pending.list";
+    public const string MethodSessionsList = "host.sessions.list";
+
 
     /** 服务端 -> 客户端 推送。 */
     public const string NotificationEvent = "host.event";
-    public const string NotificationApproval = "host.approval";
-    public const string NotificationQuestion = "host.question";
-    public const string NotificationPtyOutput = "host.pty.output";
+    public const string NotificationPendingChanged = "host.pending.changed";
+    public const string NotificationSessionsChanged = "host.sessions.changed";
 }
 
-/** 握手请求: 客户端声明的协议版本与 token。 */
-public sealed record HostHelloRequest(string? Token, int ProtocolVersion);
 
-/** 握手响应: 服务端版本; Mismatch 非空即拒绝(附原因)。 */
-public sealed record HostHelloResponse(bool Ok, int ProtocolVersion, string HostVersion, string? Mismatch);
+/** 握手请求: 客户端声明的协议版本与 token; ClientName 是客户端自报的显示名(如 "gui@laptop"), 用于标注由谁回答了审批。 */
+public sealed record HostHelloRequest(string? Token, int ProtocolVersion, string? ClientName = null);
+
+/** 握手响应: 服务端版本; Mismatch 非空即拒绝(附原因); ConnectionId 是本连接在 host 内的唯一标识。 */
+public sealed record HostHelloResponse(
+    bool Ok,
+    int ProtocolVersion,
+    string HostVersion,
+    string? Mismatch,
+    IReadOnlyList<string>? Capabilities = null,
+    string? ConnectionId = null);
 
 /** 服务端信息。 */
-public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Platform, string HomeRoot);
+public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Platform, string HomeRoot, IReadOnlyList<string>? Capabilities = null);
 
 /** 源生成的 JSON 上下文(AOT/裁剪安全)。 */
-[JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, UseStringEnumConverter = true)]
 [JsonSerializable(typeof(HostHelloRequest))]
 [JsonSerializable(typeof(HostHelloResponse))]
 [JsonSerializable(typeof(HostInfo))]
@@ -61,6 +70,8 @@ public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Pl
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(RemoteSessionInfo))]
 [JsonSerializable(typeof(RemoteEventInfo))]
+[JsonSerializable(typeof(RemoteSessionSnapshot))]
+[JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(RemoteApprovalRequest))]
 [JsonSerializable(typeof(RemoteApprovalResponse))]
 [JsonSerializable(typeof(RemoteQuestionRequest))]
@@ -76,18 +87,19 @@ public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Pl
 [JsonSerializable(typeof(RemoteModelSelection))]
 [JsonSerializable(typeof(RemoteProviderSpec))]
 [JsonSerializable(typeof(RemoteSubscribeRequest))]
+[JsonSerializable(typeof(RemoteSubscriptionRef))]
+[JsonSerializable(typeof(RemoteEventFrame))]
 [JsonSerializable(typeof(RemoteMessageRequest))]
 [JsonSerializable(typeof(RemoteImageBlock))]
 [JsonSerializable(typeof(IReadOnlyList<RemoteImageBlock>))]
-[JsonSerializable(typeof(RemoteFilePath))]
-[JsonSerializable(typeof(RemoteFileContent))]
-[JsonSerializable(typeof(RemoteDirectoryEntry))]
-[JsonSerializable(typeof(RemoteDirectoryListing))]
-[JsonSerializable(typeof(RemotePtyStartRequest))]
-[JsonSerializable(typeof(RemotePtyRef))]
-[JsonSerializable(typeof(RemotePtyInput))]
-[JsonSerializable(typeof(RemotePtyOutput))]
 [JsonSerializable(typeof(IReadOnlyList<RemoteSessionInfo>))]
-[JsonSerializable(typeof(IReadOnlyList<RemoteDirectoryEntry>))]
 [JsonSerializable(typeof(IReadOnlyList<string>))]
+[JsonSerializable(typeof(RemotePendingList))]
+[JsonSerializable(typeof(RemotePendingResolved))]
+[JsonSerializable(typeof(RemotePendingChange))]
+[JsonSerializable(typeof(RemoteHostSession))]
+[JsonSerializable(typeof(RemoteSessionChange))]
+[JsonSerializable(typeof(IReadOnlyList<RemoteHostSession>))]
+[JsonSerializable(typeof(IReadOnlyList<RemoteApprovalRequest>))]
+[JsonSerializable(typeof(IReadOnlyList<RemoteQuestionRequest>))]
 public partial class HostProtocolJsonContext : JsonSerializerContext;

@@ -1,0 +1,97 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Dsh.Gui.ViewModels"
+        xmlns:git="using:Dsh.GitInspect"
+        x:Class="Dsh.Gui.Views.NewSessionWindow"
+        x:DataType="vm:NewSessionViewModel"
+        x:CompileBindings="True"
+        Title="新建会话"
+        Width="620" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        FontFamily="{DynamicResource Font.Ui}"
+        FontSize="{DynamicResource FontSize.Body}"
+        Background="{DynamicResource Brush.Bg.Card}">
+
+  <StackPanel Margin="20" Spacing="10">
+    <TextBlock Text="新建会话" Classes="Title" />
+
+    <Grid ColumnDefinitions="110,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="10">
+      <TextBlock Grid.Row="0" Text="机器" Classes="Secondary" VerticalAlignment="Center" />
+      <ComboBox Grid.Row="0" Grid.Column="1" Name="MachineBox" HorizontalAlignment="Stretch"
+                ItemsSource="{Binding Machines}" SelectedItem="{Binding Machine}" />
+
+      <TextBlock Grid.Row="1" Text="Agent" Classes="Secondary" VerticalAlignment="Center" />
+      <ComboBox Grid.Row="1" Grid.Column="1" Name="AgentBox" HorizontalAlignment="Stretch"
+                ItemsSource="{Binding Agents}" SelectedItem="{Binding Agent}">
+        <ComboBox.Styles>
+          <Style Selector="ComboBoxItem" x:DataType="vm:AgentChoiceViewModel">
+            <Setter Property="IsEnabled" Value="{Binding IsAvailable}" />
+          </Style>
+        </ComboBox.Styles>
+        <ComboBox.ItemTemplate>
+          <DataTemplate x:DataType="vm:AgentChoiceViewModel">
+            <StackPanel Orientation="Horizontal" Spacing="8" Opacity="{Binding ItemOpacity}">
+              <TextBlock Text="{Binding Label}" />
+              <TextBlock Text="{Binding Detail}" Classes="Tertiary" VerticalAlignment="Center" />
+            </StackPanel>
+          </DataTemplate>
+        </ComboBox.ItemTemplate>
+      </ComboBox>
+
+      <TextBlock Grid.Row="2" Text="项目目录" Classes="Secondary" VerticalAlignment="Center" />
+      <Grid Grid.Row="2" Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="6">
+        <TextBox Name="ProjectBox" Text="{Binding ProjectPath}" PlaceholderText="机器上的绝对路径或 ~/…" />
+        <Button Grid.Column="1" Classes="Chip" Content="浏览…" Command="{Binding BrowseCommand}" />
+      </Grid>
+
+      <TextBlock Grid.Row="3" Text="运行方式" Classes="Secondary" VerticalAlignment="Center" IsVisible="{Binding CanChooseMode}" />
+      <CheckBox Grid.Row="3" Grid.Column="1" Content="使用 ACP 模式（否则在终端中运行 Agent 的界面）"
+                IsChecked="{Binding UseAcp}" IsVisible="{Binding CanChooseMode}" />
+
+      <TextBlock Grid.Row="4" Text="Git worktree" Classes="Secondary" VerticalAlignment="Center" />
+      <StackPanel Grid.Row="4" Grid.Column="1" Spacing="6">
+        <StackPanel Orientation="Horizontal" Spacing="4">
+          <Button Classes="Chip" Content="不使用" Command="{Binding SetWorktreeCommand}" CommandParameter="None" />
+          <Button Classes="Chip" Classes.selected="{Binding IsExistingWorktree}" Content="已有 worktree"
+                  Command="{Binding SetWorktreeCommand}" CommandParameter="Existing" />
+          <Button Classes="Chip" Classes.selected="{Binding IsNewWorktree}" Content="新建 worktree"
+                  Command="{Binding SetWorktreeCommand}" CommandParameter="New" />
+        </StackPanel>
+        <ComboBox HorizontalAlignment="Stretch" IsVisible="{Binding IsExistingWorktree}"
+                  ItemsSource="{Binding Worktrees}" SelectedItem="{Binding ExistingWorktree}">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="git:GitWorktree">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="{Binding Path}" />
+                <TextBlock Text="{Binding Branch}" Classes="Tertiary" VerticalAlignment="Center" />
+              </StackPanel>
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+        <Grid ColumnDefinitions="*,*" ColumnSpacing="6" IsVisible="{Binding IsNewWorktree}">
+          <TextBox Text="{Binding NewWorktreePath}" PlaceholderText="worktree 路径（相对项目目录或绝对路径）" />
+          <TextBox Grid.Column="1" Text="{Binding NewBranch}" PlaceholderText="新分支名（可选）" />
+        </Grid>
+      </StackPanel>
+
+      <TextBlock Grid.Row="5" Text="命令" Classes="Secondary" VerticalAlignment="Center" IsVisible="{Binding NeedsCommand}" />
+      <TextBox Grid.Row="5" Grid.Column="1" Name="CommandBox" Text="{Binding CommandLine}" IsVisible="{Binding NeedsCommand}"
+               FontFamily="{DynamicResource Font.Mono}" PlaceholderText="可执行文件及参数，参数 {prompt} 会替换为初始提示" />
+
+      <TextBlock Grid.Row="6" Text="初始提示" Classes="Secondary" VerticalAlignment="Top" Margin="0,6,0,0" IsVisible="{Binding TakesPrompt}" />
+      <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding InitialPrompt}" AcceptsReturn="True" TextWrapping="Wrap"
+               MinHeight="60" MaxHeight="160" IsVisible="{Binding TakesPrompt}" PlaceholderText="可选：启动后立即发送" />
+
+      <TextBlock Grid.Row="7" Text="标题" Classes="Secondary" VerticalAlignment="Center" />
+      <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding Title}" PlaceholderText="可选" />
+    </Grid>
+
+    <TextBlock Text="{Binding Status}" Classes="Tertiary" TextWrapping="Wrap" />
+
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Classes="Chip" Content="取消" Command="{Binding CancelCommand}" />
+      <Button Name="StartButton" Classes="Primary" Content="启动" Command="{Binding StartCommand}" />
+    </StackPanel>
+  </StackPanel>
+</Window>

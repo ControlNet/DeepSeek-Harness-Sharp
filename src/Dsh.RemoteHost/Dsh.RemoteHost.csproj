@@ -12,6 +12,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dsh.Transport\Dsh.Transport.csproj" />
+    <ProjectReference Include="..\Dsh.Pty\Dsh.Pty.csproj" />
+    <ProjectReference Include="..\Dsh.GitInspect\Dsh.GitInspect.csproj" />
+    <ProjectReference Include="..\Dsh.Notifications\Dsh.Notifications.csproj" />
+    <ProjectReference Include="..\Dsh.AgentAdapters\Dsh.AgentAdapters.csproj" />
   </ItemGroup>
 
 </Project>

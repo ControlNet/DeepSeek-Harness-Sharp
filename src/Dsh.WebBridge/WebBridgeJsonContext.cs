@@ -1,0 +1,21 @@
+using System.Text.Json.Serialization;
+using Dsh.Fleet;
+using Dsh.Notifications;
+using Dsh.GitInspect;
+
+namespace Dsh.WebBridge;
+
+/** Source-generated JSON of the bridge's own HTTP API; property names stay PascalCase like the host protocol, enums are strings. */
+[JsonSourceGenerationOptions(UseStringEnumConverter = true)]
+[JsonSerializable(typeof(IReadOnlyList<FleetMachineStatus>))]
+[JsonSerializable(typeof(IReadOnlyDictionary<string, string>))]
+[JsonSerializable(typeof(MachineConnectionState))]
+[JsonSerializable(typeof(NotificationKind))]
+[JsonSerializable(typeof(NotificationView))]
+[JsonSerializable(typeof(GitDiffSource))]
+[JsonSerializable(typeof(BrowserRpcProtocol))]
+[JsonSerializable(typeof(WebMachineView))]
+[JsonSerializable(typeof(WebTerminalOutput))]
+[JsonSerializable(typeof(WebStreamError))]
+[JsonSerializable(typeof(WebSessionEvent))]
+internal sealed partial class WebBridgeJsonContext : JsonSerializerContext;

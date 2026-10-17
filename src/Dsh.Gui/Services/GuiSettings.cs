@@ -25,9 +25,8 @@ public sealed class GuiSettings(HarnessHome home)
     public const double MinFontSize = 11;
     public const double MaxFontSize = 18;
 
-    /** 远端 dsharp 自动部署的默认下载源(与 scripts/install.sh 一致)。 */
-    public const string DefaultReleaseBaseUrl = "https://github.com/forestbat/DeepSeek-Harness-Sharp/releases";
-    public const string DefaultReleaseVersion = "latest";
+    /** How remote hosts show this GUI when it answers an approval or question. */
+    public static string RemoteClientName { get; } = $"gui@{Environment.MachineName}";
 
     public event Action? Changed;
 
@@ -47,26 +46,6 @@ public sealed class GuiSettings(HarnessHome home)
         => HarnessSettings.Load(home).Plugins.GetValueOrDefault(Package)?.Parameters ?? [];
 }
 
-/** SSH 认证方式。 */
-public static class SshAuth
-{
-    public const string Password = "password";
-    public const string Key = "key";
-    public const string Agent = "agent";
-}
-
-/** 用户保存的 SSH 远程工作区: 名称 + 连接参数 + 认证方式 + 可选代理/远端目录。 */
-public sealed record SshWorkspace(
-    string Name,
-    string Host,
-    int Port,
-    string User,
-    string Auth,
-    string? KeyPath = null,
-    string? Proxy = null,
-    string? RemotePath = null,
-    string? Password = null);
-
 /** 参数快照: 默认值即「零配置可用」的形态。 */
 public sealed record GuiSettingsSnapshot
 {
@@ -80,23 +59,6 @@ public sealed record GuiSettingsSnapshot
 
     /** 新会话的默认工作区(绝对路径); null 表示跟随启动目录。已有会话的 cwd 不变。 */
     public string? DefaultWorkspace { get; init; }
-
-    /** 用户保存的 SSH 远程工作区(工作区菜单“远程工作区”与设置页“远程”共用)。 */
-    public IReadOnlyList<SshWorkspace> RemoteWorkspaces { get; init; } = [];
-
-    /** 远端缺少 dsharp 时是否自动下载并部署(仿 VS Code Server; 不注册 PATH 命令)。 */
-    public bool RemoteAutoDeploy { get; init; } = true;
-
-    /** 自动部署的 Release 基址与版本(latest 或 vX.Y.Z)。 */
-    public string RemoteReleaseBaseUrl { get; init; } = GuiSettings.DefaultReleaseBaseUrl;
-
-    public string RemoteReleaseVersion { get; init; } = GuiSettings.DefaultReleaseVersion;
-
-    /** 下载位置: auto(先远端后本地)/client(仅本地下发)/server(仅远端直下)。 */
-    public string RemoteDownloadVia { get; init; } = "auto";
-
-    /** 远端直下时的代理(为空则用远端自带代理/直连)。 */
-    public string RemoteServerProxy { get; init; } = "";
 
     public string SortSessions { get; init; } = GuiSettings.SortUpdated;
 
@@ -139,12 +101,6 @@ public sealed record GuiSettingsSnapshot
             FontSize = Clamp(Number(parameters, "fontSize") ?? 13.5, GuiSettings.MinFontSize, GuiSettings.MaxFontSize),
             WorkspaceView = Text(parameters, "workspaceView") ?? GuiSettings.ViewSolution,
             DefaultWorkspace = Text(parameters, "defaultWorkspace"),
-            RemoteWorkspaces = Workspaces(parameters, "remoteWorkspaces"),
-            RemoteAutoDeploy = Flag(parameters, "remoteAutoDeploy") ?? true,
-            RemoteReleaseBaseUrl = Text(parameters, "remoteReleaseBaseUrl") ?? GuiSettings.DefaultReleaseBaseUrl,
-            RemoteReleaseVersion = Text(parameters, "remoteReleaseVersion") ?? GuiSettings.DefaultReleaseVersion,
-            RemoteDownloadVia = Text(parameters, "remoteDownloadVia") ?? "auto",
-            RemoteServerProxy = Text(parameters, "remoteServerProxy") ?? "",
             SortSessions = Text(parameters, "sortSessions") ?? GuiSettings.SortUpdated,
             ShowOnlyWithSessions = Flag(parameters, "showOnlyWithSessions") ?? false,
             TraceFilter = Text(parameters, "traceFilter") ?? GuiSettings.TraceAll,
@@ -170,25 +126,6 @@ public sealed record GuiSettingsSnapshot
         ["fontSize"] = FontSize,
         ["workspaceView"] = WorkspaceView,
         ["defaultWorkspace"] = DefaultWorkspace,
-        ["remoteWorkspaces"] = RemoteWorkspaces
-            .Select(workspace => (object?)new Dictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["name"] = workspace.Name,
-                ["host"] = workspace.Host,
-                ["port"] = workspace.Port,
-                ["user"] = workspace.User,
-                ["auth"] = workspace.Auth,
-                ["keyPath"] = workspace.KeyPath,
-                ["proxy"] = workspace.Proxy,
-                ["remotePath"] = workspace.RemotePath,
-                ["password"] = workspace.Password,
-            })
-            .ToList(),
-        ["remoteAutoDeploy"] = RemoteAutoDeploy,
-        ["remoteReleaseBaseUrl"] = RemoteReleaseBaseUrl,
-        ["remoteReleaseVersion"] = RemoteReleaseVersion,
-            ["remoteDownloadVia"] = RemoteDownloadVia,
-            ["remoteServerProxy"] = RemoteServerProxy,
         ["sortSessions"] = SortSessions,
         ["showOnlyWithSessions"] = ShowOnlyWithSessions,
         ["traceFilter"] = TraceFilter,
@@ -232,32 +169,4 @@ public sealed record GuiSettingsSnapshot
 
     private static double Clamp(double value, double minimum, double maximum)
         => Math.Clamp(value, minimum, maximum);
-
-    private static IReadOnlyList<SshWorkspace> Workspaces(IReadOnlyDictionary<string, object?> source, string key)
-    {
-        if (source.GetValueOrDefault(key) is not IEnumerable<object?> items)
-            return [];
-        var result = new List<SshWorkspace>();
-        foreach (var item in items)
-        {
-            if (item is not IReadOnlyDictionary<string, object?> map)
-                continue;
-            var name = Text(map, "name");
-            var host = Text(map, "host");
-            if (name is null || host is null)
-                continue;
-            result.Add(new SshWorkspace(
-                name,
-                host,
-                (int)(Number(map, "port") ?? 22),
-                Text(map, "user") ?? "",
-                Text(map, "auth") ?? SshAuth.Agent,
-                Text(map, "keyPath"),
-                Text(map, "proxy"),
-                Text(map, "remotePath"),
-                Text(map, "password")));
-        }
-
-        return result;
-    }
 }

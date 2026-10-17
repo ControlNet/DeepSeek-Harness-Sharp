@@ -1,4 +1,3 @@
-using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Plugins;
 using Dsh.Runtime;
@@ -16,10 +15,8 @@ using Dsh.Runtime;
 
 namespace Dsh.Web;
 
-/** Web 能力:运行时(web)、抓取提供方(http)、独立搜索引擎与 web_search/web_fetch 工具;
- *  入口 "web" 启动 WebProfileServer。配置(如搜索 apiKey)写在 settings.yaml 的 plugins 段。 */
-[DshEntrypoint("web")]
-public sealed class Plugin(string packageName) : IDshPlugin, IDshEntrypoint
+/** Web 工具能力:运行时、抓取和搜索提供方; 浏览器前端入口由 Dsh.WebBridge 提供。 */
+public sealed class Plugin(string packageName) : IDshPlugin
 {
     internal const string Web = "@deepseek-ai/dsh-web";
     internal const string WebFetchHttp = "@deepseek-ai/dsh-web-fetch-http";
@@ -59,11 +56,4 @@ public sealed class Plugin(string packageName) : IDshPlugin, IDshEntrypoint
         _ => throw new InvalidOperationException($"Unknown DSH package '{packageName}'."),
     };
 
-    public async Task<int> RunAsync(HarnessApp app, PluginEntrypointOptions options, CancellationToken cancellationToken)
-    {
-        await using var server = new WebProfileServer();
-        await Console.Out.WriteLineAsync($"dsharp web: http://127.0.0.1:{server.Port}");
-        await Task.Delay(Timeout.Infinite, cancellationToken);
-        return 0;
-    }
 }

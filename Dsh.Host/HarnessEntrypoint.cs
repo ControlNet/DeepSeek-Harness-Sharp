@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Dsh.Boot;
 using Dsh.Plugins;
 using Dsh.ScriptHost;
@@ -13,6 +12,14 @@ public static class HarnessEntrypoint
     {
         if (args.Contains(PtcScriptHost.HostArgument))
             return await PtcScriptHost.RunAsync(args);
+        // The web process alone owns ASP.NET. Forward before parsing so this assembly knows no web options or WebBridge types.
+        if (args.FirstOrDefault() == "web")
+            return await WebHostLauncher.RunAsync(args[1..]);
+        if (args.Length >= 2 && args[0] == "host" && args[1] == "web")
+            return await WebHostLauncher.RunAsync(args[2..]);
+        // machine/session/doctor have their own options (--host, --machine, ...): they are parsed as a whole, not by the loop below.
+        if (FleetCli.Handles(args) && !args.Contains("--help") && !args.Contains("-h"))
+            return await FleetCli.RunAsync(HarnessStorage.ResolveDefaultHome(), args, (home, sessionId) => RunEntrypointAsync(home, "tui", sessionId));
 
         string? resumeSessionId = null;
         var dumpConfig = false;
@@ -164,7 +171,7 @@ public static class HarnessEntrypoint
                     var subcommand = positional.Skip(1).FirstOrDefault();
                     if (subcommand is "serve" || hostServe)
                         return await RunHostServeAsync(harnessHome, hostStdio, hostToken);
-                    await Console.Error.WriteLineAsync("dsharp: host requires a subcommand (serve)");
+                    await Console.Error.WriteLineAsync("dsharp: host requires a subcommand (serve | web)");
                     return 1;
                 }
             case "headless":
@@ -188,15 +195,21 @@ public static class HarnessEntrypoint
         if (useStdio)
         {
             // stdio-over-SSH: 桥接到常驻 daemon; 没有就 detached 起一个。断开只断这条桥, 会话留在远端(脱钩/重连)。
-            if (!await Dsh.RemoteHost.RemoteHostListener.IsReachableAsync(home.Root, CancellationToken.None))
-                StartHostDaemon(home, token);
+            await HostAutostart.EnsureRunningAsync(home, token);
             using var duplex = Dsh.Transport.TransportConnection.FromStandardIo();
             await Dsh.RemoteHost.RemoteHostListener.BridgeAsync(duplex, home.Root, CancellationToken.None);
             return 0;
         }
 
+        using var instance = HostAutostart.TryAcquireInstance(home);
+        if (instance is null)
+        {
+            using var connection = await Dsh.RemoteHost.RemoteHostListener.ConnectAsync(home.Root, CancellationToken.None);
+            return 0;
+        }
+
         using var app = await ConfigBoot.Compose(new HarnessOptions(home, Directory.GetCurrentDirectory(), IsTui: false));
-        using var backend = new HarnessRemoteHostBackend(app);
+        await using var backend = await HarnessRemoteHostBackend.CreateAsync(app);
         var server = new Dsh.RemoteHost.RemoteHostServer(new Dsh.RemoteHost.RemoteHostServerOptions(token), backend);
         await Console.Out.WriteLineAsync($"dsharp host serving on {Dsh.RemoteHost.RemoteHostEndpoint.SocketPath(home.Root)}");
         using var cancellation = new CancellationTokenSource();
@@ -205,9 +218,17 @@ public static class HarnessEntrypoint
             eventArgs.Cancel = true;
             cancellation.Cancel();
         };
+        // SIGTERM 同样走正常收尾(登记表落盘、删 socket), 而不是被运行时直接终止。
+        using var termination = System.Runtime.InteropServices.PosixSignalRegistration.Create(System.Runtime.InteropServices.PosixSignal.SIGTERM, context =>
+        {
+            context.Cancel = true;
+            cancellation.Cancel();
+        });
         await Dsh.RemoteHost.RemoteHostListener.ServeLoopbackAsync(server, home.Root, cancellation.Token);
         return 0;
     }
+
+
 
     /**
      * `dsharp storage paths`: 打印 §18 解析后的根与各分区, 便于核对 settings.storage 是否生效。
@@ -296,42 +317,6 @@ public static class HarnessEntrypoint
         return 0;
     }
 
-    /** 以脱离会话的方式起 `dsharp host serve`(ssh 断开不把 daemon 带走)。 */
-    private static void StartHostDaemon(HarnessHome home, string? token)
-    {
-        var executable = Environment.ProcessPath
-            ?? throw new InvalidOperationException("failed to resolve the current executable to start the host daemon");
-        var hostArguments = new List<string>();
-        if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
-            hostArguments.Add(Environment.GetCommandLineArgs()[0]);
-        if (token is { Length: > 0 })
-        {
-            hostArguments.Add("--token");
-            hostArguments.Add(token);
-        }
-
-        hostArguments.Add("host");
-        hostArguments.Add("serve");
-
-        if (OperatingSystem.IsWindows())
-        {
-            Process.Start(new ProcessStartInfo(executable, hostArguments)
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Directory.GetCurrentDirectory(),
-            });
-            return;
-        }
-
-        var quoted = string.Join(' ', hostArguments.Select(argument => $"'{argument.Replace("'", "'\\''", StringComparison.Ordinal)}'"));
-        Process.Start(new ProcessStartInfo("/bin/sh", ["-c", $"nohup '{executable}' {quoted} >/dev/null 2>&1 &"])
-        {
-            UseShellExecute = false,
-            WorkingDirectory = Directory.GetCurrentDirectory(),
-        });
-    }
-
     /**
      * 接管 daemon 里的 PTY 会话: `--gpu` 时优先用独立窗口接回(与 `--gpu` 启动同一条渲染路径),
      * 窗口宿主不可用(无显示服务器/无 DRM/终端不支持图像协议)再回退到本终端接管。
@@ -351,14 +336,19 @@ public static class HarnessEntrypoint
                    dsharp attach <pty-id> [--gpu]   (等价 dsharp tui attach <pty-id>)
                    dsharp tui --session <id> [--gpu]   (恢复 harness 会话; --gpu 开独立窗口)
                    dsharp gui [--session <id>]
+                   dsharp web [--port N] [--print-token]   (启动独立安装的 dsharp-web，不在本进程加载 Web 框架)
                    dsharp headless "task"
-                   dsharp host --serve [--stdio] [--token <t>]   (远端工作区宿主: 默认 loopback socket, --stdio 走 ssh)
+                   dsharp host serve [--stdio] [--token <t>]   (后台工作区宿主: --stdio 通过 ssh 桥接, 不安装系统服务)
+                   dsharp host web [--port N] [--print-token]   (同上；只监听 127.0.0.1，跨设备用 ssh -L 转发)
                    dsharp register-terminal    (Linux: 注册为桌面环境的默认终端)
                    dsharp storage paths        (打印 storage.root 与各分区解析结果)
                    dsharp storage migrate <old> <new>   (手动搬运旧根数据)
                    dsharp config schema [--json | --markdown]   (列出所有可配置项: 顶层 settings + 各插件参数)
                    dsharp config schema --verify [--path <模板>]        (校验 settings.yaml 模板是否与配置面同步)
                    dsharp config schema --write-template [--path <模板>] (用配置面重写模板生成块)
+            """);
+        Console.WriteLine(FleetCli.Usage);
+        Console.WriteLine("""
 
             Options:
               --session <id>     open an existing session (gui) or resume one (tui)
@@ -399,7 +389,8 @@ public static class HarnessEntrypoint
             shell,
             gpuScreenshot,
             gpuCapturePlan,
-            gpuCard));
+            gpuCard,
+            StartLocalHostAsync));
     }
 
     /** macOS 专用: 由进程主线程同步组合 harness 并运行 GUI(Avalonia.Native 要求主线程初始化 UI)。 */
@@ -407,7 +398,11 @@ public static class HarnessEntrypoint
     {
         var cwd = Directory.GetCurrentDirectory();
         using var app = ConfigBoot.Compose(new HarnessOptions(home, cwd, IsTui: false)).GetAwaiter().GetResult();
-        return Dsh.Gui.GuiRunner.RunOnMainThread(app, cwd, resumeSessionId);
+        return Dsh.Gui.GuiRunner.RunOnMainThread(app, cwd, resumeSessionId, StartLocalHostAsync);
     }
+
+    /** GUI 连接本机 host 时按需拉起: 以脱离会话的方式起 `host serve`, 与 CLI 的 `session *` 一致。 */
+    private static Task StartLocalHostAsync(string harnessHome, CancellationToken cancellationToken)
+        => HostAutostart.EnsureRunningAsync(HarnessHome.Resolve(harnessHome), token: null, cancellationToken);
 }
 

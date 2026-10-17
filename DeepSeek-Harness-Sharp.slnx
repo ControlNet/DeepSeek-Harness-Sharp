@@ -11,6 +11,7 @@
     <Project Path="src/Dsh.A2A/Dsh.A2A.csproj" />
     <Project Path="src/Dsh.Account/Dsh.Account.csproj" />
     <Project Path="src/Dsh.Acp/Dsh.Acp.csproj" />
+    <Project Path="src/Dsh.AgentAdapters/Dsh.AgentAdapters.csproj" />
     <Project Path="src/Dsh.AgentInstructions/Dsh.AgentInstructions.csproj" />
     <Project Path="src/Dsh.Board/Dsh.Board.csproj" />
     <Project Path="src/Dsh.Boot/Dsh.Boot.csproj" />
@@ -19,6 +20,9 @@
     <Project Path="src/Dsh.Core/Dsh.Core.csproj" />
     <Project Path="src/Dsh.Deliverables/Dsh.Deliverables.csproj" />
     <Project Path="src/Dsh.E2b/Dsh.E2b.csproj" />
+    <Project Path="src/Dsh.Fleet/Dsh.Fleet.csproj" />
+    <Project Path="src/Dsh.Fleet.Client/Dsh.Fleet.Client.csproj" />
+    <Project Path="src/Dsh.GitInspect/Dsh.GitInspect.csproj" />
     <Project Path="src/Dsh.Goal/Dsh.Goal.csproj" />
     <Project Path="src/Dsh.Gui/Dsh.Gui.csproj" />
     <Project Path="src/Dsh.IdeHistory/Dsh.IdeHistory.csproj" />
@@ -33,6 +37,7 @@
     <Project Path="src/Dsh.Lsp/Dsh.Lsp.csproj" />
     <Project Path="src/Dsh.Mcp/Dsh.Mcp.csproj" />
     <Project Path="src/Dsh.Memory/Dsh.Memory.csproj" />
+    <Project Path="src/Dsh.Notifications/Dsh.Notifications.csproj" />
     <Project Path="src/Dsh.Persistence/Dsh.Persistence.csproj" />
     <Project Path="src/Dsh.PlanMode/Dsh.PlanMode.csproj" />
     <Project Path="src/Dsh.Presets/Dsh.Presets.csproj" />
@@ -61,9 +66,11 @@
     <Project Path="src/Dsh.Tui.GL/Dsh.Tui.GL.csproj" />
     <Project Path="src/Dsh.Tui.Vk/Dsh.Tui.Vk.csproj" />
     <Project Path="src/Dsh.Web/Dsh.Web.csproj" />
+    <Project Path="src/Dsh.WebBridge/Dsh.WebBridge.csproj" />
     <Project Path="src/Dsh.Workflow/Dsh.Workflow.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Dsh.GuiViewsHarness/Dsh.GuiViewsHarness.csproj" />
     <Project Path="tests/Dsh.IocAotSmoke/Dsh.IocAotSmoke.csproj" />
     <Project Path="tests/Dsh.ManagedPluginSample/Dsh.ManagedPluginSample.csproj" />
     <Project Path="tests/Dsh.McpResourceServerSample/Dsh.McpResourceServerSample.csproj" />
@@ -75,4 +82,5 @@
   <Project Path="DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj" />
   <Project Path="DshGuiHost/DshGuiHost.csproj" />
   <Project Path="Dsh.Host/Dsh.Host.csproj" />
+  <Project Path="Dsh.WebHost/Dsh.WebHost.csproj" />
 </Solution>

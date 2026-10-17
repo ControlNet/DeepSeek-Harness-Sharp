@@ -14,8 +14,6 @@ public class TuiOverlayCpuTests
     public async Task Slash_Menu_Does_Not_Mix_Right_Panel_Into_Main()
     {
         using var harness = await PtyTuiHarness.StartAsync();
-        if (harness is null)
-            return;
 
         var cancellationToken = TestContext.Current.CancellationToken;
         await harness.WaitForAsync("快捷键", TimeSpan.FromSeconds(150));

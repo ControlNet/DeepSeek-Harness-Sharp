@@ -201,6 +201,46 @@ public sealed class PtyDaemonSubscribeTests
         }
     }
 
+    [Fact(Timeout = 30000)]
+    public async Task Subscribe_AfterProcessAndOutputExit_ReplaysFinalScreenAndCompletes()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = TempTree.CreateSocketDirectory("sub7");
+        try
+        {
+            var (socketPath, portFile) = Paths(root);
+            using var host = new PtyHost();
+            await using var daemon = new PtyDaemon(host, socketPath, portFile);
+            await daemon.StartAsync(cancellationToken);
+            var started = await PtyDaemonRetry.StartAsync(StartParams(InteractiveShell()), socketPath, portFile, cancellationToken);
+            await using var first = await PtyDaemonClient.SubscribeAsync(started.Id, socketPath, portFile, cancellationToken);
+            var (input, expected) = MarkerCommand();
+            first.Send(Encoding.UTF8.GetBytes(input));
+            Assert.Contains(expected, await ReadUntilAsync(first, expected, MarkerTimeout));
+            first.Send(Encoding.UTF8.GetBytes(OperatingSystem.IsWindows() ? "exit 7\r" : "exit 7\n"));
+            await first.Completion.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            var process = Assert.IsType<PtySession>(host.Get(started.Id));
+            await process.WaitForExitAsync(cancellationToken);
+            Assert.Equal(PtySessionStatus.Exited, process.Status);
+            Assert.Equal(7, process.ExitCode);
+
+            // The late client arrives only after both real process exit and the first output EOF.
+            await using var late = await PtyDaemonClient.SubscribeAsync(started.Id, socketPath, portFile, cancellationToken);
+            await late.Completion.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            var snapshot = new StringBuilder();
+            var buffer = new byte[1024];
+            int read;
+            while ((read = await late.ReadAsync(buffer, cancellationToken)) > 0)
+                snapshot.Append(Encoding.UTF8.GetString(buffer, 0, read));
+            Assert.Contains(expected, snapshot.ToString());
+            Assert.True(late.Exited);
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
     private static (string SocketPath, string? PortFile) Paths(string root)
         => (Path.Combine(root, "dsh.sock"), OperatingSystem.IsWindows() ? Path.Combine(root, "dsh.port") : null);
 

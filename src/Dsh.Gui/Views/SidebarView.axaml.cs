@@ -38,7 +38,7 @@ public sealed partial class SidebarView : UserControl
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(MainViewModel.IsFileSystemView))
+        if (e.PropertyName is nameof(MainViewModel.IsFileSystemView) or nameof(MainViewModel.CurrentSessionId))
             LocateCurrentSession();
     }
 
@@ -59,14 +59,14 @@ public sealed partial class SidebarView : UserControl
             return;
         }
         _locatePending = false;
-        var path = FindSessionPath(viewModel.FileSystemNodes, viewModel.CurrentAgent.Id);
+        var path = FindSessionPath(viewModel.FileSystemNodes, viewModel.CurrentSessionId);
         if (path is null)
             return;
         foreach (var ancestor in path.SkipLast(1))
             ancestor.IsExpanded = true;
         var node = path[^1];
         foreach (var session in node.Sessions)
-            session.IsSelected = session.SessionId == viewModel.CurrentAgent.Id;
+            session.IsSelected = session.SessionId == viewModel.CurrentSessionId;
         Dispatcher.UIThread.Post(() =>
         {
             FileTree.SelectedItem = node;
@@ -108,14 +108,5 @@ public sealed partial class SidebarView : UserControl
             return;
         if (node.IsRenaming)
             viewModel.CommitRenameCommand.Execute(node);
-    }
-
-    /** 悬停即打开“远程工作区”右拉菜单(有内容时); 空列表不弹窗。 */
-    private void OnRemoteWorkspaceHover(object? sender, PointerEventArgs e)
-    {
-        if (sender is not Button { Flyout: { } flyout } button)
-            return;
-        if (DataContext is MainViewModel { RemoteWorkspaces.Count: > 0 } && !flyout.IsOpen)
-            flyout.ShowAt(button);
     }
 }

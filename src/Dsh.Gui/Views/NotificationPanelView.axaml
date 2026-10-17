@@ -1,0 +1,72 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Dsh.Gui.ViewModels"
+             x:Class="Dsh.Gui.Views.NotificationPanelView"
+             x:DataType="vm:NotificationCenterViewModel"
+             x:CompileBindings="True"
+             Width="420">
+  <Grid RowDefinitions="Auto,Auto,Auto,*" RowSpacing="8">
+    <Grid ColumnDefinitions="*,Auto">
+      <TextBlock Text="通知" Classes="Title" VerticalAlignment="Center" />
+      <Button Grid.Column="1" Classes="Chip" Content="全部标为已读" Command="{Binding MarkAllReadCommand}"
+              IsEnabled="{Binding HasUnread}" />
+    </Grid>
+
+    <StackPanel Grid.Row="1" Spacing="4" IsVisible="{Binding HasPending}">
+      <TextBlock Text="待处理的审批与提问" Classes="Secondary" FontWeight="SemiBold" />
+      <ScrollViewer MaxHeight="240" HorizontalScrollBarVisibility="Disabled">
+        <ItemsControl Name="PendingList" ItemsSource="{Binding Pending}" ItemTemplate="{StaticResource Template.PendingDecision}" />
+      </ScrollViewer>
+    </StackPanel>
+
+    <Grid Grid.Row="2" ColumnDefinitions="*,*,*" ColumnSpacing="6">
+      <ComboBox Grid.Column="0" HorizontalAlignment="Stretch" ItemsSource="{Binding MachineOptions}"
+                SelectedItem="{Binding SelectedMachine}" ToolTip.Tip="按机器筛选" />
+      <ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{Binding SessionOptions}"
+                SelectedItem="{Binding SelectedSession}" ToolTip.Tip="按会话筛选" />
+      <ComboBox Grid.Column="2" HorizontalAlignment="Stretch" ItemsSource="{Binding KindOptions}"
+                SelectedItem="{Binding SelectedKind}" ToolTip.Tip="按类型筛选" />
+    </Grid>
+
+    <Panel Grid.Row="3">
+      <TextBlock Text="没有通知" Classes="Tertiary" HorizontalAlignment="Center" Margin="0,16" IsVisible="{Binding HasNoItems}" />
+      <ScrollViewer MaxHeight="420" HorizontalScrollBarVisibility="Disabled">
+        <ItemsControl Name="NotificationList" ItemsSource="{Binding Items}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:NotificationItemViewModel">
+              <Border Classes="NotificationItem" Classes.unread="{Binding IsUnread}">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                  <Button Classes="Ghost" Padding="0" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                          ToolTip.Tip="打开会话并标为已读"
+                          Command="{Binding $parent[UserControl].((vm:NotificationCenterViewModel)DataContext).OpenCommand}"
+                          CommandParameter="{Binding}">
+                    <StackPanel Spacing="2">
+                      <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Ellipse Width="7" Height="7" Fill="{DynamicResource Brush.Accent}" IsVisible="{Binding IsUnread}" />
+                        <Border Classes="Pill">
+                          <TextBlock Text="{Binding KindLabel}" Classes="Tertiary" />
+                        </Border>
+                        <TextBlock Text="{Binding Machine}" Classes="Tertiary" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding SessionTitle}" Classes="Tertiary" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" MaxWidth="160" />
+                        <TextBlock Text="{Binding TimeText}" Classes="Tertiary" VerticalAlignment="Center" />
+                      </StackPanel>
+                      <TextBlock Text="{Binding Title}" Classes="Body" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding Body}" Classes="Tertiary" TextWrapping="Wrap" IsVisible="{Binding HasBody}" />
+                    </StackPanel>
+                  </Button>
+                  <Button Grid.Column="1" Classes="Icon" Width="24" Height="24" VerticalAlignment="Top"
+                          IsVisible="{Binding IsUnread}" ToolTip.Tip="标为已读"
+                          Command="{Binding $parent[UserControl].((vm:NotificationCenterViewModel)DataContext).MarkReadCommand}"
+                          CommandParameter="{Binding}">
+                    <Path Classes="Icon" Width="12" Height="12" Data="{StaticResource Icon.Check}" />
+                  </Button>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Panel>
+  </Grid>
+</UserControl>

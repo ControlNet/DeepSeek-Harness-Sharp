@@ -1,8 +1,11 @@
 ﻿using System.Net;
 using System.Net.Sockets;
-using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Channels;
+using Dsh.Core;
+using Dsh.Host;
+using Dsh.Transport;
+using Dsh.Llm;
 using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
@@ -14,7 +17,7 @@ public sealed class RemoteHostCapabilityTests
     [Fact(Timeout = 30000)]
     public async Task CreateSessionForwardsModelSelectionOverTheWire()
     {
-        var backend = new FakeBackend();
+        await using var backend = await FakeBackend.CreateAsync(Ct);
         await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
         var selection = new RemoteModelSelection("prov", "model", "high");
         var spec = new RemoteProviderSpec("prov", "openai-compatible", "https://example.invalid", "sk", "PROV_KEY");
@@ -32,7 +35,7 @@ public sealed class RemoteHostCapabilityTests
     [Fact(Timeout = 30000)]
     public async Task SessionsToolsFilesAndMessageFlowOverTheWire()
     {
-        var backend = new FakeBackend();
+        await using var backend = await FakeBackend.CreateAsync(Ct);
         await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
         var client = fixture.Client;
 
@@ -42,12 +45,14 @@ public sealed class RemoteHostCapabilityTests
         Assert.Single(await client.ListSessionsAsync(Ct));
         Assert.Equal(["read", "write"], await client.ListToolsAsync(created.Id, Ct));
 
-        await client.WriteFileAsync("/work/a.txt", "hello"u8.ToArray(), Ct);
-        Assert.Equal("hello"u8.ToArray(), await client.ReadFileAsync("/work/a.txt", Ct));
+        var work = Path.Combine(backend.Root, "work");
+        Directory.CreateDirectory(Path.Combine(work, "sub"));
+        await client.Files.WriteFileAsync(Path.Combine(work, "a.txt"), "hello"u8.ToArray(), Ct);
+        Assert.Equal("hello"u8.ToArray(), await client.Files.ReadFileAsync(Path.Combine(work, "a.txt"), Ct));
 
-        var listing = await client.ListDirectoryAsync("/work", Ct);
-        Assert.Equal("/work", listing.Path);
-        Assert.Equal("/", listing.Parent);
+        var listing = await client.Files.ListDirectoryAsync(work, Ct);
+        Assert.Equal(work, listing.Path);
+        Assert.Equal(backend.Root, listing.Parent);
         Assert.Contains(listing.Entries, entry => entry is { Name: "sub", IsDirectory: true });
 
         var received = new TaskCompletionSource<RemoteEventInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -57,9 +62,14 @@ public sealed class RemoteHostCapabilityTests
             await foreach (var item in client.SubscribeAsync(created.Id, 0, subscription.Token))
                 received.TrySetResult(item);
         }, Ct);
+        // host 应答 subscribe 之前后端已挂好订阅: 等后端看到订阅即可发消息, 不靠固定延时。
+        await backend.Subscribed.Task.WaitAsync(Ct);
         await client.SendMessageAsync(created.Id, "hi", [], Ct);
         var item = await received.Task.WaitAsync(Ct);
-        Assert.Equal("user:hi", item.EventJson);
+        var message = DshJson.Deserialize<SessionEvent>(item.EventJson)!;
+        Assert.Equal(0L, item.Sequence);
+        Assert.Equal(item.Sequence, message.Seq);
+        Assert.Equal("hi", Assert.IsType<TextBlock>(Assert.Single(Assert.IsType<UserMessagePayload>(message.Data).Message.Content)).Text);
         await subscription.CancelAsync();
         try
         {
@@ -73,21 +83,23 @@ public sealed class RemoteHostCapabilityTests
     [Fact(Timeout = 30000)]
     public async Task ApprovalRequestRoundTripsBack()
     {
-        var backend = new FakeBackend();
+        await using var backend = await FakeBackend.CreateAsync(Ct);
         await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
         var received = new TaskCompletionSource<RemoteApprovalRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var subscription = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var pump = Task.Run(async () =>
         {
-            await foreach (var request in fixture.Client.ApprovalsAsync(subscription.Token))
-                received.TrySetResult(request);
+            await foreach (var change in fixture.Client.PendingChangesAsync(subscription.Token))
+            {
+                foreach (var request in change.Pending.Approvals)
+                    received.TrySetResult(request);
+            }
         }, Ct);
 
-        backend.RaiseApproval(new RemoteApprovalRequest("req-1", "session-1", "bash", null, "allow?"));
+        var decision = backend.Pending.AskApprovalAsync(new RemoteApprovalRequest("req-1", "session-1", "bash", null, "allow?"));
         var approval = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
-        await fixture.Client.RespondApprovalAsync(approval.RequestId, true, "ok", Ct);
-        await WaitForAsync(() => backend.ApprovalAnswer("req-1") is not null, Ct);
-        Assert.True(backend.ApprovalAnswer("req-1"));
+        Assert.True(await fixture.Client.RespondApprovalAsync(approval.RequestId, true, "ok", Ct));
+        Assert.True((await decision.WaitAsync(TimeSpan.FromSeconds(5), Ct))?.Allow);
         await subscription.CancelAsync();
         try
         {
@@ -101,15 +113,15 @@ public sealed class RemoteHostCapabilityTests
     [Fact(Timeout = 30000)]
     public async Task PtyEchoesInputOverTheWire()
     {
-        var backend = new FakeBackend();
+        await using var backend = await FakeBackend.CreateAsync(Ct);
         await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
-        var ptyId = await fixture.Client.StartPtyAsync("/bin/sh", [], Ct);
+        var ptyId = await fixture.Client.Pty.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", []), Ct);
 
         var pipe = new System.IO.Pipelines.Pipe();
         var input = pipe.Reader.AsStream();
         var output = new MemoryStream();
         using var attachCts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        var attach = fixture.Client.AttachPtyAsync(ptyId, input, output, attachCts.Token);
+        var attach = fixture.Client.Pty.AttachPtyAsync(ptyId, input, output, attachCts.Token);
 
         await pipe.Writer.WriteAsync("ping"u8.ToArray(), Ct);
         await pipe.Writer.FlushAsync(Ct);
@@ -123,22 +135,24 @@ public sealed class RemoteHostCapabilityTests
     [Fact(Timeout = 30000)]
     public async Task QuestionRequestRoundTripsBack()
     {
-        var backend = new FakeBackend();
+        await using var backend = await FakeBackend.CreateAsync(Ct);
         await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
         var received = new TaskCompletionSource<RemoteQuestionRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var subscription = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var pump = Task.Run(async () =>
         {
-            await foreach (var request in fixture.Client.QuestionsAsync(subscription.Token))
-                received.TrySetResult(request);
+            await foreach (var change in fixture.Client.PendingChangesAsync(subscription.Token))
+            {
+                foreach (var request in change.Pending.Questions)
+                    received.TrySetResult(request);
+            }
         }, Ct);
 
-        backend.RaiseQuestion(new RemoteQuestionRequest("q-1", "session-1",
+        var answer = backend.Pending.AskQuestionAsync(new RemoteQuestionRequest("q-1", "session-1",
             [new RemoteQuestionItem("q1", "pick?", null, null, [new RemoteQuestionOption("A", null)], false, null)]));
         var question = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
-        await fixture.Client.RespondQuestionAsync(question.RequestId, [new RemoteQuestionAnswerItem("q1", ["A"], null)], Ct);
-        await WaitForAsync(() => backend.QuestionAnswer("q-1") is not null, Ct);
-        Assert.Equal("A", backend.QuestionAnswer("q-1"));
+        Assert.True(await fixture.Client.RespondQuestionAsync(question.RequestId, [new RemoteQuestionAnswerItem("q1", ["A"], null)], Ct));
+        Assert.Equal(["A"], (await answer.WaitAsync(TimeSpan.FromSeconds(5), Ct))!.Answers[0].Selected);
         await subscription.CancelAsync();
         try
         {
@@ -149,6 +163,78 @@ public sealed class RemoteHostCapabilityTests
         }
     }
 
+    [Theory(Timeout = 30000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RealHarnessCoreWorksWithOrWithoutOptionalDomains(bool includeOptional)
+    {
+        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, TestContext.Current.CancellationToken);
+        IRemoteHostBackend composed = includeOptional ? backend : new CoreOnlyBackend(backend);
+        await using var fixture = await HostFixture.CreateAsync(composed, Ct);
+        var client = fixture.Client;
+        var info = await client.InfoAsync(Ct);
+        Assert.Equal(client.Hello.Capabilities, info.Capabilities);
+        Assert.Contains(HostProtocol.PendingBroadcastCapability, info.Capabilities!);
+        Assert.Contains(HostProtocol.SessionRegistryCapability, info.Capabilities!);
+
+        var created = await client.CreateSessionAsync(info.HomeRoot, cancellationToken: Ct);
+        Assert.Equal(created.Id, (await client.ResumeSessionAsync(created.Id, cancellationToken: Ct)).Id);
+        Assert.Contains(await client.ListSessionsAsync(Ct), session => session.Id == created.Id);
+        Assert.NotNull(await client.GetSessionSnapshotAsync(created.Id, Ct));
+        Assert.Empty((await client.ListPendingAsync(Ct)).Approvals);
+
+        var file = Path.Combine(info.HomeRoot, "domain-contract.txt");
+        if (includeOptional)
+        {
+            Assert.Contains(FilesProtocol.Capability, info.Capabilities!);
+            await client.Files.WriteFileAsync(file, "domain"u8.ToArray(), Ct);
+            Assert.Equal("domain"u8.ToArray(), await client.Files.ReadFileAsync(file, Ct));
+            await client.SessionEditing.RenameSessionAsync(created.Id, "domain title", Ct);
+            Assert.Contains(await client.ListSessionsAsync(Ct), session => session.Id == created.Id && session.Title == "domain title");
+        }
+        else
+        {
+            Assert.Equal(2, info.Capabilities!.Count);
+            var denied = await Assert.ThrowsAsync<JsonRpcException>(() => client.Files.WriteFileAsync(file, "denied"u8.ToArray(), Ct));
+            Assert.Equal(JsonRpcPeer.MethodNotFound, denied.Code);
+            Assert.False(File.Exists(file));
+            var editDenied = await Assert.ThrowsAsync<JsonRpcException>(() => client.SessionEditing.RenameSessionAsync(created.Id, "denied", Ct));
+            Assert.Equal(JsonRpcPeer.MethodNotFound, editDenied.Code);
+            Func<Task>[] otherDomains =
+            [
+                () => client.Agent.AgentCatalogAsync(Ct),
+                () => client.Pty.StartPtyAsync(new RemotePtyStartRequest("unused", []), Ct),
+                () => client.Git.GitStatusAsync(info.HomeRoot, Ct),
+                () => client.Notifications.ListNotificationsAsync(cancellationToken: Ct),
+                () => client.Plugins.ListPluginsAsync(Ct),
+                () => client.Models.ListProviderModelsAsync("unused", Ct),
+            ];
+            foreach (var operation in otherDomains)
+            {
+                var unsupported = await Assert.ThrowsAsync<JsonRpcException>(operation);
+                Assert.Equal(JsonRpcPeer.MethodNotFound, unsupported.Code);
+            }
+            Assert.Equal(created.Id, (await client.ResumeSessionAsync(created.Id, cancellationToken: Ct)).Id);
+        }
+    }
+
+    private sealed class CoreOnlyBackend(IRemoteHostBackend backend) : IRemoteHostBackend
+    {
+        public HostPendingDecisions Pending => backend.Pending;
+        public HostSessionRegistry Sessions => backend.Sessions;
+        public IRemoteSessionBackend Session => backend.Session;
+        public Task<HostInfo> InfoAsync(CancellationToken cancellationToken) => backend.InfoAsync(cancellationToken);
+        public IRemoteAgentBackend? Agent => null;
+        public IRemotePtyBackend? Pty => null;
+        public HostFileSystem? Files => null;
+        public HostGitService? Git => null;
+        public HostNotificationCenter? Notifications => null;
+        public IRemoteSessionEditingBackend? SessionEditing => null;
+        public IRemotePluginsBackend? Plugins => null;
+        public IRemoteModelsBackend? Models => null;
+    }
+
     private static async Task WaitForAsync(Func<bool> condition, CancellationToken cancellationToken)
     {
         for (var attempt = 0; attempt < 500 && !condition(); attempt++)
@@ -156,24 +242,55 @@ public sealed class RemoteHostCapabilityTests
         Assert.True(condition(), "condition not met in time");
     }
 
-    /** 记录/回放式的远端后端替身; 不依赖 harness。 */
-    private sealed class FakeBackend : IRemoteHostBackend
+    /** 记录/回放式的远端后端替身; 不依赖 harness。待决策队列、会话登记表、文件系统(限于 Root)与通知历史用真实实现。 */
+    internal sealed class FakeBackend : IRemoteHostBackend, IRemoteSessionBackend, IRemotePtyBackend, IAsyncDisposable
     {
+        private readonly string _directory;
         private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
         private readonly Dictionary<string, Channel<RemoteEventInfo>> _events = [];
-        private readonly Dictionary<string, byte[]> _files = [];
-        private readonly Dictionary<string, RemoteDirectoryListing> _directories = new(StringComparer.Ordinal)
-        {
-            ["/work"] = new RemoteDirectoryListing(
-                "/work",
-                "/",
-                [new RemoteDirectoryEntry("sub", "/work/sub", true), new RemoteDirectoryEntry("a.txt", "/work/a.txt", false)]),
-        };
+        private readonly Dictionary<string, long> _sequences = [];
         private readonly Dictionary<string, Channel<RemotePtyOutput>> _pty = [];
-        private readonly Channel<RemoteApprovalRequest> _approvals = Channel.CreateUnbounded<RemoteApprovalRequest>();
-        private readonly Channel<RemoteQuestionRequest> _questions = Channel.CreateUnbounded<RemoteQuestionRequest>();
-        private readonly Dictionary<string, bool> _approvalAnswers = [];
-        private readonly Dictionary<string, string> _questionAnswers = [];
+
+        private FakeBackend(string directory, HostPendingDecisions pending, HostSessionRegistry sessions, HostNotificationCenter notifications)
+        {
+            _directory = directory;
+            Pending = pending;
+            Sessions = sessions;
+            Notifications = notifications;
+            Files = new HostFileSystem(new HostPathPolicy([directory], () => []));
+            Git = new HostGitService(Files.Policy);
+        }
+
+        public static async Task<FakeBackend> CreateAsync(CancellationToken cancellationToken)
+        {
+            var directory = TempTree.CreateDirectory("rh-cap");
+            var pending = new HostPendingDecisions();
+            var sessions = await HostSessionRegistry.OpenAsync(Path.Combine(directory, "sessions.json"), pending, cancellationToken);
+            var notifications = await HostNotificationCenter.OpenAsync(Path.Combine(directory, HostNotificationCenter.FileName), sessions, pending, cancellationToken);
+            return new FakeBackend(directory, pending, sessions, notifications);
+        }
+
+        /** The only directory the fake host's file system may touch. */
+        public string Root => _directory;
+
+        public HostPendingDecisions Pending { get; }
+
+        public HostSessionRegistry Sessions { get; }
+
+        public HostFileSystem Files { get; }
+
+        public IRemoteSessionBackend Session => this;
+        public IRemotePtyBackend Pty => this;
+        public IRemoteAgentBackend? Agent => null;
+        public HostGitService Git { get; }
+        public IRemoteSessionEditingBackend? SessionEditing => null;
+        public IRemotePluginsBackend? Plugins => null;
+        public IRemoteModelsBackend? Models => null;
+
+        public HostNotificationCenter Notifications { get; }
+
+        /** 后端完成订阅(挂好事件通道)时置位。 */
+        public TaskCompletionSource Subscribed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task<HostInfo> InfoAsync(CancellationToken cancellationToken)
             => Task.FromResult(new HostInfo(HostProtocol.Version, "fake", "test", "/home"));
@@ -199,13 +316,25 @@ public sealed class RemoteHostCapabilityTests
             return Task.FromResult(_sessions.TryGetValue(sessionId, out var session) ? session : throw new KeyNotFoundException(sessionId));
         }
 
+        public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public RemoteModelSelection? LastSelection { get; private set; }
 
         public RemoteProviderSpec? LastProvider { get; private set; }
 
         public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken)
         {
-            _events[sessionId].Writer.TryWrite(new RemoteEventInfo(sessionId, $"user:{text}"));
+            var seq = _sequences.GetValueOrDefault(sessionId);
+            _sequences[sessionId] = seq + 1;
+            var item = new SessionEvent
+            {
+                Type = SessionEventTypes.UserMessage,
+                Seq = seq,
+                Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Data = new UserMessagePayload(MessageFactory.CreateUserText(text)),
+                SurfaceOp = new SurfaceOp.Append(),
+            };
+            _events[sessionId].Writer.TryWrite(new RemoteEventInfo(sessionId, DshJson.Serialize(item), seq));
             return Task.CompletedTask;
         }
 
@@ -214,39 +343,7 @@ public sealed class RemoteHostCapabilityTests
         public Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<string>>(["read", "write"]);
 
-        public Task RespondApprovalAsync(string requestId, bool allow, string? reason, CancellationToken cancellationToken)
-        {
-            _approvalAnswers[requestId] = allow;
-            return Task.CompletedTask;
-        }
-
-        public Task RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken)
-        {
-            _questionAnswers[requestId] = answers.Count > 0 && answers[0].Selected.Count > 0 ? answers[0].Selected[0] : "";
-            return Task.CompletedTask;
-        }
-
-        public async IAsyncEnumerable<RemoteQuestionRequest> QuestionsAsync([EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            await foreach (var request in _questions.Reader.ReadAllAsync(cancellationToken))
-                yield return request;
-        }
-
-        public Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken)
-            => Task.FromResult(_files.TryGetValue(path, out var bytes) ? bytes : throw new FileNotFoundException(path));
-
-        public Task WriteFileAsync(string path, byte[] content, CancellationToken cancellationToken)
-        {
-            _files[path] = content;
-            return Task.CompletedTask;
-        }
-
-        public Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken)
-            => Task.FromResult(_directories.TryGetValue(path, out var listing)
-                ? listing
-                : throw new DirectoryNotFoundException(path));
-
-        public Task<string> StartPtyAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+        public Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken)
         {
             var id = $"pty-{Guid.NewGuid():N}";
             _pty[id] = Channel.CreateUnbounded<RemotePtyOutput>();
@@ -260,6 +357,8 @@ public sealed class RemoteHostCapabilityTests
             return Task.CompletedTask;
         }
 
+        public Task ResizePtyAsync(string ptyId, int columns, int rows, CancellationToken cancellationToken) => Task.CompletedTask;
+
         public Task StopPtyAsync(string ptyId, CancellationToken cancellationToken)
         {
             if (_pty.Remove(ptyId, out var channel))
@@ -267,33 +366,30 @@ public sealed class RemoteHostCapabilityTests
             return Task.CompletedTask;
         }
 
-        public async IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, [EnumeratorCancellation] CancellationToken cancellationToken)
+        public Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
         {
-            await foreach (var item in _events[sessionId].Reader.ReadAllAsync(cancellationToken))
-                yield return item;
+            var channel = _events.TryGetValue(sessionId, out var existing)
+                ? existing
+                : _events[sessionId] = Channel.CreateUnbounded<RemoteEventInfo>();
+            Subscribed.TrySetResult();
+            return Task.FromResult(new RemoteHostStream<RemoteEventInfo>(channel.Reader.ReadAllAsync(cancellationToken)));
         }
 
-        public async IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync([EnumeratorCancellation] CancellationToken cancellationToken)
+        public Task<RemoteHostStream<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken)
+            => _pty.TryGetValue(ptyId, out var channel)
+                ? Task.FromResult(new RemoteHostStream<RemotePtyOutput>(channel.Reader.ReadAllAsync(cancellationToken)))
+                : throw new InvalidOperationException($"PTY session not found: {ptyId}");
+
+        /** Every live host connection holds one pending-decision subscription, so this counts open host connections. */
+        public int OpenConnections => Pending.SubscriberCount;
+
+        public async ValueTask DisposeAsync()
         {
-            await foreach (var request in _approvals.Reader.ReadAllAsync(cancellationToken))
-                yield return request;
+            await Notifications.DisposeAsync();
+            Pending.Dispose();
+            await Sessions.DisposeAsync();
+            TempTree.Delete(_directory);
         }
-
-        public async IAsyncEnumerable<RemotePtyOutput> PtyOutputAsync(string ptyId, [EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            if (!_pty.TryGetValue(ptyId, out var channel))
-                yield break;
-            await foreach (var item in channel.Reader.ReadAllAsync(cancellationToken))
-                yield return item;
-        }
-
-        public void RaiseApproval(RemoteApprovalRequest request) => _approvals.Writer.TryWrite(request);
-
-        public bool? ApprovalAnswer(string requestId) => _approvalAnswers.TryGetValue(requestId, out var answer) ? answer : null;
-
-        public void RaiseQuestion(RemoteQuestionRequest request) => _questions.Writer.TryWrite(request);
-
-        public string? QuestionAnswer(string requestId) => _questionAnswers.GetValueOrDefault(requestId);
     }
 
     private sealed class HostFixture : IAsyncDisposable

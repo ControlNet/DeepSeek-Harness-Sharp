@@ -28,12 +28,15 @@ internal static class SessionTextSearchFactory
     }
 
     private static bool IsUnavailable(Exception error)
-        => error is DllNotFoundException
-            or EntryPointNotFoundException
-            or BadImageFormatException
-            or PlatformNotSupportedException
-            or TypeInitializationException      // native sqlite 缺失时 static ctor 失败会包成这个
-            or SqliteException;                 // 例如该 sqlite 没编进 FTS5
+        => error switch
+        {
+            DllNotFoundException or EntryPointNotFoundException or BadImageFormatException
+                or PlatformNotSupportedException => true,
+            TypeInitializationException { InnerException: { } inner } => IsUnavailable(inner),
+            SqliteException sqlite => sqlite.SqliteErrorCode == SQLitePCL.raw.SQLITE_ERROR
+                && sqlite.Message.Contains("no such module: fts5", StringComparison.Ordinal),
+            _ => false,
+        };
 
     /** 按空白切词:FTS5 的 MATCH 表达式与本地匹配共用同一分词视角。 */
     public static IReadOnlyList<string> Split(string query)

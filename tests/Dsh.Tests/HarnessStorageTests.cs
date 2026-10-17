@@ -1,4 +1,7 @@
 using Dsh.Boot;
+using Dsh.Pty;
+using Dsh.RemoteHost;
+using Dsh.Transport;
 
 namespace Dsh.Tests;
 
@@ -68,6 +71,29 @@ public sealed class HarnessStorageTests
             catch (IOException)
             {
             }
+        }
+    }
+
+    /** PTY daemon 与远端 host 的端点根都要跟随 storage.root 写下的记录, 否则 socket 落在默认根而客户端去 storage.root 找。 */
+    [Fact]
+    public async Task LocalEndpointRoot_FollowsTheStorageRootMarker()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"dsh-storage-{Guid.NewGuid():N}");
+        var home = Path.Combine(dir, "home");
+        var target = Path.Combine(dir, "data");
+        Directory.CreateDirectory(home);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(home, HarnessHome.StorageRootMarker), $"{target}\n", TestContext.Current.CancellationToken);
+
+            Assert.Equal(Path.GetFullPath(target), LocalEndpointRoot.FollowMarker(home));
+            Assert.Equal(Path.GetFullPath(target), LocalEndpointRoot.FollowMarker(Path.Combine(home, ".")));
+            Assert.Equal(Path.GetFullPath(target + "-unmarked"), LocalEndpointRoot.FollowMarker(target + "-unmarked"));
+            Assert.Equal(PtyDaemonPaths.DefaultRoot(), RemoteHostEndpoint.DefaultRoot());
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
         }
     }
 

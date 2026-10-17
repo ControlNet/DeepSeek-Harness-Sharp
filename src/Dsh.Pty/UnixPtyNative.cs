@@ -37,20 +37,33 @@ internal static class UnixPtyNative
         return IntPtr.Zero;
     }
     private const int Wnohang = 1;
+    /** ECHILD is 10 on Linux and Darwin. */
+    private const int Echild = 10;
     private const int ORdwr = 2;
     /** 让子进程成为新会话首进程, 从而能在 open 从端时取得控制终端(job control 前提)。值随平台不同: glibc 0x80, Darwin 0x0400(其 0x80 是 START_SUSPENDED, 用错会挂起子进程)。 */
     private static readonly short PosixSpawnSetsid = OperatingSystem.IsMacOS() ? (short)0x0400 : (short)0x80;
     /** 不透明类型的保守容量: glibc 2.39 的 posix_spawnattr_t 含两个 sigset_t(共 256 字节)加调度参数, 已超 256。 */
     private const int SpawnAttrBytes = 1024;
+    /** POSIX_SPAWN_SETSIGDEF and POSIX_SPAWN_SETSIGMASK have the same values in glibc and Darwin. */
+    private const short PosixSpawnSetSigDefault = 0x04;
+    private const short PosixSpawnSetSigMask = 0x08;
+    /** Capacity for an opaque sigset_t: glibc uses 128 bytes, Darwin 4. */
+    private const int SigsetBytes = 128;
+    private const int SigkillNumber = 9;
+    private static readonly int SigstopNumber = OperatingSystem.IsMacOS() ? 17 : 19;
     /** Darwin arm64 passes variadic arguments on the stack, so ioctl's argument has to follow the eight register arguments. */
     private static readonly bool VariadicArgumentsOnStack = OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
 
-    public static (int MasterFd, int Pid) Spawn(PtyStartInfo info)
+    public static (int MasterFd, int Pid) Spawn(PtyStartInfo info) => Spawn(info, terminal: true);
+
+    public static int SpawnBackground(PtyStartInfo info) => Spawn(info, terminal: false).Pid;
+
+    private static (int MasterFd, int Pid) Spawn(PtyStartInfo info, bool terminal)
     {
         // openpty cannot atomically set CLOEXEC: another PTY spawn must not inherit its still-open slave before the flags are set.
         using var spawnScope = SpawnGate.EnterScope();
         var allocated = new List<IntPtr>();
-        var (master, slave, slaveName) = OpenPty(info.Rows, info.Columns);
+        var (master, slave, slaveName) = terminal ? OpenPty(info.Rows, info.Columns) : (-1, -1, "/dev/null");
         try
         {
             var file = AllocAnsi(info.FileName);
@@ -73,12 +86,13 @@ internal static class UnixPtyNative
             // attr 是不透明类型, 尺寸随实现变化: 用零填充缓冲 + 官方 init/destroy 访问。
             var attributes = Marshal.AllocHGlobal(SpawnAttrBytes);
             Marshal.Copy(new byte[SpawnAttrBytes], 0, attributes, SpawnAttrBytes);
-            var attributesReady = posix_spawnattr_init(attributes) == 0;
-            if (attributesReady)
-                posix_spawnattr_setflags(attributes, PosixSpawnSetsid);
+            var attributesReady = false;
             try
             {
-                // 用 addopen 而不是 adddup2: 子进程以新会话首进程身份 open 从端, 内核才会把该 tty 设为其控制终端。
+                ThrowIfSpawnActionError(posix_spawnattr_init(attributes), "posix_spawnattr_init");
+                attributesReady = true;
+                ConfigureSpawnAttributes(attributes, allocated);
+                // Opening the PTY slave after setsid supplies a controlling terminal; background daemons instead open /dev/null.
                 ThrowIfSpawnActionError(
                     posix_spawn_file_actions_addopen(ref actions, 0, slavePath, ORdwr, 0),
                     "posix_spawn_file_actions_addopen(stdin)");
@@ -98,7 +112,7 @@ internal static class UnixPtyNative
                     out var pid,
                     file,
                     ref actions,
-                    attributesReady ? attributes : IntPtr.Zero,
+                    attributes,
                     argv,
                     envp);
                 if (spawnError != 0)
@@ -116,14 +130,37 @@ internal static class UnixPtyNative
         }
         catch
         {
-            close(master);
+            if (master >= 0)
+                close(master);
             throw;
         }
         finally
         {
-            close(slave);
+            if (slave >= 0)
+                close(slave);
             FreeAll(allocated);
         }
+    }
+
+    /**
+     * New session, plus a clean signal state: a child inherits ignored dispositions and the blocked mask across exec.
+     * A dsharp started by `cmd &` in a script or by a CI job ignores SIGINT, so without the reset Ctrl+C never interrupts the terminal's programs.
+     */
+    private static void ConfigureSpawnAttributes(IntPtr attributes, List<IntPtr> allocated)
+    {
+        var defaults = Marshal.AllocHGlobal(SigsetBytes);
+        allocated.Add(defaults);
+        var mask = Marshal.AllocHGlobal(SigsetBytes);
+        allocated.Add(mask);
+        sigfillset(defaults);
+        sigdelset(defaults, SigkillNumber);
+        sigdelset(defaults, SigstopNumber);
+        sigemptyset(mask);
+        posix_spawnattr_setsigdefault(attributes, defaults);
+        posix_spawnattr_setsigmask(attributes, mask);
+        ThrowIfSpawnActionError(
+            posix_spawnattr_setflags(attributes, (short)(PosixSpawnSetsid | PosixSpawnSetSigDefault | PosixSpawnSetSigMask)),
+            "posix_spawnattr_setflags");
     }
 
     private static (int Master, int Slave, string SlaveName) OpenPty(int rows, int cols)
@@ -207,7 +244,8 @@ internal static class UnixPtyNative
             throw new Win32Exception(Marshal.GetLastWin32Error(), "kill(SIGKILL) failed");
     }
 
-    public static bool TryWait(int pid, out int exitCode)
+    /** Whether the child has ended; its exit code is null when it was reaped elsewhere (ECHILD, e.g. SIGCHLD is ignored) and the status is lost. */
+    public static bool TryWait(int pid, out int? exitCode)
     {
         var result = waitpid(pid, out var status, Wnohang);
         if (result == pid)
@@ -216,8 +254,8 @@ internal static class UnixPtyNative
             return true;
         }
 
-        exitCode = 0;
-        return false;
+        exitCode = null;
+        return result == -1 && Marshal.GetLastPInvokeError() == Echild;
     }
 
     private static int DecodeExitStatus(int status)
@@ -341,6 +379,21 @@ internal static class UnixPtyNative
 
     [DllImport("libc", EntryPoint = "ioctl", SetLastError = true)]
     private static extern int ioctlCloseOnExec(int fd, ulong request);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int posix_spawnattr_setsigdefault(IntPtr attributes, IntPtr signals);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int posix_spawnattr_setsigmask(IntPtr attributes, IntPtr signals);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int sigfillset(IntPtr signals);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int sigemptyset(IntPtr signals);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int sigdelset(IntPtr signals, int signal);
 
     [DllImport("libc", SetLastError = true)]
     private static extern int close(int fd);

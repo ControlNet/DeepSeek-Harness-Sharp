@@ -103,6 +103,13 @@ public sealed class FinishReasonJsonConverter : JsonConverter<FinishReason>
 
 public sealed record ReplayEnvelope(JsonElement Response, IReadOnlyList<JsonElement>? Blocks = null);
 
+/** Discriminators consumed by stream readers as well as browser protocol metadata. */
+public static class StreamChunkTypes
+{
+    public const string TextDelta = "text-delta";
+    public const string ReasoningDelta = "reasoning-delta";
+}
+
 [JsonConverter(typeof(StreamChunkJsonConverter))]
 public abstract record StreamChunk
 {
@@ -115,12 +122,12 @@ public abstract record StreamChunk
 
     public sealed record TextDelta(int Index, string Text) : StreamChunk
     {
-        public override string Type => "text-delta";
+        public override string Type => StreamChunkTypes.TextDelta;
     }
 
     public sealed record ReasoningDelta(int Index, string Text) : StreamChunk
     {
-        public override string Type => "reasoning-delta";
+        public override string Type => StreamChunkTypes.ReasoningDelta;
     }
 
     public sealed record ToolCallDelta(int Index, ToolCallId Id, string? Name, string ArgumentsDelta) : StreamChunk
@@ -155,8 +162,8 @@ public sealed class StreamChunkJsonConverter : JsonConverter<StreamChunk>
         return type switch
         {
             "block-start" => new StreamChunk.BlockStart(Index(), root.GetProperty("blockType").GetString() ?? ""),
-            "text-delta" => new StreamChunk.TextDelta(Index(), root.GetProperty("text").GetString() ?? ""),
-            "reasoning-delta" => new StreamChunk.ReasoningDelta(Index(), root.GetProperty("text").GetString() ?? ""),
+            StreamChunkTypes.TextDelta => new StreamChunk.TextDelta(Index(), root.GetProperty("text").GetString() ?? ""),
+            StreamChunkTypes.ReasoningDelta => new StreamChunk.ReasoningDelta(Index(), root.GetProperty("text").GetString() ?? ""),
             "tool-call-delta" => new StreamChunk.ToolCallDelta(
                 Index(),
                 ToolCallId.Create(root.GetProperty("id").GetString() ?? throw new JsonException("tool-call-delta missing id")),

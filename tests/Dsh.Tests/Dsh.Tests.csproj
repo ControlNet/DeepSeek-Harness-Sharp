@@ -27,10 +27,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 
@@ -65,6 +61,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\Dsh.WebHost\Dsh.WebHost.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Account\Dsh.Account.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Board\Dsh.Board.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Llm\Dsh.Llm.csproj" />
@@ -115,10 +112,16 @@
     <ProjectReference Include="..\..\src\Dsh.Pty\Dsh.Pty.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Transport\Dsh.Transport.csproj" />
     <ProjectReference Include="..\..\src\Dsh.RemoteHost\Dsh.RemoteHost.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.GitInspect\Dsh.GitInspect.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.Notifications\Dsh.Notifications.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.AgentAdapters\Dsh.AgentAdapters.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.WebBridge\Dsh.WebBridge.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.Fleet\Dsh.Fleet.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.Fleet.Client\Dsh.Fleet.Client.csproj" />
     <ProjectReference Include="..\..\Dsh.Host\Dsh.Host.csproj" />
     <ProjectReference Include="..\..\DeepSeek-Harness-Sharp\DeepSeek-Harness-Sharp.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Dsh.Gui\Dsh.Gui.csproj" />
-    <ProjectReference Include="..\..\src\Dsh.Plugins.Generator\Dsh.Plugins.Generator.csproj" />
+    <ProjectReference Update="..\..\src\Dsh.Plugins.Generator\Dsh.Plugins.Generator.csproj" ReferenceOutputAssembly="true" />
   </ItemGroup>
 
   <!-- Keep the child executable's complete runtime closure separate from the test host's shared-framework dependencies. -->

@@ -35,7 +35,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
           fetch-depth: 0
+      - name: 校验检出提交包含当前 PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
       - name: 根据变更选择作业
         id: select
         shell: bash
@@ -43,7 +50,7 @@ jobs:
           python3 scripts/select-ci.py
           --event '${{ github.event_name }}'
           --base '${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}'
-          --head '${{ github.sha }}'
+          --head HEAD
           --aot '${{ inputs.aot == true }}'
           --output "$GITHUB_OUTPUT"
 
@@ -55,13 +62,99 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+      - name: 校验检出提交包含当前 PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
       - uses: docker://rhysd/actionlint:1.7.12
       - name: 验证变更选择边界
         run: python3 -m unittest discover -s tests/ci -v
 
+  iroh-component:
+    name: 准备原生 iroh-ssh（${{ matrix.rid }}）
+    needs: changes
+    if: needs.changes.outputs.tests == 'true' || needs.changes.outputs.jit == 'true' || needs.changes.outputs.aot == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+      - name: 校验检出提交包含当前 PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
+      - name: 缓存固定源码构建的 iroh-ssh
+        id: iroh-cache
+        uses: actions/cache@v4
+        with:
+          path: artifacts/iroh-ssh-component.tar
+          key: iroh-ssh-tar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-iroh-ssh.*', 'scripts/iroh-ssh-readiness.patch') }}
+      - name: 解包已缓存的原生组件
+        if: steps.iroh-cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/iroh-ssh | Out-Null
+          $tar = if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe' } else { 'tar' }
+          & $tar -xf artifacts/iroh-ssh-component.tar -C artifacts/iroh-ssh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Cold native compilation happens once per platform, outside consumer budgets.
+      - name: 构建固定源码的原生组件
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -NoProfile -File scripts/fetch-iroh-ssh.ps1 -Rid "${{ matrix.rid }}"
+          else
+            bash scripts/fetch-iroh-ssh.sh "${{ matrix.rid }}"
+          fi
+      - name: 校验 macOS 原生可执行文件的本地网络用途声明
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          otool -X -P artifacts/iroh-ssh/osx-arm64/iroh-ssh > artifacts/iroh-ssh.Info.plist
+          plutil -lint artifacts/iroh-ssh.Info.plist
+          plutil -extract NSLocalNetworkUsageDescription raw artifacts/iroh-ssh.Info.plist
+          plutil -extract NSBonjourServices.0 raw artifacts/iroh-ssh.Info.plist
+      - name: 打包原生组件（保留 Unix 执行权限）
+        shell: pwsh
+        run: |
+          $rid = '${{ matrix.rid }}'
+          $files = @(Get-ChildItem -LiteralPath "artifacts/iroh-ssh/$rid" -File |
+            Where-Object { $_.Name -notin @('source.tar.gz', '.acquire.lock') } |
+            ForEach-Object { "$rid/$($_.Name)" })
+          $tar = if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe' } else { 'tar' }
+          & $tar -cf artifacts/iroh-ssh-component.tar -C artifacts/iroh-ssh @files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iroh-ssh-${{ matrix.os }}
+          path: artifacts/iroh-ssh-component.tar
+          if-no-files-found: error
+          retention-days: 7
+
   test:
     name: 测试（${{ matrix.platform.os }}，${{ matrix.suite }}）
-    needs: changes
+    needs: [changes, iroh-component]
     if: needs.changes.outputs.tests == 'true'
     strategy:
       fail-fast: false
@@ -91,16 +184,14 @@ jobs:
       suite: ${{ matrix.suite }}
 
   build:
-    name: 发布校验（${{ matrix.os }}，${{ matrix.project }}，JIT）
-    needs: changes
+    name: 三入口发布验收（${{ matrix.rid }}，JIT）
+    needs: [changes, iroh-component]
     if: needs.changes.outputs.jit == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-        project: [DeepSeek-Harness-Sharp, DshGuiHost]
         include:
           - os: windows-latest
             rid: win-x64
@@ -113,11 +204,32 @@ jobs:
             native-cc: clang
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+      - name: 校验检出提交包含当前 PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
           cache: true
           cache-dependency-path: '**/*.csproj'
+      - name: 获取本轮构建的原生 iroh-ssh
+        uses: actions/download-artifact@v4
+        with:
+          name: iroh-ssh-${{ matrix.os }}
+          path: artifacts
+      - name: 解包本轮原生组件（不使用消费者缓存）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/iroh-ssh | Out-Null
+          $tar = if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe' } else { 'tar' }
+          & $tar -xf artifacts/iroh-ssh-component.tar -C artifacts/iroh-ssh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
         shell: bash
         run: |
@@ -127,21 +239,31 @@ jobs:
           else
             bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
           fi
-      - name: JIT 发布校验（Release + 裁剪 + 自包含）
-        run: >
-          dotnet publish ${{ matrix.project }}/${{ matrix.project }}.csproj
-          -c Release -r ${{ matrix.rid }}
-          -p:DebugSymbols=false -p:DebugType=none
-          -p:DshNativeCompiler=${{ matrix.native-cc }}
-          --nologo -v m
-      - name: 校验发布产物含原生故障遏制库
+      - name: 依次发布三个入口并校验原生故障遏制库（Release + 裁剪 + 自包含）
         shell: bash
         run: |
           set -euo pipefail
-          PUB="${{ matrix.project }}/bin/Release/net10.0/${{ matrix.rid }}/publish"
-          printf '%s\n' "$PUB"/* | grep -E '/(lib)?dsh_plugin_guard\.(dll|so|dylib)$' || { echo "::error::发布产物缺少 dsh_plugin_guard"; exit 1; }
+          FILE=iroh-ssh
+          if [ "$RUNNER_OS" = "Windows" ]; then FILE=iroh-ssh.exe; fi
+          for PROJECT in DeepSeek-Harness-Sharp DshGuiHost Dsh.WebHost; do
+            dotnet publish "$PROJECT/$PROJECT.csproj" \
+              -c Release -r ${{ matrix.rid }} \
+              -p:DebugSymbols=false -p:DebugType=none \
+              -p:DshNativeCompiler=${{ matrix.native-cc }} \
+              --nologo -v m
+            PUB="$PROJECT/bin/Release/net10.0/${{ matrix.rid }}/publish"
+            test ! -d "artifacts/iroh-ssh/${{ matrix.rid }}/target"
+            test ! -f "artifacts/iroh-ssh/${{ matrix.rid }}/source.tar.gz"
+            "$PUB/tools/$FILE" version
+            test -s "$PUB/tools/iroh-ssh.LICENSE.txt"
+            test -s "$PUB/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
+            test -s "$PUB/tools/iroh-ssh.NOTICE.txt"
+            cmp "artifacts/iroh-ssh/${{ matrix.rid }}/$FILE" "$PUB/tools/$FILE"
+            cmp scripts/iroh-ssh-readiness.patch "$PUB/tools/iroh-ssh.READINESS.patch"
+            printf '%s\n' "$PUB"/* | grep -E '/(lib)?dsh_plugin_guard\.(dll|so|dylib)$' || { echo "::error::$PROJECT 发布产物缺少 dsh_plugin_guard"; exit 1; }
+          done
       - name: GUI 主线程冒烟（macOS）
-        if: runner.os == 'macOS' && matrix.project == 'DshGuiHost'
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
@@ -149,7 +271,8 @@ jobs:
           EXE="$PUB/dsh-gui"
           test -f "$EXE" || { echo "::error::找不到 $EXE"; exit 1; }
           chmod +x "$EXE"
-          DSH_HOME="$(mktemp -d)" "$EXE" > gui-smoke.out 2>&1 &
+          mkdir -p artifacts/gui-smoke
+          DSH_HOME="$(mktemp -d "$PWD/artifacts/gui-smoke/homeXXXXXX")" "$EXE" > gui-smoke.out 2>&1 &
           GUIPID=$!
           ( sleep 30; kill -9 "$GUIPID" 2>/dev/null ) &
           WATCH=$!
@@ -163,10 +286,37 @@ jobs:
             exit 1
           fi
           echo "macOS GUI 冒烟通过（未见 Dispatcher 主线程异常）"
+      - name: 同一产品三入口真实 WebHost 与隔离验收
+        shell: bash
+        run: |
+          set -euo pipefail
+          pwsh -NoProfile -File scripts/smoke-web-host.ps1 \
+            -WebPublishDir "Dsh.WebHost/bin/Release/net10.0/${{ matrix.rid }}/publish" \
+            -TuiPublishDir "DeepSeek-Harness-Sharp/bin/Release/net10.0/${{ matrix.rid }}/publish" \
+            -GuiPublishDir "DshGuiHost/bin/Release/net10.0/${{ matrix.rid }}/publish"
+      - name: 归档三个入口的独立完整发布根
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          TAR="tar"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"
+          fi
+          "$TAR" -cf "artifacts/${{ matrix.rid }}-cli.tar" -C "DeepSeek-Harness-Sharp/bin/Release/net10.0/${{ matrix.rid }}/publish" .
+          "$TAR" -cf "artifacts/${{ matrix.rid }}-gui.tar" -C "DshGuiHost/bin/Release/net10.0/${{ matrix.rid }}/publish" .
+          "$TAR" -cf "artifacts/${{ matrix.rid }}-web.tar" -C "Dsh.WebHost/bin/Release/net10.0/${{ matrix.rid }}/publish" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jit-${{ matrix.rid }}
+          path: artifacts/${{ matrix.rid }}-*.tar
+          if-no-files-found: error
+          retention-days: 1
+
 
   aot:
     name: AOT 构建（${{ matrix.rid }}）
-    needs: changes
+    needs: [changes, iroh-component]
     if: needs.changes.outputs.aot == 'true'
     strategy:
       fail-fast: false
@@ -186,7 +336,7 @@ jobs:
 
   result:
     name: CI 结果
-    needs: [changes, validate, test, build, aot]
+    needs: [changes, validate, iroh-component, test, build, aot]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

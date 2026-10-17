@@ -41,9 +41,8 @@ def classify_changes(paths, event, aot=False, full=False):
         elif is_documentation(path) or path in LIGHT_WORKFLOWS:
             continue
         elif path.startswith("tests/Dsh.Tests/"):
-            suites.update(SUITES[:-1])
-        elif path == "scripts/check-tui-raw-mode.py":
-            suites.add("raw")
+            # This project owns the native raw tests and their shared fixtures.
+            suites.update(SUITES)
         else:
             suites.update(SUITES)
             jit = True

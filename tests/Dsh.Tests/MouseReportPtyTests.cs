@@ -16,11 +16,10 @@ public class MouseReportPtyTests
     public async Task Reports_Never_Pollute_Input_And_Drag_Resizes_Divider()
     {
         using var harness = await PtyTuiHarness.StartAsync();
-        if (harness is null)
-            return;
 
         var cancellationToken = TestContext.Current.CancellationToken;
         await harness.WaitForAsync("快捷键", TimeSpan.FromSeconds(150));
+        Assert.Equal(">", await WaitForInputAsync(harness, ">"));
 
         // ① 夹具起的只是 proxy; 常驻 daemon 会话以本夹具 home 为家(见 PtyTuiHarness.StopResidentSessions)。
         //    归属由结构化 Home 字段标识(不靠命令行文本); 普通命令会话必须为 false(mouse 只给常驻 TUI),
@@ -61,7 +60,7 @@ public class MouseReportPtyTests
 
         // ③ 报文期间照常打字: 输入行只能有我们打进的字。
         await harness.WriteTextAsync("ok");
-        await Task.Delay(250, cancellationToken);
+        await WaitForInputAsync(harness, "> ok");
         harness.SaveTranscript();
 
         var input = InputRow(harness.ReadScreen()).Trim();
@@ -72,7 +71,7 @@ public class MouseReportPtyTests
         //     会话又按 UTF-8 解释 → 输入行与发出去的内容都是乱码。
         await ClearInputAsync(harness);
         await harness.WriteTextAsync("测试");
-        await Task.Delay(250, cancellationToken);
+        await WaitForInputAsync(harness, ">测试");
         // 夹具的屏幕模型给全角字符留了一格占位, 去掉空格再比对。
         Assert.Equal(">测试", InputRow(harness.ReadScreen()).Trim().Replace(" ", string.Empty));
 
@@ -132,6 +131,22 @@ public class MouseReportPtyTests
         }
 
         Assert.Equal(">", InputRow(harness.ReadScreen()).Trim());
+    }
+
+    /** 等输入行实际重绘, 而不是把写入 PTY 后的固定延迟当成应用已处理输入。 */
+    private static async Task<string> WaitForInputAsync(PtyTuiHarness harness, string expected)
+    {
+        var input = "";
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            input = InputRow(harness.ReadScreen()).Trim();
+            if (input.Replace(" ", string.Empty) == expected.Replace(" ", string.Empty))
+                return input;
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+        }
+
+        Assert.Fail($"输入行未重绘为 {expected}: {input}");
+        return input;
     }
 
     /** 轮询 daemon 里本夹具会话的尺寸, 直到等于期望值(尺寸上报是异步的)。 */

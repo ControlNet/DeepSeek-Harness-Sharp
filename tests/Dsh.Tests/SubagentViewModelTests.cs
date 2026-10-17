@@ -1,7 +1,8 @@
-using Avalonia.Threading;
 using Dsh.Core;
 using Dsh.Gui.ViewModels;
 using Dsh.Llm;
+using Dsh.RemoteHost;
+using Dsh.Subagent;
 
 namespace Dsh.Tests;
 
@@ -10,7 +11,7 @@ namespace Dsh.Tests;
 public sealed class SubagentViewModelTests
 {
     [Fact]
-    public async Task Refresh_ListsPersistentDescendants_WithDepthAndLabel()
+    public async Task Refresh_ListsPersistentDescendants_WithDepthAndLabel() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var store = environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
@@ -18,8 +19,9 @@ public sealed class SubagentViewModelTests
         var first = SubagentTestData.AddChild(store, parent, "alpha", createdAt: 1);
         SubagentTestData.AddChild(store, first.Id, "beta", createdAt: 2, depth: 2);
 
-        using var panel = new SubagentPanelViewModel(environment.App.Ctx);
+        using var panel = new SubagentPanelViewModel(await environment.OpenChatAsync());
         panel.SetRoot(parent);
+        await panel.RefreshAsync();
 
         Assert.Equal(2, panel.Nodes.Count);
         Assert.Equal(["alpha", "beta"], panel.Nodes.Select(node => node.DisplayName));
@@ -29,46 +31,93 @@ public sealed class SubagentViewModelTests
         Assert.False(panel.Nodes[1].HasChildren);
         Assert.True(panel.HasNodes);
         Assert.Equal("one-shot", panel.Nodes[0].ModeLabel);
-    }
+    });
 
     [Fact]
-    public async Task StartAndEnd_FlipLiveStateAndBadge()
+    public async Task Refresh_OverlappingCallers_AwaitPublishedNodesAndEvents() => await HeadlessGui.RunAsync(async () =>
+    {
+        using var environment = await GuiTestEnvironment.CreateAsync();
+        var store = environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
+        var child = SubagentTestData.AddChild(store, environment.Agent.Id, "research", createdAt: 1, withToolCall: true);
+        using var panel = new SubagentPanelViewModel(await environment.OpenChatAsync());
+        panel.SetRoot(environment.Agent.Id);
+
+        // Real Host RPCs yield to the dispatcher: a later refresh must join, not invalidate, this caller.
+        var first = panel.RefreshAsync();
+        var overlapping = panel.RefreshAsync();
+        await first;
+
+        Assert.Equal(child.Id, Assert.Single(panel.Nodes).Id);
+        var events = panel.FindEvents(child.Id);
+        Assert.NotNull(events);
+        Assert.Contains(events, item => item.Data is ToolCallPayload { Name: "bash" });
+        Assert.Contains(events, item => item.Data is ToolResultPayload result &&
+            MessageText.Flatten(result.Message.Content).Contains("child-out"));
+
+        await overlapping;
+
+        Assert.Equal(child.Id, Assert.Single(panel.Nodes).Id);
+        var published = panel.FindEvents(child.Id);
+        Assert.NotNull(published);
+        Assert.Equal(events.Select(item => item.Seq), published.Select(item => item.Seq));
+        Assert.Contains(published, item => item.Data is ToolCallPayload { Name: "bash" });
+        Assert.Contains(published, item => item.Data is ToolResultPayload result &&
+            MessageText.Flatten(result.Message.Content).Contains("child-out"));
+    });
+
+    [Fact]
+    public async Task StartAndEnd_FlipLiveStateAndBadge() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var store = environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
         var parent = environment.Agent.Id;
-        var first = SubagentTestData.AddChild(store, parent, "alpha", createdAt: 1);
         SubagentTestData.AddChild(store, parent, "beta", createdAt: 2);
 
-        using var panel = new SubagentPanelViewModel(environment.App.Ctx);
+        using var panel = new SubagentPanelViewModel(await environment.OpenChatAsync());
         panel.SetRoot(parent);
+        await panel.RefreshAsync();
         Assert.All(panel.Nodes, node => Assert.False(node.IsLive));
         Assert.Equal("0", panel.Badge);
 
-        panel.NotifyStart(first.Id);
-        Assert.True(panel.Nodes.Single(node => node.Id == first.Id).IsLive);
-        Assert.Equal(1, panel.LiveCount);
-        Assert.Equal("1", panel.Badge);
+        var runtime = environment.App.Ctx.Get<SubagentRuntime>(SubagentRuntime.ServiceName)!;
+        var run = await runtime.StartAsync("spawn", new SubagentStartRequest
+        {
+            Parent = environment.Agent,
+            Label = "alpha",
+            Prompt = [new TextBlock("badge lifecycle")],
+            Signal = TestContext.Current.CancellationToken,
+        });
+        try
+        {
+            // Live ownership lasts until disposal; completing a model request is not a precondition for the badge.
+            await store.Flush(run.LocalAgent!.Session);
+            await panel.RefreshAsync();
+            Assert.True(panel.Nodes.Single(node => node.Id == run.Id).IsLive);
+            Assert.Equal(1, panel.LiveCount);
+            Assert.Equal("1", panel.Badge);
+        }
+        finally { await run.DisposeAsync(); }
 
-        panel.NotifyEnd(first.Id);
-        Assert.False(panel.Nodes.Single(node => node.Id == first.Id).IsLive);
+        await panel.RefreshAsync();
+        Assert.False(panel.Nodes.Single(node => node.Id == run.Id).IsLive);
         Assert.Equal(0, panel.LiveCount);
         Assert.Equal("0", panel.Badge);
-    }
+    });
 
     [Fact]
-    public async Task Open_RendersChildTranscript_AndCloseHides()
+    public async Task Open_RendersChildTranscript_AndCloseHides() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var store = environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
         var parent = environment.Agent.Id;
         SubagentTestData.AddChild(store, parent, "alpha", createdAt: 1, withToolCall: true);
 
-        using var panel = new SubagentPanelViewModel(environment.App.Ctx);
+        using var panel = new SubagentPanelViewModel(await environment.OpenChatAsync());
         panel.SetRoot(parent);
+        await panel.RefreshAsync();
         Assert.False(panel.IsViewing);
 
-        panel.OpenCommand.Execute(panel.Nodes[0]);
+        await panel.OpenCommand.ExecuteAsync(panel.Nodes[0]);
 
         Assert.True(panel.IsViewing);
         var viewing = panel.Viewing;
@@ -80,10 +129,10 @@ public sealed class SubagentViewModelTests
         Assert.False(panel.IsViewing);
         Assert.Null(panel.Viewing);
         Assert.Null(panel.Current);
-    }
+    });
 
     [Fact]
-    public async Task PreviousNext_NavigatesSiblings()
+    public async Task PreviousNext_NavigatesSiblings() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var store = environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
@@ -92,43 +141,48 @@ public sealed class SubagentViewModelTests
         SubagentTestData.AddChild(store, parent, "b", createdAt: 2);
         SubagentTestData.AddChild(store, parent, "c", createdAt: 3);
 
-        using var panel = new SubagentPanelViewModel(environment.App.Ctx);
+        using var panel = new SubagentPanelViewModel(await environment.OpenChatAsync());
         panel.SetRoot(parent);
-        panel.OpenCommand.Execute(panel.Nodes[1]);
+        await panel.RefreshAsync();
+        await panel.OpenCommand.ExecuteAsync(panel.Nodes[1]);
 
         Assert.Equal("2 / 3", panel.PositionText);
         Assert.True(panel.CanPrevious);
         Assert.True(panel.CanNext);
 
         panel.NextCommand.Execute(null);
+        await GuiTestEnvironment.WaitForAsync(panel, () => panel.PositionText == "3 / 3");
         Assert.Equal("c", panel.Current!.DisplayName);
         Assert.False(panel.CanNext);
 
         panel.PreviousCommand.Execute(null);
+        await GuiTestEnvironment.WaitForAsync(panel, () => panel.PositionText == "2 / 3");
         panel.PreviousCommand.Execute(null);
+        await GuiTestEnvironment.WaitForAsync(panel, () => panel.PositionText == "1 / 3");
         Assert.Equal("a", panel.Current!.DisplayName);
         Assert.False(panel.CanPrevious);
-    }
+    });
 
     [Fact]
-    public async Task View_NeverWritesToChildSession()
+    public async Task View_NeverWritesToChildSession() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var store = environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
         var parent = environment.Agent.Id;
         var child = SubagentTestData.AddChild(store, parent, "alpha", createdAt: 1, withToolCall: true);
 
-        using var panel = new SubagentPanelViewModel(environment.App.Ctx);
+        using var panel = new SubagentPanelViewModel(await environment.OpenChatAsync());
         panel.SetRoot(parent);
+        await panel.RefreshAsync();
         var before = child.Seq;
 
-        panel.OpenCommand.Execute(panel.Nodes[0]);
+        await panel.OpenCommand.ExecuteAsync(panel.Nodes[0]);
         panel.NextCommand.Execute(null);
         panel.PreviousCommand.Execute(null);
         panel.CloseCommand.Execute(null);
 
         Assert.Equal(before, child.Seq);
-    }
+    });
 
     [Fact]
     public async Task LiveChildEvents_AppendToOpenView() => await HeadlessGui.RunAsync(async () =>
@@ -139,30 +193,34 @@ public sealed class SubagentViewModelTests
         var parent = environment.Agent.Id;
         var child = SubagentTestData.AddChild(store, parent, "alpha", createdAt: 1);
 
-        using var panel = new SubagentPanelViewModel(environment.App.Ctx);
+        await store.Flush(child);
+        store.Release(child.Id);
+        var chat = await environment.OpenChatAsync();
+        await (await chat.ClientAsync()).ResumeSessionAsync(child.Id.Value,
+            new RemoteModelSelection("test", "test-model"), null, TestContext.Current.CancellationToken);
+        var live = (AgentLoopAgent)environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(child.Id)!;
+        await live.WhenIdle();
+        child = live.Session;
+        using var panel = new SubagentPanelViewModel(chat);
         panel.SetRoot(parent);
-        panel.NotifyStart(child.Id);
-        panel.OpenCommand.Execute(panel.Nodes[0]);
-        var initial = panel.Viewing!.Messages.Count;
+        await panel.RefreshAsync();
+        await panel.OpenCommand.ExecuteAsync(panel.Nodes[0]);
 
         child.Append(new TurnStartPayload(1));
         child.Append(new ToolCallPayload(1, 1, ToolCallId.Create("call-live"), "bash", """{"command":"live"}"""));
-        for (var attempt = 0; attempt < 200 && panel.Viewing!.Messages.Count <= initial; attempt++)
-        {
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-            Dispatcher.UIThread.RunJobs();
-        }
+        await GuiTestEnvironment.WaitForAsync(panel.Viewing!.Messages,
+            () => panel.Viewing.Messages.Any(message => message.Text.Contains("live")));
 
         Assert.Contains(panel.Viewing!.Messages, message => message.Text.Contains("live"));
     });
 
     [Fact]
-    public async Task SubagentToolCall_RendersExpandableCard_WithInlineStream()
+    public async Task SubagentToolCall_RendersExpandableCard_WithInlineStream() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var store = environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!;
         var parent = environment.Agent.Session;
-        SubagentTestData.AddChild(store, parent.Id, "research", createdAt: 1, withToolCall: true);
+        var child = SubagentTestData.AddChild(store, parent.Id, "research", createdAt: 1, withToolCall: true);
         parent.Append(new TurnStartPayload(1));
         var callSeq = parent.Seq;
         parent.Append(new ToolCallPayload(1, 1, ToolCallId.Create("call-sub"), "subagent",
@@ -174,7 +232,8 @@ public sealed class SubagentViewModelTests
             [callSeq]);
         parent.Append(new TurnEndPayload(1, new TurnEndReason.Completed()));
 
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
+        await viewModel.Subagents.RefreshAsync();
 
         var card = Assert.Single(viewModel.Messages, message => message.IsSubagentTool);
         Assert.Contains("research", card.Text);
@@ -185,7 +244,30 @@ public sealed class SubagentViewModelTests
 
         Assert.True(card.IsExpanded);
         Assert.True(card.ShowSubagentStream);
+        Assert.Equal(child.Id, card.SubagentSessionId);
         Assert.Contains(card.SubagentStream, message => message.Text.Contains("bash"));
         Assert.Contains(card.SubagentStream, message => message.Text.Contains("child-out"));
-    }
+
+        // The refresh owner must still reload live child events after the initial card snapshot.
+        store.Release(child.Id);
+        var chat = await environment.OpenChatAsync();
+        await (await chat.ClientAsync()).ResumeSessionAsync(child.Id.Value,
+            new RemoteModelSelection("test", "test-model"), null, TestContext.Current.CancellationToken);
+        var live = (AgentLoopAgent)environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(child.Id)!;
+        await live.WhenIdle();
+        var callId = ToolCallId.Create("call-inline-live");
+        live.Session.Append(new TurnStartPayload(2));
+        var liveCallSeq = live.Session.Seq;
+        live.Session.Append(new ToolCallPayload(2, 1, callId, "bash", """{"command":"inline-live"}"""));
+        live.Session.Append(
+            new ToolResultPayload(2, 1, MessageFactory.CreateToolResultMessage(callId, [new TextBlock("inline-live-out")], false)),
+            new SurfaceOp.Append(),
+            [liveCallSeq]);
+        await viewModel.Subagents.RefreshAsync();
+
+        Assert.True(card.ShowSubagentStream);
+        Assert.Contains(card.SubagentStream, message => message.Kind == MessageKind.Tool && message.Text.Contains("inline-live"));
+        Assert.Contains(card.SubagentStream, message => message.Kind == MessageKind.Result && message.Text.Contains("inline-live-out"));
+        Assert.Contains(card.SubagentStream, message => message.Text.Contains("child-out"));
+    });
 }

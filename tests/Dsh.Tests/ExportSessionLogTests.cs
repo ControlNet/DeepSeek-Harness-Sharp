@@ -1,5 +1,4 @@
-﻿using Avalonia.Threading;
-using Dsh.Core;
+﻿using Dsh.Core;
 using Dsh.Gui.ViewModels;
 using Dsh.Llm;
 
@@ -25,8 +24,10 @@ public sealed class ExportSessionLogTests
             new TokenUsage(10, 5)),
             new SurfaceOp.Append());
         var persistence = environment.App.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)!;
-        var expected = await WaitForStoredEvents(persistence, environment.Agent.Id, 3);
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        await environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(session);
+        using var stored = persistence.Open(environment.Agent.Id, SessionAccess.Read);
+        var expected = stored.Read();
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         await viewModel.ExportSessionLogCommand.ExecuteAsync(null);
 
@@ -38,17 +39,4 @@ public sealed class ExportSessionLogTests
             Assert.NotNull(DshJson.Deserialize<SessionEvent>(line));
     });
 
-    private static async Task<IReadOnlyList<SessionEvent>> WaitForStoredEvents(ISessionPersistence persistence, SessionId id, int count)
-    {
-        for (var attempt = 0; attempt < 500; attempt++)
-        {
-            using var handle = persistence.Open(id, SessionAccess.Read);
-            var events = handle.Read();
-            if (events.Count >= count)
-                return events;
-            Dispatcher.UIThread.RunJobs();
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-        }
-        throw new TimeoutException($"session \"{id}\" 持久化事件数未达到 {count}");
-    }
 }

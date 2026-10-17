@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>dsharp sessions</title>
+  <link rel="stylesheet" href="vendor/xterm-6.0.0/xterm.css">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <button id="nav-toggle" class="icon-button nav-toggle" type="button" aria-label="Menu" aria-expanded="false" aria-controls="nav">☰</button>
+    <a class="brand" href="#/">dsharp</a>
+    <p id="status" class="status" data-state="starting" role="status">Starting…</p>
+    <button id="theme-toggle" class="icon-button" type="button" aria-label="Switch theme">◐</button>
+  </header>
+
+  <form id="login" class="login card" hidden>
+    <h1>Log in</h1>
+    <label for="token">Web access token</label>
+    <input id="token" name="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+    <button class="primary" type="submit">Log in</button>
+    <p class="hint">Run <code>dsharp host web --print-token</code> on the machine running the bridge to see the token.</p>
+    <p id="login-error" class="error" hidden></p>
+  </form>
+
+  <div id="shell" class="shell" hidden>
+    <nav id="nav" class="nav" aria-label="Main">
+      <a href="#/" data-route="dashboard">Dashboard</a>
+      <a href="#/pending" data-route="pending">Pending <span id="pending-count" class="badge attention" hidden>0</span></a>
+      <a href="#/notifications" data-route="notifications">Notifications <span id="unread-count" class="badge" hidden>0</span></a>
+      <a href="#/new" data-route="new">New session</a>
+    </nav>
+    <main id="view" class="view"></main>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

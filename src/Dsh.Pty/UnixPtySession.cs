@@ -7,9 +7,9 @@ internal sealed class UnixPtySession : IDisposable
     private readonly int _pid;
     private readonly SafeFileHandle _handle;
     private readonly FileStream _stream;
-    private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
     private static readonly TimeSpan TerminateGrace = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ReapPollInterval = TimeSpan.FromMilliseconds(50);
     private bool _stopping;
     private bool _disposed;
 
@@ -18,7 +18,7 @@ internal sealed class UnixPtySession : IDisposable
         _pid = pid;
         _handle = handle;
         _stream = stream;
-        Completion = MonitorAsync();
+        Completion = WaitForExitAsync(pid);
     }
 
     public Task<int?> Completion { get; }
@@ -56,11 +56,11 @@ internal sealed class UnixPtySession : IDisposable
 
         UnixPtyNative.Terminate(_pid);
         var monitor = Completion;
-        if (await Task.WhenAny(monitor, Task.Delay(TerminateGrace)) != monitor)
+        if (await Task.WhenAny(monitor, Task.Delay(TerminateGrace)).ConfigureAwait(false) != monitor)
         {
             UnixPtyNative.Kill(_pid);
-            // 有界等待: 某些平台/状态下 reap 迟迟不到, 不能无限等(否则调用方挂死); Dispose 会取消 _cts 收尾。
-            await Task.WhenAny(monitor, Task.Delay(TerminateGrace));
+            // 有界等待: 某些平台/状态下 reap 迟迟不到, 不能无限等(否则调用方挂死); Dispose 关掉主端后监视继续回收子进程。
+            await Task.WhenAny(monitor, Task.Delay(TerminateGrace)).ConfigureAwait(false);
         }
 
         Dispose();
@@ -75,30 +75,26 @@ internal sealed class UnixPtySession : IDisposable
             _disposed = true;
         }
 
-        _cts.Cancel();
         UnixPtyNative.Kill(_pid);
         _stream.Dispose();
         _handle.Dispose();
     }
 
-    private async Task<int?> MonitorAsync()
+    /**
+     * Polls until the child is reaped, also after Dispose.
+     * On macOS a killed child whose tty output nobody reads finishes exiting only when the master closes, and the monitor is its only reaper; stopping at Dispose left a zombie.
+     */
+    internal static async Task<int?> WaitForExitAsync(int pid)
     {
-        try
+        while (true)
         {
-            while (!_cts.IsCancellationRequested)
+            if (UnixPtyNative.TryWait(pid, out var exitCode))
             {
-                if (UnixPtyNative.TryWait(_pid, out var exitCode))
-                {
-                    return exitCode;
-                }
-
-                await Task.Delay(50, _cts.Token);
+                return exitCode;
             }
+
+            await Task.Delay(ReapPollInterval).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
-        {
-        }
-        return null;
     }
 
     private void ThrowIfDisposed()

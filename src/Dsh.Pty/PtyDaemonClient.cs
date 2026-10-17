@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Channels;
@@ -106,63 +105,23 @@ public static class PtyDaemonClient
         }
     }
 
-    /** 终端尺寸变化的比对间隔: ConPTY 的 resize 不会打断阻塞读, 只能定时比对客户端窗口尺寸。 */
-    private const int ConsoleSizePollMilliseconds = 200;
-
     /**
      * 终端形态独有的尺寸通道。attach 只上报一次尺寸, 之后用户改窗口大小不会再来任何事件,
      * 常驻 TUI 便一直按旧尺寸画(调大留白、调小被压)。这里定时比对并上报, daemon 落盘尺寸文件后会话重排。
      * 独立窗口(GPU)形态有自己的尺寸来源(窗口 OnResize), 不走这里。
      */
-    private static async Task WatchConsoleSizeAsync(string id, string socketPath, string? portFile, CancellationToken cancellationToken)
-    {
-        if (!TryReadConsoleSize(out var columns, out var rows))
-            return;
-        while (true)
+    private static Task WatchConsoleSizeAsync(string id, string socketPath, string? portFile, CancellationToken cancellationToken)
+        => ConsoleTunnel.WatchSizeAsync(async (columns, rows, token) =>
         {
-            await Task.Delay(ConsoleSizePollMilliseconds, cancellationToken);
-            if (!TryReadConsoleSize(out var currentColumns, out var currentRows))
-                continue;
-            if (currentColumns == columns && currentRows == rows)
-                continue;
-            (columns, rows) = (currentColumns, currentRows);
             try
             {
-                await ResizeAsync(id, rows, columns, socketPath, portFile, cancellationToken);
+                await ResizeAsync(id, rows, columns, socketPath, portFile, token);
             }
             catch (Exception error) when (error is IOException or SocketException or InvalidOperationException or PtyDaemonNotRunningException)
             {
-                // daemon 暂时不可用: 保留旧尺寸, 下一次轮询再试
+                // daemon 暂时不可用: 保留旧尺寸, 下一次变化再试
             }
-        }
-    }
-
-    private static bool TryReadConsoleSize(out int columns, out int rows)
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            (columns, rows) = UnixPtyNative.ReadWindowSize(1) ?? UnixPtyNative.ReadWindowSize(0) ?? (0, 0);
-            return rows >= 4 && columns >= 20;
-        }
-        if (Console.IsOutputRedirected)
-        {
-            columns = 0;
-            rows = 0;
-            return false;
-        }
-        try
-        {
-            columns = Console.WindowWidth;
-            rows = Console.WindowHeight;
-            return rows >= 4 && columns >= 20;
-        }
-        catch (Exception error) when (error is IOException or ArgumentOutOfRangeException)
-        {
-            columns = 0;
-            rows = 0;
-            return false;
-        }
-    }
+        }, cancellationToken, reportInitial: false);
 
     /** 把代理解析出的鼠标事件发给 daemon 注入会话; 失败只丢这一条, 绝不打断输入。 */
     private static async Task ForwardMouseAsync(string id, ChannelReader<PtyMouseEvent> events, CancellationToken cancellationToken)
@@ -360,22 +319,11 @@ public static class PtyDaemonClient
     {
         var executable = Environment.ProcessPath
             ?? throw new InvalidOperationException("failed to resolve the current executable to start dsharp tui daemon");
-        var startInfo = new ProcessStartInfo(executable)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
+        List<string> arguments = [];
         if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
-            startInfo.ArgumentList.Add(Environment.GetCommandLineArgs()[0]);
-        startInfo.ArgumentList.Add("tui");
-        startInfo.ArgumentList.Add("daemon");
-        var process = Process.Start(startInfo);
-        if (process is null)
-            throw new InvalidOperationException("failed to start dsharp tui daemon");
-        _ = process;
+            arguments.Add(Environment.GetCommandLineArgs()[0]);
+        arguments.AddRange(["tui", "daemon"]);
+        _ = BackgroundProcess.Start(executable, arguments, Directory.GetCurrentDirectory(), new Dictionary<string, string?>());
     }
 
     /**
@@ -506,7 +454,7 @@ public static class PtyDaemonClient
         string? portFile,
         CancellationToken cancellationToken)
     {
-        if (!TryReadConsoleSize(out var columns, out var rows))
+        if (ConsoleTunnel.ReadSize() is not var (columns, rows))
             return;
         try
         {

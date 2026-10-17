@@ -1,72 +1,50 @@
 using Dsh.Core;
 using Dsh.Llm;
-using Dsh.Runtime;
+using Dsh.RemoteHost;
 
 namespace Dsh.Gui.Services;
 
-/** GUI 侧子代理查询: 经 ISubagentService 契约消费进程内子代理的持久化子树与 SessionStore, 不引入新协议; 服务缺失时退化为空。 */
-public sealed class SubagentDirectory
+/** Read-only subagent queries are served by the same Host that owns the parent chat. */
+public sealed class SubagentDirectory(HostChatSession chat)
 {
-    private readonly ISubagentService? _runtime;
-    private readonly SessionStore? _store;
+    private readonly Dictionary<SessionId, IReadOnlyList<SessionEvent>> _events = [];
 
-    public SubagentDirectory(Context ctx)
+    public async Task<IReadOnlyList<RemoteSubagentInfo>> DescendantsAsync(SessionId root)
     {
-        _runtime = ctx.Get<ISubagentService>(ISubagentService.ServiceName, false);
-        _store = ctx.Get<SessionStore>(SessionStore.ServiceName, false);
-    }
-
-    public IReadOnlyList<SubagentListEntry.Child> Descendants(SessionId root)
-    {
-        if (_runtime is null)
-            return [];
-        try
-        {
-            var flat = _runtime.ListDescendantsAsync(root).GetAwaiter().GetResult().OfType<SubagentListEntry.Child>().ToList();
-            return OrderByCreation(root, flat);
-        }
-        catch (Exception)
-        {
-            return [];
-        }
-    }
-
-    /** 后端平铺顺序会把同层兄弟先全部列出再下钻, 这里按会话创建顺序重排为稳定的前序树。 */
-    private IReadOnlyList<SubagentListEntry.Child> OrderByCreation(SessionId root, IReadOnlyList<SubagentListEntry.Child> entries)
-    {
-        var byParent = new Dictionary<SessionId, List<SubagentListEntry.Child>>();
-        foreach (var entry in entries)
-        {
-            if (entry.Parent is not { } parent)
-                continue;
-            if (!byParent.TryGetValue(parent, out var siblings))
-                byParent[parent] = siblings = [];
-            siblings.Add(entry);
-        }
-        var ordered = new List<SubagentListEntry.Child>();
-        var visited = new HashSet<SessionId> { root };
-        AddChildren(root);
+        var entries = await (await chat.ClientAsync()).SessionEditing.ListSubagentsAsync(root.Value);
+        // Keep the existing tree presentation: creation-ordered siblings, depth-first preorder.
+        var byParent = entries.Where(entry => entry.Parent is not null)
+            .GroupBy(entry => entry.Parent!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.OrderBy(entry => entry.CreatedAt)
+                .ThenBy(entry => entry.SessionId, StringComparer.Ordinal).ToList(), StringComparer.Ordinal);
+        var ordered = new List<RemoteSubagentInfo>(entries.Count);
+        var visited = new HashSet<string>(StringComparer.Ordinal) { root.Value };
+        AddChildren(root.Value);
         return ordered;
 
-        void AddChildren(SessionId parentId)
+        void AddChildren(string parent)
         {
-            if (!byParent.TryGetValue(parentId, out var siblings))
+            if (!byParent.TryGetValue(parent, out var children))
                 return;
-            foreach (var child in siblings
-                         .OrderBy(entry => CreationTime(entry.Id))
-                         .ThenBy(entry => entry.Id.Value, StringComparer.Ordinal))
+            foreach (var child in children)
             {
-                if (!visited.Add(child.Id))
+                if (!visited.Add(child.SessionId))
                     continue;
                 ordered.Add(child);
-                AddChildren(child.Id);
+                AddChildren(child.SessionId);
             }
         }
     }
 
-    private long CreationTime(SessionId id) => _store?.Get(id)?.Header.CreatedAt ?? 0;
+    public IReadOnlyList<SessionEvent>? FindEvents(SessionId id)
+        => _events.GetValueOrDefault(id);
 
-    public bool IsLive(SessionId id) => _runtime?.GetLive(id) is not null;
-
-    public Session? FindSession(SessionId id) => _runtime?.GetLive(id)?.Session ?? _store?.Get(id);
+    public async Task<IReadOnlyList<SessionEvent>> LoadEventsAsync(SessionId id)
+    {
+        var snapshot = await (await chat.ClientAsync()).GetSessionSnapshotAsync(id.Value);
+        var events = snapshot.Events.Select(item => DshJson.Deserialize<SessionEvent>(item.EventJson))
+            .OfType<SessionEvent>().ToList();
+        _events[id] = events;
+        return events;
+    }
 }

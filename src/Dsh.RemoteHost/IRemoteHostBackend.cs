@@ -1,52 +1,73 @@
-﻿namespace Dsh.RemoteHost;
+namespace Dsh.RemoteHost;
 
-/**
- * 远端宿主的能力后端: 远端进程内的真实实现(harness)或测试替身都实现它, 与传输完全分离。
- * 服务端把它暴露成 RPC; 客户端经 RemoteHostProxy 变成 IRemoteHost。
- */
+/** A host composes its required session/decision/registry services and explicitly supplies optional domains. */
 public interface IRemoteHostBackend
 {
+    HostPendingDecisions Pending { get; }
+    HostSessionRegistry Sessions { get; }
+    IRemoteSessionBackend Session { get; }
     Task<HostInfo> InfoAsync(CancellationToken cancellationToken);
 
+    IRemoteAgentBackend? Agent { get; }
+    IRemotePtyBackend? Pty { get; }
+    HostFileSystem? Files { get; }
+    HostGitService? Git { get; }
+    HostNotificationCenter? Notifications { get; }
+    IRemoteSessionEditingBackend? SessionEditing { get; }
+    IRemotePluginsBackend? Plugins { get; }
+    IRemoteModelsBackend? Models { get; }
+}
+
+/** Required session execution and event stream. Subscribe installs its live listener before returning. */
+public interface IRemoteSessionBackend
+{
     Task<IReadOnlyList<RemoteSessionInfo>> ListSessionsAsync(CancellationToken cancellationToken);
-
     Task<RemoteSessionInfo> CreateSessionAsync(string cwd, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken);
-
     Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken);
-
+    Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken);
     Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken);
-
     Task InterruptAsync(string sessionId, CancellationToken cancellationToken);
-
     Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken);
+    Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken);
+}
 
-    Task RespondApprovalAsync(string requestId, bool allow, string? reason, CancellationToken cancellationToken);
+public interface IRemoteSessionEditingBackend
+{
+    Task<RemoteCommandResult> ExecuteSessionCommandAsync(string sessionId, string line, CancellationToken cancellationToken);
+    Task<IReadOnlyList<RemoteCommandDescriptor>> ListSessionCommandsAsync(string sessionId, CancellationToken cancellationToken);
+    Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken);
+    Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken);
+    Task SetSessionApprovalPolicyAsync(string sessionId, string policy, CancellationToken cancellationToken);
+    Task<IReadOnlyList<RemoteSubagentInfo>> ListSubagentsAsync(string rootSessionId, CancellationToken cancellationToken);
+}
 
-    /** 问答回填: 本地选择经 Response 项回传, 远端据此构造 AskUserQuestionAnswer。 */
-    Task RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken);
+public interface IRemoteAgentBackend
+{
+    Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken);
+    Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken);
+    Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken);
+    Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken);
+    Task StopAgentAsync(string sessionId, CancellationToken cancellationToken);
+    Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken);
+}
 
-    Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken);
-
-    /** 列出远端某目录的子项; Path 支持 `~` 前缀。 */
-    Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken);
-
-    Task WriteFileAsync(string path, byte[] content, CancellationToken cancellationToken);
-
-    Task<string> StartPtyAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken);
-
+public interface IRemotePtyBackend
+{
+    Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken);
     Task WritePtyAsync(string ptyId, byte[] data, CancellationToken cancellationToken);
-
+    Task ResizePtyAsync(string ptyId, int columns, int rows, CancellationToken cancellationToken);
     Task StopPtyAsync(string ptyId, CancellationToken cancellationToken);
+    Task<RemoteHostStream<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken);
+}
 
-    /** 会话事件流(服务端订阅后经通道推给客户端): 先补发 [fromSeq, ...) 历史, 再实时推送。 */
-    IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken);
+public interface IRemotePluginsBackend
+{
+    Task<IReadOnlyList<RemotePluginInfo>> ListPluginsAsync(CancellationToken cancellationToken);
+    Task<string> SetPluginPermissionAsync(string package, string permission, bool allowed, CancellationToken cancellationToken);
+}
 
-    /** 审批请求流(远端发起, 阻塞到本地经 RespondApprovalAsync 回填)。 */
-    IAsyncEnumerable<RemoteApprovalRequest> ApprovalsAsync(CancellationToken cancellationToken);
-
-    /** 问答请求流(远端发起, 阻塞到本地经 RespondQuestionAsync 回填)。 */
-    IAsyncEnumerable<RemoteQuestionRequest> QuestionsAsync(CancellationToken cancellationToken);
-
-    /** PTY 输出流。 */
-    IAsyncEnumerable<RemotePtyOutput> PtyOutputAsync(string ptyId, CancellationToken cancellationToken);
+public interface IRemoteModelsBackend
+{
+    Task<IReadOnlyList<string>> ListReasoningEffortsAsync(string provider, string model, CancellationToken cancellationToken);
+    Task<IReadOnlyList<string>> ListProviderModelsAsync(string provider, CancellationToken cancellationToken);
 }

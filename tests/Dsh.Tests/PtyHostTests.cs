@@ -140,38 +140,40 @@ public class PtyHostTests
     }
 
     [Fact(Timeout = 30000)]
-    public async Task Windows_ConPty_Write_And_Read_RoundTrips()
+    public async Task Windows_ConPty_Parallel_Starts_Keep_Input_And_Output_Isolated()
     {
         if (!OperatingSystem.IsWindows())
             return;
 
-        using var host = new PtyHost();
-        var session = await host.StartAsync(new PtyStartInfo
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cancellation.CancelAfter(TimeSpan.FromSeconds(15));
+        using var startBarrier = new Barrier(2);
+        await Task.WhenAll(Enumerable.Range(0, 2).Select(index => Task.Run(async () =>
         {
-            FileName = "cmd.exe",
-            Arguments = [],
-        }, cancellationToken: TestContext.Current.CancellationToken);
-
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        await session.WriteAsync("ver\r"u8.ToArray(), cancellation.Token);
-        var buffer = new byte[4096];
-        var received = new List<byte>();
-        try
-        {
-            while (!Encoding.UTF8.GetString(received.ToArray()).Contains("Microsoft Windows"))
+            startBarrier.SignalAndWait(cancellation.Token);
+            using var session = ConPtySession.Start(new PtyStartInfo
             {
-                var read = await session.ReadAsync(buffer, cancellation.Token);
-                if (read == 0)
-                    break;
-                received.AddRange(buffer.AsSpan(0, read).ToArray());
+                FileName = "cmd.exe",
+                Arguments = ["/d", "/q", "/v:on"],
+            });
+            try
+            {
+                // The answer is computed by this shell, not present in its banner
+                // or input echo, and must return through this session's own pipe.
+                var expected = $"conpty-{index}-{42 + index}";
+                var command = $"set /a result=6*7+{index} & echo conpty-{index}-!result!\r";
+                await session.Input.WriteAsync(Encoding.UTF8.GetBytes(command), cancellation.Token);
+                var received = await ReadUntil(session.Stream, expected, cancellation.Token);
+                Assert.Contains(expected, received);
+                Assert.DoesNotContain($"conpty-{1 - index}-{43 - index}", received);
+                await session.Input.WriteAsync(Encoding.UTF8.GetBytes($"exit {index + 3}\r"), cancellation.Token);
+                Assert.Equal(index + 3, await session.Completion.WaitAsync(cancellation.Token));
             }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        Assert.Contains("Microsoft Windows", Encoding.UTF8.GetString(received.ToArray()));
-
-        Assert.True(await host.StopAsync(session.Id.ToString()));
+            finally
+            {
+                await session.StopAsync();
+            }
+        }, cancellation.Token)));
     }
 
     private static async Task<string> ReadUntil(Stream stream, string expected, CancellationToken cancellationToken)

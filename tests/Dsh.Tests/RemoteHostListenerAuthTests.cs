@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using Dsh.RemoteHost;
 using Dsh.Transport;
@@ -51,6 +52,114 @@ public sealed class RemoteHostListenerAuthTests
             var error = await Assert.ThrowsAsync<InvalidOperationException>(() => RemoteHostListener.ConnectAsync(root, cancellationToken));
             Assert.Contains(LocalEndpointToken.PathFor(endpoint), error.Message);
         });
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task OwnedStartup_OutlivesOrdinaryProbeBudget_AndAuthenticatesWhenReady()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = RealHostProcesses.CreateHome("rs");
+        var startup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Process? host = null;
+        try
+        {
+            var connecting = RemoteHostListener.ConnectAsync(root, cancellationToken, attempts: 1, startupLifetime: startup.Task);
+            await Assert.ThrowsAsync<IOException>(() => RemoteHostListener.ConnectAsync(root, cancellationToken, attempts: 1));
+            host = RealHostProcesses.StartHost(RealHostProcesses.Executable, root);
+            await using var stream = await connecting;
+            await using var client = await RemoteHostClient.ConnectAsync(stream, null, cancellationToken);
+            Assert.Equal(HostProtocol.Version, (await client.InfoAsync(cancellationToken)).ProtocolVersion);
+        }
+        finally
+        {
+            startup.TrySetResult();
+            RealHostProcesses.KillAll(root);
+            host?.Dispose();
+            TempTree.Delete(root);
+        }
+    }
+
+    [Theory(Timeout = 30000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OwnedStartup_StopsWaitingOnExitOrCancellation(bool cancel)
+    {
+        var root = TempTree.CreateSocketDirectory("rx");
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var startup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var connecting = RemoteHostListener.ConnectAsync(root, cancellation.Token, attempts: 1, startupLifetime: startup.Task);
+            if (cancel)
+            {
+                await cancellation.CancelAsync();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => connecting);
+            }
+            else
+            {
+                startup.SetResult();
+                await Assert.ThrowsAsync<IOException>(() => connecting);
+            }
+        }
+        finally
+        {
+            startup.TrySetResult();
+            TempTree.Delete(root);
+        }
+    }
+
+    [Fact(Timeout = 120000)]
+    public async Task KilledHost_IsReplacedWithAnEndpointReaderOpen_AndFreshClientAuthenticates()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var executable = RealHostProcesses.Executable;
+        var root = RealHostProcesses.CreateHome("rr");
+        Process? first = null;
+        Process? replacement = null;
+        try
+        {
+            first = RealHostProcesses.StartHost(executable, root);
+            await using (var stream = await RemoteHostListener.ConnectAsync(root, cancellationToken))
+            await using (var client = await RemoteHostClient.ConnectAsync(stream, null, cancellationToken))
+                Assert.Equal(HostProtocol.Version, (await client.InfoAsync(cancellationToken)).ProtocolVersion);
+
+            var endpoint = RemoteHostEndpoint.EndpointFile(root);
+            var oldToken = LocalEndpointToken.Read(endpoint);
+            Assert.NotNull(oldToken);
+            // Windows holds the port snapshot with the production reader's sharing contract.
+            // Unix has no port file; retain the old token snapshot across the same real host restart instead.
+            var snapshotPath = OperatingSystem.IsWindows() ? endpoint : LocalEndpointToken.PathFor(endpoint);
+            await using var snapshot = new FileStream(snapshotPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1, useAsync: true);
+            using var reader = new StreamReader(snapshot, leaveOpen: true);
+            var oldContents = await reader.ReadToEndAsync(cancellationToken);
+
+            first.Kill();
+            await first.WaitForExitAsync(cancellationToken);
+            replacement = RealHostProcesses.StartHost(executable, root);
+
+            // A protocol handshake and requests prove the new endpoint/token pair reaches the replacement host,
+            // while the old reader is still open and cannot share an in-place write.
+            await using var freshStream = await RemoteHostListener.ConnectAsync(root, cancellationToken);
+            await using var freshClient = await RemoteHostClient.ConnectAsync(freshStream, null, cancellationToken);
+            Assert.True(freshClient.Hello.Ok);
+            Assert.Equal(HostProtocol.Version, (await freshClient.InfoAsync(cancellationToken)).ProtocolVersion);
+            Assert.True(await freshClient.PingAsync(cancellationToken) > 0);
+            Assert.NotEqual(oldToken, LocalEndpointToken.Read(endpoint));
+            Assert.False(replacement.HasExited);
+
+            reader.DiscardBufferedData();
+            snapshot.Position = 0;
+            Assert.Equal(oldContents, await reader.ReadToEndAsync(cancellationToken));
+        }
+        finally
+        {
+            if (replacement is { HasExited: false })
+                replacement.Kill(entireProcessTree: true);
+            RealHostProcesses.KillAll(root);
+            first?.Dispose();
+            replacement?.Dispose();
+            TempTree.Delete(root);
+        }
     }
 
     private static async Task WithDaemonAsync(string prefix, CancellationToken cancellationToken, Func<string, Task> body)

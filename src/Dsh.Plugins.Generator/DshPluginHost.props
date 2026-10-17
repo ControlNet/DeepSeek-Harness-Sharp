@@ -6,16 +6,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Analyzer Include="$(MSBuildThisFileDirectory)bin\$(Configuration)\netstandard2.0\Dsh.Plugins.Generator.dll" />
+    <ProjectReference Include="$(MSBuildThisFileDirectory)Dsh.Plugins.Generator.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false"
+                      PrivateAssets="all"
+                      GlobalPropertiesToRemove="RuntimeIdentifier;PublishAot;PublishTrimmed;SelfContained" />
     <CompilerVisibleProperty Include="DshPluginHost" />
   </ItemGroup>
 
-  <Target Name="BuildDshPluginGenerator" BeforeTargets="CoreCompile">
-    <MSBuild Projects="$(MSBuildThisFileDirectory)Dsh.Plugins.Generator.csproj"
-             Targets="Build"
-             Properties="Configuration=$(Configuration)"
-             RemoveProperties="RuntimeIdentifier;PublishAot;SelfContained" />
-  </Target>
 
   <Import Project="$(MSBuildThisFileDirectory)..\..\native\plugin_guard\PluginGuard.props" />
 

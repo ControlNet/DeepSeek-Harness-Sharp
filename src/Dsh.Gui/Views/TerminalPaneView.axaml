@@ -1,0 +1,17 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Dsh.Gui.ViewModels"
+             xmlns:term="using:Dsh.Gui.Terminal"
+             x:Class="Dsh.Gui.Views.TerminalPaneView"
+             x:DataType="vm:TerminalViewModel"
+             x:CompileBindings="True">
+  <Grid RowDefinitions="Auto,*" RowSpacing="6">
+    <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
+      <TextBlock Text="{Binding ScreenTitle}" Classes="Secondary" VerticalAlignment="Center" />
+      <TextBlock Text="{Binding Status}" Classes="Tertiary" VerticalAlignment="Center" />
+    </StackPanel>
+    <Border Grid.Row="1" ClipToBounds="True" CornerRadius="{DynamicResource CornerRadius.Card}">
+      <term:TerminalControl Name="Terminal" Session="{Binding Session}" />
+    </Border>
+  </Grid>
+</UserControl>

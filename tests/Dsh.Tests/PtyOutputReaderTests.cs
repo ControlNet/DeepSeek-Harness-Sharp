@@ -42,4 +42,33 @@ public sealed class PtyOutputReaderTests
         Assert.Equal("ef", Encoding.ASCII.GetString(buffer, 0, 2));
         Assert.Equal(0, await reader.ReadAsync(buffer, cancellationToken));
     }
+
+    [Fact(Timeout = 10000)]
+    public async Task Empty_Buffer_Returns_Without_Waiting_For_Output()
+    {
+        var channel = Channel.CreateUnbounded<byte[]>();
+        var reader = new PtyOutputReader(channel.Reader);
+
+        Assert.Equal(0, await reader.ReadAsync(Memory<byte>.Empty, TestContext.Current.CancellationToken));
+    }
+
+    [Fact(Timeout = 10000)]
+    public async Task Drain_Discards_The_Unread_Tail_And_Queued_Output()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var channel = Channel.CreateUnbounded<byte[]>();
+        var reader = new PtyOutputReader(channel.Reader);
+        channel.Writer.TryWrite("abcdef"u8.ToArray());
+        channel.Writer.TryWrite("queued"u8.ToArray());
+        var buffer = new byte[SmallBuffer];
+        Assert.Equal(SmallBuffer, await reader.ReadAsync(buffer, cancellationToken));
+
+        reader.DrainPendingOutput();
+        channel.Writer.TryWrite("new"u8.ToArray());
+        channel.Writer.TryComplete();
+
+        Assert.Equal(3, await reader.ReadAsync(buffer, cancellationToken));
+        Assert.Equal("new", Encoding.ASCII.GetString(buffer, 0, 3));
+        Assert.Equal(0, await reader.ReadAsync(buffer, cancellationToken));
+    }
 }

@@ -14,18 +14,25 @@ namespace Dsh.Tests;
 public sealed class MainViewModelTests
 {
     [Fact]
-    public async Task PageTabAndSidebarCommands_SwitchState()
+    public async Task PageTabAndSidebarCommands_SwitchState() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
-        Assert.True(viewModel.IsChatPage);
+        Assert.True(viewModel.IsDashboardPage);
+        Assert.False(viewModel.IsChatPage);
         viewModel.ShowSettingsCommand.Execute(null);
         Assert.True(viewModel.IsSettingsPage);
+        viewModel.GoBackCommand.Execute(null);
+        Assert.True(viewModel.IsDashboardPage);
         viewModel.ShowMarketCommand.Execute(null);
         Assert.True(viewModel.IsMarketPage);
         viewModel.ShowChatCommand.Execute(null);
         Assert.True(viewModel.IsChatPage);
+        viewModel.GoBackCommand.Execute(null);
+        Assert.True(viewModel.IsChatPage);
+        viewModel.ShowDashboardCommand.Execute(null);
+        Assert.True(viewModel.IsDashboardPage);
 
         Assert.False(viewModel.IsTraceTab);
         viewModel.ShowTraceCommand.Execute(null);
@@ -38,13 +45,13 @@ public sealed class MainViewModelTests
         Assert.False(viewModel.IsSidebarVisible);
         viewModel.ToggleSidebarCommand.Execute(null);
         Assert.True(viewModel.IsSidebarVisible);
-    }
+    });
 
     [Fact]
-    public async Task AttachImage_AddsAttachmentAndSubmitsImageBlock()
+    public async Task AttachImage_AddsAttachmentAndSubmitsImageBlock() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         var png = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3 };
         viewModel.AttachImage("shot.png", png, 4, 2);
@@ -55,6 +62,8 @@ public sealed class MainViewModelTests
 
         viewModel.Composer.Input = "look at this";
         await viewModel.SubmitCommand.ExecuteAsync(null);
+        await GuiTestEnvironment.WaitForAsync(viewModel.Messages,
+            () => viewModel.Messages.Any(message => message.Kind == MessageKind.User));
 
         Assert.Empty(viewModel.Attachments);
         Assert.False(viewModel.HasAttachments);
@@ -67,13 +76,13 @@ public sealed class MainViewModelTests
         Assert.NotNull(userMessage);
         Assert.Contains(userMessage.Content, block => block is ImageBlock);
         Assert.Contains(userMessage.Content, block => block is TextBlock { Text: "look at this" });
-    }
+    });
 
     [Fact]
-    public async Task OpenSession_FromSettingsOrMarket_ReturnsToChatPage()
+    public async Task OpenSession_FromSettingsOrMarket_ReturnsToChatPage() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         var node = viewModel.Workspaces.SelectMany(workspace => workspace.Sessions).First();
 
         viewModel.ShowSettingsCommand.Execute(null);
@@ -86,32 +95,29 @@ public sealed class MainViewModelTests
         Assert.True(viewModel.IsMarketPage);
         viewModel.OpenSessionCommand.Execute(node);
         Assert.True(viewModel.IsChatPage);
-    }
+    });
 
     [Fact]
-    public async Task NewSession_FromSettingsPage_ReturnsToChatPage()
+    public async Task NewSession_FromSettingsPage_ReturnsToChatPage() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         viewModel.ShowSettingsCommand.Execute(null);
 
         viewModel.NewSessionCommand.Execute(null);
 
-        for (var attempt = 0; attempt < 500 && viewModel.SelectedSession?.SessionId == environment.Agent.Id; attempt++)
-        {
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-            Dispatcher.UIThread.RunJobs();
-        }
+        await GuiTestEnvironment.WaitForAsync(viewModel,
+            () => viewModel.SelectedSession is { } selected && selected.SessionId != environment.Agent.Id);
         Assert.True(viewModel.IsChatPage);
         Assert.NotNull(viewModel.SelectedSession);
         Assert.NotEqual(environment.Agent.Id, viewModel.SelectedSession!.SessionId);
-    }
+    });
 
     [Fact]
-    public async Task Sessions_GroupedByWorkspace_AndMarkCurrentSessionSelected()
+    public async Task Sessions_GroupedByWorkspace_AndMarkCurrentSessionSelected() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         var workspace = Assert.Single(viewModel.Workspaces);
         Assert.NotEmpty(workspace.Name);
@@ -120,7 +126,7 @@ public sealed class MainViewModelTests
         Assert.Same(node, viewModel.SelectedSession);
         Assert.True(node.IsSelected);
         Assert.True(node.IsLive);
-    }
+    });
 
     /** 侧栏"运行中"指示由后台会话的 TurnStart/TurnEnd 驱动, 不限于当前显示会话。 */
     [Fact]
@@ -128,21 +134,18 @@ public sealed class MainViewModelTests
     {
         var environment = await GuiTestEnvironment.CreateAsync();
         using var environmentScope = environment;
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         var session = environment.Agent.Session;
         var node = viewModel.Workspaces.SelectMany(workspace => workspace.Sessions).First(item => item.SessionId == session.Id);
         Assert.False(node.IsRunning);
 
-        // 事件按真实路径从后台线程发出, 视图模型把更新派回 dispatcher; 在 UI 线程上轮询排空直到节点反映出来。
-        await Task.Run(() => environment.App.Ctx.Emit(
-            new SessionEventNotification(session, Event(1, new TurnStartPayload(1)))),
-            TestContext.Current.CancellationToken);
-        await PumpUntilAsync(() => node.IsRunning);
+        await Task.Run(() => session.Append(new TurnStartPayload(1)), TestContext.Current.CancellationToken);
+        await GuiTestEnvironment.WaitForAsync(viewModel, () => viewModel.IsBusy);
+        Assert.True(FindNode(viewModel, session.Id)!.IsRunning);
 
-        await Task.Run(() => environment.App.Ctx.Emit(
-            new SessionEventNotification(session, Event(2, new TurnEndPayload(1, new TurnEndReason.Completed())))),
-            TestContext.Current.CancellationToken);
-        await PumpUntilAsync(() => !node.IsRunning);
+        await Task.Run(() => session.Append(new TurnEndPayload(1, new TurnEndReason.Completed())), TestContext.Current.CancellationToken);
+        await GuiTestEnvironment.WaitForAsync(viewModel, () => !viewModel.IsBusy);
+        Assert.False(FindNode(viewModel, session.Id)!.IsRunning);
     });
 
     /** 交付物清单: 打开会话时从日志回放, 之后跟随新声明与会话截断。 */
@@ -156,7 +159,7 @@ public sealed class MainViewModelTests
         var data = Path.Combine(session.Header.Cwd!, "data.xlsx");
         await File.WriteAllTextAsync(report, "report", TestContext.Current.CancellationToken);
         session.Append(new DeliverablesPresentedPayload(1, ToolCallId.Create("call-1"), [new PresentedFile(report, "报告")]));
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         var replayed = Assert.Single(viewModel.Deliverables.Items);
         Assert.Equal((report, "报告", true), (replayed.Path, replayed.Description, replayed.Exists));
@@ -165,29 +168,17 @@ public sealed class MainViewModelTests
 
         var cut = session.Seq;
         session.Append(new DeliverablesPresentedPayload(1, ToolCallId.Create("call-2"), [new PresentedFile(data)]));
-        await PumpUntilAsync(() => viewModel.Deliverables.Items.Count == 2);
+        await GuiTestEnvironment.WaitForAsync(viewModel.Deliverables.Items, () => viewModel.Deliverables.Items.Count == 2);
         Assert.False(viewModel.Deliverables.Items[1].Exists);
 
         Assert.True(session.TryTruncateTo(cut));
-        await PumpUntilAsync(() => viewModel.Deliverables.Items.Count == 1);
+        await GuiTestEnvironment.WaitForAsync(viewModel.Deliverables.Items, () => viewModel.Deliverables.Items.Count == 1);
         Assert.Equal(report, Assert.Single(viewModel.Deliverables.Items).Path);
     });
 
-    /** 后台线程发出的事件要等 dispatcher 追上才反映到视图模型, 因此在 headless UI 线程上轮询排空。 */
-    private static async Task PumpUntilAsync(Func<bool> condition)
-    {
-        for (var attempt = 0; attempt < 200 && !condition(); attempt++)
-        {
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-            Dispatcher.UIThread.RunJobs();
-        }
-    }
-
-    private static SessionEvent Event(long seq, SessionEventPayload payload)
-        => new() { Type = payload.Type, Seq = seq, Time = 0, Data = payload };
 
     [Fact]
-    public async Task SnapshotReplay_MapsEventsToMessagesAndTrace()
+    public async Task SnapshotReplay_MapsEventsToMessagesAndTrace() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var session = environment.Agent.Session;
@@ -197,7 +188,7 @@ public sealed class MainViewModelTests
         session.Append(new ToolCallPayload(1, 1, ToolCallId.Create("call-1"), "bash", """{"command":"ls"}"""));
         session.Append(new TurnEndPayload(1, new TurnEndReason.Completed()));
 
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         Assert.Collection(
             viewModel.Messages,
@@ -207,11 +198,11 @@ public sealed class MainViewModelTests
         Assert.Contains(viewModel.TraceItems, item => item.Kind == TraceKind.Context);
         Assert.Contains(viewModel.TraceItems, item => item.Kind == TraceKind.Tool);
         Assert.False(viewModel.IsBusy);
-    }
+    });
 
     /** 运行时上下文注入只应出现一行: 请求元数据(request/context)不重复进正文, 插件名也不该再补一个 @。 */
     [Fact]
-    public async Task PluginInjectedContext_RendersSingleRow()
+    public async Task PluginInjectedContext_RendersSingleRow() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var session = environment.Agent.Session;
@@ -222,23 +213,23 @@ public sealed class MainViewModelTests
             new SurfaceOp.Append());
         session.Append(new RequestContextPayload("openai-compatible", "deepseek-v4-flash"));
 
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         var message = Assert.Single(viewModel.Messages);
         Assert.Equal(MessageKind.Context, message.Kind);
         Assert.Equal("上下文注入 · @deepseek-ai/dsh-system-prompt", message.Text);
         Assert.False(message.HasRole);
         Assert.Contains(viewModel.TraceItems, item => item.Title.StartsWith("请求上下文", StringComparison.Ordinal));
-    }
+    });
 
     [Fact]
-    public async Task SelectTraceItem_MarksSelectionAndRequestsScroll()
+    public async Task SelectTraceItem_MarksSelectionAndRequestsScroll() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var session = environment.Agent.Session;
         session.Append(new UserMessagePayload(MessageFactory.CreateUserText("你好")), new SurfaceOp.Append());
         session.Append(new TurnStartPayload(1));
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         MessageViewModel? scrolled = null;
         viewModel.ScrollRequested += message => scrolled = message;
@@ -247,13 +238,13 @@ public sealed class MainViewModelTests
 
         Assert.True(trace.IsSelected);
         Assert.Same(viewModel.Messages[^1], scrolled);
-    }
+    });
 
     [Fact]
-    public async Task Submit_SlashCommand_RunsThroughCommandsService()
+    public async Task Submit_SlashCommand_RunsThroughCommandsService() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         viewModel.Composer.Input = "/plugins";
         await viewModel.SubmitCommand.ExecuteAsync(null);
@@ -262,47 +253,43 @@ public sealed class MainViewModelTests
         var message = Assert.Single(viewModel.Messages);
         Assert.Equal(MessageKind.System, message.Kind);
         Assert.Contains("dsh-", message.Text);
-    }
+    });
 
     [Fact]
     public async Task Submit_TextMessage_IsRenderedOnceFromSessionEvent() => await HeadlessGui.RunAsync(async () =>
         {
             var environment = await GuiTestEnvironment.CreateAsync();
             using var environmentScope = environment;
-            using var viewModel = new MainViewModel(environment.App, environment.Agent);
+            using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
             viewModel.Composer.Input = "你好";
             await viewModel.SubmitCommand.ExecuteAsync(null);
 
-            // 提交本身不回显, 消息要等会话事件到达才出现。
-            Assert.Empty(viewModel.Messages);
-            for (var attempt = 0; attempt < 200 && viewModel.Messages.Count == 0; attempt += 1)
-            {
-                await Task.Delay(10, TestContext.Current.CancellationToken);
-                Dispatcher.UIThread.RunJobs();
-            }
+            // Host events may arrive before the RPC reply; verify the eventual single rendered user message.
+            await GuiTestEnvironment.WaitForAsync(viewModel.Messages,
+                () => viewModel.Messages.Any(message => message.Kind == MessageKind.User));
             Assert.Single(viewModel.Messages, message => message.Kind == MessageKind.User);
             Assert.Equal("你好", viewModel.Messages[0].Text);
         });
 
     [Fact]
-    public async Task Submit_EmptyInput_DoesNothing()
+    public async Task Submit_EmptyInput_DoesNothing() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         viewModel.Composer.Input = "   ";
         await viewModel.SubmitCommand.ExecuteAsync(null);
 
         Assert.Empty(viewModel.Messages);
         Assert.False(viewModel.IsBusy);
-    }
+    });
 
     [Fact]
-    public async Task SettingsFacade_WritesSafetySettingsThroughSingleEntry()
+    public async Task SettingsFacade_WritesSafetySettingsThroughSingleEntry() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         viewModel.Settings.UpdateSafety(autoApprove: true, ["bash: rm -rf /*"]);
 
@@ -311,10 +298,10 @@ public sealed class MainViewModelTests
         Assert.True(safety.AutoApprove);
         Assert.Contains("bash: rm -rf /*", safety.Blacklist);
         Assert.True(File.Exists(viewModel.Settings.SettingsPath));
-    }
+    });
 
     [Fact]
-    public async Task RestoredSession_KeepsListedAndReplayable()
+    public async Task RestoredSession_KeepsListedAndReplayable() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var sessionId = environment.Agent.Id;
@@ -322,54 +309,51 @@ public sealed class MainViewModelTests
         await environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(environment.Agent.Session);
 
         using var restarted = await environment.RestartAsync();
-        var agents = restarted.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
-        var handle = await agents.Resume(new ResumeAgentOptions(sessionId, new AgentOptions("test", "test-model")), TestContext.Current.CancellationToken);
-        var resumed = (AgentLoopAgent)handle.Agent;
-        using var viewModel = new MainViewModel(restarted.App, resumed);
+        using var viewModel = new MainViewModel(restarted.App, await restarted.OpenChatAsync(sessionId));
 
         Assert.Collection(viewModel.Messages, message => Assert.Equal("第一条", message.Text));
         var nodes = viewModel.Workspaces.SelectMany(workspace => workspace.Sessions).ToList();
         var node = Assert.Single(nodes, candidate => candidate.SessionId == sessionId);
-        Assert.Same(resumed, node.Agent);
+        Assert.Equal(sessionId, viewModel.CurrentSessionId);
         Assert.True(node.IsLive);
-    }
+    });
 
     [Fact]
-    public async Task SetMode_AppliesSessionApprovalPolicy_AndUpdatesPermissionLabel()
+    public async Task SetMode_AppliesSessionApprovalPolicy_AndUpdatesPermissionLabel() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         var approval = environment.App.Ctx.Get<ApprovalService>(ApprovalService.ServiceName)!;
         environment.Agent.Session.Append(new TurnStartPayload(1));
 
         viewModel.SetModeCommand.Execute("full");
+        await GuiTestEnvironment.WaitForAsync(viewModel.Composer, () => viewModel.Composer.PermissionLabel == "Full access");
         Assert.Equal(ApprovalPolicy.Auto, approval.EffectivePolicy(environment.Agent.Session));
         Assert.Equal("Full access", viewModel.Composer.PermissionLabel);
 
         viewModel.SetModeCommand.Execute("standard");
+        await GuiTestEnvironment.WaitForAsync(viewModel.Composer, () => viewModel.Composer.PermissionLabel == "Ask（每次审批）");
         Assert.Equal(ApprovalPolicy.Ask, approval.EffectivePolicy(environment.Agent.Session));
         Assert.Equal("Ask（每次审批）", viewModel.Composer.PermissionLabel);
 
+        viewModel.StatusText = "";
         viewModel.SetModeCommand.Execute("readonly");
+        await GuiTestEnvironment.WaitForAsync(viewModel, () => viewModel.StatusText == "标准模式：需要审批时弹窗确认");
         Assert.Equal(ApprovalPolicy.Ask, approval.EffectivePolicy(environment.Agent.Session));
         Assert.Equal("Ask（每次审批）", viewModel.Composer.PermissionLabel);
-    }
+    });
 
     [Fact]
     public async Task PresetLabel_FollowsPresetModeEvent() => await HeadlessGui.RunAsync(async () =>
     {
         var environment = await GuiTestEnvironment.CreateAsync();
         using var environmentScope = environment;
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         Assert.Equal("标准", viewModel.PresetLabel);
         Assert.Single(viewModel.PresetItems, item => item.Id == "standard" && item.IsCurrent);
 
         environment.Agent.Session.Append(new PresetModePayload("minimal"));
-        for (var attempt = 0; attempt < 200 && viewModel.PresetLabel != "极简"; attempt++)
-        {
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-            Dispatcher.UIThread.RunJobs();
-        }
+        await GuiTestEnvironment.WaitForAsync(viewModel, () => viewModel.PresetLabel == "极简");
 
         Assert.Equal("极简", viewModel.PresetLabel);
         Assert.Single(viewModel.PresetItems, item => item.Id == "minimal" && item.IsCurrent);
@@ -381,25 +365,19 @@ public sealed class MainViewModelTests
     {
         var environment = await GuiTestEnvironment.CreateAsync();
         using var environmentScope = environment;
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         environment.Agent.Session.Append(
             new UserMessagePayload(MessageFactory.CreateUserText("unique-platypus-token")), new SurfaceOp.Append());
-        Dispatcher.UIThread.RunJobs();
+        await environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(environment.Agent.Session);
 
         Assert.False(viewModel.IsSearchOpen);
         viewModel.ToggleSearchCommand.Execute(null);
         Assert.True(viewModel.IsSearchOpen);
         viewModel.SearchText = "platypus";
 
-        SessionNodeViewModel? node = null;
-        for (var attempt = 0; attempt < 400; attempt++)
-        {
-            await Task.Delay(10, TestContext.Current.CancellationToken);
-            Dispatcher.UIThread.RunJobs();
-            node = FindNode(viewModel, environment.Agent.Id);
-            if (node is { HasMatchSnippet: true })
-                break;
-        }
+        await GuiTestEnvironment.WaitForAsync(viewModel.Workspaces,
+            () => FindNode(viewModel, environment.Agent.Id) is { HasMatchSnippet: true });
+        var node = FindNode(viewModel, environment.Agent.Id);
 
         Assert.NotNull(node);
         Assert.Contains("platypus", node.MatchSnippet);
@@ -420,7 +398,7 @@ public sealed class MainViewModelTests
         {
             var environment = await GuiTestEnvironment.CreateAsync();
             using var environmentScope = environment;
-            using var viewModel = new MainViewModel(environment.App, environment.Agent);
+            using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
             DecisionViewModel? seen = null;
             viewModel.DecisionRequested += decision =>
             {
@@ -447,7 +425,7 @@ public sealed class MainViewModelTests
         {
             var environment = await GuiTestEnvironment.CreateAsync();
             using var environmentScope = environment;
-            using var viewModel = new MainViewModel(environment.App, environment.Agent);
+            using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
             viewModel.DecisionRequested += decision => Task.FromResult<object?>(new AskUserQuestionAnswer(
                 [new AskUserQuestionAnswerItem(decision.Questions[0].Item.Id, ["继续"])]));
             var questions = environment.App.Ctx.Get<UserQuestionService>(UserQuestionService.ServiceName)!;
@@ -461,27 +439,27 @@ public sealed class MainViewModelTests
         });
 
     [Fact]
-    public async Task TraceFilter_NarrowsTraceView_WithoutDroppingItems()
+    public async Task TraceFilter_NarrowsTraceView_WithoutDroppingItems() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var session = environment.Agent.Session;
         session.Append(new UserMessagePayload(MessageFactory.CreateUserText("你好")), new SurfaceOp.Append());
         session.Append(new TurnStartPayload(1));
         session.Append(new RequestContextPayload("test", "test-model"));
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         var filter = viewModel.TraceFilters.First(candidate => candidate.Kind == TraceKind.Context);
         viewModel.SelectTraceFilterCommand.Execute(filter);
 
         Assert.All(viewModel.TraceView, item => Assert.Equal(TraceKind.Context, item.Kind));
         Assert.Contains(viewModel.TraceItems, item => item.Kind == TraceKind.Turn);
-    }
+    });
 
     [Fact]
-    public async Task SearchText_FiltersSessions()
+    public async Task SearchText_FiltersSessions() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         Assert.NotEmpty(viewModel.Workspaces);
 
         viewModel.SearchText = "不存在的关键词";
@@ -489,13 +467,13 @@ public sealed class MainViewModelTests
         Assert.Empty(viewModel.Workspaces);
         viewModel.SearchText = "";
         Assert.NotEmpty(viewModel.Workspaces);
-    }
+    });
 
     [Fact]
-    public async Task Suggestions_OfferCommandsAndSessionMentions()
+    public async Task Suggestions_OfferCommandsAndSessionMentions() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         viewModel.Composer.Input = "/mo";
 
@@ -506,13 +484,13 @@ public sealed class MainViewModelTests
 
         Assert.True(viewModel.IsSuggestionOpen);
         Assert.Contains(viewModel.Suggestions, suggestion => suggestion.InsertText == $"@{environment.Agent.Id.Value}");
-    }
+    });
 
     [Fact]
-    public async Task ConfirmSuggestion_PrefersClickedItem_OverKeyboardIndex()
+    public async Task ConfirmSuggestion_PrefersClickedItem_OverKeyboardIndex() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         viewModel.Composer.Input = "/";
 
         Assert.True(viewModel.IsSuggestionOpen);
@@ -527,18 +505,18 @@ public sealed class MainViewModelTests
         viewModel.ConfirmSuggestionCommand.Execute(null);
 
         Assert.Equal(first.InsertText, viewModel.Composer.Input);
-    }
+    });
 
     [Fact]
-    public async Task CommitRename_WritesThroughPersistence_AndSyncsTitle()
+    public async Task CommitRename_WritesThroughPersistence_AndSyncsTitle() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         var node = viewModel.Workspaces.SelectMany(workspace => workspace.Sessions).First();
 
         viewModel.BeginRenameCommand.Execute(node);
         node.RenameDraft = " 新名字 ";
-        viewModel.CommitRenameCommand.Execute(node);
+        await viewModel.CommitRenameCommand.ExecuteAsync(node);
 
         var persistence = environment.App.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)!;
         Assert.Equal("新名字", persistence.Stat(environment.Agent.Id)?.Header.Title);
@@ -546,14 +524,14 @@ public sealed class MainViewModelTests
         Assert.Equal("新名字", viewModel.SessionTitle);
         var refreshed = viewModel.Workspaces.SelectMany(workspace => workspace.Sessions).First();
         Assert.Equal("新名字", refreshed.Title);
-    }
+    });
 
     [Fact]
     public async Task ModelLabels_FollowRequestHeaderPayload() => await HeadlessGui.RunAsync(async () =>
     {
         var environment = await GuiTestEnvironment.CreateAsync();
         using var environmentScope = environment;
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         Assert.Equal("test/test-model", viewModel.Composer.ModelLabel);
         Assert.Equal("推理", viewModel.Composer.ReasoningLabel);
 
@@ -561,11 +539,7 @@ public sealed class MainViewModelTests
             new EpochHeader(new LlmCallConfig("other", "other-model", ReasoningEffortId.Create("high"))),
             RequestHeaderReasons.Change,
             true));
-        for (var attempt = 0; attempt < 200 && viewModel.Composer.ModelLabel != "other/other-model"; attempt++)
-        {
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-            Dispatcher.UIThread.RunJobs();
-        }
+        await GuiTestEnvironment.WaitForAsync(viewModel.Composer, () => viewModel.Composer.ModelLabel == "other/other-model");
 
         Assert.Equal("other/other-model", viewModel.Composer.ModelLabel);
         Assert.Equal("other/other-model", viewModel.SessionSubtitle);
@@ -573,7 +547,7 @@ public sealed class MainViewModelTests
     });
 
     [Fact]
-    public async Task SwitchCommand_Updates_Labels_For_Multi_Segment_Model()
+    public async Task SwitchCommand_Updates_Labels_For_Multi_Segment_Model() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync("""
             logging:
@@ -588,21 +562,16 @@ public sealed class MainViewModelTests
                   m1: {}
                   aion-labs/aion-3.0-mini: {}
             """);
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
-        viewModel.SwitchModelCommand.Execute("pa/aion-labs/aion-3.0-mini");
-        for (var attempt = 0; attempt < 200 && viewModel.Composer.ModelLabel != "pa/aion-labs/aion-3.0-mini"; attempt++)
-        {
-            Dispatcher.UIThread.RunJobs();
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-        }
+        await viewModel.SwitchModelCommand.ExecuteAsync("pa/aion-labs/aion-3.0-mini");
 
         Assert.Equal("pa/aion-labs/aion-3.0-mini", viewModel.Composer.ModelLabel);
         Assert.Equal("pa/aion-labs/aion-3.0-mini", viewModel.SessionSubtitle);
-    }
+    });
 
     [Fact]
-    public async Task SwitchReasoningCommand_Updates_Label_For_Flagged_Model()
+    public async Task SwitchReasoningCommand_Updates_Label_For_Flagged_Model() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync("""
             logging:
@@ -617,28 +586,20 @@ public sealed class MainViewModelTests
                   deepseek-flash:
                     name: DeepSeek Flash
             """);
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
-        viewModel.SwitchModelCommand.Execute("deepseek/deepseek-flash");
-        for (var attempt = 0; attempt < 200 && viewModel.Composer.ModelLabel != "deepseek/deepseek-flash"; attempt++)
-        {
-            Dispatcher.UIThread.RunJobs();
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-        }
+        await viewModel.SwitchModelCommand.ExecuteAsync("deepseek/deepseek-flash");
+        await GuiTestEnvironment.WaitForAsync(viewModel.Preferences.ReasoningEfforts,
+            () => viewModel.Preferences.ReasoningEfforts.Contains("max"));
 
         Assert.Contains("max", viewModel.Preferences.ReasoningEfforts);
-        viewModel.SwitchReasoningCommand.Execute("max");
-        for (var attempt = 0; attempt < 200 && viewModel.Composer.ReasoningLabel != "max"; attempt++)
-        {
-            Dispatcher.UIThread.RunJobs();
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-        }
+        await viewModel.SwitchReasoningCommand.ExecuteAsync("max");
 
         Assert.Equal("max", viewModel.Composer.ReasoningLabel);
-    }
+    });
 
     [Fact]
-    public async Task AssistantMessages_AreLabeledWithCurrentModel()
+    public async Task AssistantMessages_AreLabeledWithCurrentModel() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
         var session = environment.Agent.Session;
@@ -651,43 +612,35 @@ public sealed class MainViewModelTests
             MessageFactory.CreateAssistantMessage([new TextBlock("回答")], "other", "other-model")),
             new SurfaceOp.Append());
 
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         var assistant = Assert.Single(viewModel.Messages, message => message.Kind == MessageKind.Assistant);
         Assert.Equal("other-model", assistant.Role);
-    }
+    });
 
     [Fact]
-    public async Task WorkspaceView_SwitchPersistsIntoGuiParameters()
+    public async Task WorkspaceView_SwitchPersistsIntoGuiParameters() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         viewModel.SetWorkspaceViewCommand.Execute("filesystem");
 
         Assert.True(viewModel.IsFileSystemView);
         Assert.Equal(GuiSettings.ViewFilesystem, viewModel.Gui.Load().WorkspaceView);
-    }
+    });
 
     [Fact]
-    public async Task DeleteCurrentSession_IsRefused()
+    public async Task DeleteCurrentSession_IsRefused() => await HeadlessGui.RunAsync(async () =>
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, environment.Agent);
+        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         var node = Assert.Single(viewModel.Workspaces.SelectMany(workspace => workspace.Sessions));
 
-        viewModel.DeleteSessionCommand.Execute(node);
+        await viewModel.DeleteSessionCommand.ExecuteAsync(node);
 
         Assert.Equal("不能删除当前正在使用的会话", viewModel.StatusText);
-    }
+    });
 
-    private static async Task<T> PumpAsync<T>(Task<T> task)
-    {
-        for (var attempt = 0; attempt < 500 && !task.IsCompleted; attempt += 1)
-        {
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-            Dispatcher.UIThread.RunJobs();
-        }
-        return await task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-    }
+    private static Task<T> PumpAsync<T>(Task<T> task) => GuiTestEnvironment.PumpAsync(task);
 }

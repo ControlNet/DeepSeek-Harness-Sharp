@@ -4,10 +4,18 @@
 public sealed record RemoteSessionInfo(string Id, string Cwd, string Status, long StartedAt, string? Title, string? Summary, long UpdatedAt);
 
 /** 会话事件流的一条: EventJson 是该 SessionEvent 的完整序列化(含 type/seq/time/data/surfaceOp), 本地据此重建会话。 */
-public sealed record RemoteEventInfo(string SessionId, string EventJson);
+public sealed record RemoteEventInfo(string SessionId, string EventJson, long Sequence, bool Reset = false);
 
-/** 订阅会话事件: FromSeq 之前的作为历史先补发, 之后的实时推送(local 重连后可见增量)。 */
-public sealed record RemoteSubscribeRequest(string SessionId, long FromSeq);
+/** 每个读者有独立订阅标识，历史和实时事件均由 Host 提供。 */
+public sealed record RemoteSubscribeRequest(string SessionId, long FromSeq, string SubscriptionId);
+
+public sealed record RemoteSubscriptionRef(string SubscriptionId);
+
+public readonly record struct RemoteEventFrame(string SubscriptionId, RemoteEventInfo Event);
+
+
+public sealed record RemoteSessionSnapshot(string HeaderJson, IReadOnlyList<RemoteEventInfo> Events, string? ApprovalPolicy = null);
+
 
 /** 远端发起的审批/问答: 需本地决策, 用 RequestId 回填。 */
 public sealed record RemoteApprovalRequest(string RequestId, string SessionId, string Tool, string? Arguments, string? Reason);
@@ -45,22 +53,80 @@ public sealed record RemoteMessageRequest(string SessionId, string Text, IReadOn
 /** 远端消息里的一张图片: 字节经 base64 传输, 由远端落进附件库后作为 ImageBlock 发给会话。 */
 public sealed record RemoteImageBlock(string MediaType, int Width, int Height, string? Name, string Base64);
 
-public sealed record RemoteApprovalResponse(string RequestId, bool Allow, string? Reason);
+public sealed record RemoteApprovalResponse(string RequestId, bool Allow, string? Reason, bool RememberForSession = false);
 
-public sealed record RemoteFilePath(string Path);
 
-/** 远端文件系统中的一项: 名称 + 绝对路径 + 是否目录。 */
-public sealed record RemoteDirectoryEntry(string Name, string Path, bool IsDirectory);
+/** 全部未决的审批与问答(host.pending.list), 也是新连接补发的内容。 */
+public sealed record RemotePendingList(IReadOnlyList<RemoteApprovalRequest> Approvals, IReadOnlyList<RemoteQuestionRequest> Questions);
 
-/** 一次远端目录列举: 被列举目录的绝对路径 + 父目录(根为 null) + 子项。 */
-public sealed record RemoteDirectoryListing(string Path, string? Parent, IReadOnlyList<RemoteDirectoryEntry> Entries);
+/** 完整权威待决投影; Resolution 仅携带本次结局的审计信息。 */
+public sealed record RemotePendingChange(RemotePendingList Pending, RemotePendingResolved? Resolution = null);
 
-public sealed record RemoteFileContent(string Path, string Base64);
+/** 未决请求的结局: Kind 见 PendingKinds, Resolution 见 PendingResolutions; 由 host 取消时 ResolvedBy 为 "host"、ResolvedByConnection 为空。 */
+public sealed record RemotePendingResolved(
+    string RequestId,
+    string Kind,
+    string SessionId,
+    string Resolution,
+    string ResolvedBy,
+    string? ResolvedByConnection);
 
-public sealed record RemotePtyStartRequest(string FileName, IReadOnlyList<string> Arguments);
+public static class PendingKinds
+{
+    public const string Approval = "approval";
+    public const string Question = "question";
+}
 
-public sealed record RemotePtyRef(string PtyId);
+public static class PendingResolutions
+{
+    public const string Allowed = "allowed";
+    public const string Rejected = "rejected";
+    public const string Answered = "answered";
 
-public sealed record RemotePtyInput(string PtyId, string Base64);
+    /** 会话被中断、结束或 host 退出, 请求不再有人等待。 */
+    public const string Cancelled = "cancelled";
+}
 
-public sealed record RemotePtyOutput(string PtyId, string Base64, bool Eof);
+/**
+ * 统一会话模型的一条(host.sessions.list / host.sessions.changed): 只登记由本 host 创建或恢复的会话, 不扫描外部进程。
+ * Kind 见 HostSessionKinds, Status 见 HostSessionStatuses; 时间为 Unix 毫秒; ExitCode 只对已退出的进程型会话有值。
+ */
+public sealed record RemoteHostSession(
+    string SessionId,
+    string Kind,
+    string? AgentKind,
+    string? ProjectPath,
+    string? Title,
+    string Status,
+    long CreatedAt,
+    long LastActivityAt,
+    int PendingCount,
+    int? ExitCode,
+    bool Deleted = false);
+
+/** Registry stream starts with a complete snapshot, followed by per-session changes. */
+public sealed record RemoteSessionChange(IReadOnlyList<RemoteHostSession>? Snapshot = null, RemoteHostSession? Session = null);
+
+public static class HostSessionKinds
+{
+    public const string Harness = "harness";
+    public const string External = "external";
+    public const string Acp = "acp";
+    public const string Terminal = "terminal";
+}
+
+/** agentKind 取值: 会话里跑的是哪种 Agent; 外部 Agent 的取值由各自的适配器登记。 */
+public static class HostAgentKinds
+{
+    /** 本项目自己的 Agent(harness 会话)。 */
+    public const string Dsharp = "dsharp";
+}
+
+/** 只反映进程与交互状态, 不判断任务是否完成。 */
+public static class HostSessionStatuses
+{
+    public const string Running = "Running";
+    public const string WaitingForUser = "WaitingForUser";
+    public const string Idle = "Idle";
+    public const string Exited = "Exited";
+}

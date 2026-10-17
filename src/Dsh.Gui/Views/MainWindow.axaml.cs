@@ -1,16 +1,18 @@
+using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
-using Dsh.Core;
 using Dsh.Gui.Services;
+using Dsh.Gui.Terminal;
 using Dsh.Gui.ViewModels;
 
 namespace Dsh.Gui.Views;
@@ -33,27 +35,60 @@ public sealed partial class MainWindow : Window
     /** XAML 编译器要求存在无参构造, 实际启动路径走下面的带参构造。 */
     public MainWindow() => InitializeComponent();
 
-    public MainWindow(HarnessApp app, AgentLoopAgent agent) : this()
+    public MainWindow(HarnessApp app, HostChatSession chat) : this()
     {
         _guiSettings = new GuiSettings(app.Home);
         _closeAction = ClosePolicy.Effective(ClosePolicy.Parse(_guiSettings.Load().CloseAction));
-        ViewModel = new MainViewModel(app, agent);
+        ViewModel = new MainViewModel(app, chat);
         DataContext = ViewModel;
+        ConnectWorkspace(ViewModel.Workspace);
         ViewModel.DecisionRequested += ShowDecisionAsync;
+        Opened += (_, _) => ViewModel.RefreshPendingDialogs();
         ViewModel.CopyRequested += CopyToClipboard;
         ViewModel.TerminalRequested += ShowTerminal;
         ViewModel.FilePicker = PickAsync;
-        ViewModel.Preferences.RemoteFolderPicker = PickRemoteFolderAsync;
         ViewModel.Preferences.PluginFilePicker = PickPluginLibraryAsync;
         ViewModel.Preferences.Applied += ApplyAppearance;
         ViewModel.Preferences.Preview += ApplyPreview;
-        AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
+        AddHandler(KeyDownEvent, OnWorkspaceKeyDown, RoutingStrategies.Bubble);
         Dispatcher.UIThread.UnhandledException += OnDispatcherUnhandledException;
         SetUpTitleBar();
         SetUpTray();
     }
 
     public MainViewModel? ViewModel { get; }
+
+    /** Session windows by view model, so the workspace can close or focus them. */
+    private readonly Dictionary<FleetSessionViewModel, SessionWindow> _sessionWindows = [];
+
+    private void ConnectWorkspace(WorkspaceViewModel workspace)
+    {
+        workspace.SessionWindowRequested += ShowSessionWindow;
+        workspace.SessionWindowFocusRequested += session => _sessionWindows.GetValueOrDefault(session)?.Activate();
+        workspace.SessionWindowCloseRequested += session => _sessionWindows.GetValueOrDefault(session)?.Close();
+        workspace.NewSessionDialogRequested += form => _ = new NewSessionWindow(form).ShowDialog(this);
+        // Opening a session from a notification navigates behind the panel; the panel closes so the session is visible.
+        workspace.NavigationRequested += _ => BellButton.Flyout?.Hide();
+        workspace.Notifications.IsForeground = () => IsActive;
+        workspace.Notifications.DesktopNotify = DesktopNotifier.Create();
+        workspace.RegisterHostPages(IconGeometry("Icon.Folder"), IconGeometry("Icon.Git"), IconGeometry("Icon.Machine"));
+        workspace.Start();
+    }
+
+    private Geometry IconGeometry(string key) => (Geometry)this.FindResource(key)!;
+
+    private void ShowSessionWindow(FleetSessionViewModel session)
+    {
+        var window = new SessionWindow(session);
+        _sessionWindows[session] = window;
+        window.Closed += async (_, _) =>
+        {
+            _sessionWindows.Remove(session);
+            if (ViewModel is { } viewModel)
+                await viewModel.Workspace.SessionWindowClosedAsync(session);
+        };
+        window.Show(this);
+    }
 
     protected override void OnOpened(EventArgs e)
     {
@@ -300,8 +335,31 @@ public sealed partial class MainWindow : Window
             || error.Source?.Contains("Tmds.DBus", StringComparison.Ordinal) == true;
     }
 
-    private void OnPreviewKeyDown(object? sender, KeyEventArgs e)
+    /** Workspace shortcuts run only after focused controls have had their input; PTY keys never become GUI commands. */
+    private void OnWorkspaceKeyDown(object? sender, KeyEventArgs e)
     {
+        if (e.Handled || e.Source is TerminalControl || ViewModel is not { } viewModel)
+            return;
+        ICommand? command = (e.Key, e.KeyModifiers) switch
+        {
+            (Key.N, KeyModifiers.Control) => viewModel.NewSessionCommand,
+            (Key.OemComma, KeyModifiers.Control) => viewModel.ShowSettingsCommand,
+            (Key.Escape, KeyModifiers.None) => viewModel.GoBackCommand,
+            (Key.K, KeyModifiers.Control) => viewModel.Workspace.Palette.ToggleCommand,
+            (Key.D1, KeyModifiers.Control) => viewModel.ShowConversationCommand,
+            (Key.D2, KeyModifiers.Control) => viewModel.ShowTraceCommand,
+            (Key.B, KeyModifiers.Control) => viewModel.ToggleSidebarCommand,
+            _ => null,
+        };
+        if (command is not null)
+        {
+            if (command.CanExecute(null))
+            {
+                e.Handled = true;
+                command.Execute(null);
+            }
+            return;
+        }
         if (!e.KeyModifiers.HasFlag(KeyModifiers.Control))
             return;
         if (e.Key == Key.W)
@@ -380,17 +438,4 @@ public sealed partial class MainWindow : Window
         return files.Select(file => file.TryGetLocalPath()).FirstOrDefault(path => path is not null);
     }
 
-    /** “选择远端目录”: 需要时先自动部署 dsharp, 连上后再用对话框浏览远端目录树。 */
-    private async Task<string?> PickRemoteFolderAsync(SshWorkspace workspace, string? initial)
-    {
-        var cancellationToken = CancellationToken.None;
-        if (ViewModel is not { } model)
-            return null;
-        string? hostCommand = null;
-        if (model.Preferences.RemoteAutoDeploy)
-            hostCommand = (await RemoteDsharpInstaller.EnsureAsync(workspace, model.Preferences.BuildDeployOptions(), null, cancellationToken)).CommandPath;
-        await using var connection = await SshRemoteWorkspaceLauncher.ConnectAsync(workspace, hostCommand, cancellationToken);
-        var dialog = new RemoteFolderPickerWindow(connection.Client, initial);
-        return await dialog.ShowDialog<string?>(this);
-    }
 }

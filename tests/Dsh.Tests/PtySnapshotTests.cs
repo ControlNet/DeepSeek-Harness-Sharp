@@ -4,8 +4,8 @@ using Dsh.Pty;
 namespace Dsh.Tests;
 
 /**
- * attach 的状态重建: daemon 侧用会话自己的 VT 屏做全量重绘(进备用屏 + 清屏 + 逐行定位 + SGR + 光标),
- * 而不是把历史字节再放一遍 —— 全屏程序(vim/htop)接管后也必须是正确画面。
+ * attach 的状态重建: daemon 侧重建 VT 主/备用屏、输入模式、画笔与光标,
+ * 而不是把历史字节再放一遍 —— 全屏程序(vim/htop)退出与 tmux 切换后也必须保持一致。
  */
 public sealed class PtySnapshotTests
 {
@@ -22,11 +22,11 @@ public sealed class PtySnapshotTests
         {
             var snapshot = Encoding.UTF8.GetString(session.Snapshot());
 
-            // 进备用屏 + 清屏 + 光标归位, 然后逐行定位重绘(每行都以 CSI row;1H 开头 + 行尾 EL)。
-            Assert.StartsWith("\u001b[?1049h\u001b[2J\u001b[H", snapshot, StringComparison.Ordinal);
+            // 取消可能被旧连接截断的控制序列, 复位后逐行重画; 不强制进入备用屏。
+            Assert.StartsWith("\u0018\u001bc\u001b[0m\u001b[2J\u001b[H", snapshot, StringComparison.Ordinal);
             Assert.Contains("\u001b[1;1H", snapshot, StringComparison.Ordinal);
             Assert.Contains("\u001b[6;1H", snapshot, StringComparison.Ordinal);
-            Assert.Contains("\u001b[K", snapshot, StringComparison.Ordinal);
+            Assert.DoesNotContain("\u001b[K", snapshot, StringComparison.Ordinal);
         }
         finally
         {
