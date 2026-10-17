@@ -12,6 +12,11 @@ public static class HarnessEntrypoint
     {
         if (args.Contains(PtcScriptHost.HostArgument))
             return await PtcScriptHost.RunAsync(args);
+        // The web process alone owns ASP.NET. Forward before parsing so this assembly knows no web options or WebBridge types.
+        if (args.FirstOrDefault() == "web")
+            return await WebHostLauncher.RunAsync(args[1..]);
+        if (args.Length >= 2 && args[0] == "host" && args[1] == "web")
+            return await WebHostLauncher.RunAsync(args[2..]);
         // machine/session/doctor have their own options (--host, --machine, ...): they are parsed as a whole, not by the loop below.
         if (FleetCli.Handles(args) && !args.Contains("--help") && !args.Contains("-h"))
             return await FleetCli.RunAsync(HarnessStorage.ResolveDefaultHome(), args, (home, sessionId) => RunEntrypointAsync(home, "tui", sessionId));
@@ -64,10 +69,10 @@ public static class HarnessEntrypoint
                     gpuCard = args[++index];
                     break;
                 // 子命令自己的选项(config schema / storage 等): 原样透传给子命令解析, 不当未知选项报错。
-                case "--write-template" or "--verify" or "--json" or "--markdown" or "--md" or Dsh.WebBridge.WebBridgeCommand.PrintTokenOption:
+                case "--write-template" or "--verify" or "--json" or "--markdown" or "--md":
                     positional.Add(args[index]);
                     break;
-                case "--path" or Dsh.WebBridge.WebBridgeCommand.PortOption when index + 1 < args.Length:
+                case "--path" when index + 1 < args.Length:
                     positional.Add(args[index]);
                     positional.Add(args[++index]);
                     break;
@@ -161,15 +166,11 @@ public static class HarnessEntrypoint
                 if (OperatingSystem.IsMacOS())
                     return RunGuiOnMainThread(harnessHome, resumeSessionId);
                 return await RunEntrypointAsync(harnessHome, "gui", resumeSessionId);
-            case "web":
-                return await RunHostWebAsync(harnessHome, positional.Skip(1).ToList());
             case "host":
                 {
                     var subcommand = positional.Skip(1).FirstOrDefault();
                     if (subcommand is "serve" || hostServe)
                         return await RunHostServeAsync(harnessHome, hostStdio, hostToken);
-                    if (subcommand is "web")
-                        return await RunHostWebAsync(harnessHome, positional.Skip(2).ToList());
                     await Console.Error.WriteLineAsync("dsharp: host requires a subcommand (serve | web)");
                     return 1;
                 }
@@ -227,19 +228,6 @@ public static class HarnessEntrypoint
         return 0;
     }
 
-    /** The browser UI runs through the same plugin-entrypoint resolution as TUI and GUI. */
-    private static async Task<int> RunHostWebAsync(HarnessHome home, List<string> arguments)
-    {
-        using var cancellation = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, eventArgs) =>
-        {
-            eventArgs.Cancel = true;
-            cancellation.Cancel();
-        };
-        using var app = await ConfigBoot.Compose(new HarnessOptions(home, Directory.GetCurrentDirectory(), IsTui: false));
-        return await app.RunEntrypointAsync("web", new PluginEntrypointOptions(home, Directory.GetCurrentDirectory(),
-            StartLocalHost: StartLocalHostAsync, Arguments: arguments), cancellation.Token);
-    }
 
 
     /**
@@ -348,10 +336,10 @@ public static class HarnessEntrypoint
                    dsharp attach <pty-id> [--gpu]   (等价 dsharp tui attach <pty-id>)
                    dsharp tui --session <id> [--gpu]   (恢复 harness 会话; --gpu 开独立窗口)
                    dsharp gui [--session <id>]
-                   dsharp web [--port N] [--print-token]   (浏览器工作台，与 GUI/TUI 并行入口)
+                   dsharp web [--port N] [--print-token]   (启动独立安装的 dsharp-web，不在本进程加载 Web 框架)
                    dsharp headless "task"
                    dsharp host serve [--stdio] [--token <t>]   (后台工作区宿主: --stdio 通过 ssh 桥接, 不安装系统服务)
-                   dsharp host web [--port N] [--print-token]   (浏览器桥: 只监听 127.0.0.1, 跨设备用 ssh -L 转发)
+                   dsharp host web [--port N] [--print-token]   (同上；只监听 127.0.0.1，跨设备用 ssh -L 转发)
                    dsharp register-terminal    (Linux: 注册为桌面环境的默认终端)
                    dsharp storage paths        (打印 storage.root 与各分区解析结果)
                    dsharp storage migrate <old> <new>   (手动搬运旧根数据)

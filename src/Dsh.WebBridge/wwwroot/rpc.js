@@ -1,6 +1,6 @@
 // JSON-RPC 2.0 client for the dsharp web bridge.
-// The bridge relays every WebSocket text message verbatim to the host (one message is one JSON-RPC request, response or notification), so this module is the whole client-side protocol layer.
-// Method names and parameter shapes are the host's (Dsh.RemoteHost HostProtocol); parameter and result property names are PascalCase and case-sensitive.
+// Each WebSocket is a view transport over the bridge's shared Fleet client, not a raw host connection.
+// Host method names remain the user-operation API; bridge.view contains the server's authoritative render projection.
 
 /** JSON-RPC "method not found", returned for requests the host sends to the browser. */
 const METHOD_NOT_FOUND = -32601;

@@ -32,7 +32,8 @@ public static class WebBridgeCommand
         Func<Task> ensureHostAsync,
         CancellationToken cancellationToken,
         Func<MachineSpec, CancellationToken, Task>? startLocalHost = null,
-        OutboundProxy? localProxy = null)
+        OutboundProxy? localProxy = null,
+        WebBridgeRuntime? runtime = null)
     {
         var (port, printToken, problem) = Parse(arguments);
         if (problem is not null)
@@ -44,7 +45,10 @@ public static class WebBridgeCommand
         if (printToken)
             return await PrintTokenAsync(root, output, error, cancellationToken).ConfigureAwait(false);
         await ensureHostAsync().ConfigureAwait(false);
-        return await ServeAsync(Options(root, port, startLocalHost, localProxy), output, error, cancellationToken).ConfigureAwait(false);
+        using var ownedRuntime = runtime is null ? new WebBridgeRuntime(localProxy) : null;
+        var owner = runtime ?? ownedRuntime!;
+        var options = Options(root, port, startLocalHost, localProxy ?? owner.Proxy);
+        return await owner.RunAsync(options, (fleet, token) => ServeAsync(options, fleet, output, error, token), cancellationToken).ConfigureAwait(false);
     }
 
     private static WebBridgeArguments Parse(IReadOnlyList<string> arguments)
@@ -96,14 +100,14 @@ public static class WebBridgeCommand
         return new WebBridgeOptions(root, port, [MachineSpec.Local(root), .. config.Machines], fleet);
     }
 
-    private static async Task<int> ServeAsync(WebBridgeOptions options, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    private static async Task<int> ServeAsync(WebBridgeOptions options, FleetClient fleet, TextWriter output, TextWriter error, CancellationToken cancellationToken)
     {
         WebBridgeServer server;
         try
         {
-            server = WebBridgeServer.Start(options);
+            server = WebBridgeServer.Start(options, fleet);
         }
-        catch (SocketException failure) when (failure.SocketErrorCode == SocketError.AddressAlreadyInUse)
+        catch (IOException failure) when (failure.InnerException is Microsoft.AspNetCore.Connections.AddressInUseException)
         {
             await error.WriteLineAsync($"dsharp: port {options.Port} on 127.0.0.1 is already in use; pick another with {PortOption} N").ConfigureAwait(false);
             return 1;

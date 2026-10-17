@@ -27,10 +27,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 
@@ -65,6 +61,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\Dsh.WebHost\Dsh.WebHost.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Account\Dsh.Account.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Board\Dsh.Board.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Llm\Dsh.Llm.csproj" />

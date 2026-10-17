@@ -109,6 +109,7 @@ public sealed class PluginHostTests
         var activation = Assert.IsType<PluginActivation>(app.Composition!.Find("@deepseek-ai/dsh-web-bridge"));
         Assert.Equal(ActivationState.Active, activation.State);
         var runtime = Assert.IsType<Dsh.WebBridge.WebBridgeRuntime>(ctx.Get(Dsh.WebBridge.WebBridgeRuntime.ServiceName));
+        ctx.Provide(Dsh.WebBridge.WebBridgeRuntime.ApplicationServiceName, new Dsh.WebBridge.WebBridgeApplication());
         string? startedHome = null;
         var options = new Dsh.Boot.PluginEntrypointOptions(new Dsh.Boot.HarnessHome(root), root,
             StartLocalHost: (home, _) =>
@@ -134,7 +135,7 @@ public sealed class PluginHostTests
             Assert.Null(ctx.Get(Dsh.WebBridge.WebBridgeRuntime.ServiceName, false));
             Assert.Throws<ObjectDisposedException>(() =>
             {
-                _ = runtime.RunAsync(options, new StringWriter(), new StringWriter(), ct);
+                _ = runtime.RunAsync(new Dsh.WebBridge.WebBridgeOptions(root, 0), (_, _) => Task.FromResult(0), ct);
             });
         }
         finally

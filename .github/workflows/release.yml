@@ -260,6 +260,17 @@ jobs:
           # GUI 启动器一并发布并叠加进主产物。
           dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r "$RID" $PUBLISH_ARGS \
             -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none --nologo -v m
+          # WebHost is a separate asset. Never merge its ASP.NET assemblies into the TUI/GUI archive.
+          dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r "$RID" $PUBLISH_ARGS \
+            -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none --nologo -v m
+          WEB_PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"
+          if [ "$FLAVOR" = "aot" ]; then
+            bash scripts/assert-aot-output.sh "$WEB_PUB" dsharp-web
+          fi
+          pwsh -NoProfile -File scripts/smoke-web-host.ps1 \
+            -WebPublishDir "$WEB_PUB" \
+            -TuiPublishDir "DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish" \
+            -GuiPublishDir "DshGuiHost/bin/Release/net10.0/$RID/publish"
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
           GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
           test -d "$PUB"
@@ -355,6 +366,39 @@ jobs:
           cd - >/dev/null
           rm -rf "$VERIFY"
           echo "归档校验通过：$ARCHIVE"
+
+      - name: 单独打包和冒烟 WebHost
+        shell: pwsh
+        env:
+          FLAVOR: ${{ matrix.flavor }}
+          RID: ${{ matrix.rid }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $webPub = "Dsh.WebHost/bin/Release/net10.0/$env:RID/publish"
+          $webArchive = $env:ARCHIVE -replace '^dsharp-', 'dsharp-web-'
+          $out = "artifacts/release-stage/$webArchive"
+          New-Item -ItemType Directory -Force "$webPub/plugins" | Out-Null
+          tar -a -c -f $out --exclude=*.pdb --exclude=*.dbg -C $webPub .
+          if ($LASTEXITCODE -ne 0) { throw 'WebHost archive creation failed' }
+          $entries = tar -tf $out
+          if (-not ($entries -match '^\./dsharp-web(\.exe)?$')) { throw 'WebHost executable is missing from its archive' }
+          $verify = Join-Path $env:RUNNER_TEMP "verify-web-$env:FLAVOR-$env:RID"
+          New-Item -ItemType Directory -Force $verify | Out-Null
+          try {
+            tar -xf $out -C $verify
+            if ($LASTEXITCODE -ne 0) { throw 'WebHost archive extraction failed' }
+            ./scripts/smoke-web-host.ps1 -WebPublishDir $verify `
+              -TuiPublishDir "DeepSeek-Harness-Sharp/bin/Release/net10.0/$env:RID/publish" `
+              -GuiPublishDir "DshGuiHost/bin/Release/net10.0/$env:RID/publish"
+          } finally { Remove-Item $verify -Recurse -Force }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-${{ matrix.flavor }}-${{ matrix.rid }}
+          path: artifacts/release-stage/dsharp-web-*
+          if-no-files-found: error
+          retention-days: 7
 
       - uses: actions/upload-artifact@v4
         with:

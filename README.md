@@ -233,10 +233,11 @@ dsharp host serve                                     # 手动前台运行 Host;
 - 断线后每台机器独立重连,会话事件从断点续订,终端会重新接入。
 - ACP 对话使用与 harness 相同的会话持久化、全文查询和事件订阅；Host 重启或恢复 agent 时保留原会话 ID、回合与工具事件。旧 `host/agents/*.events.jsonl` 通过真实会话存储句柄一次性导入，成功后原文件保留为 `.events.jsonl.imported`，失败不删除源文件。
 - 通知与已读标记保存为 `host/notifications.json` 原子快照，不再维护单独的追加日志、压缩或保留期引擎；首次打开时导入同目录旧 `notifications.jsonl`，源文件保持不变，后续只读写快照。通知跨 Host 重启保留。
-- 浏览器：`dsharp web` 是与 TUI/GUI 并行的插件入口（`dsharp host web` 进入同一入口），只监听 `127.0.0.1:8780`；`dsharp web --print-token` 打印一次性登录链接，其它设备先 `ssh -N -L 8780:127.0.0.1:8780 user@host` 转发再访问。
+- 浏览器：先单独安装 `dsharp-web`（见下方发布形态），再运行 `dsharp web` 或 `dsharp-web`；`dsharp host web` 也是同一进程转发入口，TUI/GUI 不加载 WebBridge 或 ASP.NET。独立 WebHost 内的真实 WebBridge 插件拥有 Fleet 连接、协议桥和监听生命周期，只监听 `127.0.0.1:8780`；`dsharp web --print-token`（或 `dsharp-web --print-token`）打印登录链接，其它设备先 `ssh -N -L 8780:127.0.0.1:8780 user@host` 转发再访问。
 - 手机触摸或触控笔点按终端会取得输入焦点，不阻止正常滚动手势；首屏快照解析完成后才解除忙碌标记，使用终端键栏发送 `Ctrl+C` 后仍可继续输入。文字、回车和键栏按键按各自终端的输入顺序提交，切换页面不会把已排队的输入发送到新会话；发送失败会显示错误且不自动重放。
 - `@deepseek-ai/dsh-fleet` 提供机器客户端服务并拥有客户端连接的生命周期，禁用时断开客户端而不终止 Host 会话；可复用连接与部署实现位于 `Dsh.Fleet.Client`，GUI、WebBridge 和 CLI 共用它。
 - `@deepseek-ai/dsh-web-bridge` 拥有 WebUI 入口及桥接服务器生命周期，停用或退出入口会停止监听并删除临时访问凭据；它不是绕过插件装载的静态网页宿主。
+- 浏览器只渲染服务器下发的权威视图、会话事件和实际 PTY 输出，提交文件/Git/会话/审批等操作；机器重连、能力处理、按序续订和 PTY 重挂由与 GUI/CLI 共用的 Fleet/RemoteHost 提供，浏览器不保存第二套事件回放或已解决请求缓存。关闭发起页面不会终止 Host 里的会话。
 - GUI 本地终端与 SSH 终端都由 Host/PTY daemon 托管；关闭终端页只分离客户端。重接会恢复主屏/备用屏、光标、滚动区域、换行模式及 DEC 图形字符集，`tmux` 切窗和切 pane 不再共用错误的屏幕保存槽，窗格边框不会因字符集丢失变成字母；离线期间最新窗口尺寸在重新 attach 前应用。
 - 终端的非独占订阅也可在进程退出后读取最终屏幕并正常结束；瞬时结束的命令仍正常入册，不因 Host 建立观察订阅稍晚而误报启动失败。
 - 终端聚焦时 `Ctrl+B`、`Ctrl+K`、`Esc` 等按键原样送往 PTY，不再被窗口快捷键先行截获；点击终端外的导航区后再使用工作台快捷键。普通 Chat 重新显示或重新挂载时会恢复输入框焦点及事件订阅。
@@ -304,6 +305,42 @@ systemctl --user disable --now dsharp-host.service
   - NativeAOT 不支持在运行期装载托管 dll:`plugins/` 中的托管插件启动时逐文件 WARN 并跳过(被跳过的插件不会出现在 `/plugins list`),其余插件照常启用、程序正常启动;要使用托管插件就把它编译进镜像;
   - 会话持久化(JSONL + Zstd)在 JIT 与 AOT 下均可用。
 
+
+### 独立 WebHost
+
+发布项目分别是 `DeepSeek-Harness-Sharp`（`dsharp`）、`DshGuiHost`（`dsh-gui`）和 `Dsh.WebHost`（`dsharp-web`）。只有最后一个引入 `Microsoft.AspNetCore.App`：ASP.NET Core 的 HTTP/WebSocket、Cookie 认证和嵌入资源服务不会沿引用图进入 TUI/GUI。Web 的 Host/Origin 校验继续防止 DNS rebinding 与 CSRF，Cookie 为 HttpOnly/SameSite=Strict，令牌及 Cookie 密钥随进程重启失效。
+
+```bash
+# 源码运行：WebHost 编译、激活 WebBridge 插件，再启动监听
+dotnet run --project Dsh.WebHost/Dsh.WebHost.csproj -- --port 8780
+# 独立发布（默认 JIT + partial trim + 自包含）
+dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r linux-x64
+dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r linux-x64
+# 不裁剪的 JIT / NativeAOT 档使用同一个入口
+dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r linux-x64 -p:PublishTrimmed=false
+dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r linux-x64 -p:PublishAot=true
+Dsh.WebHost/bin/Release/net10.0/linux-x64/publish/dsharp-web --port 8780
+```
+
+Release 将 Web 单独打包为 `dsharp-web-<rid>.tar.gz` / `dsharp-web-win-x64.zip`；AOT 资产在扩展名前加 `-aot`。默认安装脚本只安装原有 TUI/GUI 资产；需要 Web 时另下载对应平台和版本的 Web 资产，解压到独立目录，不要把 ASP.NET 程序集覆盖到 TUI/GUI 发布目录。把 Web 目录加入 PATH（或将 `dsharp-web` 链接到命令目录）即可保留 `dsharp web` 用户入口，例如：
+
+```bash
+mkdir -p "$HOME/.local/share/dsharp-web" "$HOME/.local/bin"
+tar -xzf dsharp-web-linux-x64.tar.gz -C "$HOME/.local/share/dsharp-web"
+ln -sf "$HOME/.local/share/dsharp-web/dsharp-web" "$HOME/.local/bin/dsharp-web"
+dsharp-web --print-token    # 另一个终端已经运行 dsharp-web 时，打印该 home 的登录链接
+```
+
+Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` 并将该目录加入用户 PATH，直接运行其中的 `dsharp-web.exe`。WebHost 与其它入口使用相同的 `DSH_HOME` / `settings.storage.root`；WebHost 自身也能执行共享的 `host serve` 命令，本机 Host 启动不依赖猜测另一个构建目录。
+
+CI 在真实三份发布产物上检查非 Web 的 `.deps.json`、`runtimeconfig.json` 和程序集隔离，打印各目录总字节数，并启动发布版进行 HTTP 登录、跨站拒绝、CSP、嵌入资源和 WebSocket/Fleet 转发冒烟；同一检查也用于 Web 的 NativeAOT 产物与解压后的 Release 归档：
+
+```powershell
+./scripts/smoke-web-host.ps1 `
+  -WebPublishDir Dsh.WebHost/bin/Release/net10.0/linux-x64/publish `
+  -TuiPublishDir DeepSeek-Harness-Sharp/bin/Release/net10.0/linux-x64/publish `
+  -GuiPublishDir DshGuiHost/bin/Release/net10.0/linux-x64/publish
+```
 ## 各版本新增功能
 
 0.1.1 起的发布说明未单独张贴,这里按版本折叠列出新增能力(0.1.0 的完整发布说明见[讨论区](https://github.com/deepseek-ai/deepseek-harness/discussions/8952))。
