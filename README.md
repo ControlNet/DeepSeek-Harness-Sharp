@@ -233,8 +233,8 @@ dsharp host serve                                     # 手动前台运行 Host;
 - GUI:启动后进入总览,按 机器 → 项目 → 会话 分组,等待你审批的会话会高亮;`Ctrl+K` 快速跳转,`Esc` 返回;铃铛是通知中心,所有机器的待审批与提问都能在这里直接回答,先答者生效。侧栏还有文件、Git、机器三页;「设置 → 远程」与机器页是同一份机器清单。
 - 审批和提问由 Host 的单一待决队列拥有；`host.pending.changed` 在订阅时及每次变更后推送完整投影，结局可附首答者审计，所有客户端据此关闭已处理的对话，不保存已解决请求的记忆缓存。等待高亮只来自真实待决请求（包括 ACP 结构化权限请求）；外部终端仅显示进程状态，不再用屏幕文本或正则猜测审批、忙碌和等待。
 - 断线后每台机器独立重连,会话事件从断点续订,终端会重新接入。
-- ACP 对话使用与 harness 相同的会话持久化、全文查询和事件订阅；Host 重启或恢复 agent 时保留原会话 ID、回合与工具事件。旧 `host/agents/*.events.jsonl` 通过真实会话存储句柄一次性导入，成功后原文件保留为 `.events.jsonl.imported`，失败不删除源文件。
-- 通知与已读标记保存为 `host/notifications.json` 原子快照，不再维护单独的追加日志、压缩或保留期引擎；首次打开时导入同目录旧 `notifications.jsonl`，源文件保持不变，后续只读写快照。通知跨 Host 重启保留。
+- ACP 对话只使用与 harness 相同的 `SessionStore` / `ISessionPersistence` 会话持久化、全文查询和事件订阅；Host 重启或恢复 agent 时保留原会话 ID、回合与工具事件，不维护另一套 ACP JSONL 历史文件。
+- 通知与已读标记只保存为 `host/notifications.json` 原子快照，跨 Host 重启保留；不维护单独的追加日志、压缩、保留期或 JSONL 导入引擎。
 - 浏览器：先单独安装 `dsharp-web`（见下方发布形态），再运行 `dsharp web` 或 `dsharp-web`；`dsharp host web` 也是同一进程转发入口，TUI/GUI 不加载 WebBridge 或 ASP.NET。独立 WebHost 内的真实 WebBridge 插件拥有 Fleet 连接、协议桥和监听生命周期，只监听 `127.0.0.1:8780`；`dsharp web --print-token`（或 `dsharp-web --print-token`）打印登录链接，其它设备先 `ssh -N -L 8780:127.0.0.1:8780 user@host` 转发再访问。
 - 手机触摸或触控笔点按终端会取得输入焦点，不阻止正常滚动手势；首屏快照解析完成后才解除忙碌标记，使用终端键栏发送 `Ctrl+C` 后仍可继续输入。文字、回车和键栏按键按各自终端的输入顺序提交，切换页面不会把已排队的输入发送到新会话；发送失败会显示错误且不自动重放。
 - `@deepseek-ai/dsh-fleet` 提供机器客户端服务并拥有客户端连接的生命周期，禁用时断开客户端而不终止 Host 会话；可复用连接与部署实现位于 `Dsh.Fleet.Client`，GUI、WebBridge 和 CLI 共用它。
@@ -248,6 +248,7 @@ dsharp host serve                                     # 手动前台运行 Host;
 - TUI Git 面板与 GUI/Web 的 Git 检查共用 `Dsh.GitInspect`：面板仅展示排序、截断后的结构化统计；刷新使用单次 `--raw --numstat -z` diff，不请求 patch，也不逐文件启动 Git。暂存与未暂存改动一起对比 HEAD，干净仓库显示上次提交；首次提交按仓库对象格式计算空树，重命名、二进制及含制表符/换行的文件名由同一解析器处理。GUI/Web 的 status、逐文件 diff、log 和 worktree 管理保持不变。
 - 这里继续使用 Git CLI，而未引入 [LibGit2Sharp](https://github.com/libgit2/libgit2sharp)：它能省去进程启动和机器输出解析，但会增加托管绑定、原生 libgit2 资产及各发布 RID 的加载/NativeAOT 验证，并需重新核对既有 Git 配置、属性/textconv、重命名和 worktree 行为；不能仅因是托管 API 就认定 AOT 发布已兼容。当前 summary 已去掉逐文件进程与 patch 生成，保留安装 Git 的既有执行边界和统一解析实现，不额外维护第二套后端。
 - 同一 home 只允许一个常驻 Host 持有会话注册表，SSH 自动启动会等待真实监听就绪，避免并发启动用旧注册表替换仍在运行的 PTY。
+- 机器清单与部署偏好只读写 `settings.yaml` 的 `fleet` 段；不读取或自动导入 `fleet/machines.json`、旧 GUI 插件的 `remoteWorkspaces` 或私有代理配置。试用过这些布局的用户需在机器页、CLI 或 `fleet` 段显式重新添加配置；原文件和旧插件参数不会因读取配置而被改写或删除。
 - 本机下载发布包使用统一的 `network.outbound_proxy`，不再使用 GUI/Fleet 私有的 `downloadProxy`；旧值不自动迁移，请在统一设置中显式填写。
 - `fleet.deploy.serverProxy` 仅用于在远端下载部署包，不是每台服务器的一般网络出口；SSH 的跳板/代理命令仍配置在机器条目的 `proxy`。
 

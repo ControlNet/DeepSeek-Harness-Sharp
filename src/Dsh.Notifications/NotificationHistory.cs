@@ -20,7 +20,7 @@ public sealed class NotificationHistory
 
     public string FilePath => _path;
 
-    /** The old JSONL file is read only when no snapshot exists, and is never changed or deleted by migration. */
+    /** Opens only the notification snapshot; unrelated files are neither read nor changed. */
     public static async Task<NotificationHistory> OpenAsync(string path, CancellationToken cancellationToken = default)
     {
         var fullPath = Path.GetFullPath(path);
@@ -32,11 +32,7 @@ public sealed class NotificationHistory
                 ?? throw new JsonException("the notification snapshot must be an array");
             return new NotificationHistory(fullPath, [.. records]);
         }
-        var legacy = Path.ChangeExtension(fullPath, ".jsonl");
-        var history = new NotificationHistory(fullPath, File.Exists(legacy) ? await ImportLegacyAsync(legacy, cancellationToken) : []);
-        if (File.Exists(legacy))
-            await history.SaveAsync(history._records, cancellationToken);
-        return history;
+        return new NotificationHistory(fullPath, []);
     }
 
     /** Matching notifications, newest first. */
@@ -142,40 +138,4 @@ public sealed class NotificationHistory
         }
     }
 
-    /** One-time decoding of the former added/read wire records; this is not used for new writes or recovery of snapshots. */
-    private static async Task<List<NotificationRecord>> ImportLegacyAsync(string path, CancellationToken cancellationToken)
-    {
-        var records = new Dictionary<string, NotificationRecord>(StringComparer.Ordinal);
-        var lines = await File.ReadAllLinesAsync(path, cancellationToken);
-        for (var index = 0; index < lines.Length; index++)
-        {
-            if (string.IsNullOrWhiteSpace(lines[index]))
-                continue;
-            try
-            {
-                using var document = JsonDocument.Parse(lines[index]);
-                var entry = document.RootElement;
-                switch (entry.GetProperty("type").GetString())
-                {
-                    case "added":
-                        var added = entry.GetProperty("notification").Deserialize(NotificationsJsonContext.Default.NotificationRecord)
-                            ?? throw new JsonException("a legacy notification must not be null");
-                        records.TryAdd(added.Id, added);
-                        break;
-                    case "read":
-                        foreach (var id in entry.GetProperty("ids").EnumerateArray())
-                            if (id.GetString() is { } key && records.TryGetValue(key, out var record))
-                                records[key] = record with { IsRead = true };
-                        break;
-                    default:
-                        throw new JsonException("unknown legacy notification entry");
-                }
-            }
-            catch (JsonException) when (index == lines.Length - 1)
-            {
-                // Old append-only files could end mid-record; all original bytes remain in the untouched source.
-            }
-        }
-        return records.Values.OrderBy(record => record.CreatedAt).ToList();
-    }
 }

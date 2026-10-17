@@ -39,8 +39,6 @@ internal sealed partial class AgentLaunchJsonContext : JsonSerializerContext;
 internal sealed class ExternalAgentSessions : IAsyncDisposable
 {
     private const string RecordsFileName = "agents.json";
-    private const string TranscriptsDirectory = "agents";
-    private const string TranscriptExtension = ".events.jsonl";
 
     private static readonly StringComparison PathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
@@ -217,7 +215,6 @@ internal sealed class ExternalAgentSessions : IAsyncDisposable
     {
         var persistence = _ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)
             ?? throw new InvalidOperationException("ACP conversations require session persistence");
-        await ImportTranscriptAsync(record, persistence).ConfigureAwait(false);
         var id = SessionId.Create(record.SessionId);
         Session session;
         if (persistence.Stat(id) is not null)
@@ -239,43 +236,6 @@ internal sealed class ExternalAgentSessions : IAsyncDisposable
             _store.Release(id);
             throw;
         }
-    }
-
-    /** Imports the old event-only file through the real storage handle, keeping the source as an archive only after a successful flush. */
-    private async Task ImportTranscriptAsync(AgentLaunchRecord record, ISessionPersistence persistence)
-    {
-        var path = Path.Combine(_hostPath, TranscriptsDirectory, $"{record.SessionId}{TranscriptExtension}");
-        if (!File.Exists(path))
-            return;
-        var lines = await File.ReadAllLinesAsync(path).ConfigureAwait(false);
-        var events = new List<SessionEvent>();
-        for (var index = 0; index < lines.Length; index++)
-        {
-            if (string.IsNullOrWhiteSpace(lines[index]))
-                continue;
-            try
-            {
-                events.Add(DshJson.Deserialize<SessionEvent>(lines[index]) ?? throw new JsonException("an ACP event must not be null"));
-            }
-            catch (JsonException) when (index == lines.Length - 1)
-            {
-                // Older hosts could leave an incomplete last append; the archived source retains those bytes.
-            }
-        }
-        var id = SessionId.Create(record.SessionId);
-        using (var handle = persistence.Stat(id) is null
-            ? persistence.Create(HeaderFor(record, events.FirstOrDefault()?.Time ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
-            : persistence.Open(id, SessionAccess.Write))
-        {
-            var stored = handle.Read();
-            for (var index = 0; index < Math.Min(stored.Count, events.Count); index++)
-                if (DshJson.Serialize(stored[index]) != DshJson.Serialize(events[index]))
-                    throw new InvalidDataException($"the ACP import for {record.SessionId} differs from its stored prefix");
-            if (stored.Count < events.Count)
-                handle.Append(events.GetRange(stored.Count, events.Count - stored.Count));
-            handle.Flush();
-        }
-        File.Move(path, $"{path}.imported");
     }
 
     private static SessionHeader HeaderFor(AgentLaunchRecord record, long createdAt)

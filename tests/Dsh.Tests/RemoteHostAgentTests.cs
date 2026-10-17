@@ -3,6 +3,7 @@ using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Notifications;
 using Dsh.RemoteHost;
+using Dsh.SessionQuery;
 using Dsh.Transport;
 
 namespace Dsh.Tests;
@@ -40,7 +41,7 @@ public sealed class RemoteHostAgentTests : IDisposable
 
         var catalog = await client.AgentCatalogAsync(Ct);
 
-        Assert.True(client.Supports(HostCapabilities.AgentSessions));
+        Assert.True(client.Supports(AgentProtocol.Capability));
         Assert.Equal(
             [HostAgentKinds.Dsharp, AgentKinds.Codex, AgentKinds.ClaudeCode, AgentKinds.OpenCode, AgentKinds.Terminal, AgentKinds.Acp],
             catalog.Select(entry => entry.AgentKind));
@@ -160,7 +161,7 @@ public sealed class RemoteHostAgentTests : IDisposable
 
     [Fact(Timeout = 360000)]
     [Trait("Category", "LlmSmoke")]
-    public async Task OpenCodeAcp_PromptTurn_BecomesHarnessSessionEvents()
+    public async Task OpenCodeAcp_PromptTurn_PersistsAndRemainsQueryableAcrossRestart()
     {
         RequireOpenCode();
         await using var host = await HarnessHostFixture.CreateAsync("map", TestContext.Current.CancellationToken);
@@ -179,6 +180,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         Assert.Contains("pong", reply, StringComparison.OrdinalIgnoreCase);
         Assert.IsType<TurnEndReason.Completed>(Assert.IsType<TurnEndPayload>(events[^1].Data).Reason);
         Assert.Equal(HostSessionStatuses.Idle, idle.Status);
+        await AssertHistoryAcrossRestartAsync(host, session.SessionId, events, "pong");
     }
 
     [Fact(Timeout = 360000)]
@@ -206,6 +208,40 @@ public sealed class RemoteHostAgentTests : IDisposable
         Assert.Contains(events, item => item.Data is ToolCallPayload);
         Assert.Contains(events, item => item.Data is ToolResultPayload { Error: null });
         Assert.Equal("dsh-acp-probe", (await File.ReadAllTextAsync(Path.Combine(_workspace, "acp-probe.txt"), Ct)).Trim());
+        await AssertHistoryAcrossRestartAsync(host, session.SessionId, events, "acp-probe");
+    }
+
+    /** Read actual ACP output from the shared persistence and query services, then recompose the whole application. */
+    private static async Task AssertHistoryAcrossRestartAsync(HarnessHostFixture host, string sessionId, IReadOnlyList<SessionEvent> events, string queryText)
+    {
+        var id = SessionId.Create(sessionId);
+        var expected = events.Select(item => DshJson.Serialize(item)).ToArray();
+        await host.StopHostAsync();
+        var persistence = host.Environment.App.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)!;
+        var snapshot = Assert.Single(persistence.List(), item => item.Header.Id == id);
+        using (var stored = persistence.Open(id, SessionAccess.Read))
+            Assert.Equal(expected, stored.Read().Select(item => DshJson.Serialize(item)));
+        var query = host.Environment.App.Ctx.Get<SessionQueryService>(SessionQueryService.ServiceName)!;
+        Assert.Contains(query.Search(queryText), hit => hit.SessionId == sessionId);
+
+        await host.RestartHostAsync(Ct);
+        var client = await host.ConnectAsync("history", Ct);
+        var restored = Assert.Single(await client.ListHostSessionsAsync(Ct), item => item.SessionId == sessionId);
+        Assert.Equal(HostSessionStatuses.Exited, restored.Status);
+        Assert.Equal(snapshot.Header.Cwd, restored.ProjectPath);
+        Assert.Equal(expected, (await TurnEventsAsync(client, sessionId)).Select(item => DshJson.Serialize(item)));
+        var reopened = host.Environment.App.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)!;
+        Assert.Single(reopened.List(), item => item.Header.Id == id);
+        using (var stored = reopened.Open(id, SessionAccess.Read))
+        {
+            Assert.Equal(snapshot.Header, stored.Header);
+            Assert.Equal(expected, stored.Read().Select(item => DshJson.Serialize(item)));
+        }
+
+        var resumed = await client.ResumeAgentAsync(sessionId, Ct);
+        Assert.Equal(sessionId, resumed.SessionId);
+        Assert.Equal(expected, (await TurnEventsAsync(client, sessionId)).Select(item => DshJson.Serialize(item)));
+        await client.StopAgentAsync(sessionId, Ct);
     }
 
     private static void RequireOpenCode()

@@ -47,8 +47,13 @@ public sealed class NotificationHistoryTests : IDisposable
         var reopened = await OpenAsync();
 
         Assert.Equal((2, 0), (marked.Count, markedAgain.Count));
+        Assert.Equal(["n2", "n1"], Ids(reopened.Query()));
         Assert.All(reopened.Query(), record => Assert.True(record.IsRead));
         Assert.Equal(0, reopened.CountUnread());
+        await reopened.AppendAsync(Record("n3", "m1", "s1", minutes: 2), TestContext.Current.CancellationToken);
+        var afterAppend = await OpenAsync();
+        Assert.Equal(["n3", "n2", "n1"], Ids(afterAppend.Query()));
+        Assert.Equal(["n3"], Ids(afterAppend.Query(new NotificationFilter(UnreadOnly: true))));
     }
 
     [Fact]
@@ -63,47 +68,6 @@ public sealed class NotificationHistoryTests : IDisposable
 
         Assert.Equal((true, false, 1), (first, replay, changes));
         Assert.Single(history.Query());
-    }
-
-    [Fact]
-    public async Task LegacyHistory_ImportsNotificationsAndReadMarksOnce_WithoutChangingSource()
-    {
-        Directory.CreateDirectory(_directory);
-        var legacy = Path.ChangeExtension(FilePath, ".jsonl");
-        var first = JsonSerializer.Serialize(Record("n1", "m1", "s1", 0), NotificationsJsonContext.Default.NotificationRecord);
-        var second = JsonSerializer.Serialize(Record("n2", "m1", "s1", 1), NotificationsJsonContext.Default.NotificationRecord);
-        var original = $$"""
-            {"type":"added","notification":{{first}}}
-            {"type":"added","notification":{{second}}}
-            {"type":"read","ids":["n1"]}
-            {"type":"added","notification":{"id":"incomplete
-            """;
-        await File.WriteAllTextAsync(legacy, original, TestContext.Current.CancellationToken);
-
-        var migrated = await OpenAsync();
-        Assert.Equal(["n2", "n1"], Ids(migrated.Query()));
-        Assert.True(Assert.Single(migrated.Query(new NotificationFilter(SessionId: "s1")), record => record.Id == "n1").IsRead);
-        await migrated.MarkReadAsync(["n2"], TestContext.Current.CancellationToken);
-        await migrated.AppendAsync(Record("n3", "m1", "s1", 2), TestContext.Current.CancellationToken);
-
-        var reopened = await OpenAsync();
-        Assert.Equal(["n3", "n2", "n1"], Ids(reopened.Query()));
-        Assert.Equal(["n3"], Ids(reopened.Query(new NotificationFilter(UnreadOnly: true))));
-        Assert.Equal(original, await File.ReadAllTextAsync(legacy, TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
-    public async Task FailedMigration_DoesNotChangeLegacySource()
-    {
-        Directory.CreateDirectory(_directory);
-        var legacy = Path.ChangeExtension(FilePath, ".jsonl");
-        const string original = "{broken\n{\"type\":\"read\",\"ids\":[]}\n";
-        await File.WriteAllTextAsync(legacy, original, TestContext.Current.CancellationToken);
-
-        await Assert.ThrowsAnyAsync<JsonException>(() => OpenAsync());
-
-        Assert.False(File.Exists(FilePath));
-        Assert.Equal(original, await File.ReadAllTextAsync(legacy, TestContext.Current.CancellationToken));
     }
 
     [Fact]

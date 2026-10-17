@@ -1,11 +1,9 @@
-using System.Text.Json;
 using Dsh.Boot;
 using Dsh.Fleet;
-using Dsh.Gui.Services;
 
 namespace Dsh.Tests;
 
-/** 机器清单: GUI、CLI 与 WebBridge 共用 settings.yaml 的 fleet 段, 以及从 fleet/machines.json 和旧 GUI 设置里一次性迁移。 */
+/** 机器清单: GUI、CLI 与 WebBridge 只读写 settings.yaml 的 fleet 段。 */
 public sealed class MachineStoreTests : IDisposable
 {
     private readonly string _root = TempTree.CreateDirectory("fleet-store");
@@ -68,117 +66,41 @@ public sealed class MachineStoreTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => store.Save(FleetConfig.Empty with { Machines = [machine, machine] }));
     }
 
-    /** 旧版 GUI 把远程工作区放在 settings.yaml 的 GUI 插件参数里: 首次加载时搬进机器清单, 并从 settings.yaml 删掉, 其余 GUI 参数保持。 */
-    [Fact]
-    public void Legacy_Gui_Workspaces_Are_Imported_Once_And_Removed_From_Settings()
-    {
-        var home = new HarnessHome(_root);
-        WriteLegacyGuiSettings(home);
-
-        var imported = new MachineStore(home).Load();
-
-        var machine = Assert.Single(imported.Machines);
-        Assert.Equal(MachineSpec.Ssh("lab", "lab.internal", 2200, "dev", SshAuth.Password) with { RemotePath = "~/repo", Password = "pw" }, machine);
-        Assert.False(imported.Deploy.AutoDeploy);
-        Assert.Null(HarnessSettings.Load(home).Network?.OutboundProxy);
-        var gui = HarnessSettings.Load(home).Plugins[GuiSettings.Package].Parameters;
-        Assert.False(gui.ContainsKey("remoteWorkspaces"));
-        Assert.False(gui.ContainsKey("remoteAutoDeploy"));
-        Assert.False(gui.ContainsKey("remoteDownloadProxy"));
-        Assert.Equal(GuiSettings.ThemeLight, new GuiSettings(home).Load().Theme);
-        Assert.NotNull(HarnessSettings.Load(home).Fleet);
-        Assert.Equal(imported.Machines, new MachineStore(home).Load().Machines);
-    }
-
     [Theory]
-    [InlineData("")]
-    [InlineData("remoteWorkspaces: null")]
-    [InlineData("remoteWorkspaces: []")]
-    public void LegacyGuiEmptyWorkspaces_AreMigratedWithoutRejectingOptionalConfiguration(string workspaces)
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Loading_UsesOnlyFleetSettings_AndLeavesUnrelatedFilesAndPluginParametersUntouched(bool configured)
     {
         var home = new HarnessHome(_root);
-        File.WriteAllText(home.SettingsFile, $"""
+        var machine = MachineSpec.Ssh("keep", "keep.internal", 22, "dev", SshAuth.Agent);
+        var store = new MachineStore(home);
+        if (configured)
+            store.Save(new FleetConfig([machine], new DeploySettings { ServerProxy = "http://remote-proxy:3128" }));
+        File.AppendAllText(home.SettingsFile, """
+
             plugins:
               "@deepseek-ai/dsh-gui":
-                theme: light
+                remoteWorkspaces: [{ name: ignored, host: ignored.internal }]
                 remoteAutoDeploy: false
-                {workspaces}
+                remoteDownloadProxy: http://ignored-proxy:3128
             """);
-        var store = new MachineStore(home);
+        var original = File.ReadAllText(home.SettingsFile);
+        var unrelatedFile = Path.Combine(_root, "fleet", "machines.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(unrelatedFile)!);
+        const string unrelatedContents = "{not a valid configuration";
+        File.WriteAllText(unrelatedFile, unrelatedContents);
 
-        var imported = store.Load();
+        var config = store.Load();
 
-        Assert.Empty(imported.Machines);
-        Assert.False(imported.Deploy.AutoDeploy);
-        Assert.NotNull(HarnessSettings.Load(home).Fleet);
-        Assert.Equal(GuiSettings.ThemeLight, new GuiSettings(home).Load().Theme);
-        Assert.Empty(store.Load().Machines);
-    }
-
-    [Theory]
-    [InlineData("remoteWorkspaces: invalid")]
-    [InlineData("remoteWorkspaces: [invalid]")]
-    [InlineData("remoteWorkspaces: [{ name: lab, host: lab.internal }, { name: incomplete }]")]
-    public void InvalidLegacyGuiWorkspaces_FailWithoutRemovingTheOriginalConfiguration(string workspaces)
-    {
-        var home = new HarnessHome(_root);
-        var original = $"""
-            plugins:
-              "@deepseek-ai/dsh-gui":
-                theme: light
-                {workspaces}
-            """;
-        File.WriteAllText(home.SettingsFile, original);
-
-        Assert.Throws<InvalidDataException>(() => new MachineStore(home).Load());
-
+        if (configured)
+            Assert.Equal(machine, Assert.Single(config.Machines));
+        else
+            Assert.Empty(config.Machines);
+        Assert.True(config.Deploy.AutoDeploy);
+        Assert.Equal(configured ? "http://remote-proxy:3128" : null, config.Deploy.ServerProxy);
+        Assert.Null(HarnessSettings.Load(home).Network?.OutboundProxy);
         Assert.Equal(original, File.ReadAllText(home.SettingsFile));
-    }
-
-    /** 早期版本的 fleet/machines.json: 首次加载时写进 settings.yaml 的 fleet 段并删除该文件。 */
-    [Fact]
-    public void Machines_Json_Is_Imported_Into_Settings_And_Deleted()
-    {
-        var home = new HarnessHome(_root);
-        var store = new MachineStore(home);
-        Directory.CreateDirectory(Path.GetDirectoryName(store.LegacyFilePath)!);
-        File.WriteAllText(store.LegacyFilePath, """
-            {
-              "machines": [
-                { "name": "build", "kind": "ssh", "host": "build.internal", "port": 2200, "user": "dev", "auth": "key", "keyPath": "~/.ssh/id_ed25519" },
-                { "name": "second", "kind": "local", "harnessHome": "/srv/second-home" }
-              ],
-              "deploy": { "autoDeploy": false, "via": "client" }
-            }
-            """);
-
-        var imported = store.Load();
-
-        Assert.False(File.Exists(store.LegacyFilePath));
-        Assert.Equal(
-            [MachineSpec.Ssh("build", "build.internal", 2200, "dev", SshAuth.Key) with { KeyPath = "~/.ssh/id_ed25519" }, MachineSpec.Local("/srv/second-home", "second")],
-            imported.Machines);
-        Assert.Equal((false, DownloadVia.Client), (imported.Deploy.AutoDeploy, imported.Deploy.Via));
-        Assert.Equal(imported.Machines, store.Load().Machines);
-        Assert.Equal(2, HarnessSettings.Load(home).Fleet!.Machines.Count);
-    }
-
-    [Theory]
-    [InlineData("{")]
-    [InlineData("null")]
-    public void InvalidLegacyMachinesFile_FailsWithoutDeletingItOrChangingSettings(string contents)
-    {
-        var home = new HarnessHome(_root);
-        var store = new MachineStore(home);
-        store.Save(new FleetConfig([MachineSpec.Ssh("keep", "keep.internal", 22, "dev", SshAuth.Agent)], new DeploySettings()));
-        var settingsBefore = File.ReadAllText(home.SettingsFile);
-        Directory.CreateDirectory(Path.GetDirectoryName(store.LegacyFilePath)!);
-        File.WriteAllText(store.LegacyFilePath, contents);
-
-        Assert.Throws<JsonException>(() => store.Load());
-
-        Assert.Equal(contents, File.ReadAllText(store.LegacyFilePath));
-        Assert.Equal(settingsBefore, File.ReadAllText(home.SettingsFile));
+        Assert.Equal(unrelatedContents, File.ReadAllText(unrelatedFile));
     }
 
     /** 只改写 fleet 段: 注释、其它段与 CRLF 换行原样保留; 删掉最后一台机器后文件回到原样。 */
@@ -219,34 +141,6 @@ public sealed class MachineStoreTests : IDisposable
         var home = new HarnessHome(_root);
         Assert.Empty(new MachineStore(home).Load().Machines);
         Assert.False(File.Exists(home.SettingsFile));
-        Assert.False(File.Exists(new MachineStore(home).LegacyFilePath));
     }
 
-    private static void WriteLegacyGuiSettings(HarnessHome home)
-    {
-        var settings = HarnessSettings.Load(home);
-        settings.Plugins[GuiSettings.Package] = new PluginSetting
-        {
-            Parameters = new Dictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["theme"] = GuiSettings.ThemeLight,
-                ["remoteAutoDeploy"] = false,
-                ["remoteDownloadProxy"] = "http://proxy:3128",
-                ["remoteWorkspaces"] = new List<object?>
-                {
-                    new Dictionary<string, object?>(StringComparer.Ordinal)
-                    {
-                        ["name"] = "lab",
-                        ["host"] = "lab.internal",
-                        ["port"] = 2200,
-                        ["user"] = "dev",
-                        ["auth"] = SshAuth.Password,
-                        ["remotePath"] = "~/repo",
-                        ["password"] = "pw",
-                    },
-                },
-            },
-        };
-        settings.SavePlugins(home);
-    }
 }
