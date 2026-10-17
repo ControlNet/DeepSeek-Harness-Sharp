@@ -16,6 +16,8 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 
 安装后新开终端,在任意目录运行 `dsharp` 即可启动 TUI。可用环境变量覆盖: `DSHARP_VERSION`(版本号或 latest)、`DSHARP_HOME`(安装目录)、`DSHARP_BASE_URL`(镜像基址)、`DSHARP_PROXY`(下载代理)。Release 资产命名为 `dsharp-<rid>.tar.gz`(Linux/macOS)与 `dsharp-win-<arch>.zip`(Windows)。
 
+发布包包含会话全文检索所需的 SQLite FTS5 原生库；安装或移动程序时保留完整发布目录，无需另行安装系统 SQLite。
+
 ## 运行
 
 1. 配置文件:`~/.dsh/settings.yaml`(Linux)/`%USERPROFILE%\.dsh\settings.yaml`(Windows);首次运行会生成带注释的模板,插件开关与参数写在 `plugins:` 段。
@@ -51,11 +53,6 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 
    终端 TUI 的后台 Git 面板、检查点和命令工具不继承交互终端输入,刷新或执行命令期间仍可逐键输入。普通命令的标准输入立即收到 EOF;需要持续输入的管道协议(如 `bash_persistent`)单独保持输入管道,交互式 shell 仍使用独立 PTY。窗口调整和子进程退出信号不会被误当作输入结束。正常 `/exit` 会恢复终端行模式、回显和主屏幕。
 
-   Unix 的真实 PTY 输入、窗口调整、正常退出与完整 termios 恢复由 `Dsh.Tests.TuiRawModeEndToEndTests` 固定回归覆盖。可用 `dotnet run --project tests/Dsh.Tests -c Debug -- -class Dsh.Tests.TuiRawModeEndToEndTests -trait- Category=LlmSmoke` 运行无模型用例；在正常 `DSH_HOME` 中配置可用模型后，改用 `-trait Category=LlmSmoke` 执行真实模型回合。测试只操作自己的独立 PTY，不接管当前桌面终端；含凭据的配置与原始日志不可上传。
-
-   测试边界：raw 输入与退出恢复复用 `PtyTuiHarness` 的生产 PTY；系统 `/bin/sh` 在 CLI 退出后保留终端归属，`stty -g` 与 `stty -a` 对照完整模式、控制字符、速率及 Linux 行规程，不再构建专用原生测试程序。真实内核输入/resize/退出、tmux 跨客户端、SSH 部署与断线保留原 PTY、浏览器审批与手机可见 DOM 保留端到端覆盖；VT 解析、样式、屏幕快照及续流语义由直接消费生产 `VtScreen` 的组件测试覆盖，GUI 工作区复用 `HeadlessGui`/`HarnessHostFixture`，不为每项底层语义另起完整应用。
-
-   夹具先确认首帧同步输出已结束，再读取生产 VT 快照作为空输入基线；配置克隆通过 `HarnessSettings.Load`/`Save`/`SavePlugins` 解析与保存，合法的 `{}` 配置也不会与追加映射拼接。
 3. 插件运维:TUI 内用 `/plugins list|add <包|dll 路径>|remove <包> [--force]|disable <包>|enable <包>|ban_write <包>|enable_write <包>`(输入 `/plugins` 后按 Tab 可从浮层选单选子命令与包名);改动写回 `settings.yaml` 的 `plugins:` 段并保留注释。
 
     `ban_write`/`enable_write` 切换该插件的写权限(`plugins."<包>".permissions.write`),`enable`/`disable` 保留权限设置,`remove` 连同参数与权限一并清除。权限目前只记录在配置里,由后续版本的插件沙箱强制执行。

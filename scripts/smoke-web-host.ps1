@@ -22,28 +22,45 @@ foreach ($directory in @($TuiPublishDir, $GuiPublishDir, $WebPublishDir)) {
 $webDirectory = (Resolve-Path $WebPublishDir).Path
 $exe = Join-Path $webDirectory $(if ($IsWindows) { 'dsharp-web.exe' } else { 'dsharp-web' })
 # Keep Unix-domain socket paths short; every process and credential belongs to this smoke run.
-$homeDirectory = Join-Path ([IO.Path]::GetTempPath()) ('dshw-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$homeDirectory = Join-Path (Split-Path $PSScriptRoot -Parent) ('.daemon-tests/w' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory $homeDirectory | Out-Null
 $oldHome = $env:DSH_HOME
 $env:DSH_HOME = $homeDirectory
-$hostProcess = $null
-$webProcess = $null
+$hostCommand = $null
+$webCommand = $null
 $client = $null
 $socket = $null
 $deadline = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(60))
+
+function Start-SmokeProcess([string]$Name, [string[]]$Arguments) {
+    $start = [Diagnostics.ProcessStartInfo]::new($exe)
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::Start($start)
+    [PSCustomObject]@{
+        Name = $Name
+        Process = $process
+        Output = $process.StandardOutput.ReadToEndAsync()
+        Error = $process.StandardError.ReadToEndAsync()
+    }
+}
+
 try {
-    $hostProcess = Start-Process $exe -ArgumentList @('host', 'serve') -PassThru -RedirectStandardOutput (Join-Path $homeDirectory 'host.out') -RedirectStandardError (Join-Path $homeDirectory 'host.err')
+    $hostCommand = Start-SmokeProcess -Name 'host' -Arguments @('host', 'serve')
     $hostEndpoint = Join-Path $homeDirectory $(if ($IsWindows) { 'run/host.port' } else { 'run/host.sock' })
     while (-not (Test-Path $hostEndpoint)) {
         $deadline.Token.ThrowIfCancellationRequested()
-        if ($hostProcess.HasExited) { throw 'Published WebHost could not serve the shared Host command' }
+        if ($hostCommand.Process.HasExited) { throw 'Published WebHost could not serve the shared Host command' }
         Start-Sleep -Milliseconds 50
     }
-    $webProcess = Start-Process $exe -ArgumentList @('--port', '0') -PassThru -RedirectStandardOutput (Join-Path $homeDirectory 'web.out') -RedirectStandardError (Join-Path $homeDirectory 'web.err')
+    $webCommand = Start-SmokeProcess -Name 'web' -Arguments @('--port', '0')
     $portFile = Join-Path $homeDirectory 'run/web.port'
     while (-not (Test-Path $portFile)) {
         $deadline.Token.ThrowIfCancellationRequested()
-        if ($webProcess.HasExited) { throw 'Published WebHost exited before announcing its endpoint' }
+        if ($webCommand.Process.HasExited) { throw 'Published WebHost exited before announcing its endpoint' }
         Start-Sleep -Milliseconds 50
     }
     $port = (Get-Content $portFile -Raw).Trim()
@@ -116,9 +133,14 @@ try {
 } finally {
     if ($socket) { $socket.Dispose() }
     if ($client) { $client.Dispose() }
-    foreach ($process in @($webProcess, $hostProcess)) {
-        if ($process -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
-        if ($process) { $process.Dispose() }
+    foreach ($command in @($webCommand, $hostCommand)) {
+        if (-not $command) { continue }
+        try {
+            if (-not $command.Process.HasExited) { $command.Process.Kill($true) }
+            $command.Process.WaitForExit()
+            [IO.File]::WriteAllText((Join-Path $homeDirectory "$($command.Name).out"), $command.Output.GetAwaiter().GetResult())
+            [IO.File]::WriteAllText((Join-Path $homeDirectory "$($command.Name).err"), $command.Error.GetAwaiter().GetResult())
+        } finally { $command.Process.Dispose() }
     }
     $deadline.Dispose()
     $env:DSH_HOME = $oldHome
