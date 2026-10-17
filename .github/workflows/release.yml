@@ -100,7 +100,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             if ! command -v clang-cl >/dev/null 2>&1; then
               choco install llvm --no-progress -y
-              echo 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+              printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
               export PATH="/c/Program Files/LLVM/bin:$PATH"
             fi
             clang-cl --version
@@ -237,19 +237,19 @@ jobs:
           set -euo pipefail
           # 程序集版本随 tag: 远端部署判据比较的就是它, 必须与发布的 tag 一致。
           VERSION="${TAG#v}"
-          PUBLISH_ARGS="-p:DshNativeCompiler=$NATIVE_CC"
+          PUBLISH_ARGS=(-p:DshNativeCompiler="$NATIVE_CC")
           if [ "$FLAVOR" = "aot" ]; then
             # AOT 产物附带 fault probe, 供在目标机上回归 guard 的遏制。
-            PUBLISH_ARGS="$PUBLISH_ARGS -p:PublishAot=true -p:DshShipFaultProbe=true"
+            PUBLISH_ARGS+=(-p:PublishAot=true -p:DshShipFaultProbe=true)
           fi
           # 不指定 PublishDir，使用默认发布目录，避免 bash/Windows 路径转换问题。
           # DebugType=none：发布档不需要调试符号（AOT 的 pdb 单独就有数百 MB）。
           dotnet publish DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj \
-            -c Release -r "$RID" $PUBLISH_ARGS \
+            -c Release -r "$RID" "${PUBLISH_ARGS[@]}" \
             -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none \
             --nologo -v m
           # GUI 启动器一并发布并叠加进主产物。
-          dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r "$RID" $PUBLISH_ARGS \
+          dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r "$RID" "${PUBLISH_ARGS[@]}" \
             -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none --nologo -v m
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
           GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
@@ -268,7 +268,7 @@ jobs:
             NATIVES+=(dsh_fault_probe)
           fi
           for NATIVE in "${NATIVES[@]}"; do
-            ls "$STAGE" | grep -E "^(lib)?$NATIVE\.(dll|so|dylib)$" || { echo "::error::产物缺少 $NATIVE"; exit 1; }
+            printf '%s\n' "$STAGE"/* | grep -E "/(lib)?$NATIVE\.(dll|so|dylib)$" || { echo "::error::产物缺少 $NATIVE"; exit 1; }
           done
           # 调试旁文件不进产物（AOT 的 .pdb/.dbg 动辄数百 MB）。
           rm -f "$STAGE"/*.pdb "$STAGE"/*.dbg
