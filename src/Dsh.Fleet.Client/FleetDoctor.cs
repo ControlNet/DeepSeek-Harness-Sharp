@@ -31,41 +31,42 @@ public static class FleetDoctor
     /** Endpoint files that must stay owner-only: the host's and the PTY daemon's socket and token. */
     private static readonly string[] EndpointFiles = [HostSocket, "host.token", PtySocket, "dsh.token"];
 
-    public static async Task<IReadOnlyList<DoctorCheck>> CheckAsync(MachineSpec machine, FleetOptions options, CancellationToken cancellationToken)
+    public static async Task<IReadOnlyList<DoctorCheck>> CheckAsync(MachineSpec machine, FleetOptions options, CancellationToken cancellationToken, IRemoteMachineTransport? transport = null)
     {
+        transport ??= new SshTransport(machine);
         List<DoctorCheck> checks = [];
         if (!machine.IsLocal)
         {
-            var reach = await ReachAsync(machine, cancellationToken).ConfigureAwait(false);
+            var reach = await ReachAsync(machine, transport, cancellationToken).ConfigureAwait(false);
             checks.Add(reach);
             if (reach.Outcome == DoctorOutcome.Failed)
                 return checks;
         }
 
-        var commandPath = await InstallationAsync(machine, checks, cancellationToken).ConfigureAwait(false);
+        var commandPath = await InstallationAsync(machine, transport, checks, cancellationToken).ConfigureAwait(false);
         if (commandPath is null && !machine.IsLocal)
             return checks;
-        var status = await StatusAsync(machine, cancellationToken).ConfigureAwait(false);
-        checks.Add(HostCheck(machine, commandPath, status));
-        checks.Add(PermissionCheck(machine, status));
+        var status = await StatusAsync(machine, transport, cancellationToken).ConfigureAwait(false);
+        checks.Add(HostCheck(machine, transport, commandPath, status));
+        checks.Add(PermissionCheck(machine, transport, status));
         checks.Add(PtyDaemonCheck(status));
-        checks.Add(await ConnectionAsync(machine, options, commandPath, cancellationToken).ConfigureAwait(false));
+        checks.Add(await ConnectionAsync(machine, transport, options, commandPath, cancellationToken).ConfigureAwait(false));
         return checks;
     }
 
-    private static async Task<DoctorCheck> ReachAsync(MachineSpec machine, CancellationToken cancellationToken)
+    private static async Task<DoctorCheck> ReachAsync(MachineSpec machine, IRemoteMachineTransport transport, CancellationToken cancellationToken)
     {
-        var result = await SshHostLauncher.RunRemoteCaptureAsync(machine, "true", cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode != RemoteDsharpInstaller.SshFailureExitCode)
+        var result = await transport.CaptureAsync("true", cancellationToken).ConfigureAwait(false);
+        if (!result.TransportFailed)
             return new DoctorCheck("ssh", DoctorOutcome.Ok, $"{machine.Target} accepts the connection ({machine.Auth})");
         var fix = machine.Auth == SshAuth.Key && machine.KeyPath is { Length: > 0 } key
             ? $"ssh-copy-id -p {machine.Port} -i {RemoteShell.Quote($"{key}.pub")} {machine.User}@{machine.Host}"
-            : SshHostLauncher.CommandLine(machine, "true");
+            : transport.CommandLine("true");
         return new DoctorCheck("ssh", DoctorOutcome.Failed, result.FailureDetail, fix);
     }
 
     /** Adds the platform and dsharp checks; returns the dsharp the machine would run, or null when there is none or the platform is unsupported. */
-    private static async Task<string?> InstallationAsync(MachineSpec machine, List<DoctorCheck> checks, CancellationToken cancellationToken)
+    private static async Task<string?> InstallationAsync(MachineSpec machine, IRemoteMachineTransport transport, List<DoctorCheck> checks, CancellationToken cancellationToken)
     {
         if (machine.IsLocal)
         {
@@ -76,7 +77,7 @@ public static class FleetDoctor
 
         try
         {
-            var installation = await RemoteDsharpInstaller.InspectAsync(machine, cancellationToken).ConfigureAwait(false);
+            var installation = await new RemoteDsharpInstaller(transport).InspectAsync(cancellationToken).ConfigureAwait(false);
             checks.Add(new DoctorCheck("platform", DoctorOutcome.Ok, $"{installation.Rid}, harness home {installation.HarnessHome}"));
             checks.Add(DsharpCheck(machine, installation));
             return installation.CommandPath;
@@ -100,14 +101,14 @@ public static class FleetDoctor
     }
 
     /** Runs the status script on the machine; a local Windows machine has no POSIX shell and reports nothing. */
-    private static async Task<Dictionary<string, string>> StatusAsync(MachineSpec machine, CancellationToken cancellationToken)
+    private static async Task<Dictionary<string, string>> StatusAsync(MachineSpec machine, IRemoteMachineTransport transport, CancellationToken cancellationToken)
     {
         if (machine.IsLocal && OperatingSystem.IsWindows())
             return [];
         var script = StatusScript(machine);
         var result = machine.IsLocal
-            ? await RunLocalAsync(script, cancellationToken).ConfigureAwait(false)
-            : await SshHostLauncher.RunRemoteCaptureAsync(machine, script, cancellationToken).ConfigureAwait(false);
+            ? await RemoteShell.RunLocalAsync(script, cancellationToken).ConfigureAwait(false)
+            : await transport.CaptureAsync(script, cancellationToken).ConfigureAwait(false);
         return RemoteDsharpInstaller.KeyValues(result.StdOut);
     }
 
@@ -121,22 +122,7 @@ public static class FleetDoctor
             + $"for f in {string.Join(' ', EndpointFiles)}; do [ -e \"$h/run/$f\" ] && echo \"{ModePrefix}$f=$(m \"$h/run/$f\")\"; done; "
             + "true";
 
-    private static async Task<SshHostLauncher.RemoteCommandResult> RunLocalAsync(string script, CancellationToken cancellationToken)
-    {
-        var info = new ProcessStartInfo("/bin/sh", ["-c", script])
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        using var process = Process.Start(info) ?? throw new InvalidOperationException("failed to start /bin/sh");
-        var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var error = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        return new SshHostLauncher.RemoteCommandResult(process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
-    }
-
-    private static DoctorCheck HostCheck(MachineSpec machine, string? commandPath, Dictionary<string, string> status)
+    private static DoctorCheck HostCheck(MachineSpec machine, IRemoteMachineTransport transport, string? commandPath, Dictionary<string, string> status)
     {
         var socket = $"{status.GetValueOrDefault("home")}/run/{HostSocket}";
         if (status.ContainsKey(ModePrefix + HostSocket))
@@ -144,10 +130,10 @@ public static class FleetDoctor
         var detail = machine.IsLocal
             ? $"no host is listening on {socket}"
             : $"no host is listening on {socket}; ssh connections start one on demand";
-        return new DoctorCheck("host", DoctorOutcome.Warning, detail, Fix(machine, $"{DsharpCommand(machine, commandPath)} host serve"));
+        return new DoctorCheck("host", DoctorOutcome.Warning, detail, Fix(machine, transport, $"{DsharpCommand(machine, commandPath)} host serve"));
     }
 
-    private static DoctorCheck PermissionCheck(MachineSpec machine, Dictionary<string, string> status)
+    private static DoctorCheck PermissionCheck(MachineSpec machine, IRemoteMachineTransport transport, Dictionary<string, string> status)
     {
         if (status.GetValueOrDefault("run") is not { } runMode)
             return new DoctorCheck("permissions", DoctorOutcome.Skipped, "no endpoint directory yet");
@@ -161,7 +147,7 @@ public static class FleetDoctor
         var fix = $"chmod {OwnerOnlyDirectoryMode} {RemoteShell.Quote(run)}";
         if (loose.Count > 0)
             fix += $" && chmod {OwnerOnlyFileMode} {string.Join(' ', loose.Select(RemoteShell.Quote))}";
-        return new DoctorCheck("permissions", DoctorOutcome.Failed, $"{run} is {runMode}; open to others: {(loose.Count == 0 ? "-" : string.Join(", ", loose))}", Fix(machine, fix));
+        return new DoctorCheck("permissions", DoctorOutcome.Failed, $"{run} is {runMode}; open to others: {(loose.Count == 0 ? "-" : string.Join(", ", loose))}", Fix(machine, transport, fix));
     }
 
     private static DoctorCheck PtyDaemonCheck(Dictionary<string, string> status)
@@ -170,7 +156,7 @@ public static class FleetDoctor
             : new DoctorCheck("pty daemon", DoctorOutcome.Skipped, "not running; it starts with the first terminal session");
 
     /** A live round trip: info and ping through the same path a client uses, and the host's release against this client's. */
-    private static async Task<DoctorCheck> ConnectionAsync(MachineSpec machine, FleetOptions options, string? commandPath, CancellationToken cancellationToken)
+    private static async Task<DoctorCheck> ConnectionAsync(MachineSpec machine, IRemoteMachineTransport transport, FleetOptions options, string? commandPath, CancellationToken cancellationToken)
     {
         if (machine.IsLocal && !await RemoteHostListener.IsReachableAsync(HostLink.LocalRoot(machine), cancellationToken).ConfigureAwait(false))
             return new DoctorCheck("connection", DoctorOutcome.Skipped, "the host is not running");
@@ -186,7 +172,7 @@ public static class FleetDoctor
         }
         catch (Exception error) when (!cancellationToken.IsCancellationRequested)
         {
-            return new DoctorCheck("connection", DoctorOutcome.Failed, error.Message, Fix(machine, $"{DsharpCommand(machine, commandPath)} host serve"));
+            return new DoctorCheck("connection", DoctorOutcome.Failed, error.Message, Fix(machine, transport, $"{DsharpCommand(machine, commandPath)} host serve"));
         }
     }
 
@@ -201,10 +187,10 @@ public static class FleetDoctor
     }
 
     /** The repair runs on the machine with its harness home: directly for the local one, wrapped in an ssh command line for a remote one. */
-    private static string Fix(MachineSpec machine, string command)
+    private static string Fix(MachineSpec machine, IRemoteMachineTransport transport, string command)
         => machine.IsLocal
             ? $"{RemoteShell.HomeAssignment(machine.HarnessHome)}{command}"
-            : SshHostLauncher.CommandLine(machine, $"{RemoteShell.Prelude(machine)}{command}");
+            : transport.CommandLine($"{RemoteShell.Prelude(machine)}{command}");
 
     private static string DsharpCommand(MachineSpec machine, string? commandPath)
         => machine.IsLocal || commandPath is null ? LocalCommand : RemoteShell.Quote(commandPath);

@@ -165,8 +165,8 @@ internal static class FleetCli
         if (machine.IsLocal)
             return await FailAsync($"{machine.Name} is this computer; it runs this dsharp and needs no deployment");
         var deploy = context.Store.Load().Deploy;
-        var result = await RemoteDsharpInstaller.EnsureAsync(
-            machine, deploy, step => Console.Error.WriteLine(step), context.Cancellation, force: context.Arguments.Has("--force"),
+        var result = await new RemoteDsharpInstaller(new SshTransport(machine)).EnsureAsync(
+            deploy, step => Console.Error.WriteLine(step), context.Cancellation, force: context.Arguments.Has("--force"),
             localProxy: context.Options(deploy: true, startLocalHost: false).LocalProxy);
         await Console.Out.WriteLineAsync(result.AlreadyPresent
             ? $"{machine.Name}: {result.CommandPath} is already at {RemoteHostServer.ReleaseVersion} or newer (use --force to redeploy)"

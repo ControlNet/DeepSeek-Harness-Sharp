@@ -11,10 +11,8 @@ namespace Dsh.Fleet;
  * 部署只提供二进制; 首次连接通过 stdio 桥按需启动独立宿主, 不安装系统服务。
  * 只支持 POSIX 远端(Linux/macOS); Windows 远端明确报不支持。
  */
-public static class RemoteDsharpInstaller
+public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport)
 {
-    /** OpenSSH 自身失败(连接/认证/端口不通)的退出码固定为 255; 远端命令自身的失败是别的退出码。 */
-    internal const int SshFailureExitCode = 255;
 
     /**
      * 部署身份 = 本项目的发布版本(Directory.Build.props 的 Version, 经 RemoteHostServer.ReleaseVersion 读出), 写在 `~/.dsharp/RID/.dsharp-version`。
@@ -41,8 +39,7 @@ public static class RemoteDsharpInstaller
      * 确保远端有不旧于本客户端的 dsharp: 可复用就返回其路径, 否则下载并部署对应平台构建。
      * archiveFactory 可注入本地归档(离线部署/测试); 为空则从 Release 下载。force 为真时无论版本都重新部署。
      */
-    public static async Task<Result> EnsureAsync(
-        MachineSpec machine,
+    public async Task<Result> EnsureAsync(
         DeploySettings settings,
         Action<string>? progress,
         CancellationToken cancellationToken,
@@ -50,7 +47,7 @@ public static class RemoteDsharpInstaller
         bool force = false,
         OutboundProxy? localProxy = null)
     {
-        var installation = await InspectAsync(machine, cancellationToken).ConfigureAwait(false);
+        var installation = await InspectAsync(cancellationToken).ConfigureAwait(false);
         var identity = RemoteHostServer.ReleaseVersion;
         if (!force && installation.CommandPath is { } present && ReleaseVersions.CanReuse(installation.Version, identity))
             return new Result(present, true);
@@ -59,18 +56,18 @@ public static class RemoteDsharpInstaller
             ? $"远端缺少 dsharp, 正在部署 {identity}({installation.Rid}) …"
             : $"远端 dsharp 版本 {installation.Version ?? "(未知)"} 需要更新到 {identity}, 重新部署 …");
         var stop = StopHostCommand(installation.CommandPath);
-        var deployed = await DeployAsync(machine, settings, installation.Rid, stop, progress, archiveFactory, localProxy, cancellationToken).ConfigureAwait(false);
-        await WriteIdentityAsync(machine, installation.Rid, identity, cancellationToken).ConfigureAwait(false);
+        var deployed = await DeployAsync(settings, installation.Rid, stop, progress, archiveFactory, localProxy, cancellationToken).ConfigureAwait(false);
+        await WriteIdentityAsync(installation.Rid, identity, cancellationToken).ConfigureAwait(false);
         return new Result(deployed, false);
     }
 
     /** 只探测不部署: 识别平台(Windows 抛 NotSupportedException), 解析 harness home, 找出 dsharp 与其部署版本。 */
-    public static async Task<Installation> InspectAsync(MachineSpec machine, CancellationToken cancellationToken)
+    public async Task<Installation> InspectAsync(CancellationToken cancellationToken)
     {
-        var rid = await DetectRidAsync(machine, cancellationToken).ConfigureAwait(false);
+        var rid = await DetectRidAsync(cancellationToken).ConfigureAwait(false);
         if (rid.StartsWith("win-", StringComparison.Ordinal))
             throw new NotSupportedException(WindowsUnsupported);
-        var values = KeyValues(await SshHostLauncher.RunRemoteAsync(machine, ProbeScript(machine, rid), cancellationToken).ConfigureAwait(false));
+        var values = KeyValues(await transport.RunAsync(ProbeScript(transport.Machine, rid), cancellationToken).ConfigureAwait(false));
         return new Installation(rid, values.GetValueOrDefault("home") ?? "", NonEmpty(values, "path"), NonEmpty(values, "version"));
     }
 
@@ -152,8 +149,7 @@ public static class RemoteDsharpInstaller
             + "echo \"home=$h\"; "
             + $"if [ -n \"$p\" ]; then echo \"path=$p\"; echo \"version=$(cat \"$(dirname \"$p\")/{VersionFileName}\" 2>/dev/null)\"; fi";
 
-    private static async Task<string> DeployAsync(
-        MachineSpec machine,
+    private async Task<string> DeployAsync(
         DeploySettings settings,
         string rid,
         string stop,
@@ -168,7 +164,7 @@ public static class RemoteDsharpInstaller
             try
             {
                 progress?.Invoke($"正在让远端直接下载 {AssetName(rid)} …");
-                return await DeployFromServerAsync(machine, settings, rid, stop, cancellationToken).ConfigureAwait(false);
+                return await DeployFromServerAsync(settings, rid, stop, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception error) when (settings.Via == DownloadVia.Auto && error is not OperationCanceledException)
             {
@@ -183,7 +179,7 @@ public static class RemoteDsharpInstaller
         try
         {
             progress?.Invoke($"正在上传并部署 dsharp({rid})到 ~/.dsharp/ …");
-            return await UploadAndDeployAsync(machine, archive, rid, stop, cancellationToken).ConfigureAwait(false);
+            return await UploadAndDeployAsync(archive, rid, stop, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -193,29 +189,28 @@ public static class RemoteDsharpInstaller
     }
 
     /** 部署成功后写入版本标记: 它是「远端部署是否已过期」的唯一判据。 */
-    private static Task<string> WriteIdentityAsync(MachineSpec machine, string rid, string identity, CancellationToken cancellationToken)
-        => SshHostLauncher.RunRemoteAsync(
-            machine,
+    private Task<string> WriteIdentityAsync(string rid, string identity, CancellationToken cancellationToken)
+        => transport.RunAsync(
             $"printf '%s' '{identity.Replace("'", "", StringComparison.Ordinal)}' > \"$HOME/.dsharp/{rid}/{VersionFileName}\"",
             cancellationToken);
 
     /** 远端平台识别: 先 `uname`(POSIX), 失败再试 PowerShell / cmd(Windows 远端默认 shell 多为 cmd)。 */
-    private static async Task<string> DetectRidAsync(MachineSpec machine, CancellationToken cancellationToken)
+    private async Task<string> DetectRidAsync(CancellationToken cancellationToken)
     {
-        if (await TryRunAsync(machine, "uname -s; uname -m", cancellationToken).ConfigureAwait(false) is { } uname)
+        if (await TryRunAsync("uname -s; uname -m", cancellationToken).ConfigureAwait(false) is { } uname)
         {
             var parts = Lines(uname);
             if (parts.Length >= 2 && RidFor(parts[0], parts[1]) is { } rid)
                 return rid;
         }
 
-        if (await TryRunAsync(machine, "powershell -NoProfile -NonInteractive -Command \"$env:PROCESSOR_ARCHITECTURE\"", cancellationToken).ConfigureAwait(false) is { } powershell
+        if (await TryRunAsync("powershell -NoProfile -NonInteractive -Command \"$env:PROCESSOR_ARCHITECTURE\"", cancellationToken).ConfigureAwait(false) is { } powershell
             && RidFor("windows", LastLine(powershell)) is { } psRid)
         {
             return psRid;
         }
 
-        if (await TryRunAsync(machine, "cmd /c echo %PROCESSOR_ARCHITECTURE%", cancellationToken).ConfigureAwait(false) is { } cmd
+        if (await TryRunAsync("cmd /c echo %PROCESSOR_ARCHITECTURE%", cancellationToken).ConfigureAwait(false) is { } cmd
             && RidFor("windows", LastLine(cmd)) is { } cmdRid)
         {
             return cmdRid;
@@ -225,11 +220,11 @@ public static class RemoteDsharpInstaller
     }
 
     /** 探测命令: 成功返回 stdout; 远端命令失败返回 null(继续试下一种平台探测); ssh 自身失败必须抛出, 不能伪装成“平台未知”。 */
-    private static async Task<string?> TryRunAsync(MachineSpec machine, string command, CancellationToken cancellationToken)
+    private async Task<string?> TryRunAsync(string command, CancellationToken cancellationToken)
     {
-        var result = await SshHostLauncher.RunRemoteCaptureAsync(machine, command, cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode == SshFailureExitCode)
-            throw new IOException($"ssh {machine.User}@{machine.Host} 失败: {result.FailureDetail}");
+        var result = await transport.CaptureAsync(command, cancellationToken).ConfigureAwait(false);
+        if (result.TransportFailed)
+            throw new IOException($"连接 {transport.Machine.Target} 失败: {result.FailureDetail}");
         return result.ExitCode == 0 ? result.StdOut : null;
     }
 
@@ -265,11 +260,11 @@ public static class RemoteDsharpInstaller
         return path;
     }
 
-    private static async Task<string> UploadAndDeployAsync(MachineSpec machine, string archive, string rid, string stop, CancellationToken cancellationToken)
+    private async Task<string> UploadAndDeployAsync(string archive, string rid, string stop, CancellationToken cancellationToken)
     {
         var token = Guid.NewGuid().ToString("N");
         var archiveName = $".dsharp-upload-{token}.tar.gz";
-        await SshHostLauncher.UploadAsync(machine, archive, archiveName, cancellationToken).ConfigureAwait(false);
+        await transport.UploadAsync(archive, archiveName, cancellationToken).ConfigureAwait(false);
 
         // 远端先停旧宿主, 再解压到 ~/.dsharp/<rid>/(归档根即发布输出), 打印解压后 dsharp 的目录。tar -xf 自动识别 gzip。
         var dir = InstallDirectory(rid);
@@ -281,11 +276,11 @@ public static class RemoteDsharpInstaller
             + $"chmod +x {dir}/dsharp; "
             + $"rm -f \"$HOME/{archiveName}\"; "
             + $"cd {dir} && pwd";
-        return CommandIn(await SshHostLauncher.RunRemoteAsync(machine, script, cancellationToken).ConfigureAwait(false));
+        return CommandIn(await transport.RunAsync(script, cancellationToken).ConfigureAwait(false));
     }
 
-    private static async Task<string> DeployFromServerAsync(MachineSpec machine, DeploySettings settings, string rid, string stop, CancellationToken cancellationToken)
-        => CommandIn(await SshHostLauncher.RunRemoteAsync(machine, BuildServerDownloadScript(settings, rid, stop), cancellationToken).ConfigureAwait(false));
+    private async Task<string> DeployFromServerAsync(DeploySettings settings, string rid, string stop, CancellationToken cancellationToken)
+        => CommandIn(await transport.RunAsync(BuildServerDownloadScript(settings, rid, stop), cancellationToken).ConfigureAwait(false));
 
     private static string CommandIn(string printedDirectory)
     {

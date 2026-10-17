@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Dsh.Fleet;
 
 /**
@@ -30,4 +32,13 @@ public static class RemoteShell
             return $"\"$HOME\"{Quote(value[1..])}";
         return $"'{value.Replace("'", "'\\''", StringComparison.Ordinal)}'";
     }
+
+    internal static Task<RemoteCommandResult> RunLocalAsync(string script, CancellationToken cancellationToken)
+        => SshTransport.CaptureProcessAsync(new ProcessStartInfo("/bin/sh", ["-c", script])
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        }, cancellationToken);
 }

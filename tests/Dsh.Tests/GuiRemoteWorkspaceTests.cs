@@ -163,8 +163,7 @@ public sealed class GuiRemoteWorkspaceTests
         try
         {
             var workspace = spec.ToMachine();
-            var result = await RemoteDsharpInstaller.EnsureAsync(
-                workspace,
+            var result = await new RemoteDsharpInstaller(new SshTransport(workspace)).EnsureAsync(
                 new DeploySettings { ReleaseBaseUrl = "https://example.invalid", Via = DownloadVia.Client },
                 null,
                 TestContext.Current.CancellationToken,

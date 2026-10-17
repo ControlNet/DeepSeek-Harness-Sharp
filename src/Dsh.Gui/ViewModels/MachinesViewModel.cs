@@ -142,7 +142,7 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     {
         if (spec.IsLocal)
             throw new InvalidOperationException($"{spec.Name} 是本机，运行的就是这份 dsharp，不需要部署");
-        var result = await RemoteDsharpInstaller.EnsureAsync(spec, Deploy?.ToSettings() ?? store.Load().Deploy, Log, cancellationToken, options.ArchiveFactory, ForceDeploy, options.LocalProxy);
+        var result = await new RemoteDsharpInstaller(new SshTransport(spec)).EnsureAsync(Deploy?.ToSettings() ?? store.Load().Deploy, Log, cancellationToken, options.ArchiveFactory, ForceDeploy, options.LocalProxy);
         Log(result.AlreadyPresent
             ? $"{spec.Name}: {result.CommandPath} 已是 {RemoteHostServer.ReleaseVersion} 或更新的版本（勾选“强制重新部署”可覆盖）"
             : $"{spec.Name}: 已部署 {RemoteHostServer.ReleaseVersion} 到 {result.CommandPath}");
