@@ -2,8 +2,11 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dsh.AgentAdapters;
+using Dsh.Core;
 using Dsh.GitInspect;
 using Dsh.RemoteHost;
+using Dsh.Llm;
+using Dsh.Runtime;
 using Dsh.Transport;
 
 namespace Dsh.Host;
@@ -21,7 +24,6 @@ internal sealed record AgentLaunchRecord(
     string ProjectPath,
     string? Title,
     IReadOnlyDictionary<string, string>? Environment,
-    RemoteScreenRules? ScreenRules,
     string? AcpSessionId);
 
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
@@ -45,14 +47,18 @@ internal sealed class ExternalAgentSessions : IAsyncDisposable
     private readonly AcpSessionServices _services;
     private readonly HostPtySessions _ptys;
     private readonly string _hostPath;
+    private readonly Context _ctx;
+    private readonly SessionStore _store;
     private readonly ConcurrentDictionary<string, AgentLaunchRecord> _records;
     private readonly ConcurrentDictionary<string, AcpAgentSession> _live = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Lazy<Task<AcpTranscript>>> _transcripts = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _saveGate = new(1, 1);
 
-    private ExternalAgentSessions(string hostPath, AcpSessionServices services, HostPtySessions ptys, IEnumerable<AgentLaunchRecord> records)
+    private ExternalAgentSessions(string hostPath, Context ctx, AcpSessionServices services, HostPtySessions ptys, IEnumerable<AgentLaunchRecord> records)
     {
         _hostPath = hostPath;
+        _ctx = ctx;
+        _store = ctx.Get<SessionStore>(SessionStore.ServiceName) ?? throw new InvalidOperationException("session store is not registered");
         _services = services;
         _ptys = ptys;
         _records = new ConcurrentDictionary<string, AgentLaunchRecord>(records.Select(record => KeyValuePair.Create(record.SessionId, record)), StringComparer.Ordinal);
@@ -60,20 +66,17 @@ internal sealed class ExternalAgentSessions : IAsyncDisposable
 
     private HostSessionRegistry Registry => _services.Registry;
 
-    /** Loads the launch records and re-attaches screen rules to terminal-mode agents that are still running in the PTY daemon. */
-    public static async Task<ExternalAgentSessions> OpenAsync(string hostPath, AcpSessionServices services, HostPtySessions ptys, CancellationToken cancellationToken)
+    /** Loads launch records and restores ACP conversations into the shared session store. */
+    public static async Task<ExternalAgentSessions> OpenAsync(string hostPath, Context ctx, AcpSessionServices services, HostPtySessions ptys, CancellationToken cancellationToken)
     {
         var path = Path.Combine(hostPath, RecordsFileName);
         var records = File.Exists(path)
             ? JsonSerializer.Deserialize(await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false), AgentLaunchJsonContext.Default.ListAgentLaunchRecord)
                 ?? throw new JsonException("the agent launch registry must be a JSON array")
             : [];
-        var sessions = new ExternalAgentSessions(hostPath, services, ptys, records);
-        foreach (var record in records.Where(record => record.Mode == RemoteAgentModes.Terminal))
-        {
-            if (services.Registry.Get(record.SessionId) is { Status: not HostSessionStatuses.Exited })
-                ptys.WatchScreen(record.SessionId, RulesFor(record.ScreenRules, AgentAdapterCatalog.Find(record.AgentKind)));
-        }
+        var sessions = new ExternalAgentSessions(hostPath, ctx, services, ptys, records);
+        foreach (var record in records.Where(record => record.Mode == RemoteAgentModes.Acp))
+            await sessions.TranscriptAsync(record).ConfigureAwait(false);
         return sessions;
     }
 
@@ -127,7 +130,7 @@ internal sealed class ExternalAgentSessions : IAsyncDisposable
             _ => throw new ArgumentException($"unknown agent mode: {mode}"),
         };
         var record = new AgentLaunchRecord(
-            "", mode, adapter.Kind, command.Executable, command.Arguments, directory, request.Title ?? adapter.DisplayName, request.Environment, request.ScreenRules, null);
+            "", mode, adapter.Kind, command.Executable, command.Arguments, directory, request.Title ?? adapter.DisplayName, request.Environment, null);
         return mode == RemoteAgentModes.Acp
             ? await StartAcpAsync(record with { SessionId = $"acp-{Guid.NewGuid():N}" }, request.InitialPrompt, cancellationToken).ConfigureAwait(false)
             : await StartTerminalAsync(record, request.Columns, request.Rows, cancellationToken).ConfigureAwait(false);
@@ -169,16 +172,15 @@ internal sealed class ExternalAgentSessions : IAsyncDisposable
         return await StartTerminalAsync(record with { Executable = command.Executable, Arguments = command.Arguments }, null, null, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
-        => (await TranscriptAsync(Record(sessionId)).ConfigureAwait(false)).SubscribeAsync(fromSeq, cancellationToken);
+    public async Task<Session> SessionAsync(string sessionId)
+        => (await TranscriptAsync(Record(sessionId)).ConfigureAwait(false)).Session;
 
     private async Task<RemoteHostSession> StartTerminalAsync(AgentLaunchRecord record, int? columns, int? rows, CancellationToken cancellationToken)
     {
         var executable = AgentExecutableLocator.Resolve(record.Executable)
             ?? throw new FileNotFoundException($"agent executable not found on PATH: {record.Executable}", record.Executable);
         var start = new RemotePtyStartRequest(executable, record.Arguments, record.ProjectPath, columns, rows, record.Title);
-        var rules = RulesFor(record.ScreenRules, AgentAdapterCatalog.Find(record.AgentKind));
-        var id = await _ptys.StartAgentAsync(start, record.ProjectPath, record.AgentKind, record.Environment, rules, cancellationToken).ConfigureAwait(false);
+        var id = await _ptys.StartAgentAsync(start, record.ProjectPath, record.AgentKind, record.Environment, cancellationToken).ConfigureAwait(false);
         await SaveAsync(record with { SessionId = id }).ConfigureAwait(false);
         return Registry.Get(id) ?? throw new InvalidOperationException($"session {id} was not registered");
     }
@@ -209,8 +211,83 @@ internal sealed class ExternalAgentSessions : IAsyncDisposable
     }
 
     private Task<AcpTranscript> TranscriptAsync(AgentLaunchRecord record)
-        => _transcripts.GetOrAdd(record.SessionId, id => new Lazy<Task<AcpTranscript>>(() => AcpTranscript.OpenAsync(
-            Path.Combine(_hostPath, TranscriptsDirectory, $"{id}{TranscriptExtension}"), id, record.AgentKind, CancellationToken.None))).Value;
+        => _transcripts.GetOrAdd(record.SessionId, _ => new Lazy<Task<AcpTranscript>>(() => LoadTranscriptAsync(record))).Value;
+
+    private async Task<AcpTranscript> LoadTranscriptAsync(AgentLaunchRecord record)
+    {
+        var persistence = _ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)
+            ?? throw new InvalidOperationException("ACP conversations require session persistence");
+        await ImportTranscriptAsync(record, persistence).ConfigureAwait(false);
+        var id = SessionId.Create(record.SessionId);
+        Session session;
+        if (persistence.Stat(id) is not null)
+        {
+            using var handle = persistence.Open(id, SessionAccess.Read);
+            session = Session.FromRestore(id, handle.Read(), handle.Header, handle.InheritedEventCount);
+        }
+        else
+            session = Session.Create(id, header: HeaderFor(record, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        _store.Enter(session, _ctx);
+        try
+        {
+            _store.Announce(session);
+            await _store.Flush(session).ConfigureAwait(false);
+            return new AcpTranscript(session, record.AgentKind);
+        }
+        catch
+        {
+            _store.Release(id);
+            throw;
+        }
+    }
+
+    /** Imports the old event-only file through the real storage handle, keeping the source as an archive only after a successful flush. */
+    private async Task ImportTranscriptAsync(AgentLaunchRecord record, ISessionPersistence persistence)
+    {
+        var path = Path.Combine(_hostPath, TranscriptsDirectory, $"{record.SessionId}{TranscriptExtension}");
+        if (!File.Exists(path))
+            return;
+        var lines = await File.ReadAllLinesAsync(path).ConfigureAwait(false);
+        var events = new List<SessionEvent>();
+        for (var index = 0; index < lines.Length; index++)
+        {
+            if (string.IsNullOrWhiteSpace(lines[index]))
+                continue;
+            try
+            {
+                events.Add(DshJson.Deserialize<SessionEvent>(lines[index]) ?? throw new JsonException("an ACP event must not be null"));
+            }
+            catch (JsonException) when (index == lines.Length - 1)
+            {
+                // Older hosts could leave an incomplete last append; the archived source retains those bytes.
+            }
+        }
+        var id = SessionId.Create(record.SessionId);
+        using (var handle = persistence.Stat(id) is null
+            ? persistence.Create(HeaderFor(record, events.FirstOrDefault()?.Time ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
+            : persistence.Open(id, SessionAccess.Write))
+        {
+            var stored = handle.Read();
+            for (var index = 0; index < Math.Min(stored.Count, events.Count); index++)
+                if (DshJson.Serialize(stored[index]) != DshJson.Serialize(events[index]))
+                    throw new InvalidDataException($"the ACP import for {record.SessionId} differs from its stored prefix");
+            if (stored.Count < events.Count)
+                handle.Append(events.GetRange(stored.Count, events.Count - stored.Count));
+            handle.Flush();
+        }
+        File.Move(path, $"{path}.imported");
+    }
+
+    private static SessionHeader HeaderFor(AgentLaunchRecord record, long createdAt)
+        => new()
+        {
+            Version = SessionHeader.SessionFormatVersion,
+            Id = SessionId.Create(record.SessionId),
+            CreatedAt = createdAt,
+            Cwd = record.ProjectPath,
+            Title = record.Title,
+            IsSeeded = false,
+        };
 
     private AcpAgentSession Live(string sessionId)
         => _live.TryGetValue(sessionId, out var session) ? session : throw new InvalidOperationException($"ACP session {sessionId} is not running");
@@ -249,11 +326,6 @@ internal sealed class ExternalAgentSessions : IAsyncDisposable
         };
     }
 
-    /** Rules sent with the start request win over the adapter's own; agents without either get no classification. */
-    private static AgentScreenRules RulesFor(RemoteScreenRules? custom, AgentAdapter? adapter)
-        => custom is null
-            ? adapter?.ScreenRules ?? AgentScreenRules.None
-            : AgentScreenRules.FromPatterns(custom.Approval ?? [], custom.Busy ?? [], custom.Idle ?? []);
 
     /** Whole-file replacement through a temporary file, owner-only because launch environments may carry credentials. */
     private async Task SaveAsync(AgentLaunchRecord record)
@@ -283,7 +355,7 @@ internal sealed class ExternalAgentSessions : IAsyncDisposable
                 await session.DisposeAsync().ConfigureAwait(false);
         }
         foreach (var transcript in _transcripts.Values.Where(lazy => lazy.IsValueCreated))
-            await (await transcript.Value.ConfigureAwait(false)).DisposeAsync().ConfigureAwait(false);
+            _store.Release((await transcript.Value.ConfigureAwait(false)).Session.Id);
         _saveGate.Dispose();
     }
 }
