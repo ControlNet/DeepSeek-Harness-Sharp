@@ -3,7 +3,6 @@ using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Notifications;
 using Dsh.RemoteHost;
-using Dsh.SessionQuery;
 using Dsh.Transport;
 
 namespace Dsh.Tests;
@@ -159,7 +158,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         Assert.Equal((session.SessionId, HostSessionStatuses.Idle, "opencode acp"), (reopened.SessionId, reopened.Status, reopened.Title));
     }
 
-    [Fact(Timeout = 360000)]
+    [Fact(Timeout = 600000)]
     [Trait("Category", "LlmSmoke")]
     public async Task OpenCodeAcp_PromptTurn_PersistsAndRemainsQueryableAcrossRestart()
     {
@@ -169,12 +168,11 @@ public sealed class RemoteHostAgentTests : IDisposable
         var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp), Ct);
 
         await client.Agent.PromptAgentAsync(session.SessionId, "Reply with exactly the word pong and nothing else. Do not use any tools.", Ct);
-        var events = await TurnEventsAsync(client, session.SessionId);
+        var events = await ReadEventsAsync(client, session.SessionId, item => item.Data is TurnEndPayload);
         var idle = (await RemoteHostMultiClientTests.NextAsync(client.HostSessionChangesAsync(Ct), item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Idle)).Session!;
 
         Assert.IsType<TurnStartPayload>(events[0].Data);
         Assert.IsType<UserMessagePayload>(events[1].Data);
-        Assert.Equal(Enumerable.Range(0, events.Count).Select(seq => (long)seq), events.Select(item => item.Seq));
         Assert.Contains(events, item => item.Data is AssistantChunkPayload);
         var reply = string.Concat(events.Select(item => item.Data).OfType<AssistantMessagePayload>().SelectMany(payload => payload.Message.Content).OfType<TextBlock>().Select(block => block.Text));
         Assert.Contains("pong", reply, StringComparison.OrdinalIgnoreCase);
@@ -183,7 +181,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         await AssertHistoryAcrossRestartAsync(host, session.SessionId, events, "pong");
     }
 
-    [Fact(Timeout = 360000)]
+    [Fact(Timeout = 600000)]
     [Trait("Category", "LlmSmoke")]
     public async Task OpenCodeAcp_PermissionRequest_ReachesEveryClient_AndTheFirstAnswerWins()
     {
@@ -200,7 +198,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         var seenByBob = Assert.Single((await RemoteHostMultiClientTests.NextAsync(bob.PendingChangesAsync(Ct), change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
         var allowed = await alice.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct);
         var late = await bob.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct);
-        var events = await TurnEventsAsync(bob, session.SessionId);
+        var events = await ReadEventsAsync(bob, session.SessionId, item => item.Data is TurnEndPayload);
 
         Assert.Equal(request, seenByBob);
         Assert.Equal(session.SessionId, request.SessionId);
@@ -211,7 +209,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         await AssertHistoryAcrossRestartAsync(host, session.SessionId, events, "acp-probe");
     }
 
-    /** Read actual ACP output from the shared persistence and query services, then recompose the whole application. */
+    /** Preserve the complete ACP history across application recomposition, then continue the same conversation. */
     private static async Task AssertHistoryAcrossRestartAsync(HarnessHostFixture host, string sessionId, IReadOnlyList<SessionEvent> events, string queryText)
     {
         var id = SessionId.Create(sessionId);
@@ -221,27 +219,57 @@ public sealed class RemoteHostAgentTests : IDisposable
         var snapshot = Assert.Single(persistence.List(), item => item.Header.Id == id);
         using (var stored = persistence.Open(id, SessionAccess.Read))
             Assert.Equal(expected, stored.Read().Select(item => DshJson.Serialize(item)));
-        var query = host.Environment.App.Ctx.Get<SessionQueryService>(SessionQueryService.ServiceName)!;
-        Assert.Contains(query.Search(queryText), hit => hit.SessionId == sessionId);
+        AssertSearchable(host, sessionId, queryText, events);
 
         await host.RestartHostAsync(Ct);
         var client = await host.ConnectAsync("history", Ct);
         var restored = Assert.Single(await client.ListHostSessionsAsync(Ct), item => item.SessionId == sessionId);
-        Assert.Equal(HostSessionStatuses.Exited, restored.Status);
+        Assert.Equal((sessionId, HostSessionKinds.Acp, HostSessionStatuses.Exited), (restored.SessionId, restored.Kind, restored.Status));
         Assert.Equal(snapshot.Header.Cwd, restored.ProjectPath);
-        Assert.Equal(expected, (await TurnEventsAsync(client, sessionId)).Select(item => DshJson.Serialize(item)));
         var reopened = host.Environment.App.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)!;
         Assert.Single(reopened.List(), item => item.Header.Id == id);
+        IReadOnlyList<SessionEvent> history;
         using (var stored = reopened.Open(id, SessionAccess.Read))
         {
             Assert.Equal(snapshot.Header, stored.Header);
-            Assert.Equal(expected, stored.Read().Select(item => DshJson.Serialize(item)));
+            history = stored.Read();
         }
+        // Recovery marks the history/live boundary without rewriting or discarding the original events.
+        Assert.Equal(expected, history.Take(events.Count).Select(item => DshJson.Serialize(item)));
+        Assert.IsType<SessionEndSeedPayload>(Assert.Single(history.Skip(events.Count)).Data);
+        Assert.Equal(Enumerable.Range(0, history.Count).Select(seq => (long)seq), history.Select(item => item.Seq));
+        var recovered = history.Select(item => DshJson.Serialize(item)).ToArray();
+        Assert.Equal(recovered, (await ReadEventsAsync(client, sessionId, item => item.Seq == history[^1].Seq)).Select(item => DshJson.Serialize(item)));
+        AssertSearchable(host, sessionId, queryText, history);
 
         var resumed = await client.Agent.ResumeAgentAsync(sessionId, Ct);
-        Assert.Equal(sessionId, resumed.SessionId);
-        Assert.Equal(expected, (await TurnEventsAsync(client, sessionId)).Select(item => DshJson.Serialize(item)));
-        await client.Agent.StopAgentAsync(sessionId, Ct);
+        Assert.Equal((sessionId, HostSessionStatuses.Idle), (resumed.SessionId, resumed.Status));
+        Assert.Equal(recovered, (await ReadEventsAsync(client, sessionId, item => item.Seq == history[^1].Seq)).Select(item => DshJson.Serialize(item)));
+        var marker = $"acpresumed{Guid.NewGuid():N}";
+        await client.Agent.PromptAgentAsync(sessionId, $"Reply with exactly {marker} and nothing else. Do not use any tools.", Ct);
+        var continued = await ReadEventsAsync(client, sessionId, item => item.Data is TurnEndPayload, history.Count);
+        Assert.IsType<TurnStartPayload>(continued[0].Data);
+        Assert.IsType<UserMessagePayload>(continued[1].Data);
+        Assert.Contains(continued, item => item.Data is AssistantMessagePayload assistant
+            && assistant.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains(marker, StringComparison.Ordinal)));
+        Assert.IsType<TurnEndReason.Completed>(Assert.IsType<TurnEndPayload>(continued[^1].Data).Reason);
+        AssertSearchable(host, sessionId, marker, continued, SessionEventTypes.AssistantMessage);
+        await host.StopHostAsync();
+        using (var stored = reopened.Open(id, SessionAccess.Read))
+        {
+            Assert.Equal(snapshot.Header, stored.Header);
+            Assert.Equal(recovered.Concat(continued.Select(item => DshJson.Serialize(item))), stored.Read().Select(item => DshJson.Serialize(item)));
+        }
+        AssertSearchable(host, sessionId, queryText, events);
+        AssertSearchable(host, sessionId, marker, continued, SessionEventTypes.AssistantMessage);
+    }
+
+    private static void AssertSearchable(HarnessHostFixture host, string sessionId, string text, IReadOnlyList<SessionEvent> events, string? eventType = null)
+    {
+        var query = host.Environment.App.Ctx.Get<ISessionQueryService>(ISessionQueryService.ServiceName)!;
+        Assert.Contains(query.Search(text), hit => hit.SessionId == sessionId
+            && (eventType is null || hit.Type == eventType)
+            && events.Any(item => item.Seq == hit.Seq && item.Type == hit.Type));
     }
 
     private static void RequireOpenCode()
@@ -250,18 +278,22 @@ public sealed class RemoteHostAgentTests : IDisposable
             Assert.Skip("opencode is not installed on this machine");
     }
 
-    /** The session's events from the start up to the end of its first turn. */
-    private static async Task<List<SessionEvent>> TurnEventsAsync(RemoteHostClient client, string sessionId)
+    /** Read a bounded portion of the public event stream, checking its session identity and contiguous sequence numbers. */
+    private static async Task<List<SessionEvent>> ReadEventsAsync(RemoteHostClient client, string sessionId, Func<SessionEvent, bool> until, long fromSeq = 0)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         timeout.CancelAfter(Turn + Handshake);
         var events = new List<SessionEvent>();
-        await foreach (var item in client.SubscribeAsync(sessionId, 0, timeout.Token))
+        await foreach (var item in client.SubscribeAsync(sessionId, fromSeq, timeout.Token))
         {
-            events.Add(DshJson.Deserialize<SessionEvent>(item.EventJson)!);
-            if (events[^1].Data is TurnEndPayload)
+            var sessionEvent = DshJson.Deserialize<SessionEvent>(item.EventJson)!;
+            Assert.Equal(sessionId, item.SessionId);
+            Assert.Equal(item.Sequence, sessionEvent.Seq);
+            Assert.Equal(fromSeq + events.Count, sessionEvent.Seq);
+            events.Add(sessionEvent);
+            if (until(sessionEvent))
                 return events;
         }
-        throw new InvalidOperationException("the event stream ended before the turn did");
+        throw new InvalidOperationException("the event stream ended before the expected session event");
     }
 }
