@@ -1,0 +1,242 @@
+"""Consumer-visible coverage for the dependency-free CI selector."""
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "select-ci.py"
+SPEC = importlib.util.spec_from_file_location("select_ci", SCRIPT)
+SELECTOR = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SELECTOR)
+ALL_SUITES = ["quick", "regression-1", "regression-2", "regression-3", "raw"]
+
+
+class SelectionTests(unittest.TestCase):
+    def assert_selection(self, paths, *, suites=(), jit=False, aot=False, validate=False,
+                         event="pull_request", manual_aot=False):
+        self.assertEqual(
+            SELECTOR.classify_changes(paths, event, manual_aot),
+            {"tests": bool(suites), "jit": jit, "aot": aot,
+             "validate": validate, "suites": list(suites)},
+        )
+
+    def test_safe_documentation_allowlist(self):
+        self.assert_selection([
+            "README.md", "CONTRIBUTING.md", "docs/guide/nested.txt", "plans/ci.md",
+            ".omo/state.json", "LICENSE", "LICENSE.MIT",
+            ".github/ISSUE_TEMPLATE/bug.yml", ".github/PULL_REQUEST_TEMPLATE.md",
+        ])
+
+    def test_embedded_markdown_is_not_documentation(self):
+        for path in ("src/Dsh.Core/prompts/system.md", "assets/README.md", ".github/README.md"):
+            with self.subTest(path=path):
+                self.assert_selection([path], suites=ALL_SUITES, jit=True, aot=True)
+
+    def test_empty_diff_runs_nothing(self):
+        self.assert_selection([])
+
+    def test_test_only_keeps_all_three_regressions(self):
+        self.assert_selection(
+            ["tests/Dsh.Tests/SessionTests.cs", "tests/Dsh.Tests/Fixtures/prompt.md"],
+            suites=ALL_SUITES[:-1],
+        )
+
+    def test_build_metadata_is_always_conservative(self):
+        for path in (
+            "tests/Dsh.Tests/Dsh.Tests.csproj", "tests/Dsh.Tests/Directory.Build.props",
+            "tests/Dsh.Tests/custom.targets", "Directory.Build.props", "global.json",
+            "DeepSeekHarness.slnx", "NuGet.Config",
+        ):
+            with self.subTest(path=path):
+                self.assert_selection([path], suites=ALL_SUITES, jit=True, aot=True)
+
+    def test_build_metadata_is_not_hidden_by_documentation_paths(self):
+        for path in ("docs/Directory.Build.props", "plans/Fixture.csproj", ".omo/build.targets"):
+            with self.subTest(path=path):
+                self.assert_selection([path], suites=ALL_SUITES, jit=True, aot=True)
+
+    def test_other_test_fixture_projects_are_not_test_only(self):
+        for path in (
+            "tests/Dsh.ManagedPluginSample/Plugin.cs",
+            "tests/Dsh.NativePluginSample/SamplePlugin.cs",
+            "tests/Dsh.IocAotSmoke/Program.cs",
+        ):
+            with self.subTest(path=path):
+                self.assert_selection([path], suites=ALL_SUITES, jit=True, aot=True)
+
+    def test_raw_script_only_runs_raw_suite(self):
+        self.assert_selection(["scripts/check-tui-raw-mode.py"], suites=["raw"])
+
+    def test_mixed_paths_take_the_union(self):
+        self.assert_selection(
+            ["docs/ci.md", "tests/Dsh.Tests/RawTests.cs", "scripts/check-tui-raw-mode.py",
+             ".github/workflows/release.yml"],
+            suites=ALL_SUITES, validate=True,
+        )
+        self.assert_selection(
+            ["README.md", "tests/Dsh.Tests/UnitTests.cs", "src/Dsh.Core/Agent.cs"],
+            suites=ALL_SUITES, jit=True, aot=True,
+        )
+
+    def test_release_workflows_only_require_validation(self):
+        for path in (
+            ".github/workflows/release.yml", ".github/workflows/release-assets.yml",
+            ".github/workflows/interactive.yml",
+        ):
+            with self.subTest(path=path):
+                self.assert_selection([path], validate=True)
+
+    def test_ci_and_unknown_workflows_are_conservative(self):
+        for path in (
+            ".github/workflows/ci.yml", ".github/workflows/ci-tests.yml",
+            ".github/workflows/ci-aot.yml", ".github/workflows/new-job.yaml",
+        ):
+            with self.subTest(path=path):
+                self.assert_selection([path], suites=ALL_SUITES, jit=True, aot=True, validate=True)
+
+    def test_selector_changes_require_full_ci_and_validation(self):
+        for path in ("scripts/select-ci.py", "tests/ci/test_select_ci.py", "tests/ci/test_other.py"):
+            with self.subTest(path=path):
+                self.assert_selection([path], suites=ALL_SUITES, jit=True, aot=True, validate=True)
+
+    def test_unknown_and_deleted_paths_do_not_require_file_existence(self):
+        for path in ("unexpected/path", "src/Deleted.cs", "tests/Dsh.Tests/DeletedTests.cs"):
+            with self.subTest(path=path):
+                if path == "tests/Dsh.Tests/DeletedTests.cs":
+                    self.assert_selection([path], suites=ALL_SUITES[:-1])
+                else:
+                    self.assert_selection([path], suites=ALL_SUITES, jit=True, aot=True)
+
+    def test_push_does_not_add_aot(self):
+        self.assert_selection(["src/Dsh.Core/Agent.cs"], event="push", suites=ALL_SUITES, jit=True)
+
+    def test_manual_runs_everything_except_opted_out_aot(self):
+        for aot in (False, True):
+            with self.subTest(aot=aot):
+                self.assert_selection([], event="workflow_dispatch", manual_aot=aot,
+                                      suites=ALL_SUITES, jit=True, aot=aot, validate=True)
+
+
+class CommandLineTests(unittest.TestCase):
+    def run_selector(self, *, event="push", base="HEAD", head="HEAD", aot="false",
+                     output=None, cwd=ROOT):
+        command = [sys.executable, str(SCRIPT), "--event", event, "--base", base,
+                   "--head", head, "--aot", aot]
+        if output is not None:
+            command.extend(["--output", str(output)])
+        return subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+
+    def parse_output(self, output):
+        lines = output.splitlines()
+        self.assertEqual(len(lines), 5)
+        result = dict(line.split("=", 1) for line in lines)
+        self.assertEqual(set(result), {"tests", "jit", "aot", "validate", "suites"})
+        for key in ("tests", "jit", "aot", "validate"):
+            self.assertIn(result[key], ("true", "false"))
+        suites = json.loads(result["suites"])
+        self.assertEqual(result["suites"], json.dumps(suites, separators=(",", ":")))
+        return {key: json.loads(value) for key, value in result.items()}
+
+    def test_initial_push_does_not_need_diffable_revisions(self):
+        for base in ("", "0" * 40):
+            with self.subTest(base=base):
+                result = self.run_selector(base=base, head="invalid-revision", aot="true")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.parse_output(result.stdout), {
+                    "tests": True, "jit": True, "aot": False, "validate": True,
+                    "suites": ALL_SUITES,
+                })
+
+    def test_manual_bypasses_git_and_honors_aot_input(self):
+        for aot in ("true", "false"):
+            with self.subTest(aot=aot):
+                result = self.run_selector(event="workflow_dispatch", base="invalid-base",
+                                           head="invalid-head", aot=aot)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.parse_output(result.stdout), {
+                    "tests": True, "jit": True, "aot": aot == "true", "validate": True,
+                    "suites": ALL_SUITES,
+                })
+
+    def test_invalid_git_revisions_fail_without_selection_output(self):
+        for event, base, head in (
+            ("push", "invalid-base:revision", "HEAD"),
+            ("push", "HEAD", "invalid-head:revision"),
+            ("pull_request", "0" * 40, "HEAD"),
+            ("pull_request", "", "HEAD"),
+        ):
+            with self.subTest(event=event, base=base, head=head):
+                result = self.run_selector(event=event, base=base, head=head)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("Unable to determine CI changes", result.stderr)
+
+    def test_output_file_is_appended_and_empty_diff_runs_nothing(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            output = Path(directory) / "github-output"
+            output.write_text("existing=value\n", encoding="utf-8")
+            result = self.run_selector(output=output)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+            contents = output.read_text(encoding="utf-8")
+            self.assertTrue(contents.startswith("existing=value\n"))
+            self.assertEqual(self.parse_output(contents.removeprefix("existing=value\n")), {
+                "tests": False, "jit": False, "aot": False, "validate": False, "suites": [],
+            })
+
+    def test_real_git_diff_preserves_newlines_in_paths(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=root, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            git("init")
+            git("-c", "user.name=CI Selector", "-c", "user.email=selector@example.invalid",
+                "commit", "--allow-empty", "-m", "Base")
+            base = git("rev-parse", "HEAD")
+            source = root / "src" / "embedded\nprompt.md"
+            source.parent.mkdir()
+            source.write_text("A production prompt", encoding="utf-8")
+            git("add", "--", "src")
+            git("-c", "user.name=CI Selector", "-c", "user.email=selector@example.invalid",
+                "commit", "-m", "Prompt")
+            result = self.run_selector(event="pull_request", base=base, head="HEAD", cwd=root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.parse_output(result.stdout), {
+                "tests": True, "jit": True, "aot": True, "validate": False,
+                "suites": ALL_SUITES,
+            })
+
+    def test_rename_from_production_to_documentation_keeps_production_checks(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=root, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            git("init")
+            source = root / "src" / "prompt.md"
+            source.parent.mkdir()
+            source.write_text("A production prompt", encoding="utf-8")
+            git("add", "--", "src")
+            git("-c", "user.name=CI Selector", "-c", "user.email=selector@example.invalid",
+                "commit", "-m", "Production prompt")
+            base = git("rev-parse", "HEAD")
+            (root / "docs").mkdir()
+            git("mv", "src/prompt.md", "docs/prompt.md")
+            git("-c", "user.name=CI Selector", "-c", "user.email=selector@example.invalid",
+                "commit", "-m", "Move prompt")
+            result = self.run_selector(event="pull_request", base=base, head="HEAD", cwd=root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.parse_output(result.stdout), {
+                "tests": True, "jit": True, "aot": True, "validate": False,
+                "suites": ALL_SUITES,
+            })
+
+
+if __name__ == "__main__":
+    unittest.main()

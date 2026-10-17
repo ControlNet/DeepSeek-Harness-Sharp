@@ -1,0 +1,296 @@
+name: CI tests
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      native-cc:
+        required: true
+        type: string
+      native-cc-alt:
+        required: false
+        type: string
+        default: ''
+      suite:
+        description: 'quick, regression-1, regression-2, regression-3, or raw'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ inputs.suite }}
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Download the native iroh-ssh built for this run
+        uses: actions/download-artifact@v4
+        with:
+          name: iroh-ssh-${{ inputs.os }}
+          path: artifacts
+
+      - name: Extract the native component without a consumer cache
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/iroh-ssh | Out-Null
+          $tar = if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe' } else { 'tar' }
+          & $tar -xf artifacts/iroh-ssh-component.tar -C artifacts/iroh-ssh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $rid = switch ($env:RUNNER_OS) {
+            'Windows' { 'win-x64' }
+            'Linux' { 'linux-x64' }
+            'macOS' { 'osx-arm64' }
+            default { throw "Unsupported runner OS: $env:RUNNER_OS" }
+          }
+          "IROH_RID=$rid" >> $env:GITHUB_ENV
+
+      - name: Prepare local NuGet feed (packages/, DryIoc.dll)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -NoProfile -File scripts/fetch-dryioc-feed.ps1 -UseGhArtifact
+          else
+            bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
+          fi
+
+      - name: Check C toolchain (Clang/LLVM and MSVC on Windows)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            if ! command -v clang-cl >/dev/null 2>&1; then
+              choco install llvm --no-progress -y
+              printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+              export PATH="/c/Program Files/LLVM/bin:$PATH"
+            fi
+            clang-cl --version
+            "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' \
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'Common7\Tools\VsDevCmd.bat'
+          else
+            if ! command -v clang >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends clang
+            fi
+            clang --version
+          fi
+
+      - name: Install real SSH end-to-end prerequisites (Linux)
+        if: inputs.suite != 'raw' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends openssh-server openssh-sftp-server
+          sudo mkdir -p /run/sshd
+
+      - name: Build tests (Debug, plugin fixtures and fault probe)
+        if: inputs.suite != 'raw'
+        run: >
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
+          -p:DshNativeCompiler=${{ inputs.native-cc }}
+
+      - name: Build the CLI for real Unix TUI raw input checks
+        if: inputs.suite == 'raw' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet build DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -c Debug --nologo -m:2 -p:DshNativeCompiler=${{ inputs.native-cc }}
+
+      - name: Check bundled native iroh-ssh, licenses, and readiness patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Consumers only extract this run's artifact; rebuilding the component must fail this check.
+          test ! -d "artifacts/iroh-ssh/$IROH_RID/target"
+          test ! -f "artifacts/iroh-ssh/$IROH_RID/source.tar.gz"
+          FILE=iroh-ssh
+          if [ "$RUNNER_OS" = "Windows" ]; then FILE=iroh-ssh.exe; fi
+          OUTPUTS=(DeepSeek-Harness-Sharp/bin/Debug/net10.0)
+          if [ "${{ inputs.suite }}" != "raw" ]; then
+            OUTPUTS+=(tests/Dsh.Tests/bin/Debug/net10.0)
+          fi
+          for OUTPUT in "${OUTPUTS[@]}"; do
+            "$OUTPUT/tools/$FILE" version
+            test -s "$OUTPUT/tools/iroh-ssh.LICENSE.txt"
+            test -s "$OUTPUT/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
+            test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
+            cmp scripts/iroh-ssh-readiness.patch "$OUTPUT/tools/iroh-ssh.READINESS.patch"
+          done
+
+      - name: Check real Unix TUI raw input and exit restoration
+        if: inputs.suite == 'raw' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/check-tui-raw-mode.py --runs 8 --home-template artifacts/raw/empty-template
+
+      - name: Check macOS non-admin headless SSH LAN receiver
+        if: inputs.suite == 'quick' && runner.os == 'macOS'
+        shell: bash
+        run: bash scripts/test-iroh-macos-lan.sh
+
+      - name: Start a standalone PTY daemon from the current build
+        if: inputs.suite != 'raw'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .daemon-tests
+          HOME_DIR="$(mktemp -d "$PWD/.daemon-tests/qXXXXXX")"
+          cp src/Dsh.Boot/Profiles/Templates/settings.yaml "$HOME_DIR/settings.yaml"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            DSH_HOME="$(cygpath -w "$HOME_DIR")"
+          else
+            DSH_HOME="$HOME_DIR"
+          fi
+          export DSH_HOME
+          echo "DSH_HOME=$DSH_HOME" >> "$GITHUB_ENV"
+          DAEMON="DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp"
+          if [ ! -x "$DAEMON" ]; then
+            DAEMON="$DAEMON.exe"
+          fi
+          "$DAEMON" tui daemon > "$HOME_DIR/daemon.log" 2>&1 &
+          DAEMON_PID=$!
+          for _ in {1..200}; do
+            if [ -e "$HOME_DIR/run/dsh.sock" ] || [ -e "$HOME_DIR/run/dsh.port" ]; then
+              exit 0
+            fi
+            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+              cat "$HOME_DIR/daemon.log"
+              exit 1
+            fi
+            sleep 0.05
+          done
+          echo "::error::The standalone PTY daemon from the current build did not publish an endpoint"
+          cat "$HOME_DIR/daemon.log"
+          exit 1
+
+      - name: Run quick tests (excluding GpuStress / OnlyGpu / LlmSmoke / RenderBench)
+        if: inputs.suite == 'quick'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GpuStress needs real GPU stress testing; OnlyGpu needs GPU/desktop rendering.
+          # RenderBench needs desktop rendering; LlmSmoke needs external model access and credentials.
+          # Hosted runners have no GPU; run GPU measurements on a GPU host without trait filtering.
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ ! -x "$EXE" ]; then
+            EXE="$EXE.exe"
+          fi
+          ARGS=("$EXE" -noColor
+            -trait- "Category=GpuStress"
+            -trait- "Category=OnlyGpu"
+            -trait- "Category=LlmSmoke"
+            -trait- "Category=RenderBench")
+          # macOS PTY reads block their calling thread and can starve the parallel test thread pool.
+          # Keep serial execution and the existing watchdog budget.
+          # Raw input and the exact headless SSH LAN Fact run in their dedicated stages.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ARGS+=(-parallel none -class- Dsh.Tests.TuiRawModeEndToEndTests
+              -method- Dsh.Tests.IrohReceiverEndToEndTests.TargetCli_Lan_Readiness_And_Restart_Work_Without_A_Relay)
+            echo "Running: ${ARGS[*]}"
+            "${ARGS[@]}" &
+            TESTPID=$!
+            ( sleep 600; kill -9 "$TESTPID" 2>/dev/null ) &
+            WATCH=$!
+            set +e
+            wait "$TESTPID"
+            CODE=$?
+            kill "$WATCH" 2>/dev/null || true
+            exit $CODE
+          fi
+          if command -v timeout >/dev/null 2>&1; then
+            ARGS=(timeout 900 "${ARGS[@]}")
+          fi
+          echo "Running: ${ARGS[*]}"
+          "${ARGS[@]}"
+
+      - name: Run root-cause regression (${{ inputs.suite }}, no retries)
+        if: startsWith(inputs.suite, 'regression-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ ! -x "$EXE" ]; then
+            EXE="$EXE.exe"
+          fi
+          ARGS=(-noColor
+            -class Dsh.Tests.PtyDaemonSubscribeTests
+            -class Dsh.Tests.PtyDaemonTests
+            -class Dsh.Tests.PtyOwnershipTests
+            -class Dsh.Tests.PtyOutputReaderTests
+            -class Dsh.Tests.UnixPtyDescriptorOwnershipTests
+            -class Dsh.Tests.PtyConsoleResizeTests
+            -class Dsh.Tests.MouseReportPtyTests
+            -class Dsh.Tests.TuiOverlayCpuTests
+            -class Dsh.Tests.PtySessionSubscriptionTests
+            -class Dsh.Tests.ChatWindowKeyBindingTests
+            -class Dsh.Tests.ChatWindowPaneTests
+            -class 'Dsh.Tests.JobsTests*'
+            -class Dsh.Tests.Runtime.PluginLifecycleTests
+            -class Dsh.Tests.Runtime.PluginSchedulerTests
+            -class Dsh.Tests.Runtime.RuntimePluginTests
+            -class Dsh.Tests.Runtime.PluginUnloadTests
+            -class Dsh.Tests.AcpTests
+            -class Dsh.Tests.AcpClientTests
+            -class Dsh.Tests.LspTests
+            -class Dsh.Tests.SdkTests
+            -class Dsh.Tests.Mcp.McpResourceToolsTests
+            -class Dsh.Tests.ProjectMemoryTests
+            -class Dsh.Tests.SessionAutoRenameTests
+            -class Dsh.Tests.SessionLogCompatibilityTests
+            -class Dsh.Tests.RemoteHostCapabilityTests
+            -class Dsh.Tests.RemoteHostTests
+            -class Dsh.Tests.FrameCodecTests
+            -class Dsh.Tests.PluginTemplateTests
+            -class Dsh.Tests.SettingsTemplateTests
+            -class Dsh.Tests.ExportSessionLogTests)
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ARGS+=(-parallel none)
+          fi
+          "$EXE" "${ARGS[@]}"
+
+      - name: Check schedule time zones with invariant globalization
+        if: inputs.suite == 'quick'
+        shell: pwsh
+        run: |
+          $runtime = Get-Content tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.runtimeconfig.json -Raw | ConvertFrom-Json -AsHashtable
+          $runtime.runtimeOptions.configProperties['System.Globalization.Invariant'] = $true
+          $config = Join-Path $env:RUNNER_TEMP 'schedule-invariant.runtimeconfig.json'
+          $runtime | ConvertTo-Json -Depth 20 | Set-Content $config
+          dotnet exec --runtimeconfig $config tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.dll -noColor -class 'Dsh.Tests.ScheduleTests+Rules' -class 'Dsh.Tests.ScheduleClockCompatibilityTests' -class 'Dsh.Tests.ScheduleCronCompatibilityTests' -class 'Dsh.Tests.ScheduleToolCompatibilityTests' -class 'Dsh.Tests.ScheduleUpstreamReferenceTests' -failSkips
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check native containment (NativeGuardTests, ${{ inputs.native-cc }}, no skips)
+        if: inputs.suite == 'quick'
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ ! -x "$EXE" ]; then
+            EXE="$EXE.exe"
+          fi
+          "$EXE" -noColor -class Dsh.Tests.NativeGuardTests -failSkips
+
+      - name: Rebuild native libraries with ${{ inputs.native-cc-alt }} and check native containment
+        if: inputs.suite == 'quick' && inputs.native-cc-alt != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo \
+            -p:DshNativeCompiler=${{ inputs.native-cc-alt }} "-flp:verbosity=normal;logfile=native-alt.log"
+          # Verify that the alternate driver rebuilt both the guard and the probe.
+          grep -E '${{ inputs.native-cc-alt }} /nologo' native-alt.log
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -class Dsh.Tests.NativeGuardTests -failSkips
