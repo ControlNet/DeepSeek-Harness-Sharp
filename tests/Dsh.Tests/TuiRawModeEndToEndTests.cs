@@ -43,47 +43,31 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
         var scenario = new Scenario(terminal);
         scenario.WaitForRawInput();
         // The answer is deliberately absent from the prompt: input echo cannot satisfy the assertion.
-        scenario.Write("Spell out in English the number equal to six times seven. Reply only with the answer, without digits or tools.\r");
-        scenario.WaitFor(() => scenario.ContainsVisible("forty-two", ignoreCase: true)
-                && HasPersistedCompletedTurn(terminal.Home),
+        const string prompt = "Spell out in English the number equal to six times seven. Reply only with the answer, without digits, formatting or tools.";
+        scenario.Write($"{prompt}\r");
+        scenario.WaitFor(() => ReadCompletedAssistantReply(terminal.Home) is { } reply
+                && !prompt.Contains(reply, StringComparison.OrdinalIgnoreCase)
+                && scenario.ContainsVisible(reply, ignoreCase: true),
             TimeSpan.FromSeconds(120), "The real assistant answer did not complete in the visible TUI.");
         scenario.ExitAndAssertRestored(output, "real model turn");
-        using var persistence = new JsonlSessionPersistence(new HarnessHome(terminal.Home).SessionsPath);
-        var assistantAnswered = false;
-        foreach (var session in persistence.List())
-        {
-            var handle = persistence.Open(session.Header.Id, SessionAccess.Read);
-            try
-            {
-                assistantAnswered |= handle.Read().Any(entry => entry.Data is AssistantMessagePayload assistant
-                    && assistant.Message.Content.OfType<TextBlock>().Any(block =>
-                        block.Text.Contains("forty-two", StringComparison.OrdinalIgnoreCase)));
-            }
-            finally
-            {
-                handle.Close();
-            }
-        }
-        Assert.True(assistantAnswered, "The real CLI did not persist the rendered answer as an assistant message.");
     }
 
-    private static bool HasPersistedCompletedTurn(string home)
+    private static string? ReadCompletedAssistantReply(string home)
     {
         using var persistence = new JsonlSessionPersistence(new HarnessHome(home).SessionsPath);
         foreach (var session in persistence.List())
         {
-            var handle = persistence.Open(session.Header.Id, SessionAccess.Read);
-            try
-            {
-                if (handle.Read().Any(entry => entry.Data is TurnEndPayload { Reason: TurnEndReason.Completed }))
-                    return true;
-            }
-            finally
-            {
-                handle.Close();
-            }
+            using var handle = persistence.Open(session.Header.Id, SessionAccess.Read);
+            var events = handle.Read();
+            var end = events.Select(entry => entry.Data).OfType<TurnEndPayload>().LastOrDefault();
+            if (end is null)
+                continue;
+            Assert.IsType<TurnEndReason.Completed>(end.Reason);
+            return events.Select(entry => entry.Data).OfType<AssistantMessagePayload>()
+                .SelectMany(assistant => assistant.Message.Content.OfType<TextBlock>())
+                .Select(block => block.Text.Trim()).LastOrDefault(text => text.Length > 0);
         }
-        return false;
+        return null;
     }
 
     private static void RequireUnix()

@@ -168,7 +168,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp), Ct);
 
         await client.Agent.PromptAgentAsync(session.SessionId, "Reply with exactly the word pong and nothing else. Do not use any tools.", Ct);
-        var events = await ReadEventsAsync(client, session.SessionId, item => item.Data is TurnEndPayload);
+        var events = await ReadEventsAsync(client, session.SessionId, item => item.Data is TurnEndPayload, cancellationToken: Ct);
         var idle = (await RemoteHostMultiClientTests.NextAsync(client.HostSessionChangesAsync(Ct), item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Idle)).Session!;
 
         Assert.IsType<TurnStartPayload>(events[0].Data);
@@ -198,15 +198,51 @@ public sealed class RemoteHostAgentTests : IDisposable
         var seenByBob = Assert.Single((await RemoteHostMultiClientTests.NextAsync(bob.PendingChangesAsync(Ct), change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
         var allowed = await alice.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct);
         var late = await bob.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct);
-        var events = await ReadEventsAsync(bob, session.SessionId, item => item.Data is TurnEndPayload);
 
         Assert.Equal(request, seenByBob);
         Assert.Equal(session.SessionId, request.SessionId);
         Assert.Equal((true, false), (allowed, late));
+        var events = await ReadApprovedTurnAsync(bob, session.SessionId, request.RequestId);
+        Assert.IsType<TurnEndReason.Completed>(Assert.IsType<TurnEndPayload>(events[^1].Data).Reason);
         Assert.Contains(events, item => item.Data is ToolCallPayload);
         Assert.Contains(events, item => item.Data is ToolResultPayload { Error: null });
         Assert.Equal("dsh-acp-probe", (await File.ReadAllTextAsync(Path.Combine(_workspace, "acp-probe.txt"), Ct)).Trim());
         await AssertHistoryAcrossRestartAsync(host, session.SessionId, events, "acp-probe");
+    }
+
+    /** A real model may request another tool (for example, reading back its output) after the first approval. */
+    private static async Task<List<SessionEvent>> ReadApprovedTurnAsync(RemoteHostClient client, string sessionId, string answeredRequestId)
+    {
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var approvals = AnswerApprovalsAsync();
+        var events = ReadEventsAsync(client, sessionId, item => item.Data is TurnEndPayload, cancellationToken: lifetime.Token);
+        try
+        {
+            var completed = await Task.WhenAny(events, approvals);
+            await completed;
+            return await events;
+        }
+        finally
+        {
+            await lifetime.CancelAsync();
+            try
+            {
+                await Task.WhenAll(events, approvals);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+        }
+
+        async Task AnswerApprovalsAsync()
+        {
+            var answered = new HashSet<string>(StringComparer.Ordinal) { answeredRequestId };
+            await foreach (var change in client.PendingChangesAsync(lifetime.Token))
+                foreach (var request in change.Pending.Approvals)
+                    if (request.SessionId == sessionId && answered.Add(request.RequestId))
+                        await client.RespondApprovalAsync(request.RequestId, true, cancellationToken: lifetime.Token);
+            throw new InvalidOperationException("the pending stream ended before the ACP turn completed");
+        }
     }
 
     /** Preserve the complete ACP history across application recomposition, then continue the same conversation. */
@@ -279,9 +315,9 @@ public sealed class RemoteHostAgentTests : IDisposable
     }
 
     /** Read a bounded portion of the public event stream, checking its session identity and contiguous sequence numbers. */
-    private static async Task<List<SessionEvent>> ReadEventsAsync(RemoteHostClient client, string sessionId, Func<SessionEvent, bool> until, long fromSeq = 0)
+    private static async Task<List<SessionEvent>> ReadEventsAsync(RemoteHostClient client, string sessionId, Func<SessionEvent, bool> until, long fromSeq = 0, CancellationToken cancellationToken = default)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Ct, cancellationToken);
         timeout.CancelAfter(Turn + Handshake);
         var events = new List<SessionEvent>();
         await foreach (var item in client.SubscribeAsync(sessionId, fromSeq, timeout.Token))
