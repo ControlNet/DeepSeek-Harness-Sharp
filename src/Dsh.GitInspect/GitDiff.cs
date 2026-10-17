@@ -10,6 +10,9 @@ public enum GitDiffSource
 
     /** One commit versus its first parent (versus the empty tree for a root commit). */
     Commit,
+
+    /** HEAD versus working tree, including staged changes; empty tree versus working tree before the first commit. */
+    Uncommitted,
 }
 
 public sealed record GitDiffTarget(GitDiffSource Source, string? Commit = null)
@@ -17,6 +20,8 @@ public sealed record GitDiffTarget(GitDiffSource Source, string? Commit = null)
     public static GitDiffTarget WorkingTree { get; } = new(GitDiffSource.WorkingTree);
 
     public static GitDiffTarget Staged { get; } = new(GitDiffSource.Staged);
+
+    public static GitDiffTarget Uncommitted { get; } = new(GitDiffSource.Uncommitted);
 
     public static GitDiffTarget OfCommit(string commit) => new(GitDiffSource.Commit, commit);
 }
@@ -49,8 +54,14 @@ public sealed record GitFileDiff(
 /** Truncated is true when any file patch was cut. */
 public sealed record GitDiff(GitDiffTarget Target, IReadOnlyList<GitFileDiff> Files, bool Truncated);
 
-/** A changed path enumerated before patches are fetched. */
-internal sealed record GitDiffEntry(string Path, string? OriginalPath, GitChangeKind Kind, int? Added, int? Deleted);
+/** Per-file line statistics, without generating or retaining a patch; counts are null for binary files. */
+public sealed record GitFileStat(string Path, string? OriginalPath, GitChangeKind Kind, int? Added, int? Deleted)
+{
+    public bool IsBinary => Added is null;
+}
+
+/** Changed paths and line counts for the same target supported by the full diff. */
+public sealed record GitDiffSummary(GitDiffTarget Target, IReadOnlyList<GitFileStat> Files);
 
 /**
  * Parser for `git diff --raw --numstat -z`: raw records (starting with ':') come first, numstat records follow.
@@ -62,7 +73,7 @@ internal static class GitDiffEntryParser
     private const string BinaryCount = "-";
     private const int NumstatFieldCount = 3;
 
-    public static IReadOnlyList<GitDiffEntry> Parse(string output)
+    public static IReadOnlyList<GitFileStat> Parse(string output)
     {
         var fields = output.Split('\0');
         var index = 0;
@@ -77,8 +88,8 @@ internal static class GitDiffEntryParser
         var counts = ParseNumstat(fields, index);
         return raw
             .Select(entry => counts.TryGetValue(entry.Path, out var count)
-                ? new GitDiffEntry(entry.Path, entry.OriginalPath, entry.Kind, count.Added, count.Deleted)
-                : new GitDiffEntry(entry.Path, entry.OriginalPath, entry.Kind, 0, 0))
+                ? new GitFileStat(entry.Path, entry.OriginalPath, entry.Kind, count.Added, count.Deleted)
+                : new GitFileStat(entry.Path, entry.OriginalPath, entry.Kind, 0, 0))
             .ToList();
     }
 

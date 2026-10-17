@@ -10,9 +10,8 @@ public readonly record struct PendingResolver(string Name, string? ConnectionId)
 public sealed record HostPendingAsked(string Kind, string RequestId, string SessionId, string Summary);
 
 /**
- * 远端发起、等待用户决策的审批与问答: 广播给所有连接, 先答者生效, 随后向所有连接推送 host.pending.resolved。
- * 请求一直保留到有人回答, 或所属会话被中断/结束(取消); 新连接订阅时先补发全部未决请求。
- * 与具体后端无关: harness 的审批瀑布与后续的外部 Agent 权限请求都经它进入同一个待决策队列。
+ * 审批与问答的唯一权威队列: 每次变更在同一锁序下发布完整 pending 投影, 先答者生效。
+ * 新订阅也先收到完整投影; 结局仅随该次变更携带审计信息, 不另存重放缓存。
  */
 public sealed class HostPendingDecisions : IDisposable
 {
@@ -20,69 +19,49 @@ public sealed class HostPendingDecisions : IDisposable
     private readonly HostBroadcast _broadcast = new();
     private readonly OrderedDictionary<string, PendingEntry> _entries = new(StringComparer.Ordinal);
 
-    /** 订阅了未决请求推送的连接数。 */
     public int SubscriberCount => _broadcast.SubscriberCount;
 
-    /** 某会话的未决数量变化(参数为会话 id); 在锁外触发。 */
+    /** 在锁外触发, 消费者重新查询当前数量, 不保存投影副本。 */
     public event Action<string>? CountChanged;
 
-    /** A new approval or question was raised; raised outside the lock. */
+    /** Host 内部通知业务事件, 不作为另一条线协议。 */
     public event Action<HostPendingAsked>? Asked;
 
     private sealed record PendingEntry(
         string Kind,
         string SessionId,
         string? Scope,
-        HostNotification Asked,
         RemoteApprovalRequest? Approval,
         RemoteQuestionRequest? Question,
         TaskCompletionSource<object?> Completion);
 
-    /** 挂起一条审批直到有人回答; 被取消时返回 null。Scope 是发起方的细分标识(如子代理 id), 供 CancelScope 精确取消。 */
     public Task<RemoteApprovalResponse?> AskApprovalAsync(RemoteApprovalRequest request, string? scope = null)
         => AskAsync<RemoteApprovalResponse>(new PendingEntry(
-            PendingKinds.Approval,
-            request.SessionId,
-            scope,
-            HostNotification.Create(HostProtocol.NotificationApproval, request, HostProtocolJsonContext.Default.RemoteApprovalRequest),
-            request,
-            null,
-            NewCompletion()), request.RequestId);
+            PendingKinds.Approval, request.SessionId, scope, request, null, NewCompletion()), request.RequestId);
 
-    /** 挂起一条问答直到有人回答; 被取消时返回 null。 */
     public Task<RemoteQuestionResponse?> AskQuestionAsync(RemoteQuestionRequest request, string? scope = null)
         => AskAsync<RemoteQuestionResponse>(new PendingEntry(
-            PendingKinds.Question,
-            request.SessionId,
-            scope,
-            HostNotification.Create(HostProtocol.NotificationQuestion, request, HostProtocolJsonContext.Default.RemoteQuestionRequest),
-            null,
-            request,
-            NewCompletion()), request.RequestId);
+            PendingKinds.Question, request.SessionId, scope, null, request, NewCompletion()), request.RequestId);
 
-    /** 回答审批; 返回 false 表示该请求已不在(别人先答了或已取消)。 */
     public bool RespondApproval(RemoteApprovalResponse response, PendingResolver resolver)
         => Resolve(response.RequestId, PendingKinds.Approval, response, response.Allow ? PendingResolutions.Allowed : PendingResolutions.Rejected, resolver);
 
-    /** 回答问答; 返回 false 表示该请求已不在。 */
     public bool RespondQuestion(RemoteQuestionResponse response, PendingResolver resolver)
         => Resolve(response.RequestId, PendingKinds.Question, response, PendingResolutions.Answered, resolver);
 
-    /** 会话被中断或结束: 取消它的全部未决请求。 */
     public void CancelSession(string sessionId) => CancelWhere(entry => entry.SessionId == sessionId);
 
-    /** 发起方(Scope)已不再等待: 只取消它自己发起的请求。 */
     public void CancelScope(string scope) => CancelWhere(entry => entry.Scope == scope);
 
     public RemotePendingList List()
     {
         lock (_gate)
-        {
-            return new RemotePendingList(
-                [.. _entries.Values.Select(entry => entry.Approval).OfType<RemoteApprovalRequest>()],
-                [.. _entries.Values.Select(entry => entry.Question).OfType<RemoteQuestionRequest>()]);
-        }
+            return Snapshot();
     }
+
+    private RemotePendingList Snapshot() => new(
+        [.. _entries.Values.Select(entry => entry.Approval).OfType<RemoteApprovalRequest>()],
+        [.. _entries.Values.Select(entry => entry.Question).OfType<RemoteQuestionRequest>()]);
 
     public int CountFor(string sessionId)
     {
@@ -90,11 +69,10 @@ public sealed class HostPendingDecisions : IDisposable
             return _entries.Values.Count(entry => entry.SessionId == sessionId);
     }
 
-    /** 每个连接一份: 先补发当前全部未决请求, 再接实时的请求与结局推送。 */
     public HostSubscription Subscribe()
     {
         lock (_gate)
-            return _broadcast.Subscribe([.. _entries.Values.Select(entry => entry.Asked)]);
+            return _broadcast.Subscribe([Change()]);
     }
 
     public void Dispose() => CancelWhere(_ => true);
@@ -107,7 +85,7 @@ public sealed class HostPendingDecisions : IDisposable
         {
             if (!_entries.TryAdd(requestId, entry))
                 throw new InvalidOperationException($"pending request id already in use: {requestId}");
-            _broadcast.Publish(entry.Asked);
+            _broadcast.Publish(Change());
         }
         CountChanged?.Invoke(entry.SessionId);
         Asked?.Invoke(new HostPendingAsked(entry.Kind, requestId, entry.SessionId, entry.Approval?.Tool ?? entry.Question?.Questions.FirstOrDefault()?.Question ?? ""));
@@ -122,7 +100,7 @@ public sealed class HostPendingDecisions : IDisposable
             if (!_entries.TryGetValue(requestId, out entry) || entry.Kind != kind)
                 return false;
             _entries.Remove(requestId);
-            _broadcast.Publish(Resolved(requestId, entry, resolution, resolver));
+            _broadcast.Publish(Change(Resolved(requestId, entry, resolution, resolver)));
         }
         entry.Completion.TrySetResult(answer);
         CountChanged?.Invoke(entry.SessionId);
@@ -138,8 +116,9 @@ public sealed class HostPendingDecisions : IDisposable
             cancelled = [.. ids.Select(id => _entries[id])];
             foreach (var id in ids)
             {
-                _broadcast.Publish(Resolved(id, _entries[id], PendingResolutions.Cancelled, PendingResolver.Host));
+                var entry = _entries[id];
                 _entries.Remove(id);
+                _broadcast.Publish(Change(Resolved(id, entry, PendingResolutions.Cancelled, PendingResolver.Host)));
             }
         }
         foreach (var entry in cancelled)
@@ -148,9 +127,9 @@ public sealed class HostPendingDecisions : IDisposable
             CountChanged?.Invoke(sessionId);
     }
 
-    private static HostNotification Resolved(string requestId, PendingEntry entry, string resolution, PendingResolver resolver)
-        => HostNotification.Create(
-            HostProtocol.NotificationPendingResolved,
-            new RemotePendingResolved(requestId, entry.Kind, entry.SessionId, resolution, resolver.Name, resolver.ConnectionId),
-            HostProtocolJsonContext.Default.RemotePendingResolved);
+    private HostNotification Change(RemotePendingResolved? resolution = null)
+        => HostNotification.Create(HostProtocol.NotificationPendingChanged, new RemotePendingChange(Snapshot(), resolution), HostProtocolJsonContext.Default.RemotePendingChange);
+
+    private static RemotePendingResolved Resolved(string requestId, PendingEntry entry, string resolution, PendingResolver resolver)
+        => new(requestId, entry.Kind, entry.SessionId, resolution, resolver.Name, resolver.ConnectionId);
 }

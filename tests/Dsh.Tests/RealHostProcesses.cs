@@ -25,8 +25,10 @@ internal static class RealHostProcesses
     {
         get
         {
-            var executable = PtyTuiHarness.FindTuiExecutable();
-            Assert.NotNull(executable);
+            var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../"));
+            var name = OperatingSystem.IsWindows() ? "dsharp.exe" : "dsharp";
+            var executable = Path.Combine(root, "DeepSeek-Harness-Sharp", "bin", "Debug", "net10.0", name);
+            Assert.True(File.Exists(executable), "The real dsharp executable must be built with the tests.");
             return executable;
         }
     }
@@ -37,6 +39,32 @@ internal static class RealHostProcesses
         var root = TempTree.CreateSocketDirectory(prefix);
         File.WriteAllText(Path.Combine(root, "settings.yaml"), Settings);
         return root;
+    }
+
+    /** Preserve real providers and safety settings without following the template's storage redirects. */
+    public static void CopyRealConfiguration(string root)
+    {
+        Directory.CreateDirectory(root);
+        var template = HarnessHome.Default().Root;
+        Assert.True(File.Exists(Path.Combine(template, "settings.yaml")),
+            "The real TUI model smoke requires settings.yaml in the normal DSH_HOME template.");
+        var profiles = Path.Combine(template, "profiles");
+        if (Directory.Exists(profiles))
+            CopyDirectory(profiles, Path.Combine(root, "profiles"));
+        var home = new HarnessHome(root);
+        var settings = HarnessSettings.Load(new HarnessHome(template));
+        settings.Storage = new StorageSettings { Root = root, ToolResults = settings.Storage?.ToolResults };
+        settings.Save(home);
+        settings.SavePlugins(home);
+    }
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.EnumerateFiles(source))
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
+        foreach (var directory in Directory.EnumerateDirectories(source))
+            CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
     }
 
     public static Process StartHost(string executable, string root, Action<string>? output = null)
@@ -112,7 +140,7 @@ internal static class RealHostProcesses
             .Select(file => int.TryParse(File.ReadAllText(file).Trim(), out var port) ? $":{port}" : null)
             .OfType<string>()
             .ToHashSet(StringComparer.Ordinal);
-        var name = Path.GetFileNameWithoutExtension(PtyTuiHarness.FindTuiExecutable());
+        var name = Path.GetFileNameWithoutExtension(Executable);
         foreach (var line in ProcessListing("netstat", "-ano", "-p", "TCP"))
         {
             if (line.Split(' ', StringSplitOptions.RemoveEmptyEntries) is [_, var local, _, "LISTENING", var id]

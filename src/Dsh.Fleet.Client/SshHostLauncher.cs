@@ -1,364 +1,64 @@
-﻿using System.Collections.ObjectModel;
 using System.Diagnostics;
-using System.Text;
 using Dsh.RemoteHost;
-using Dsh.Transport;
 
 namespace Dsh.Fleet;
 
-/**
- * 用 ssh 起远端 `dsharp host --serve --stdio`, 把它当成 stdio-over-SSH 的帧通道, 连成 IRemoteHost。
- * 远端命令叫 dsharp 而不是 dsh: Ubuntu 里 `dsh` 是 "dancer's shell / distributed shell" 包, 会重名。
- * 认证: 密钥对(-i)、ssh-agent(默认)、密码(SSH_ASKPASS 非交互); 可选代理经 ProxyCommand。
- * 另提供只在远端跑一条命令 / scp 上传的辅助, 供自动部署(RemoteDsharpInstaller)复用同一套认证。
- * 机器配置了 HarnessHome 时, 远端宿主以 DSH_HOME=<HarnessHome> 运行(POSIX 远端)。
- */
+/** Connects the host protocol over an SSH stdio command; SSH authentication and process ownership live in SshTransport. */
 public static class SshHostLauncher
 {
-    public sealed record Connection(RemoteHostClient Client, Process Process) : IAsyncDisposable
+    public sealed class Connection : IAsyncDisposable
     {
+        private readonly SshCommandChannel _channel;
+        public RemoteHostClient Client { get; }
+        public Process Process => _channel.Process;
+
+        internal Connection(RemoteHostClient client, SshCommandChannel channel)
+        {
+            Client = client;
+            _channel = channel;
+        }
+
         public async ValueTask DisposeAsync()
         {
-            await Client.DisposeAsync();
             try
             {
-                if (!Process.HasExited)
-                    Process.Kill(entireProcessTree: true);
+                await Client.DisposeAsync().ConfigureAwait(false);
             }
-            catch (InvalidOperationException)
+            finally
             {
-            }
-
-            Process.Dispose();
-        }
-    }
-
-    /** 远端命令的原始结果: 调用方按 ExitCode 判定(OpenSSH 自身失败固定为 255, 远端命令自身的失败是别的退出码)。 */
-    public sealed record RemoteCommandResult(int ExitCode, string StdOut, string StdErr)
-    {
-        public string FailureDetail => string.IsNullOrWhiteSpace(StdErr) ? "(无 stderr)" : StdErr.Trim();
-    }
-
-    /** hostCommandPath 非空时用它作为远端宿主可执行文件(绝对路径); 为空则按“远端目录/ PATH”推导; clientName 是 host 用来标注由谁回答了审批的显示名。 */
-    public static async Task<Connection> ConnectAsync(MachineSpec workspace, string? hostCommandPath, string clientName, CancellationToken cancellationToken)
-    {
-        RequirePassword(workspace);
-
-        var startInfo = BuildSshStartInfo(workspace, out var askPass);
-        startInfo.ArgumentList.Add(HarnessCommand(workspace, hostCommandPath));
-        try
-        {
-            var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start ssh");
-            // 必须持续排空 stderr: 远端宿主/ssh 往 stderr 写日志, 管道填满后 ssh 会阻塞, 表现为握手卡死。
-            var stderr = new StringBuilder();
-            _ = DrainAsync(process.StandardError, stderr);
-            try
-            {
-                var stream = new StandardIoDuplexStream(process.StandardOutput.BaseStream, process.StandardInput.BaseStream);
-                var client = await RemoteHostClient.ConnectAsync(stream, token: null, clientName, cancellationToken).ConfigureAwait(false);
-                return new Connection(client, process);
-            }
-            catch (Exception error)
-            {
-                Kill(process);
-                throw new IOException($"ssh {workspace.Target} 失败（认证方式 {workspace.Auth}）: {Describe(stderr)}", error);
+                _channel.Dispose();
             }
         }
-        finally
-        {
-            if (askPass is not null)
-                TryDelete(askPass);
-        }
     }
 
-    /**
-     * Starts the same `ssh -T ... dsharp host --serve --stdio` as ConnectAsync but hands back the raw frame channel without the handshake, for relays that speak the host protocol themselves (the web bridge).
-     * Disposing the returned stream ends the ssh process.
-     */
-    public static SshTunnelStream OpenTunnel(MachineSpec workspace, string? hostCommandPath)
+    public static async Task<Connection> ConnectAsync(MachineSpec machine, string? hostCommandPath, string clientName, CancellationToken cancellationToken)
     {
-        RequirePassword(workspace);
-        var startInfo = BuildSshStartInfo(workspace, out var askPass);
-        startInfo.ArgumentList.Add(HarnessCommand(workspace, hostCommandPath));
-        Process process;
+        var channel = new SshTransport(machine).OpenCommand(HarnessCommand(machine, hostCommandPath));
         try
         {
-            process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start ssh");
+            var client = await RemoteHostClient.ConnectAsync(channel.Stream, token: null, clientName, cancellationToken).ConfigureAwait(false);
+            channel.AuthenticationCompleted();
+            return new Connection(client, channel);
         }
-        catch
+        catch (Exception error)
         {
-            if (askPass is not null)
-                TryDelete(askPass);
-            throw;
-        }
-
-        var stderr = new StringBuilder();
-        _ = DrainAsync(process.StandardError, stderr);
-        return new SshTunnelStream(process, askPass, () => Describe(stderr));
-    }
-
-    private static void RequirePassword(MachineSpec workspace)
-    {
-        if (workspace.Auth == SshAuth.Password && string.IsNullOrEmpty(workspace.Password))
-            throw new InvalidOperationException("认证方式为“password”但密码为空: 请在设置页填写密码（注意区分大小写、是否有尾部空格）。");
-    }
-
-    /** 后台把 stderr 读进有界缓冲(排空管道, 避免背压死锁), 供失败时汇报。 */
-    private static async Task DrainAsync(StreamReader reader, StringBuilder sink)
-    {
-        try
-        {
-            var buffer = new char[4096];
-            int read;
-            while ((read = await reader.ReadAsync(buffer).ConfigureAwait(false)) > 0)
-            {
-                lock (sink)
-                {
-                    if (sink.Length < 8192)
-                        sink.Append(buffer, 0, read);
-                }
-            }
-        }
-        catch (Exception error) when (error is IOException or ObjectDisposedException or OperationCanceledException)
-        {
+            var detail = channel.ErrorOutput;
+            channel.Dispose();
+            throw new IOException($"ssh {machine.Target} 失败（认证方式 {machine.Auth}）: {detail}", error);
         }
     }
 
-    private static string Describe(StringBuilder sink)
+    private static string HarnessCommand(MachineSpec machine, string? hostCommandPath)
     {
-        lock (sink)
-        {
-            return sink.Length == 0 ? "(无 stderr 输出)" : sink.ToString().Trim();
-        }
-    }
-
-    /** 在远端执行一条命令并返回 stdout(不启动 harness); 非 0 退出抛异常(含 stderr)。 */
-    public static async Task<string> RunRemoteAsync(MachineSpec workspace, string command, CancellationToken cancellationToken)
-    {
-        var result = await RunRemoteCaptureAsync(workspace, command, cancellationToken).ConfigureAwait(false);
-        return result.ExitCode == 0
-            ? result.StdOut
-            : throw new IOException($"{workspace.Target} 远端命令失败: {result.FailureDetail}");
-    }
-
-    /** 在远端执行一条命令, 原样返回退出码与 stdout/stderr(不抛异常), 供需要区分“ssh 失败”与“命令失败”的调用方使用。 */
-    public static async Task<RemoteCommandResult> RunRemoteCaptureAsync(MachineSpec workspace, string command, CancellationToken cancellationToken)
-    {
-        var startInfo = BuildSshStartInfo(workspace, out var askPass);
-        startInfo.ArgumentList.Add(command);
-        try
-        {
-            return await CaptureAsync(startInfo, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (askPass is not null)
-                TryDelete(askPass);
-        }
-    }
-
-    /** A command line a person can paste into a POSIX shell to run remoteCommand on the machine with the same port, key, proxy and options. */
-    public static string CommandLine(MachineSpec workspace, string remoteCommand)
-    {
-        Collection<string> arguments = [];
-        AddCommonOptions(arguments, workspace);
-        var line = new StringBuilder($"ssh -p {workspace.Port}");
-        foreach (var argument in arguments)
-            line.Append($" {Quote(argument)}");
-        line.Append($" {Quote($"{workspace.User}@{workspace.ConnectionHost}")} {Quote(remoteCommand)}");
-        return line.ToString();
-    }
-
-    /** 用 scp 上传本地文件到远端(认证与 ssh 一致); remotePath 支持 `~`。 */
-    public static async Task UploadAsync(MachineSpec workspace, string localPath, string remotePath, CancellationToken cancellationToken)
-    {
-        var startInfo = BuildScpStartInfo(workspace, out var askPass);
-        startInfo.ArgumentList.Add(localPath);
-        startInfo.ArgumentList.Add($"{workspace.User}@{workspace.ConnectionHost}:{remotePath}");
-        try
-        {
-            var result = await CaptureAsync(startInfo, cancellationToken).ConfigureAwait(false);
-            if (result.ExitCode != 0)
-                throw new IOException($"{workspace.Target} scp 上传失败: {result.FailureDetail}");
-        }
-        finally
-        {
-            if (askPass is not null)
-                TryDelete(askPass);
-        }
-    }
-
-    private static async Task<RemoteCommandResult> CaptureAsync(ProcessStartInfo startInfo, CancellationToken cancellationToken)
-    {
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start process");
-        try
-        {
-            // 命令式调用(远端执行/scp)不需要 stdin: 必须显式关闭, 否则 Win32-OpenSSH 会一直等 stdin EOF, 表现为卡死。
-            process.StandardInput.Close();
-            var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var error = process.StandardError.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            return new RemoteCommandResult(process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            if (!process.HasExited)
-                process.Kill(entireProcessTree: true);
-            throw;
-        }
-    }
-
-    /** 远端启动 harness: 指定了 hostCommandPath 就用它(路径原样, 交由远端 shell); 否则按“远端目录”用 ./dsharp, 或 PATH 里的 dsharp。 */
-    private static string HarnessCommand(MachineSpec workspace, string? hostCommandPath)
-    {
-        // 指定了绝对路径时不做 POSIX 单引号转义, 只在含空白时加双引号(cmd 与 POSIX 都接受): 兼容 Windows 远端。
-        var environment = RemoteShell.HomeAssignment(workspace.HarnessHome);
+        var environment = RemoteShell.HomeAssignment(machine.HarnessHome);
         if (!string.IsNullOrEmpty(hostCommandPath))
-            return $"{environment}{NeutralQuote(hostCommandPath)} host --serve --stdio";
-        var launcher = string.IsNullOrEmpty(workspace.RemotePath) ? "dsharp" : "./dsharp";
-        var prefix = string.IsNullOrEmpty(workspace.RemotePath) ? "" : $"cd {Quote(workspace.RemotePath)} && ";
+        {
+            // Absolute paths may target Windows: quote whitespace in a form accepted by cmd and POSIX shells.
+            var command = hostCommandPath.Any(char.IsWhiteSpace) ? $"\"{hostCommandPath}\"" : hostCommandPath;
+            return $"{environment}{command} host --serve --stdio";
+        }
+        var launcher = string.IsNullOrEmpty(machine.RemotePath) ? "dsharp" : "./dsharp";
+        var prefix = string.IsNullOrEmpty(machine.RemotePath) ? "" : $"cd {RemoteShell.Quote(machine.RemotePath)} && ";
         return $"{prefix}{environment}{launcher} host --serve --stdio";
-    }
-
-    /** 只在含空白时用双引号包裹(cmd / POSIX 都接受); 否则原样。 */
-    private static string NeutralQuote(string value)
-        => value.Any(char.IsWhiteSpace) ? $"\"{value}\"" : value;
-
-    private static ProcessStartInfo BuildSshStartInfo(MachineSpec workspace, out string? askPass)
-    {
-        var startInfo = new ProcessStartInfo("ssh")
-        {
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        var arguments = startInfo.ArgumentList;
-        arguments.Add("-T"); // 不要远端 TTY: 帧通道走干净管道。
-        arguments.Add("-p");
-        arguments.Add(workspace.Port.ToString());
-        AddCommonOptions(arguments, workspace);
-        askPass = ApplyAskPass(startInfo, workspace);
-        arguments.Add($"{workspace.User}@{workspace.ConnectionHost}");
-        return startInfo;
-    }
-
-    private static ProcessStartInfo BuildScpStartInfo(MachineSpec workspace, out string? askPass)
-    {
-        var startInfo = new ProcessStartInfo("scp")
-        {
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        var arguments = startInfo.ArgumentList;
-        arguments.Add("-q");
-        arguments.Add("-P");
-        arguments.Add(workspace.Port.ToString());
-        AddCommonOptions(arguments, workspace);
-        askPass = ApplyAskPass(startInfo, workspace);
-        return startInfo;
-    }
-
-    private static void AddCommonOptions(Collection<string> arguments, MachineSpec workspace)
-    {
-        IrohSshTransport.Validate(workspace);
-        if (workspace.IsIroh)
-        {
-            // OpenSSH can reuse a TCP master before it considers ProxyCommand.
-            arguments.Add("-o");
-            arguments.Add("ControlPath=none");
-            arguments.Add("-o");
-            arguments.Add($"ProxyCommand={IrohSshTransport.ProxyCommand(workspace)}");
-            arguments.Add("-o");
-            arguments.Add($"HostKeyAlias=iroh-{workspace.EndpointId!.ToLowerInvariant()}");
-        }
-        foreach (var option in workspace.SshOptions ?? [])
-        {
-            arguments.Add("-o");
-            arguments.Add(option);
-        }
-
-        arguments.Add("-o");
-        arguments.Add("BatchMode=" + (string.IsNullOrEmpty(workspace.Password) ? "yes" : "no"));
-        arguments.Add("-o");
-        arguments.Add("StrictHostKeyChecking=accept-new");
-        arguments.Add("-o");
-        arguments.Add("ConnectTimeout=15");
-        arguments.Add("-o");
-        arguments.Add("ServerAliveInterval=15");
-        arguments.Add("-o");
-        arguments.Add("ServerAliveCountMax=4");
-        if (workspace.Auth == SshAuth.Key && workspace.KeyPath is { Length: > 0 } key)
-        {
-            arguments.Add("-i");
-            arguments.Add(key);
-            arguments.Add("-o");
-            arguments.Add("IdentitiesOnly=yes");
-        }
-
-        if (workspace.Proxy is { Length: > 0 } proxy)
-        {
-            arguments.Add("-o");
-            arguments.Add($"ProxyCommand={proxy}");
-        }
-    }
-
-    private static string? ApplyAskPass(ProcessStartInfo startInfo, MachineSpec workspace)
-    {
-        if (workspace.Auth != SshAuth.Password || workspace.Password is not { Length: > 0 } password)
-            return null;
-        var askPass = WriteAskPass(password);
-        startInfo.Environment["SSH_ASKPASS"] = askPass;
-        startInfo.Environment["SSH_ASKPASS_REQUIRE"] = "force";
-        startInfo.Environment["DISPLAY"] = "dsh:0";
-        return askPass;
-    }
-
-    internal static void Kill(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-                process.Kill(entireProcessTree: true);
-        }
-        catch (InvalidOperationException)
-        {
-        }
-
-        process.Dispose();
-    }
-
-    private static string WriteAskPass(string password)
-    {
-        // SSH_ASKPASS 必须是宿主平台可执行文件: Windows 用 .cmd, Unix 用 .sh(否则 ssh 无法执行, 密码认证失效)。
-        if (OperatingSystem.IsWindows())
-        {
-            var command = Path.Combine(Path.GetTempPath(), $"dsh-askpass-{Guid.NewGuid():N}.cmd");
-            File.WriteAllText(command, $"@echo off\r\necho {password}\r\n", Encoding.ASCII);
-            return command;
-        }
-
-        var path = Path.Combine(Path.GetTempPath(), $"dsh-askpass-{Guid.NewGuid():N}.sh");
-        File.WriteAllText(path, $"#!/bin/sh\nprintf '%s\\n' {Quote(password)}\n", new UTF8Encoding(false));
-        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        return path;
-    }
-
-    /** POSIX 单引号转义, 避免密码里的引号/空白破坏脚本。 */
-    private static string Quote(string value) => "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
-
-    internal static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-        }
     }
 }

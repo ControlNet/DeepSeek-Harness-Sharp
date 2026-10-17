@@ -1,6 +1,7 @@
 // One session: its header and actions, its pending decisions, and either the message transcript with a composer or the terminal.
 import { h, mount, link, ago, when, toast } from '../dom.js';
-import { Capability, SessionKind, SessionStatus, describe, isTerminalSession } from '../hub.js';
+import { describe, isTerminalSession } from '../hub.js';
+import { Capability, SessionKind, SessionStatus, HostProtocol, AgentProtocol, PtyProtocol } from '/protocol.js';
 import { sessionRoute, sessionTitle, statusChip, machineChip, filesRoute, gitRoute, emptyState } from './common.js';
 import { syncPendingCards } from './pending.js';
 import { Transcript } from './transcript.js';
@@ -85,16 +86,16 @@ async function stop(machineLink, session) {
   if (!confirm(`Stop ${sessionTitle(session)} on ${machineLink.name}?`))
     return;
   if (machineLink.supports(Capability.AgentSessions))
-    await machineLink.request('host.agent.stop', { SessionId: session.SessionId });
+    await machineLink.request(AgentProtocol.MethodAgentStop, { SessionId: session.SessionId });
   else if (isTerminalSession(session))
-    await machineLink.request('host.pty.stop', { PtyId: session.SessionId });
+    await machineLink.request(PtyProtocol.MethodPtyStop, { PtyId: session.SessionId });
   else
-    await machineLink.request('host.session.interrupt', { SessionId: session.SessionId });
+    await machineLink.request(HostProtocol.MethodSessionInterrupt, { SessionId: session.SessionId });
 }
 
 /** Terminal-mode agents resume as a new session (a new id); the view follows it. */
 async function resume(machineLink, session) {
-  const resumed = await machineLink.request('host.agent.resume', { SessionId: session.SessionId });
+  const resumed = await machineLink.request(AgentProtocol.MethodAgentResume, { SessionId: session.SessionId });
   if (resumed.SessionId !== session.SessionId)
     location.hash = `#${sessionRoute(machineLink.name, resumed.SessionId)}`;
 }
@@ -121,8 +122,8 @@ function conversation(machineLink, session) {
     sendButton.disabled = true;
     try {
       await (agentApi
-        ? machineLink.request('host.agent.prompt', { SessionId: session.SessionId, Text: message })
-        : machineLink.request('host.session.message', { SessionId: session.SessionId, Text: message }));
+        ? machineLink.request(AgentProtocol.MethodAgentPrompt, { SessionId: session.SessionId, Text: message })
+        : machineLink.request(HostProtocol.MethodSessionMessage, { SessionId: session.SessionId, Text: message }));
       text.value = '';
     } catch (error) {
       toast(`Not sent: ${describe(error)}`, 'error');
@@ -134,8 +135,8 @@ function conversation(machineLink, session) {
   async function cancel() {
     try {
       await (agentApi
-        ? machineLink.request('host.agent.cancel', { SessionId: session.SessionId })
-        : machineLink.request('host.session.interrupt', { SessionId: session.SessionId }));
+        ? machineLink.request(AgentProtocol.MethodAgentCancel, { SessionId: session.SessionId })
+        : machineLink.request(HostProtocol.MethodSessionInterrupt, { SessionId: session.SessionId }));
     } catch (error) {
       toast(`Cancel failed: ${describe(error)}`, 'error');
     }

@@ -10,13 +10,14 @@ public static class IrohRemoteInstaller
         IrohSshTransport.ValidateRelayUrls(machine.RelayUrls ?? []);
         _ = IrohSshComponent.RequireExecutable();
         progress?.Invoke("Deploying the current dsharp receiver over the existing SSH connection …");
-        var commandPath = await RemoteDsharpInstaller.EnsureReceiverAsync(machine, options.Deploy, progress, cancellationToken, options.ArchiveFactory, options.LocalProxy).ConfigureAwait(false);
-        var connection = (await SshHostLauncher.RunRemoteAsync(machine, "printf '%s' \"$SSH_CONNECTION\"", cancellationToken).ConfigureAwait(false))
+        var transport = new SshTransport(machine);
+        var commandPath = await new RemoteDsharpInstaller(transport).EnsureReceiverAsync(options.Deploy, progress, cancellationToken, options.ArchiveFactory, options.LocalProxy).ConfigureAwait(false);
+        var connection = (await transport.RunAsync("printf '%s' \"$SSH_CONNECTION\"", cancellationToken).ConfigureAwait(false))
             .Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (connection is not [_, _, _, var portText] || !int.TryParse(portText, out var sshPort) || sshPort is <= 0 or > ushort.MaxValue)
             throw new IOException("Cannot determine the target sshd's listening port from the SSH connection; run dsharp remote enable --ssh-port on the target.");
         var receiverCommand = $"{RemoteShell.Prelude(machine)}{RemoteShell.Quote(commandPath)} remote";
-        var previous = ParseStatus(await SshHostLauncher.RunRemoteAsync(machine, $"{receiverCommand} info", cancellationToken).ConfigureAwait(false));
+        var previous = ParseStatus(await transport.RunAsync($"{receiverCommand} info", cancellationToken).ConfigureAwait(false));
         var startingReceiver = false;
         var activation = Guid.NewGuid().ToString("N");
         try
@@ -29,7 +30,7 @@ public static class IrohRemoteInstaller
                     arguments = $"{arguments} --relay-url {RemoteShell.Quote(relay)}";
                 progress?.Invoke("Starting the target's user-owned iroh receiver …");
                 startingReceiver = true;
-                var enabled = ParseStatus(await SshHostLauncher.RunRemoteAsync(machine, $"{receiverCommand} {arguments}", cancellationToken).ConfigureAwait(false));
+                var enabled = ParseStatus(await transport.RunAsync($"{receiverCommand} {arguments}", cancellationToken).ConfigureAwait(false));
                 if (!enabled.Running)
                     throw new IOException("The target did not start its iroh receiver.");
                 endpoint = enabled.EndpointId;
@@ -44,7 +45,7 @@ public static class IrohRemoteInstaller
                 RelayUrls = machine.RelayUrls?.ToArray(),
             };
             progress?.Invoke($"Verifying SSH authentication and a real remote command through iroh endpoint {endpoint} …");
-            var observed = ParseStatus(await SshHostLauncher.RunRemoteAsync(converted, $"{receiverCommand} info", cancellationToken).ConfigureAwait(false));
+            var observed = ParseStatus(await new SshTransport(converted).RunAsync($"{receiverCommand} info", cancellationToken).ConfigureAwait(false));
             if (!observed.Running || !string.Equals(observed.EndpointId, endpoint, StringComparison.Ordinal))
                 throw new IOException("The receiver reached through iroh did not report the expected running persistent endpoint.");
             cancellationToken.ThrowIfCancellationRequested();
@@ -54,17 +55,17 @@ public static class IrohRemoteInstaller
         catch (Exception failure)
         {
             if (startingReceiver)
-                await RollbackAsync(machine, receiverCommand, activation, failure).ConfigureAwait(false);
+                await RollbackAsync(transport, receiverCommand, activation, failure).ConfigureAwait(false);
             throw;
         }
     }
 
-    private static async Task RollbackAsync(MachineSpec machine, string receiverCommand, string activation, Exception failure)
+    private static async Task RollbackAsync(IRemoteMachineTransport transport, string receiverCommand, string activation, Exception failure)
     {
         using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         try
         {
-            await SshHostLauncher.RunRemoteAsync(machine, $"{receiverCommand} disable --activation {activation}", cleanup.Token).ConfigureAwait(false);
+            await transport.RunAsync($"{receiverCommand} disable --activation {activation}", cleanup.Token).ConfigureAwait(false);
         }
         catch (Exception rollbackFailure)
         {

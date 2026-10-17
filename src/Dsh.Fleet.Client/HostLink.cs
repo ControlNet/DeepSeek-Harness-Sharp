@@ -4,9 +4,6 @@ using Dsh.Transport;
 
 namespace Dsh.Fleet;
 
-/** A connected host client handed to consumers; Lifetime is cancelled when this connection drops, after which a new lease must be awaited. */
-public sealed record HostLease(RemoteHostClient Client, CancellationToken Lifetime);
-
 /**
  * One established transport to a machine's host: a local loopback connection, or an ssh process carrying the stdio bridge.
  * Exited completes when the ssh process ends; local links have no process and rely on the heartbeat.
@@ -20,7 +17,7 @@ internal sealed class HostLink(RemoteHostClient client, SshHostLauncher.Connecti
 
     public Process? Process => ssh?.Process;
 
-    public Task Exited => ssh?.Process.WaitForExitAsync() ?? Task.Delay(Timeout.Infinite);
+    public Task Exited => ssh?.Process.WaitForExitAsync() ?? Client.WhenClosed;
 
     /** Connects to the local host of the machine's harness home, starting it first through startHost when it is not reachable. */
     public static async Task<HostLink> OpenLocalAsync(MachineSpec machine, FleetOptions options, CancellationToken cancellationToken)

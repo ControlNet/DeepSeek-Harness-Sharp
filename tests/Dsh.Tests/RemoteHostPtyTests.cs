@@ -14,14 +14,16 @@ public sealed class RemoteHostPtyTests
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = 90000)]
-    public async Task TwoClients_ShareOnePty_SeeEachOthersInput_AndSurviveDisconnect()
+    [Theory(Timeout = 90000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TwoViews_ShareOnePty_SeeEachOthersInput_AndSurviveDisconnect(bool shareClient)
     {
         await using var host = await HarnessHostFixture.CreateAsync("mhp", TestContext.Current.CancellationToken);
         var alice = await host.ConnectAsync("alice", Ct);
-        var bob = await host.ConnectAsync("bob", Ct);
+        var bob = shareClient ? alice : await host.ConnectAsync("bob", Ct);
         var (fileName, arguments) = RemoteHostMultiClientTests.Shell;
-        var ptyId = await alice.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments, Columns: 100, Rows: 30), Ct);
+        var ptyId = await alice.Pty.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments, Columns: 100, Rows: 30), Ct);
 
         await using var aliceView = TerminalCapture.Attach(alice, ptyId);
         await using var bobView = TerminalCapture.Attach(bob, ptyId);
@@ -35,7 +37,8 @@ public sealed class RemoteHostPtyTests
         await aliceView.WaitForAsync(bobMarker, Arrival);
 
         await aliceView.DisposeAsync();
-        await alice.DisposeAsync();
+        if (!shareClient)
+            await alice.DisposeAsync();
         var (afterDisconnect, afterMarker) = MarkerCommand("C", 60, 6);
         await bobView.SendAsync(afterDisconnect);
         await bobView.WaitForAsync(afterMarker, Arrival);
@@ -50,7 +53,7 @@ public sealed class RemoteHostPtyTests
         await using var host = await HarnessHostFixture.CreateAsync("mhq", TestContext.Current.CancellationToken);
         var owner = await host.ConnectAsync("owner", Ct);
         var (fileName, arguments) = RemoteHostMultiClientTests.Shell;
-        var ptyId = await owner.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments, Columns: 100, Rows: 30), Ct);
+        var ptyId = await owner.Pty.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments, Columns: 100, Rows: 30), Ct);
         await using (var ownerView = TerminalCapture.Attach(owner, ptyId))
         {
             var (command, marker) = MarkerCommand("S", 30, 3);
@@ -63,7 +66,7 @@ public sealed class RemoteHostPtyTests
         await using var lateView = TerminalCapture.Attach(late, ptyId);
         await lateView.WaitForAsync("S-33", Arrival);
 
-        await late.ResizePtyAsync(ptyId, 120, 40, Ct);
+        await late.Pty.ResizePtyAsync(ptyId, 120, 40, Ct);
         var resized = Assert.Single(await PtyDaemonClient.ListAsync(host.PtyEndpoint.SocketPath, host.PtyEndpoint.PortFile, Ct), candidate => candidate.Id == ptyId);
         Assert.Equal((120, 40), (resized.Columns, resized.Rows));
         if (!OperatingSystem.IsWindows())
@@ -73,9 +76,9 @@ public sealed class RemoteHostPtyTests
         }
 
         var changes = late.HostSessionChangesAsync(Ct);
-        await late.StopPtyAsync(ptyId, Ct);
+        await late.Pty.StopPtyAsync(ptyId, Ct);
         // Throttled activity pushes from the earlier output may still arrive first, so wait for the exit itself.
-        await RemoteHostMultiClientTests.NextAsync(changes, session => session.SessionId == ptyId && session.Status == HostSessionStatuses.Exited);
+        await RemoteHostMultiClientTests.NextAsync(changes, change => change.Session?.SessionId == ptyId && change.Session.Status == HostSessionStatuses.Exited);
         await lateView.Completion.WaitAsync(Arrival, Ct);
     }
 
@@ -163,7 +166,7 @@ public sealed class RemoteHostPtyTests
         public static TerminalCapture Attach(RemoteHostClient client, string ptyId)
         {
             var capture = new TerminalCapture();
-            capture._attach = Task.Run(() => client.AttachPtyAsync(ptyId, capture._input.Reader.AsStream(), capture._output.Writer.AsStream(), capture._cts.Token));
+            capture._attach = Task.Run(() => client.Pty.AttachPtyAsync(ptyId, capture._input.Reader.AsStream(), capture._output.Writer.AsStream(), capture._cts.Token));
             capture._collect = Task.Run(capture.CollectAsync);
             return capture;
         }

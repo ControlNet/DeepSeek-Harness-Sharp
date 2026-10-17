@@ -33,7 +33,7 @@ public sealed class FleetLocalHostTests
             await using var connection = new MachineConnection(MachineSpec.Local(home), FleetConnectionTests.TestOptions);
             connection.Start();
             var client = (await connection.WaitConnectedAsync(TestContext.Current.CancellationToken)).Client;
-            var session = await client.StartAgentAsync(new RemoteAgentStartRequest(kind, home,
+            var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(kind, home,
                 Mode: kind == AgentKinds.OpenCode ? RemoteAgentModes.Acp : RemoteAgentModes.Terminal,
                 Command: kind == AgentKinds.Terminal ? new RemoteAgentCommand(TestShell.FileName, TestShell.Arguments) : null), Ct);
             Assert.Equal(kind == AgentKinds.OpenCode ? HostSessionKinds.Acp : HostSessionKinds.External, session.Kind);
@@ -230,7 +230,7 @@ public sealed class FleetLocalHostTests
     private static async Task<string> StartShellAsync(MachineConnection connection, string cwd)
     {
         var lease = await connection.WaitConnectedAsync(Ct);
-        return await lease.Client.StartPtyAsync(new RemotePtyStartRequest(TestShell.FileName, TestShell.Arguments, cwd, Title: "fleet-shell"), Ct);
+        return await lease.Client.Pty.StartPtyAsync(new RemotePtyStartRequest(TestShell.FileName, TestShell.Arguments, cwd, Title: "fleet-shell"), Ct);
     }
 
     /** Starts a shell on the host of a home whose host is already running. */

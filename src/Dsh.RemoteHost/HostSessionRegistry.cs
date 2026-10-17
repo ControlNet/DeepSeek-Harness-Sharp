@@ -1,57 +1,42 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Dsh.Transport;
 
 namespace Dsh.RemoteHost;
 
 /**
- * 统一会话登记表: 只登记本 host 创建或恢复的会话(harness / external / acp / terminal), 持久化成 JSON, host 重启后恢复列表。
- * 记录里保存的是进程/Agent 的基础状态(Running / Idle / Exited); 对外的状态再叠加待决策数量: 有未决请求即 WaitingForUser。
- * 每次对外可见的变化都经 host.sessions.changed 推给所有连接; 只有活动时间变化时按 ActivityPushInterval 合并推送。
+ * 仅保存 Host 创建或恢复的基础登记; pending 数量与 WaitingForUser 始终即时查询权威队列。
+ * 基础登记持久化供重启对账, 每次真实变化直接发布, 不缓存第二份投影或活动推送时间。
  */
 public sealed class HostSessionRegistry : IAsyncDisposable
 {
-    /** 只有 lastActivityAt 变化时两次推送的最小间隔(毫秒): 终端输出与流式事件很密, 逐条推送会淹没客户端。 */
-    private const long ActivityPushIntervalMilliseconds = 2000;
-
     private readonly Lock _gate = new();
     private readonly HostBroadcast _broadcast = new();
-    private readonly OrderedDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+    private readonly OrderedDictionary<string, HostSessionRegistration> _entries = new(StringComparer.Ordinal);
     private readonly HostPendingDecisions _pending;
     private readonly string _storePath;
     private readonly Channel<bool> _saveRequests = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
     private readonly Task _saver;
 
-    /** Pushed 是上一次推送出去的对外投影: 待决策数在登记表之外变化, 只有和它比较才能发现变化。 */
-    private sealed class Entry(RemoteHostSession record)
-    {
-        public RemoteHostSession Record { get; set; } = record;
-
-        public RemoteHostSession Pushed { get; set; } = record;
-    }
-
-    private HostSessionRegistry(string storePath, HostPendingDecisions pending, IEnumerable<RemoteHostSession> records)
+    private HostSessionRegistry(string storePath, HostPendingDecisions pending, IEnumerable<HostSessionRegistration> records)
     {
         _storePath = storePath;
         _pending = pending;
         foreach (var record in records)
-            _entries[record.SessionId] = new Entry(record);
+            _entries[record.SessionId] = record;
         pending.CountChanged += OnPendingChanged;
-        _saver = Task.Run(SaveLoopAsync);
+        _saver = SaveLoopAsync();
     }
 
-    /** Every published change, with the record as clients see it; raised under the registry lock, so handlers must only hand the record off. */
-    public event Action<RemoteHostSession>? Changed;
+    /** Raised under the registry lock; handlers only hand the projection off. */
+    public event Action<RemoteHostSession>? SessionExited;
 
-    /** 读出上次的登记表; 上一个 host 进程托管的会话已随它结束, 一律记为 Exited(仍活着的终端由 HostPtySessions 对账后复活)。 */
+    /** Host-owned processes exited; surviving daemon PTYs are restored by HostPtySessions reconciliation. */
     public static async Task<HostSessionRegistry> OpenAsync(string storePath, HostPendingDecisions pending, CancellationToken cancellationToken)
     {
         var records = await LoadAsync(storePath, cancellationToken).ConfigureAwait(false);
-        return new HostSessionRegistry(storePath, pending, records.Select(record => record with
-        {
-            Status = HostSessionStatuses.Exited,
-            PendingCount = 0,
-        }));
+        return new HostSessionRegistry(storePath, pending, records.Select(record => record with { Status = HostSessionStatuses.Exited }));
     }
 
     public IReadOnlyList<RemoteHostSession> List()
@@ -63,32 +48,31 @@ public sealed class HostSessionRegistry : IAsyncDisposable
     public RemoteHostSession? Get(string sessionId)
     {
         lock (_gate)
-            return _entries.TryGetValue(sessionId, out var entry) ? Project(entry) : null;
+            return _entries.TryGetValue(sessionId, out var record) ? Project(record) : null;
     }
 
-    /** 登记或重新登记(恢复会话): 已有记录保留其 CreatedAt, 其余字段取新值。 */
+    /** Re-registration preserves the original creation time and identity fields from the new registration. */
     public void Register(RemoteHostSession record)
     {
         lock (_gate)
         {
+            var registration = HostSessionRegistration.From(record);
             if (_entries.TryGetValue(record.SessionId, out var existing))
             {
-                existing.Record = record with { CreatedAt = existing.Record.CreatedAt, PendingCount = 0 };
-                PublishIfChanged(existing);
-                return;
+                registration = registration with { CreatedAt = existing.CreatedAt };
+                if (registration == existing)
+                    return;
             }
-
-            var entry = new Entry(record with { PendingCount = 0 });
-            _entries[record.SessionId] = entry;
-            Publish(entry);
+            _entries[record.SessionId] = registration;
+            Publish(registration, existing?.Status);
+            _saveRequests.Writer.TryWrite(true);
         }
     }
 
-    /** 基础状态(Running / Idle); 离开 Exited 时清掉退出码。 */
     public void SetStatus(string sessionId, string status)
         => Update(sessionId, record => record with { Status = status, ExitCode = status == HostSessionStatuses.Exited ? record.ExitCode : null });
 
-    /** Interaction state read off a live session (Running / WaitingForUser); ignored once the session has exited, so a late reading cannot revive it. */
+    /** Structured agent lifecycle changes cannot revive an already exited session. */
     public void SetLiveStatus(string sessionId, string status)
         => Update(sessionId, record => record.Status == HostSessionStatuses.Exited ? record : record with { Status = status });
 
@@ -97,7 +81,6 @@ public sealed class HostSessionRegistry : IAsyncDisposable
     public void Touch(string sessionId, long time)
         => Update(sessionId, record => time > record.LastActivityAt ? record with { LastActivityAt = time } : record);
 
-    /** 会话进程结束: 记退出码, 并取消它所有还在等人回答的请求。 */
     public void MarkExited(string sessionId, int? exitCode)
     {
         Update(sessionId, record => record with { Status = HostSessionStatuses.Exited, ExitCode = exitCode });
@@ -108,17 +91,19 @@ public sealed class HostSessionRegistry : IAsyncDisposable
     {
         lock (_gate)
         {
-            if (!_entries.Remove(sessionId, out var entry))
+            if (!_entries.Remove(sessionId, out var record))
                 return;
-            var removed = Project(entry) with { Deleted = true };
-            _broadcast.Publish(HostNotification.Create(HostProtocol.NotificationSessionsChanged, removed, HostProtocolJsonContext.Default.RemoteHostSession));
+            Publish(Project(record) with { Deleted = true });
             _saveRequests.Writer.TryWrite(true);
-            Changed?.Invoke(removed);
         }
     }
 
-    /** 每个连接一份: 只推实时变化, 完整列表由 host.sessions.list 查询。 */
-    public HostSubscription Subscribe() => _broadcast.Subscribe([]);
+    public HostSubscription Subscribe()
+    {
+        lock (_gate)
+            return _broadcast.Subscribe([HostNotification.Create(
+                HostProtocol.NotificationSessionsChanged, new RemoteSessionChange(Snapshot: List()), HostProtocolJsonContext.Default.RemoteSessionChange)]);
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -128,47 +113,50 @@ public sealed class HostSessionRegistry : IAsyncDisposable
         await SaveAsync().ConfigureAwait(false);
     }
 
-    private void OnPendingChanged(string sessionId) => Update(sessionId, record => record);
-
-    private void Update(string sessionId, Func<RemoteHostSession, RemoteHostSession> change)
+    private void OnPendingChanged(string sessionId)
     {
         lock (_gate)
         {
-            if (!_entries.TryGetValue(sessionId, out var entry))
-                return;
-            entry.Record = change(entry.Record);
-            PublishIfChanged(entry);
+            if (_entries.TryGetValue(sessionId, out var record))
+                Publish(record);
         }
     }
 
-    private void PublishIfChanged(Entry entry)
+    private void Update(string sessionId, Func<HostSessionRegistration, HostSessionRegistration> change)
     {
-        var after = Project(entry);
-        var before = entry.Pushed;
-        if (after == before)
-            return;
-        var activityOnly = after == before with { LastActivityAt = after.LastActivityAt };
-        if (activityOnly && after.LastActivityAt - before.LastActivityAt < ActivityPushIntervalMilliseconds)
-            return;
-        Publish(entry);
+        lock (_gate)
+        {
+            if (!_entries.TryGetValue(sessionId, out var before))
+                return;
+            var after = change(before);
+            if (after == before)
+                return;
+            _entries[sessionId] = after;
+            Publish(after, before.Status);
+            _saveRequests.Writer.TryWrite(true);
+        }
     }
 
-    private void Publish(Entry entry)
+    private void Publish(HostSessionRegistration record, string? previousStatus = null)
     {
-        var projected = Project(entry);
-        entry.Pushed = projected;
-        _broadcast.Publish(HostNotification.Create(HostProtocol.NotificationSessionsChanged, projected, HostProtocolJsonContext.Default.RemoteHostSession));
-        _saveRequests.Writer.TryWrite(true);
-        Changed?.Invoke(projected);
+        var projected = Project(record);
+        Publish(projected);
+        if (previousStatus is not null and not HostSessionStatuses.Exited && record.Status == HostSessionStatuses.Exited)
+            SessionExited?.Invoke(projected);
     }
 
-    /** 对外状态: Exited 优先; 否则有未决请求即 WaitingForUser; 否则基础状态。 */
-    private RemoteHostSession Project(Entry entry)
+    private void Publish(RemoteHostSession projected)
     {
-        var record = entry.Record;
+        _broadcast.Publish(HostNotification.Create(
+            HostProtocol.NotificationSessionsChanged, new RemoteSessionChange(Session: projected), HostProtocolJsonContext.Default.RemoteSessionChange));
+    }
+
+    private RemoteHostSession Project(HostSessionRegistration record)
+    {
         var pending = _pending.CountFor(record.SessionId);
         var status = record.Status != HostSessionStatuses.Exited && pending > 0 ? HostSessionStatuses.WaitingForUser : record.Status;
-        return record with { Status = status, PendingCount = pending };
+        return new RemoteHostSession(record.SessionId, record.Kind, record.AgentKind, record.ProjectPath, record.Title,
+            status, record.CreatedAt, record.LastActivityAt, pending, record.ExitCode);
     }
 
     private async Task SaveLoopAsync()
@@ -177,22 +165,41 @@ public sealed class HostSessionRegistry : IAsyncDisposable
             await SaveAsync().ConfigureAwait(false);
     }
 
-    /** 写临时文件再整体替换: host 被杀时不会留下半截 JSON。 */
     private async Task SaveAsync()
     {
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(List(), HostProtocolJsonContext.Default.IReadOnlyListRemoteHostSession);
+        IReadOnlyList<HostSessionRegistration> records;
+        lock (_gate)
+            records = [.. _entries.Values];
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(records, HostSessionRegistryJsonContext.Default.IReadOnlyListHostSessionRegistration);
         OwnerOnlyFiles.EnsureDirectory(Path.GetDirectoryName(_storePath)!);
         var temporary = $"{_storePath}.tmp";
         await File.WriteAllBytesAsync(temporary, bytes).ConfigureAwait(false);
-        File.Move(temporary, _storePath, overwrite: true);
+        if (File.Exists(_storePath))
+            File.Replace(temporary, _storePath, null);
+        else
+            File.Move(temporary, _storePath);
     }
 
-    private static async Task<IReadOnlyList<RemoteHostSession>> LoadAsync(string storePath, CancellationToken cancellationToken)
+    private static async Task<IReadOnlyList<HostSessionRegistration>> LoadAsync(string storePath, CancellationToken cancellationToken)
     {
         if (!File.Exists(storePath))
             return [];
-        await using var stream = File.OpenRead(storePath);
-        return await JsonSerializer.DeserializeAsync(stream, HostProtocolJsonContext.Default.IReadOnlyListRemoteHostSession, cancellationToken).ConfigureAwait(false)
+        await using var stream = new FileStream(storePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        return await JsonSerializer.DeserializeAsync(stream, HostSessionRegistryJsonContext.Default.IReadOnlyListHostSessionRegistration, cancellationToken).ConfigureAwait(false)
             ?? throw new JsonException("the host session registry must be a JSON array");
     }
 }
+
+/** Persisted facts only: no pending count, waiting projection, or client deletion marker. */
+internal sealed record HostSessionRegistration(
+    string SessionId, string Kind, string? AgentKind, string? ProjectPath, string? Title,
+    string Status, long CreatedAt, long LastActivityAt, int? ExitCode)
+{
+    public static HostSessionRegistration From(RemoteHostSession record)
+        => new(record.SessionId, record.Kind, record.AgentKind, record.ProjectPath, record.Title,
+            record.Status == HostSessionStatuses.WaitingForUser ? HostSessionStatuses.Running : record.Status,
+            record.CreatedAt, record.LastActivityAt, record.ExitCode);
+}
+
+[JsonSerializable(typeof(IReadOnlyList<HostSessionRegistration>))]
+internal partial class HostSessionRegistryJsonContext : JsonSerializerContext;

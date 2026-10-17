@@ -38,12 +38,11 @@ internal sealed class PtyTuiHarness : IDisposable
     /** 测试构建必须提供真实 TUI; 环境缺配置/不支持 AF_UNIX 时 Assert.Skip。 */
     public static async Task<PtyTuiHarness> StartAsync(params string[] extraArguments)
     {
-        var executable = FindTuiExecutable();
-        Assert.NotNull(executable);
+        var executable = RealHostProcesses.Executable;
         var realHome = HarnessHome.Default().Root;
         if (!File.Exists(Path.Combine(realHome, "settings.yaml")))
             Assert.Skip($"环境缺少 {realHome}/settings.yaml, 无法启动 dsharp");
-        var home = PrepareIsolatedHome(realHome);
+        var home = PrepareIsolatedHome();
         if (!SupportsUnixSockets(home))
             Assert.Skip($"{home} 所在文件系统不支持 AF_UNIX(如 WSL 的 /mnt drvfs); 请把仓库放在原生文件系统上运行");
 
@@ -66,6 +65,59 @@ internal sealed class PtyTuiHarness : IDisposable
         catch
         {
             host.Dispose();
+            throw;
+        }
+    }
+
+    /**
+     * Run the CLI directly, with the ordinary POSIX shell retaining terminal ownership after /exit.
+     * The shell reads once before taking the restored stty snapshot: like a caller's next prompt,
+     * this processes Darwin's kernel PENDIN without changing any terminal settings.
+     */
+    public static async Task<PtyTuiHarness> StartOwnedTerminalAsync(bool copyRealConfiguration)
+    {
+        var home = RealHostProcesses.CreateHome("r");
+        var host = new PtyHost();
+        try
+        {
+            if (copyRealConfiguration)
+                RealHostProcesses.CopyRealConfiguration(home);
+            var session = await host.StartAsync(new PtyStartInfo
+            {
+                FileName = "/bin/sh",
+                Arguments = ["-c", """
+                    stty -g > "$1/termios-before" && stty -a >> "$1/termios-before" || exit 125
+                    tty > "$1/terminal.tmp" && mv "$1/terminal.tmp" "$1/terminal" || exit 125
+                    printf 'DSH-RAW-MAIN-SCREEN\r\n'
+                    "$2" tui
+                    status=$?
+                    printf '%s\n' "$status" > "$1/exit-code.tmp"
+                    mv "$1/exit-code.tmp" "$1/exit-code"
+                    read -r restored
+                    stty -g > "$1/termios-after.tmp" && stty -a >> "$1/termios-after.tmp" || exit 125
+                    mv "$1/termios-after.tmp" "$1/termios-after"
+                    read -r release
+                    exit "$status"
+                    """, "raw-terminal", home, RealHostProcesses.Executable],
+                Rows = 40,
+                Columns = 140,
+                Home = home,
+                WorkingDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../")),
+                Environment = new Dictionary<string, string?>
+                {
+                    [HarnessHome.HomeEnv] = home,
+                    [HarnessHome.ChildHomeEnv] = home,
+                    ["LC_ALL"] = "C",
+                    ["DSH_PTY_CHILD"] = "1",
+                    ["TERM"] = "xterm-256color",
+                },
+            }, cancellationToken: TestContext.Current.CancellationToken);
+            return new PtyTuiHarness(host, session, home);
+        }
+        catch
+        {
+            host.Dispose();
+            TempTree.Delete(home);
             throw;
         }
     }
@@ -98,12 +150,18 @@ internal sealed class PtyTuiHarness : IDisposable
     public async Task WriteBytesAsync(params byte[] bytes)
         => await Session.WriteAsync(bytes, TestContext.Current.CancellationToken);
 
-    /** 解析当前被测 proxy 的屏幕快照；不能按初始尺寸重放 resize 前的历史输出。 */
-    public char[,] ReadScreen()
+    /** Consume the production PTY snapshot at its current geometry, including both screen buffers. */
+    public VtScreen ReadTerminalScreen()
     {
         var size = _host.List().Single();
         var terminal = new VtScreen(size.Columns, size.Rows);
         terminal.Feed(Session.Snapshot());
+        return terminal;
+    }
+
+    public char[,] ReadScreen()
+    {
+        var terminal = ReadTerminalScreen();
         var screen = new char[terminal.Width, terminal.Height];
         for (var y = 0; y < terminal.Height; y++)
         {
@@ -125,9 +183,9 @@ internal sealed class PtyTuiHarness : IDisposable
     public void Dispose()
     {
         _cancellation.Cancel();
-        _signal.Dispose();
-        _ = _pump;
         _host.StopAsync(Session.Id.ToString()).GetAwaiter().GetResult();
+        _pump.GetAwaiter().GetResult();
+        _signal.Dispose();
         _host.Dispose();
         // 本夹具起的 TUI 只是 proxy: 真正的会话常驻 daemon 且以本夹具的 home 为家, 不结束它会占住日志目录导致删除失败。
         StopResidentSessions();
@@ -239,19 +297,11 @@ internal sealed class PtyTuiHarness : IDisposable
      * 隔离 home(项目内 artifacts020 下, 不污染用户目录): 复制真实 home 的配置与凭据, 保证插件能解析。
      * Linux 上域套接字路径上限 108 字符, home 必须短: 用 artifacts020 下的 8 位目录名而非 GUID 全称。
      */
-    private static string PrepareIsolatedHome(string realHome)
+    private static string PrepareIsolatedHome()
     {
         var home = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "..", "artifacts020", $"h{Guid.NewGuid():N}"[..9]));
-        Directory.CreateDirectory(home);
-        foreach (var name in new[] { "settings.yaml", "profiles" })
-        {
-            var source = Path.Combine(realHome, name);
-            if (File.Exists(source))
-                File.Copy(source, Path.Combine(home, name), overwrite: true);
-            else if (Directory.Exists(source))
-                CopyDirectory(source, Path.Combine(home, name));
-        }
+        RealHostProcesses.CopyRealConfiguration(home);
 
         // 用例断言的是默认布局几何: 去掉上一层会话里拖出来的 TUI 布局参数(侧栏宽度/输入栏高度),
         // 否则同一用例会因为开发机上拖过侧栏而失败。
@@ -267,20 +317,4 @@ internal sealed class PtyTuiHarness : IDisposable
         return home;
     }
 
-    private static void CopyDirectory(string source, string destination)
-    {
-        Directory.CreateDirectory(destination);
-        foreach (var file in Directory.GetFiles(source))
-            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
-        foreach (var directory in Directory.GetDirectories(source))
-            CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
-    }
-
-    internal static string? FindTuiExecutable()
-    {
-        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
-        var name = OperatingSystem.IsWindows() ? "dsharp.exe" : "dsharp";
-        var path = Path.Combine(root, "DeepSeek-Harness-Sharp", "bin", "Debug", "net10.0", name);
-        return File.Exists(path) ? path : null;
-    }
 }

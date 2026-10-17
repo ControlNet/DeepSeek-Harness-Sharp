@@ -7,11 +7,11 @@ using Dsh.RemoteHost;
 namespace Dsh.Gui.ViewModels;
 
 /**
- * 一台机器上某个根目录(通常是会话的项目路径)的文件浏览与轻量编辑, 全部经 IRemoteHost 的 host.file.* / host.fs.* 完成。
- * 用法: new FilesViewModel(host, rootPath) 后 await LoadAsync(); 本地文件选择由视图负责, 选好的本地路径交给 UploadAsync / DownloadAsync。
+ * 一台机器上某个根目录(通常是会话的项目路径)的文件浏览与轻量编辑, 全部经 IRemoteFiles 的 host.file.* / host.fs.* 完成。
+ * 用法: new FilesViewModel(files, rootPath, style) 后 await LoadAsync(); 本地文件选择由视图负责, 选好的本地路径交给 UploadAsync / DownloadAsync。
  * 远端路径按远端平台的分隔符拼接(RemotePaths), 不借用本机 OS 的 Path。
  */
-public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : OperationViewModel
+public sealed partial class FilesViewModel(IRemoteFiles files, string rootPath, RemotePathStyle style) : OperationViewModel
 {
     /** 超过这个大小的文件不进编辑器, 只显示信息并提供下载。 */
     public const long MaxEditableBytes = 2 * 1024 * 1024;
@@ -19,9 +19,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
     private const int LocalBufferBytes = 81920;
     private const string PartialSuffix = ".part";
 
-    private RemotePathStyle _style = RemotePathStyle.Posix;
-
-    public IRemoteHost Host => host;
+    private readonly RemotePathStyle _style = style;
 
     public string RootPath => rootPath;
 
@@ -46,8 +44,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
 
     public Task<bool> LoadAsync() => RunAsync(async () =>
     {
-        _style = RemotePaths.StyleFor((await host.InfoAsync()).Platform);
-        var listing = await host.ListDirectoryAsync(rootPath);
+        var listing = await files.ListDirectoryAsync(rootPath);
         var name = RemotePaths.FileName(listing.Path.TrimEnd('/', '\\'), _style);
         var root = new FileNodeViewModel(this, new RemoteDirectoryEntry(name.Length == 0 ? listing.Path : name, listing.Path, true), null);
         root.ReplaceChildren(listing.Entries);
@@ -60,7 +57,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
     /** 列举(或重新列举)一个目录的子项; 展开目录时自动调用。 */
     public Task<bool> LoadChildrenAsync(FileNodeViewModel directory) => RunAsync(async () =>
     {
-        var listing = await host.ListDirectoryAsync(directory.Path);
+        var listing = await files.ListDirectoryAsync(directory.Path);
         directory.ReplaceChildren(listing.Entries);
     });
 
@@ -78,7 +75,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
     public async Task<FileTransferViewModel?> DownloadAsync(string remotePath, string localPath)
     {
         RemoteFileStat? stat = null;
-        if (!await RunAsync(async () => stat = await host.StatAsync(remotePath)) || stat is not { Exists: true, IsDirectory: false })
+        if (!await RunAsync(async () => stat = await files.StatAsync(remotePath)) || stat is not { Exists: true, IsDirectory: false })
             return null;
         var transfer = Track(new FileTransferViewModel(TransferDirection.Download, RemotePaths.FileName(remotePath, _style), remotePath, localPath, stat.Size));
         var partial = $"{localPath}{PartialSuffix}";
@@ -86,7 +83,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
         {
             long copied;
             await using (var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None, LocalBufferBytes, useAsync: true))
-                copied = await host.DownloadFileAsync(remotePath, new TransferProgressStream(file, transfer.Report), cancellationToken);
+                copied = await files.DownloadFileAsync(remotePath, new TransferProgressStream(file, transfer.Report), cancellationToken);
             File.Move(partial, localPath, overwrite: true);
             return copied;
         });
@@ -104,7 +101,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
         if (TargetDirectory is not { } directory)
             return;
         var name = ValidName();
-        await host.CreateDirectoryAsync(RemotePaths.Resolve(directory.Path, name, _style));
+        await files.CreateDirectoryAsync(RemotePaths.Resolve(directory.Path, name, _style));
         NameInput = "";
         await ReloadAsync(directory, $"已新建文件夹 {name}");
     });
@@ -115,7 +112,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
         if (Selected is not { Parent: { } parent } node)
             return;
         var name = ValidName();
-        await host.RenameAsync(node.Path, RemotePaths.Resolve(parent.Path, name, _style));
+        await files.RenameAsync(node.Path, RemotePaths.Resolve(parent.Path, name, _style));
         NameInput = "";
         Selected = parent;
         await ReloadAsync(parent, $"已重命名为 {name}");
@@ -138,7 +135,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
     {
         if (Selected is not { IsDirectory: false } node)
             return;
-        var editor = new FileEditorViewModel(host, node.Path, _style, MaxEditableBytes);
+        var editor = new FileEditorViewModel(files, node.Path, _style, MaxEditableBytes);
         if (node.Parent is { } parent)
             editor.Saved += () => _ = LoadChildrenAsync(parent);
         Editor = editor;
@@ -161,7 +158,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
 
     private Task DeleteNowAsync(FileNodeViewModel node) => RunAsync(async () =>
     {
-        await host.DeleteAsync(node.Path, recursive: node.IsDirectory);
+        await files.DeleteAsync(node.Path, recursive: node.IsDirectory);
         if (Editor?.Path == node.Path)
             Editor = null;
         Selected = node.Parent;
@@ -177,7 +174,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
         await transfer.RunAsync(async cancellationToken =>
         {
             await using var file = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, LocalBufferBytes, useAsync: true);
-            return (await host.UploadFileAsync(target, new TransferProgressStream(file, transfer.Report), cancellationToken: cancellationToken)).Size;
+            return (await files.UploadFileAsync(target, new TransferProgressStream(file, transfer.Report), cancellationToken: cancellationToken)).Size;
         });
     }
 
@@ -189,7 +186,7 @@ public sealed partial class FilesViewModel(IRemoteHost host, string rootPath) : 
 
     private async Task ReloadAsync(FileNodeViewModel directory, string done)
     {
-        var listing = await host.ListDirectoryAsync(directory.Path);
+        var listing = await files.ListDirectoryAsync(directory.Path);
         directory.ReplaceChildren(listing.Entries);
         Report(done);
     }

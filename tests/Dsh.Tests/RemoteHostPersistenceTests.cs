@@ -182,34 +182,37 @@ public sealed class RemoteHostPersistenceTests
         }
     }
 
-    /** 只实现本用例用到的会话能力; 其余为只读/空实现。 */
-    private sealed class SessionBackend : IRemoteHostBackend, IAsyncDisposable
+    /** Reconnect fixture supplies only core sessions; optional methods must not become empty services. */
+    private sealed class SessionBackend : IRemoteHostBackend, IRemoteSessionBackend, IAsyncDisposable
     {
         private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
 
-        private SessionBackend(string root, HostPendingDecisions pending, HostSessionRegistry sessions, HostNotificationCenter notifications)
+        private SessionBackend(HostPendingDecisions pending, HostSessionRegistry sessions)
         {
             Pending = pending;
             Sessions = sessions;
-            Notifications = notifications;
-            Files = new HostFileSystem(new HostPathPolicy([root], () => []));
         }
 
         public static async Task<SessionBackend> CreateAsync(string root, CancellationToken cancellationToken)
         {
             var pending = new HostPendingDecisions();
             var sessions = await HostSessionRegistry.OpenAsync(Path.Combine(root, "sessions.json"), pending, cancellationToken);
-            var notifications = await HostNotificationCenter.OpenAsync(Path.Combine(root, HostNotificationCenter.FileName), sessions, pending, cancellationToken);
-            return new SessionBackend(root, pending, sessions, notifications);
+            return new SessionBackend(pending, sessions);
         }
 
         public HostPendingDecisions Pending { get; }
 
         public HostSessionRegistry Sessions { get; }
 
-        public HostFileSystem Files { get; }
-
-        public HostNotificationCenter Notifications { get; }
+        public IRemoteSessionBackend Session => this;
+        public IRemoteAgentBackend? Agent => null;
+        public IRemotePtyBackend? Pty => null;
+        public HostFileSystem? Files => null;
+        public HostGitService? Git => null;
+        public HostNotificationCenter? Notifications => null;
+        public IRemoteSessionEditingBackend? SessionEditing => null;
+        public IRemotePluginsBackend? Plugins => null;
+        public IRemoteModelsBackend? Models => null;
 
         public Task<HostInfo> InfoAsync(CancellationToken cancellationToken)
             => Task.FromResult(new HostInfo(HostProtocol.Version, "test", "test", "/home"));
@@ -229,26 +232,6 @@ public sealed class RemoteHostPersistenceTests
 
         public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public Task<RemoteCommandResult> ExecuteSessionCommandAsync(string sessionId, string line, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<RemoteCommandDescriptor>> ListSessionCommandsAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task SetSessionApprovalPolicyAsync(string sessionId, string policy, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<RemoteSubagentInfo>> ListSubagentsAsync(string rootSessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<RemotePluginInfo>> ListPluginsAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<string> SetPluginPermissionAsync(string package, string permission, bool allowed, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<string>> ListReasoningEffortsAsync(string provider, string model, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<string>> ListProviderModelsAsync(string provider, CancellationToken cancellationToken) => throw new NotSupportedException();
-
         public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task InterruptAsync(string sessionId, CancellationToken cancellationToken) => Task.CompletedTask;
@@ -256,35 +239,11 @@ public sealed class RemoteHostPersistenceTests
         public Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<string>>([]);
 
-        public Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task StopAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken) => Task.FromResult("");
-
-        public Task WritePtyAsync(string ptyId, byte[] data, CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public Task ResizePtyAsync(string ptyId, int columns, int rows, CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public Task StopPtyAsync(string ptyId, CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
-            => Task.FromResult(AsyncEnumerable.Empty<RemoteEventInfo>());
-
-        public Task<IAsyncEnumerable<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken)
-            => Task.FromResult(AsyncEnumerable.Empty<RemotePtyOutput>());
+        public Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+            => Task.FromResult(new RemoteHostStream<RemoteEventInfo>(AsyncEnumerable.Empty<RemoteEventInfo>()));
 
         public async ValueTask DisposeAsync()
         {
-            await Notifications.DisposeAsync();
             Pending.Dispose();
             await Sessions.DisposeAsync();
         }

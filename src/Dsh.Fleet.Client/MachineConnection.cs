@@ -1,7 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
-using System.Threading.Channels;
-using Dsh.Notifications;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 
@@ -10,22 +7,17 @@ namespace Dsh.Fleet;
 /**
  * The single connection a client keeps to one machine; every session on that machine shares it.
  * A background loop connects (deploying first when needed), keeps the link alive with a heartbeat, and reconnects with exponential backoff after a drop.
- * After every (re)connection it re-reads host info, the session registry and the pending requests, and resumes event subscriptions from the last seen seq.
- * Sessions and pending requests are the last known values while the machine is not connected.
+ * Each connection starts with ordered Host snapshots, then applies their changes without another query or replay cache.
+ * The last authoritative projections remain visible while the machine is not connected.
  */
 public sealed class MachineConnection : IAsyncDisposable
 {
-    /** How many resolved request ids are remembered, so that a request re-sent before its resolution was processed does not come back. */
-    private const int ResolvedMemory = 1024;
-
     private readonly FleetOptions _options;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, RemoteHostSession> _sessions = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, RemoteApprovalRequest> _approvals = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, RemoteQuestionRequest> _questions = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, EventFeed> _eventFeeds = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _resolved = new(StringComparer.Ordinal);
-    private readonly Queue<string> _resolvedOrder = new();
+    private RemotePendingList _pending = new([], []);
+    private RemoteNotifyPage? _notifications;
+    private readonly RemoteHostSubscriptions _subscriptions;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TaskCompletionSource _settled = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private TaskCompletionSource<HostLease> _connected = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -36,6 +28,7 @@ public sealed class MachineConnection : IAsyncDisposable
     {
         Machine = machine;
         _options = options;
+        _subscriptions = new RemoteHostSubscriptions(WaitConnectedAsync, _lifetime.Token);
     }
 
     public MachineSpec Machine { get; }
@@ -47,6 +40,8 @@ public sealed class MachineConnection : IAsyncDisposable
 
     public HostInfo? Info { get; private set; }
 
+    public HostHelloResponse? Hello { get; private set; }
+
     /** The ssh process of the current link (SSH machines only). */
     internal Process? LinkProcess { get; private set; }
 
@@ -56,17 +51,18 @@ public sealed class MachineConnection : IAsyncDisposable
 
     public event Action<MachineConnection>? PendingChanged;
 
-    /** A notification the host added to its history (host.notify.added). */
-    public event Action<MachineConnection, NotificationRecord>? NotificationAdded;
+    public event Action<MachineConnection, RemoteNotificationChange?>? NotificationsChanged;
 
-    /** Notifications some client marked read (host.notify.changed), with the ids that became read. */
-    public event Action<MachineConnection, IReadOnlyList<string>>? NotificationsRead;
+    public RemoteNotifyPage? Notifications
+    {
+        get
+        {
+            lock (_gate)
+                return _notifications;
+        }
+    }
 
-    /** The history was re-read after a (re)connection; records added while the machine was unreachable are only visible through host.notify.list. */
-    public event Action<MachineConnection>? NotificationsReloaded;
-
-    /** Unread notifications in the host's history; 0 while never connected or when the host keeps no history. */
-    public int UnreadNotifications { get; private set; }
+    public int UnreadNotifications => Notifications?.UnreadCount ?? 0;
 
     public IReadOnlyList<RemoteHostSession> Sessions
     {
@@ -82,11 +78,11 @@ public sealed class MachineConnection : IAsyncDisposable
         get
         {
             lock (_gate)
-                return new RemotePendingList([.. _approvals.Values], [.. _questions.Values]);
+                return _pending;
         }
     }
 
-    public void Start() => _loop ??= Task.Run(() => RunAsync(_lifetime.Token));
+    public void Start() => _loop ??= RunAsync(_lifetime.Token);
 
     /** Completes once the first attempt has either connected or failed. */
     public Task WaitSettledAsync(CancellationToken cancellationToken) => _settled.Task.WaitAsync(cancellationToken);
@@ -97,154 +93,23 @@ public sealed class MachineConnection : IAsyncDisposable
             return _connected.Task.WaitAsync(cancellationToken);
     }
 
-    /**
-     * Session events that survive reconnection: after a drop the subscription resumes at the seq after the last delivered event.
-     * When the host cannot resume from that seq, it subscribes from the start and skips what was already delivered.
-     * The stream fails when the host rejects the subscription itself (for example an unknown session).
-     */
-    public async IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        EventFeed feed;
-        EventReader reader;
-        while (true)
-        {
-            Task? stopping = null;
-            lock (_gate)
-            {
-                _lifetime.Token.ThrowIfCancellationRequested();
-                if (_eventFeeds.TryGetValue(sessionId, out feed!) && feed.Stopping)
-                    stopping = feed.Completed.Task;
-                else
-                {
-                    if (feed is null)
-                    {
-                        feed = new EventFeed(_lifetime.Token);
-                        _eventFeeds.Add(sessionId, feed);
-                        _ = Task.Run(() => FollowEventsAsync(sessionId, feed));
-                    }
-                    reader = new EventReader(fromSeq);
-                    foreach (var item in feed.Replay)
-                        Deliver(reader, item);
-                    feed.Readers.Add(reader);
-                    break;
-                }
-            }
-            await stopping!.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        try
-        {
-            await foreach (var item in reader.Channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-                yield return item;
-        }
-        finally
-        {
-            lock (_gate)
-            {
-                feed.Readers.Remove(reader);
-                if (feed.Readers.Count == 0 && !feed.Stopping)
-                {
-                    feed.Stopping = true;
-                    feed.Lifetime.Cancel();
-                }
-            }
-        }
-    }
+    /** 每个读者使用共享 RemoteHost 续订语义，不保存另一份历史或去重记忆。 */
+    public IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+        => _subscriptions.SubscribeAsync(sessionId, fromSeq, cancellationToken);
 
-    private readonly record struct ReplayedEvent(RemoteEventInfo Info, long? Sequence);
-
-    private sealed class EventReader(long fromSeq)
-    {
-        public long Next { get; set; } = fromSeq;
-        public Channel<RemoteEventInfo> Channel { get; } = System.Threading.Channels.Channel.CreateUnbounded<RemoteEventInfo>(
-            new UnboundedChannelOptions { SingleReader = true });
-    }
-
-    /** One wire subscription per session. Replay lives only while at least one reader owns the feed. */
-    private sealed class EventFeed(CancellationToken lifetime)
-    {
-        public CancellationTokenSource Lifetime { get; } = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
-        public List<EventReader> Readers { get; } = [];
-        public List<ReplayedEvent> Replay { get; } = [];
-        public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public bool Stopping { get; set; }
-    }
-
-    private static void Deliver(EventReader reader, ReplayedEvent item)
-    {
-        if (item.Info.Reset)
-            reader.Next = 0;
-        else if (item.Sequence is { } sequence)
-        {
-            if (sequence < reader.Next)
-                return;
-            reader.Next = sequence + 1;
-        }
-        reader.Channel.Writer.TryWrite(item.Info);
-    }
-
-    private void PublishEvent(EventFeed feed, RemoteEventInfo item, long? sequence)
-    {
-        lock (_gate)
-        {
-            if (item.Reset)
-                feed.Replay.Clear();
-            var replayed = new ReplayedEvent(item, sequence);
-            if (!item.Reset)
-                feed.Replay.Add(replayed);
-            foreach (var reader in feed.Readers)
-                Deliver(reader, replayed);
-        }
-    }
-
-    /**
-     * A separate raw channel to this machine's host for a relay that speaks the host protocol itself (the web bridge); none of its traffic goes through this connection.
-     * Local machines get a host.sock stream that has already presented the host token.
-     * SSH machines get their own `ssh -T` running the dsharp this connection deployed or found, so it first waits for this connection unless the machine is offline.
-     */
-    public async Task<Stream> OpenChannelAsync(CancellationToken cancellationToken)
-    {
-        if (Machine.IsLocal)
-            return await RemoteHostListener.ConnectAsync(HostLink.LocalRoot(Machine), cancellationToken).ConfigureAwait(false);
-        await WaitReachableAsync(cancellationToken).ConfigureAwait(false);
-        return SshHostLauncher.OpenTunnel(Machine, _commandPath);
-    }
 
     /**
      * Attaches to a PTY across reconnections: after a drop the next link attaches again and the host starts over with a full-screen snapshot.
      * Returns when the PTY ends; fails when the host does not know the PTY (for example it exited while the machine was unreachable).
      */
-    public async Task AttachPtyAsync(string ptyId, Stream input, Stream output, CancellationToken cancellationToken,
+    public Task AttachPtyAsync(string ptyId, Stream input, Stream output, CancellationToken cancellationToken,
         Func<RemoteHostClient, CancellationToken, Task>? prepare = null)
-    {
-        while (true)
-        {
-            var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
-            try
-            {
-                // Apply the view's latest geometry before the first snapshot, including changes made while offline.
-                if (prepare is not null)
-                    await prepare(lease.Client, linked.Token).ConfigureAwait(false);
-                await lease.Client.AttachPtyAsync(ptyId, input, output, linked.Token).ConfigureAwait(false);
-                return;
-            }
-            catch (Exception error) when (!cancellationToken.IsCancellationRequested && error is OperationCanceledException or IOException or ObjectDisposedException)
-            {
-            }
-        }
-    }
+        => _subscriptions.AttachPtyAsync(ptyId, input, output, cancellationToken, prepare);
 
-    /** Records a session this client just started or resumed, ahead of the registry push that announces it (the push, being newer, replaces it). */
-    public void Remember(RemoteHostSession session) => ApplySession(session);
 
     public async ValueTask DisposeAsync()
     {
         await _lifetime.CancelAsync().ConfigureAwait(false);
-        Task[] feeds;
-        lock (_gate)
-            feeds = [.. _eventFeeds.Values.Select(feed => feed.Completed.Task)];
-        await Task.WhenAll(feeds).ConfigureAwait(false);
         try
         {
             if (_loop is { } loop)
@@ -271,10 +136,12 @@ public sealed class MachineConnection : IAsyncDisposable
                 failures++;
             else
             {
-                (failures, everConnected) = (0, true);
+                failures = 0;
                 await ServeAsync(link, cancellationToken).ConfigureAwait(false);
+                everConnected |= State == MachineConnectionState.Connected;
             }
 
+            SetState(_options.AutoReconnect && everConnected ? MachineConnectionState.Reconnecting : MachineConnectionState.Offline, Detail);
             _settled.TrySetResult();
             if (!_options.AutoReconnect || !await DelayAsync(_options.Backoff(failures), cancellationToken).ConfigureAwait(false))
                 break;
@@ -310,15 +177,15 @@ public sealed class MachineConnection : IAsyncDisposable
         if (_options.Deploy.AutoDeploy)
         {
             SetState(MachineConnectionState.Deploying, null);
-            var deployed = await RemoteDsharpInstaller.EnsureAsync(
-                Machine, _options.Deploy, step => SetState(MachineConnectionState.Deploying, step), cancellationToken, _options.ArchiveFactory,
+            var deployed = await new RemoteDsharpInstaller(new SshTransport(Machine)).EnsureAsync(
+                _options.Deploy, step => SetState(MachineConnectionState.Deploying, step), cancellationToken, _options.ArchiveFactory,
                 localProxy: _options.LocalProxy).ConfigureAwait(false);
             return _commandPath = deployed.CommandPath;
         }
 
         try
         {
-            return _commandPath = (await RemoteDsharpInstaller.InspectAsync(Machine, cancellationToken).ConfigureAwait(false)).CommandPath;
+            return _commandPath = (await new RemoteDsharpInstaller(new SshTransport(Machine)).InspectAsync(cancellationToken).ConfigureAwait(false)).CommandPath;
         }
         catch (NotSupportedException)
         {
@@ -326,17 +193,27 @@ public sealed class MachineConnection : IAsyncDisposable
         }
     }
 
-    /** Serves one established link until it drops: refresh, publish the lease, pump pushes, and watch the heartbeat. */
+    /** Publishes the lease only after all provided domains supplied their initial authoritative projection. */
     private async Task ServeAsync(HostLink link, CancellationToken cancellationToken)
     {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Task[] pumps = [];
         try
         {
-            pumps = StartPumps(link.Client, lifetime.Token);
-            await RefreshAsync(link.Client, lifetime.Token).ConfigureAwait(false);
-            Publish(new HostLease(link.Client, lifetime.Token), link.Process);
-            await WatchAsync(link, lifetime.Token).ConfigureAwait(false);
+            Info = await link.Client.InfoAsync(lifetime.Token).ConfigureAwait(false);
+            Hello = link.Client.Hello;
+            var projections = StartPumps(link, lifetime.Token);
+            pumps = projections.Pumps;
+            var ended = Task.WhenAny(pumps);
+            if (await Task.WhenAny(projections.Ready, ended).WaitAsync(lifetime.Token).ConfigureAwait(false) == ended)
+            {
+                await (await ended.ConfigureAwait(false)).ConfigureAwait(false);
+                throw new IOException("host connection ended before its initial projection");
+            }
+            await projections.Ready.ConfigureAwait(false);
+            Publish(new HostLease(link.Client, lifetime.Token, closed.Task), link.Process);
+            await (await ended.ConfigureAwait(false)).ConfigureAwait(false);
             Detail = "connection lost";
         }
         catch (Exception error) when (!cancellationToken.IsCancellationRequested)
@@ -347,70 +224,57 @@ public sealed class MachineConnection : IAsyncDisposable
         {
             Unpublish();
             await lifetime.CancelAsync().ConfigureAwait(false);
+            closed.TrySetResult();
             await link.DisposeAsync().ConfigureAwait(false);
             await Task.WhenAll(pumps).ConfigureAwait(false);
         }
     }
 
-    private Task[] StartPumps(RemoteHostClient client, CancellationToken cancellationToken)
+    private (Task[] Pumps, Task Ready) StartPumps(HostLink link, CancellationToken cancellationToken)
     {
-        Task[] pumps =
-        [
-            PumpAsync(client.ApprovalsAsync(cancellationToken), AddApproval),
-            PumpAsync(client.QuestionsAsync(cancellationToken), AddQuestion),
-            PumpAsync(client.ResolutionsAsync(cancellationToken), Resolve),
-            PumpAsync(client.HostSessionChangesAsync(cancellationToken), ApplySession),
-        ];
-        if (!client.Supports(HostCapabilities.NotifyHistory))
-            return pumps;
-        return
-        [
-            .. pumps,
-            PumpAsync(client.NotificationsAddedAsync(cancellationToken), AddNotification),
-            PumpAsync(client.NotificationChangesAsync(cancellationToken), ApplyNotificationsRead),
-        ];
+        var client = link.Client;
+        if (!client.Supports(HostProtocol.SessionRegistryCapability) || !client.Supports(HostProtocol.PendingBroadcastCapability))
+            throw new NotSupportedException("the Host does not provide core session and pending projections");
+        var hasNotifications = client.Supports(NotificationsProtocol.Capability);
+        var ready = new Task[hasNotifications ? 3 : 2];
+        var pumps = new Task[ready.Length + 1];
+        (pumps[0], ready[0]) = StartPump(client.PendingChangesAsync(cancellationToken), change => ReplacePending(change.Pending));
+        (pumps[1], ready[1]) = StartPump(client.HostSessionChangesAsync(cancellationToken), ApplySession);
+        if (hasNotifications)
+            (pumps[2], ready[2]) = StartPump(client.Notifications.NotificationChangesAsync(cancellationToken), ApplyNotifications);
+        else
+            ApplyNotifications(null);
+        pumps[^1] = WatchAsync(link, cancellationToken);
+        return (pumps, Task.WhenAll(ready));
     }
 
-    private static async Task PumpAsync<T>(IAsyncEnumerable<T> source, Action<T> apply)
+    private static (Task Pump, Task Ready) StartPump<T>(IAsyncEnumerable<T> source, Action<T> apply)
+    {
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        return (PumpAsync(source, apply, ready), ready.Task);
+    }
+
+    private static async Task PumpAsync<T>(IAsyncEnumerable<T> source, Action<T> apply, TaskCompletionSource ready)
     {
         try
         {
             await foreach (var item in source.ConfigureAwait(false))
+            {
                 apply(item);
+                ready.TrySetResult();
+            }
         }
-        catch (OperationCanceledException)
+        catch (Exception error) when (error is OperationCanceledException or IOException or ObjectDisposedException)
         {
+            if (!ready.Task.IsCompleted)
+                ready.TrySetException(error);
+        }
+        finally
+        {
+            if (!ready.Task.IsCompleted)
+                ready.TrySetException(new EndOfStreamException("host projection ended before its initial snapshot"));
         }
     }
-
-    /** Re-reads everything a reconnect may have missed; the pushes already being pumped are newer and keep applying after it. */
-    private async Task RefreshAsync(RemoteHostClient client, CancellationToken cancellationToken)
-    {
-        Info = await client.InfoAsync(cancellationToken).ConfigureAwait(false);
-        var sessions = client.Supports(HostCapabilities.SessionRegistry)
-            ? await client.ListHostSessionsAsync(cancellationToken).ConfigureAwait(false)
-            : [.. (await client.ListSessionsAsync(cancellationToken).ConfigureAwait(false)).Select(FromHarnessSession)];
-        lock (_gate)
-        {
-            _sessions.Clear();
-            foreach (var session in sessions)
-                _sessions[session.SessionId] = session;
-        }
-
-        SessionsChanged?.Invoke(this);
-        if (client.Supports(HostCapabilities.PendingBroadcast))
-            ReplacePending(await client.ListPendingAsync(cancellationToken).ConfigureAwait(false));
-        if (!client.Supports(HostCapabilities.NotifyHistory))
-            return;
-        var history = await client.ListNotificationsAsync(new RemoteNotifyQuery(Limit: 1), cancellationToken).ConfigureAwait(false);
-        lock (_gate)
-            UnreadNotifications = history.UnreadCount;
-        NotificationsReloaded?.Invoke(this);
-    }
-
-    /** Hosts without the session registry only list harness sessions. */
-    private static RemoteHostSession FromHarnessSession(RemoteSessionInfo session)
-        => new(session.Id, HostSessionKinds.Harness, HostAgentKinds.Dsharp, session.Cwd, session.Title, session.Status, session.StartedAt, session.UpdatedAt, 0, null);
 
     /** Returns when the ssh process exits, a heartbeat ping fails, or the client is shutting down. */
     private async Task WatchAsync(HostLink link, CancellationToken cancellationToken)
@@ -461,32 +325,6 @@ public sealed class MachineConnection : IAsyncDisposable
         LinkProcess = null;
     }
 
-    /** Completes once connected; fails as soon as the machine is offline (between attempts, or stopped for good) with its last failure. */
-    private async Task WaitReachableAsync(CancellationToken cancellationToken)
-    {
-        var offline = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        StateChanged += Watch;
-        try
-        {
-            var connected = WaitConnectedAsync(cancellationToken);
-            Watch(this);
-            await Task.WhenAny(connected, offline.Task).ConfigureAwait(false);
-            if (!connected.IsCompleted)
-                throw new IOException($"{Machine.Name} ({Machine.Target}) is offline: {Detail}");
-            await connected.ConfigureAwait(false);
-        }
-        finally
-        {
-            StateChanged -= Watch;
-        }
-
-        void Watch(MachineConnection machine)
-        {
-            if (machine.State == MachineConnectionState.Offline)
-                offline.TrySetResult();
-        }
-    }
-
     private static async Task<bool> DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
     {
         try
@@ -507,254 +345,38 @@ public sealed class MachineConnection : IAsyncDisposable
         StateChanged?.Invoke(this);
     }
 
-    private void ApplySession(RemoteHostSession session)
+    private void ApplySession(RemoteSessionChange change)
     {
         lock (_gate)
         {
-            if (session.Deleted)
-                _sessions.Remove(session.SessionId);
-            else
-                _sessions[session.SessionId] = session;
+            if (change.Snapshot is { } snapshot)
+            {
+                _sessions.Clear();
+                foreach (var session in snapshot)
+                    _sessions[session.SessionId] = session;
+            }
+            if (change.Session is { } updated)
+            {
+                if (updated.Deleted)
+                    _sessions.Remove(updated.SessionId);
+                else
+                    _sessions[updated.SessionId] = updated;
+            }
         }
         SessionsChanged?.Invoke(this);
     }
 
-    private void AddApproval(RemoteApprovalRequest request)
+    private void ApplyNotifications(RemoteNotificationChange? change)
     {
         lock (_gate)
-        {
-            if (!_resolved.Contains(request.RequestId))
-                _approvals[request.RequestId] = request;
-        }
-
-        PendingChanged?.Invoke(this);
-    }
-
-    private void AddQuestion(RemoteQuestionRequest request)
-    {
-        lock (_gate)
-        {
-            if (!_resolved.Contains(request.RequestId))
-                _questions[request.RequestId] = request;
-        }
-
-        PendingChanged?.Invoke(this);
-    }
-
-    private void Resolve(RemotePendingResolved resolved)
-    {
-        lock (_gate)
-        {
-            _approvals.Remove(resolved.RequestId);
-            _questions.Remove(resolved.RequestId);
-            RememberResolved(resolved.RequestId);
-        }
-
-        PendingChanged?.Invoke(this);
-    }
-
-    private void AddNotification(NotificationRecord record)
-    {
-        if (!record.IsRead)
-        {
-            lock (_gate)
-                UnreadNotifications++;
-        }
-
-        NotificationAdded?.Invoke(this, record);
-    }
-
-    private void ApplyNotificationsRead(RemoteNotifyChanged changed)
-    {
-        lock (_gate)
-            UnreadNotifications = changed.UnreadCount;
-        NotificationsRead?.Invoke(this, changed.ReadIds);
-    }
-
-    private void RememberResolved(string requestId)
-    {
-        if (!_resolved.Add(requestId))
-            return;
-        _resolvedOrder.Enqueue(requestId);
-        if (_resolvedOrder.Count > ResolvedMemory)
-            _resolved.Remove(_resolvedOrder.Dequeue());
+            _notifications = change?.Page;
+        NotificationsChanged?.Invoke(this, change);
     }
 
     private void ReplacePending(RemotePendingList pending)
     {
         lock (_gate)
-        {
-            _approvals.Clear();
-            _questions.Clear();
-            foreach (var approval in pending.Approvals.Where(item => !_resolved.Contains(item.RequestId)))
-                _approvals[approval.RequestId] = approval;
-            foreach (var question in pending.Questions.Where(item => !_resolved.Contains(item.RequestId)))
-                _questions[question.RequestId] = question;
-        }
-
+            _pending = pending;
         PendingChanged?.Invoke(this);
-    }
-
-    private async Task FollowEventsAsync(string sessionId, EventFeed feed)
-    {
-        var cancellationToken = feed.Lifetime.Token;
-        var cursor = new EventCursor(0);
-        Exception? failure = null;
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                var lease = await WaitConnectedAsync(cancellationToken).ConfigureAwait(false);
-                using var resumed = new ResumeWatch(this, sessionId);
-                await PumpEventsAsync(lease, sessionId, cursor, feed, resumed.Token, cancellationToken).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception error)
-        {
-            failure = error;
-        }
-        finally
-        {
-            if (cancellationToken.IsCancellationRequested)
-                await UnsubscribeAsync(sessionId).ConfigureAwait(false);
-            lock (_gate)
-            {
-                foreach (var reader in feed.Readers)
-                    reader.Channel.Writer.TryComplete(failure);
-                _eventFeeds.Remove(sessionId);
-                feed.Stopping = true;
-            }
-            feed.Completed.TrySetResult();
-            feed.Lifetime.Dispose();
-        }
-    }
-
-    /** The reader stopped: the host stops pushing this session's events to this connection instead of filling an unread stream. */
-    private async Task UnsubscribeAsync(string sessionId)
-    {
-        Task<HostLease> connected;
-        lock (_gate)
-            connected = _connected.Task;
-        if (!connected.IsCompletedSuccessfully)
-            return;
-        var lease = connected.Result;
-        try
-        {
-            await lease.Client.UnsubscribeAsync(sessionId, lease.Lifetime).ConfigureAwait(false);
-        }
-        catch (Exception error) when (error is OperationCanceledException or IOException or JsonRpcException or ObjectDisposedException)
-        {
-        }
-    }
-
-    /**
-     * Pumps one link's subscription until the link drops or the session is resumed; a rejected resume from the middle is retried from the start once.
-     * The host serves a session without a live agent from its persisted history and pushes nothing after it, so resuming the session needs a new subscription.
-     */
-    private async Task PumpEventsAsync(
-        HostLease lease, string sessionId, EventCursor cursor, EventFeed feed, CancellationToken resumed, CancellationToken cancellationToken)
-    {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime, resumed);
-        try
-        {
-            await foreach (var item in lease.Client.SubscribeAsync(sessionId, cursor.SubscribeFrom, linked.Token).ConfigureAwait(false))
-            {
-                if (cursor.Accept(item))
-                    PublishEvent(feed, item, cursor.LastSequence);
-                if (item.Reset)
-                    return; // Re-read retained history at seq 0 for every reader, including readers joining after the reset.
-            }
-            // The client closed the stream while its link is still up: nothing more arrives on it before the link drops or the session is resumed.
-            await Task.Delay(Timeout.Infinite, linked.Token).ConfigureAwait(false);
-        }
-        catch (Exception error) when (!cancellationToken.IsCancellationRequested && error is OperationCanceledException or IOException or ObjectDisposedException)
-        {
-        }
-        catch (JsonRpcException) when (cursor.SubscribeFrom > 0)
-        {
-            cursor.RestartFromBeginning();
-        }
-    }
-
-    private RemoteHostSession? SessionOf(string sessionId)
-    {
-        lock (_gate)
-            return _sessions.GetValueOrDefault(sessionId);
-    }
-
-    /** Signals when a session that had no live agent (exited or not yet listed) comes back to life on the host. */
-    private sealed class ResumeWatch : IDisposable
-    {
-        private readonly MachineConnection _machine;
-        private readonly string _sessionId;
-        private readonly CancellationTokenSource _resumed = new();
-        private readonly Lock _gate = new();
-        private bool _exited;
-        private bool _disposed;
-
-        public ResumeWatch(MachineConnection machine, string sessionId)
-        {
-            (_machine, _sessionId) = (machine, sessionId);
-            _exited = IsExited();
-            machine.SessionsChanged += OnSessionsChanged;
-        }
-
-        public CancellationToken Token => _resumed.Token;
-
-        public void Dispose()
-        {
-            _machine.SessionsChanged -= OnSessionsChanged;
-            lock (_gate)
-            {
-                _disposed = true;
-                _resumed.Dispose();
-            }
-        }
-
-        private bool IsExited() => _machine.SessionOf(_sessionId) is not { Status: not HostSessionStatuses.Exited };
-
-        private void OnSessionsChanged(MachineConnection _)
-        {
-            lock (_gate)
-            {
-                var exited = IsExited();
-                if (_exited && !exited && !_disposed)
-                    _resumed.Cancel();
-                _exited = exited;
-            }
-        }
-    }
-
-    /** Where a resilient subscription stands: the next seq to deliver and the seq to subscribe from (0 after a rejected resume). */
-    private sealed class EventCursor(long next)
-    {
-        private long _next = next;
-
-        public long SubscribeFrom { get; private set; } = next;
-        public long? LastSequence { get; private set; }
-
-        public void RestartFromBeginning() => SubscribeFrom = 0;
-
-        /** Delivers each seq once: events below the next seq were already delivered before the reconnect. */
-        public bool Accept(RemoteEventInfo item)
-        {
-            LastSequence = null;
-            if (item.Reset)
-            {
-                _next = SubscribeFrom = 0;
-                return true;
-            }
-            if (JsonSerializer.Deserialize(item.EventJson, FleetJsonContext.Default.EventEnvelope) is not { } envelope)
-                return true;
-            LastSequence = envelope.Seq;
-            if (envelope.Seq < _next)
-                return false;
-            _next = envelope.Seq + 1;
-            SubscribeFrom = _next;
-            return true;
-        }
     }
 }

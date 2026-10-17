@@ -1,6 +1,6 @@
 // Pieces shared by several views: routes, session labels, status chips and keyed list updates.
 import { h, baseName } from '../dom.js';
-import { SessionStatus } from '../hub.js';
+import { SessionStatus, MachineConnectionState } from '/protocol.js';
 
 export function sessionRoute(machine, sessionId) {
   return `/m/${encodeURIComponent(machine)}/s/${encodeURIComponent(sessionId)}`;
@@ -34,7 +34,7 @@ const LINK_LABELS = { connected: 'Connected', connecting: 'Connecting', reconnec
 /** The page's own connection to a machine, with the bridge's view (deploying, offline reason) when the page cannot reach it. */
 export function machineChip(link) {
   const bridgeState = link.bridgeStatus?.State;
-  const label = !link.connected && bridgeState === 'Deploying' ? 'Deploying' : LINK_LABELS[link.state] ?? link.state;
+  const label = !link.connected && bridgeState === MachineConnectionState.Deploying ? 'Deploying' : LINK_LABELS[link.state] ?? link.state;
   return h('span', { className: `chip machine-${link.connected ? 'online' : 'offline'}`, dataset: { state: link.state } }, label);
 }
 

@@ -363,19 +363,35 @@ jobs:
           -p:DshNativeCompiler=${{ matrix.native-cc }}
           --nologo -v m
 
-      - name: 校验 CLI 与 GUI 发布自动携带 iroh-ssh
+      - name: 独立 WebHost JIT 发布（ASP.NET 不进入 TUI/GUI）
+        run: >
+          dotnet publish Dsh.WebHost/Dsh.WebHost.csproj
+          -c Release -r ${{ matrix.rid }}
+          -p:DebugSymbols=false -p:DebugType=none
+          -p:DshNativeCompiler=${{ matrix.native-cc }}
+          --nologo -v m
+
+      - name: 校验 CLI、GUI 与 WebHost 发布自动携带 iroh-ssh
         shell: bash
         run: |
           set -euo pipefail
           FILE=iroh-ssh
           if [ "$RUNNER_OS" = "Windows" ]; then FILE=iroh-ssh.exe; fi
-          for PROJECT in DeepSeek-Harness-Sharp DshGuiHost; do
+          for PROJECT in DeepSeek-Harness-Sharp DshGuiHost Dsh.WebHost; do
             OUTPUT="$PROJECT/bin/Release/net10.0/${{ matrix.rid }}/publish"
             "$OUTPUT/tools/$FILE" version
             test -s "$OUTPUT/tools/iroh-ssh.LICENSE.txt"
             test -s "$OUTPUT/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
             test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
           done
+
+      - name: 三发布产物隔离、体积和真实 WebHost 冒烟
+        shell: pwsh
+        run: |
+          ./scripts/smoke-web-host.ps1 `
+            -WebPublishDir Dsh.WebHost/bin/Release/net10.0/${{ matrix.rid }}/publish `
+            -TuiPublishDir DeepSeek-Harness-Sharp/bin/Release/net10.0/${{ matrix.rid }}/publish `
+            -GuiPublishDir DshGuiHost/bin/Release/net10.0/${{ matrix.rid }}/publish
 
       - name: 校验发布产物含原生故障遏制库
         shell: bash
@@ -485,6 +501,16 @@ jobs:
             -c Release -r "$RID" -p:PublishAot=true \
             -p:DebugSymbols=false -p:DebugType=none "${NATIVE_ARGS[@]}" \
             --nologo -v m
+          dotnet publish Dsh.WebHost/Dsh.WebHost.csproj \
+            -c Release -r "$RID" -p:PublishAot=true \
+            -p:DebugSymbols=false -p:DebugType=none "${NATIVE_ARGS[@]}" \
+            --nologo -v m
+          WEB_PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"
+          bash scripts/assert-aot-output.sh "$WEB_PUB" dsharp-web
+          pwsh -NoProfile -File scripts/smoke-web-host.ps1 \
+            -WebPublishDir "$WEB_PUB" \
+            -TuiPublishDir "DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish" \
+            -GuiPublishDir "DshGuiHost/bin/Release/net10.0/$RID/publish"
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
           GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
           test -d "$GUI_PUB"

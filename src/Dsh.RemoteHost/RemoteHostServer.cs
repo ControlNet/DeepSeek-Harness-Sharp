@@ -45,8 +45,26 @@ public sealed class RemoteHostServer(
 
     private bool RequiresToken => Token is not null;
 
-    /** 没有后端时只有握手/探活/信息, 不声明任何能力。 */
-    private IReadOnlyList<string> Capabilities => _backend is null ? [] : HostCapabilities.All;
+    /** Capabilities describe the services this backend actually supplies, not protocol knowledge. */
+    private readonly IReadOnlyList<string> _capabilities = CapabilitiesOf(backend);
+
+    private IReadOnlyList<string> Capabilities => _capabilities;
+
+    private static IReadOnlyList<string> CapabilitiesOf(IRemoteHostBackend? backend)
+    {
+        if (backend is null)
+            return [];
+        List<string> capabilities = [HostProtocol.PendingBroadcastCapability, HostProtocol.SessionRegistryCapability];
+        if (backend.Agent is not null) capabilities.Add(AgentProtocol.Capability);
+        if (backend.Pty is not null) capabilities.AddRange([PtyProtocol.Capability, PtyProtocol.ResizeCapability]);
+        if (backend.Files is not null) capabilities.Add(FilesProtocol.Capability);
+        if (backend.Git is not null) capabilities.Add(GitProtocol.Capability);
+        if (backend.Notifications is not null) capabilities.Add(NotificationsProtocol.Capability);
+        if (backend.SessionEditing is not null) capabilities.Add(SessionEditingProtocol.Capability);
+        if (backend.Plugins is not null) capabilities.Add(PluginsProtocol.Capability);
+        if (backend.Models is not null) capabilities.Add(ModelsProtocol.Capability);
+        return capabilities;
+    }
 
     public async Task ServeAsync(Stream duplex, CancellationToken cancellationToken = default)
     {
@@ -54,15 +72,36 @@ public sealed class RemoteHostServer(
         using var pumps = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var connection = new Connection(this, peer, $"c{Interlocked.Increment(ref _connectionSequence)}", pumps.Token);
         peer.RequestHandler = connection.HandleAsync;
+        peer.RequestPreparation = connection.PrepareRequest;
         var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         peer.Closed += _ => closed.TrySetResult();
-        connection.StartIfTrusted();
-        peer.Start();
-        using var registration = cancellationToken.Register(() => closed.TrySetResult());
-        await closed.Task.ConfigureAwait(false);
-        await pumps.CancelAsync().ConfigureAwait(false);
-        connection.StopAll();
-        await connection.Uploads.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            // Register routes synchronously, then read EOF while a snapshot waits for its domain gate.
+            var initialize = connection.StartIfTrustedAsync();
+            peer.Start();
+            using var registration = cancellationToken.Register(() => closed.TrySetResult());
+            if (await Task.WhenAny(initialize, closed.Task).ConfigureAwait(false) == closed.Task)
+            {
+                await pumps.CancelAsync().ConfigureAwait(false);
+                try
+                {
+                    await initialize.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (pumps.IsCancellationRequested)
+                {
+                }
+                return;
+            }
+            await initialize.ConfigureAwait(false);
+            await closed.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            await pumps.CancelAsync().ConfigureAwait(false);
+            connection.StopAll();
+            await connection.Uploads.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private HostInfo StaticInfo() => new(
@@ -75,12 +114,9 @@ public sealed class RemoteHostServer(
     /** 一条连接的处理与推送状态。 */
     private sealed class Connection(RemoteHostServer server, JsonRpcPeer peer, string id, CancellationToken lifetime)
     {
-        private const string PtyPrefix = "host.pty";
-        private const string AgentPrefix = "host.agent";
-        private const string GitPrefix = "host.git";
-        private const string FilePrefix = "host.file";
-        private const string FsPrefix = "host.fs";
-        private const string NotifyPrefix = "host.notify";
+        private delegate ValueTask<JsonElement?> DomainHandler(string name, JsonRpcMessage message, CancellationToken cancellationToken);
+        private delegate ValueTask<JsonElement?>? DomainPreparation(string name, JsonRpcMessage message);
+        private readonly Dictionary<string, (DomainHandler Handle, DomainPreparation? Prepare)> _domainHandlers = new(StringComparer.Ordinal);
 
         private readonly KeyedPumps _eventPumps = new(lifetime);
         private readonly KeyedPumps _ptyPumps = new(lifetime);
@@ -89,6 +125,8 @@ public sealed class RemoteHostServer(
 
         /** With a host token every method but hello waits for a successful hello; without one the connection is trusted from the start. */
         private volatile bool _authenticated = !server.RequiresToken;
+        private bool _stopped;
+        private Task? _hostPushes;
 
         private PendingResolver Resolver => new(_clientName ?? id, id);
 
@@ -96,10 +134,11 @@ public sealed class RemoteHostServer(
         public HostUploads Uploads { get; } = new();
 
         /** 无 token 的 host 从连接建立起就推送; 有 token 的等 hello 通过后再推, 未认证的连接收不到任何请求内容。 */
-        public void StartIfTrusted()
+        public async Task StartIfTrustedAsync()
         {
+            RegisterDomains();
             if (_authenticated)
-                StartHostPushes();
+                await StartHostPushesAsync().ConfigureAwait(false);
         }
 
         public void StopAll()
@@ -108,10 +147,42 @@ public sealed class RemoteHostServer(
             _ptyPumps.StopAll();
             lock (_subscriptions)
             {
+                _stopped = true;
                 foreach (var subscription in _subscriptions)
                     subscription.Dispose();
                 _subscriptions.Clear();
             }
+        }
+
+        /** Ownership changes run in frame order, before concurrent backend work can overtake a preceding subscribe. */
+        public ValueTask<JsonElement?>? PrepareRequest(JsonRpcMessage message, CancellationToken cancellationToken)
+        {
+            if (!_authenticated || server._backend is not { } backend)
+                return null;
+            switch (message.Method)
+            {
+                case HostProtocol.MethodSessionSubscribe:
+                {
+                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSubscribeRequest, "subscribe requires sessionId");
+                    return StartedAsync(_eventPumps.StartAsync(request.SubscriptionId,
+                        token => backend.Session.SubscribeAsync(request.SessionId, request.FromSeq, token),
+                        (events, token) => PumpAsync(events, HostProtocol.NotificationEvent,
+                            item => new RemoteEventFrame(request.SubscriptionId, item), HostProtocolJsonContext.Default.RemoteEventFrame, token)));
+                }
+                case HostProtocol.MethodSessionUnsubscribe:
+                    _eventPumps.Stop(Require(message, HostProtocolJsonContext.Default.RemoteSubscriptionRef, "unsubscribe requires subscriptionId").SubscriptionId);
+                    return ValueTask.FromResult<JsonElement?>(True);
+                default:
+                    return _domainHandlers.TryGetValue(message.Method ?? "", out var domain)
+                        ? domain.Prepare?.Invoke(message.Method!, message)
+                        : null;
+            }
+        }
+
+        private static async ValueTask<JsonElement?> StartedAsync(Task initialize)
+        {
+            await initialize.ConfigureAwait(false);
+            return True;
         }
 
         public async ValueTask<JsonElement?> HandleAsync(JsonRpcMessage message, CancellationToken cancellationToken)
@@ -122,32 +193,55 @@ public sealed class RemoteHostServer(
             switch (name)
             {
                 case HostProtocol.MethodHello:
-                    return Serialize(Hello(message), HostProtocolJsonContext.Default.HostHelloResponse);
+                    return Serialize(await HelloAsync(message).ConfigureAwait(false), HostProtocolJsonContext.Default.HostHelloResponse);
                 case HostProtocol.MethodPing:
                     return Serialize(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), HostProtocolJsonContext.Default.Int64);
                 case HostProtocol.MethodInfo:
                     return Serialize(await InfoAsync(cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.HostInfo);
             }
             var backend = server._backend ?? throw MethodNotFound(name);
-            return Family(name) switch
-            {
-                PtyPrefix => await HandlePtyAsync(backend, name, message, cancellationToken).ConfigureAwait(false),
-                AgentPrefix => await HostAgentMethods.HandleAsync(backend, name, message, cancellationToken).ConfigureAwait(false),
-                GitPrefix => await HostGitMethods.HandleAsync(backend.Files.Policy, name, message, cancellationToken).ConfigureAwait(false),
-                FilePrefix or FsPrefix => await HostFileMethods.HandleAsync(backend.Files, Uploads, name, message, cancellationToken).ConfigureAwait(false),
-                NotifyPrefix => await HostNotifyMethods.HandleAsync(backend.Notifications, name, message, cancellationToken).ConfigureAwait(false),
-                _ => await HandleBackendAsync(backend, name, message, cancellationToken).ConfigureAwait(false),
-            };
+            if (_domainHandlers.TryGetValue(name, out var handler))
+                return await handler.Handle(name, message, cancellationToken).ConfigureAwait(false);
+            return await HandleBackendAsync(backend, name, message, cancellationToken).ConfigureAwait(false);
         }
 
-        /** The method family: the first two dot-separated segments ("host.fs" of "host.fs.upload.begin"). */
-        private static string Family(string name)
+        private void RegisterDomains()
         {
-            var second = name.IndexOf('.', name.IndexOf('.') + 1);
-            return second < 0 ? name : name[..second];
+            if (server._backend is not { } backend)
+                return;
+            if (backend.Agent is { } agent)
+                Register(AgentProtocol.Methods, (name, message, ct) => HostAgentMethods.HandleAsync(agent, name, message, ct));
+            if (backend.Pty is { } pty)
+            {
+                var handler = new HostPtyMethods(pty, (subscriptionId, ptyId) => StartPtyPumpAsync(pty, subscriptionId, ptyId), _ptyPumps.Stop);
+                Register(PtyProtocol.Methods, handler.HandleAsync, handler.Prepare);
+            }
+            if (backend.Files is { } files)
+                Register(FilesProtocol.Methods, (name, message, ct) => HostFileMethods.HandleAsync(files, Uploads, name, message, ct));
+            if (backend.Git is { } git)
+                Register(GitProtocol.Methods, (name, message, ct) => HostGitMethods.HandleAsync(git, name, message, ct));
+            if (backend.Notifications is { } notifications)
+                Register(NotificationsProtocol.Methods, (name, message, ct) => HostNotifyMethods.HandleAsync(notifications, name, message, ct));
+            if (backend.SessionEditing is { } editing)
+                Register(SessionEditingProtocol.Methods, (name, message, ct) => HostSessionEditingMethods.HandleAsync(editing, name, message, ct));
+            if (backend.Plugins is { } plugins)
+                Register(PluginsProtocol.Methods, (name, message, ct) => HostPluginsMethods.HandleAsync(plugins, name, message, ct));
+            if (backend.Models is { } models)
+                Register(ModelsProtocol.Methods, (name, message, ct) => HostModelsMethods.HandleAsync(models, name, message, ct));
         }
 
-        private HostHelloResponse Hello(JsonRpcMessage message)
+        private void Register(IReadOnlyList<string> methods, DomainHandler handler, DomainPreparation? prepare = null)
+        {
+            foreach (var method in methods)
+                _domainHandlers.Add(method, (handler, prepare));
+        }
+
+        private Task StartPtyPumpAsync(IRemotePtyBackend backend, string subscriptionId, string ptyId)
+            => _ptyPumps.StartAsync(subscriptionId, token => backend.AttachPtyAsync(ptyId, token),
+                (output, token) => PumpAsync(output, PtyProtocol.NotificationPtyOutput,
+                    item => new RemotePtyFrame(subscriptionId, item), PtyProtocolJsonContext.Default.RemotePtyFrame, token));
+
+        private async Task<HostHelloResponse> HelloAsync(JsonRpcMessage message)
         {
             var request = message.Params is { } parameters
                 ? JsonSerializer.Deserialize(parameters, HostProtocolJsonContext.Default.HostHelloRequest)
@@ -163,17 +257,17 @@ public sealed class RemoteHostServer(
                     ? $"protocol version mismatch: client {request?.ProtocolVersion}, host {HostProtocol.Version}"
                     : null);
             if (mismatch is null)
-                Authenticate(request?.ClientName);
+                await AuthenticateAsync(request?.ClientName).ConfigureAwait(false);
             return new HostHelloResponse(mismatch is null, HostProtocol.Version, ReleaseVersion, mismatch, server.Capabilities, id);
         }
 
-        private void Authenticate(string? clientName)
+        private async Task AuthenticateAsync(string? clientName)
         {
             _clientName = string.IsNullOrWhiteSpace(clientName) ? null : clientName;
             if (_authenticated)
                 return;
+            await StartHostPushesAsync().ConfigureAwait(false);
             _authenticated = true;
-            StartHostPushes();
         }
 
         private async Task<HostInfo> InfoAsync(CancellationToken cancellationToken)
@@ -186,88 +280,37 @@ public sealed class RemoteHostServer(
             switch (name)
             {
                 case HostProtocol.MethodSessionList:
-                    return Serialize(await backend.ListSessionsAsync(cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListRemoteSessionInfo);
+                    return Serialize(await backend.Session.ListSessionsAsync(cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListRemoteSessionInfo);
                 case HostProtocol.MethodSessionCreate:
                 {
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionCreateRequest, "create requires cwd");
-                    return Serialize(await backend.CreateSessionAsync(request.Cwd, request.Selection, request.Provider, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionInfo);
+                    return Serialize(await backend.Session.CreateSessionAsync(request.Cwd, request.Selection, request.Provider, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionInfo);
                 }
                 case HostProtocol.MethodSessionResume:
                 {
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "resume requires sessionId");
-                    return Serialize(await backend.ResumeSessionAsync(request.SessionId, request.Selection, request.Provider, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionInfo);
+                    return Serialize(await backend.Session.ResumeSessionAsync(request.SessionId, request.Selection, request.Provider, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionInfo);
                 }
                 case HostProtocol.MethodSessionSnapshot:
                 {
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "snapshot requires sessionId");
-                    return Serialize(await backend.GetSessionSnapshotAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionSnapshot);
+                    return Serialize(await backend.Session.GetSessionSnapshotAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionSnapshot);
                 }
-                case HostProtocol.MethodSessionCommand:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteCommandRequest, "command requires sessionId and line");
-                    return Serialize(await backend.ExecuteSessionCommandAsync(request.SessionId, request.Line, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteCommandResult);
-                }
-                case HostProtocol.MethodSessionCommands:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "commands requires sessionId");
-                    return Serialize(await backend.ListSessionCommandsAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListRemoteCommandDescriptor);
-                }
-                case HostProtocol.MethodSessionRename:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRenameRequest, "rename requires sessionId and title");
-                    await backend.RenameSessionAsync(request.SessionId, request.Title, cancellationToken).ConfigureAwait(false);
-                    return True;
-                }
-                case HostProtocol.MethodSessionDelete:
-                    await backend.DeleteSessionAsync(Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "delete requires sessionId").SessionId, cancellationToken).ConfigureAwait(false);
-                    return True;
-                case HostProtocol.MethodSessionApprovalPolicy:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionPolicyRequest, "approvalPolicy requires sessionId and policy");
-                    await backend.SetSessionApprovalPolicyAsync(request.SessionId, request.Policy, cancellationToken).ConfigureAwait(false);
-                    return True;
-                }
-                case HostProtocol.MethodSessionSubagents:
-                    return Serialize(await backend.ListSubagentsAsync(Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "subagents requires sessionId").SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListRemoteSubagentInfo);
-                case HostProtocol.MethodPluginsList:
-                    return Serialize(await backend.ListPluginsAsync(cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListRemotePluginInfo);
-                case HostProtocol.MethodPluginPermission:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemotePluginPermissionRequest, "permission requires package, permission and allowed");
-                    return Serialize(await backend.SetPluginPermissionAsync(request.Package, request.Permission, request.Allowed, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.String);
-                }
-                case HostProtocol.MethodReasoningEfforts:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteModelRef, "reasoningEfforts requires provider and model");
-                    return Serialize(await backend.ListReasoningEffortsAsync(request.Provider, request.Model, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListString);
-                }
-                case HostProtocol.MethodProviderModels:
-                    return Serialize(await backend.ListProviderModelsAsync(Require(message, HostProtocolJsonContext.Default.RemoteProviderRef, "models requires provider").Provider, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListString);
-                case HostProtocol.MethodSessionSubscribe:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSubscribeRequest, "subscribe requires sessionId");
-                    var events = await backend.SubscribeAsync(request.SessionId, request.FromSeq, lifetime).ConfigureAwait(false);
-                    _eventPumps.Start(request.SessionId, token => PumpAsync(events, HostProtocol.NotificationEvent, HostProtocolJsonContext.Default.RemoteEventInfo, token));
-                    return True;
-                }
-                case HostProtocol.MethodSessionUnsubscribe:
-                    _eventPumps.Stop(Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "unsubscribe requires sessionId").SessionId);
-                    return True;
                 case HostProtocol.MethodSessionMessage:
                 {
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteMessageRequest, "message requires sessionId and text");
-                    await backend.SendMessageAsync(request.SessionId, request.Text, request.Images ?? [], cancellationToken).ConfigureAwait(false);
+                    await backend.Session.SendMessageAsync(request.SessionId, request.Text, request.Images ?? [], cancellationToken).ConfigureAwait(false);
                     return True;
                 }
                 case HostProtocol.MethodSessionInterrupt:
-                    await backend.InterruptAsync(Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "interrupt requires sessionId").SessionId, cancellationToken).ConfigureAwait(false);
+                    await backend.Session.InterruptAsync(Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "interrupt requires sessionId").SessionId, cancellationToken).ConfigureAwait(false);
                     return True;
                 case HostProtocol.MethodSessionsList:
                     return Serialize(backend.Sessions.List(), HostProtocolJsonContext.Default.IReadOnlyListRemoteHostSession);
                 case HostProtocol.MethodToolsList:
                 {
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "tools requires sessionId");
-                    return Serialize(await backend.ListToolsAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListString);
+                    return Serialize(await backend.Session.ListToolsAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListString);
                 }
                 default:
                     return HandleDecisions(backend, name, message);
@@ -295,53 +338,37 @@ public sealed class RemoteHostServer(
             }
         }
 
-        private async ValueTask<JsonElement?> HandlePtyAsync(IRemoteHostBackend backend, string name, JsonRpcMessage message, CancellationToken cancellationToken)
+
+        private Task StartHostPushesAsync()
         {
-            switch (name)
-            {
-                case HostProtocol.MethodPtyStart:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemotePtyStartRequest, "pty start requires fileName");
-                    var ptyId = await backend.StartPtyAsync(request, cancellationToken).ConfigureAwait(false);
-                    return Serialize(new RemotePtyRef(ptyId), HostProtocolJsonContext.Default.RemotePtyRef);
-                }
-                case HostProtocol.MethodPtyWrite:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemotePtyInput, "pty write requires ptyId");
-                    await backend.WritePtyAsync(request.PtyId, Convert.FromBase64String(request.Base64), cancellationToken).ConfigureAwait(false);
-                    return True;
-                }
-                case HostProtocol.MethodPtyResize:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemotePtyResize, "pty resize requires ptyId, columns and rows");
-                    await backend.ResizePtyAsync(request.PtyId, request.Columns, request.Rows, cancellationToken).ConfigureAwait(false);
-                    return True;
-                }
-                case HostProtocol.MethodPtyStop:
-                    await backend.StopPtyAsync(Require(message, HostProtocolJsonContext.Default.RemotePtyRef, "pty stop requires ptyId").PtyId, cancellationToken).ConfigureAwait(false);
-                    return True;
-                case HostProtocol.MethodPtyAttach:
-                {
-                    var ptyId = Require(message, HostProtocolJsonContext.Default.RemotePtyRef, "pty attach requires ptyId").PtyId;
-                    var output = await backend.AttachPtyAsync(ptyId, lifetime).ConfigureAwait(false);
-                    _ptyPumps.Start(ptyId, token => PumpAsync(output, HostProtocol.NotificationPtyOutput, HostProtocolJsonContext.Default.RemotePtyOutput, token));
-                    return True;
-                }
-                case HostProtocol.MethodPtyDetach:
-                    _ptyPumps.Stop(Require(message, HostProtocolJsonContext.Default.RemotePtyRef, "pty detach requires ptyId").PtyId);
-                    return True;
-                default:
-                    throw new JsonRpcException(JsonRpcPeer.MethodNotFound, $"method not found: {name}");
-            }
+            lock (_subscriptions)
+                return _hostPushes ??= SubscribeHostPushesAsync();
         }
 
-        private void StartHostPushes()
+        private async Task SubscribeHostPushesAsync()
         {
             if (server._backend is not { } backend)
                 return;
-            HostSubscription[] subscriptions = [backend.Pending.Subscribe(), backend.Sessions.Subscribe(), backend.Notifications.Subscribe()];
-            lock (_subscriptions)
-                _subscriptions.AddRange(subscriptions);
+            List<HostSubscription> subscriptions = [];
+            try
+            {
+                subscriptions.Add(backend.Pending.Subscribe());
+                subscriptions.Add(backend.Sessions.Subscribe());
+                if (backend.Notifications is { } notifications)
+                    subscriptions.Add(await notifications.SubscribeAsync(lifetime).ConfigureAwait(false));
+                lock (_subscriptions)
+                {
+                    if (_stopped)
+                        throw new OperationCanceledException(lifetime);
+                    _subscriptions.AddRange(subscriptions);
+                }
+            }
+            catch
+            {
+                foreach (var subscription in subscriptions)
+                    subscription.Dispose();
+                throw;
+            }
             foreach (var subscription in subscriptions)
                 _ = PumpNotificationsAsync(subscription);
         }
@@ -358,12 +385,12 @@ public sealed class RemoteHostServer(
             }
         }
 
-        private async Task PumpAsync<T>(IAsyncEnumerable<T> items, string method, JsonTypeInfo<T> info, CancellationToken cancellationToken)
+        private async Task PumpAsync<T, TFrame>(IAsyncEnumerable<T> items, string method, Func<T, TFrame> frame, JsonTypeInfo<TFrame> info, CancellationToken cancellationToken)
         {
             try
             {
                 await foreach (var item in items.WithCancellation(cancellationToken).ConfigureAwait(false))
-                    await peer.NotifyAsync(method, Serialize(item, info), cancellationToken).ConfigureAwait(false);
+                    await peer.NotifyAsync(method, Serialize(frame(item), info), cancellationToken).ConfigureAwait(false);
             }
             catch (Exception error) when (error is OperationCanceledException or IOException or ObjectDisposedException)
             {
@@ -371,42 +398,97 @@ public sealed class RemoteHostServer(
         }
     }
 
-    /** 每个 key(会话 id / PTY id)至多一个推送泵: 重复订阅先停旧的, 避免同一内容被推送多次。 */
+    /** 推送泵归属于订阅读者，释放一个读者不会影响同一会话或 PTY 的其他视图。 */
     private sealed class KeyedPumps(CancellationToken lifetime)
     {
         private readonly Dictionary<string, CancellationTokenSource> _pumps = new(StringComparer.Ordinal);
+        private bool _stopped;
 
-        public void Start(string key, Func<CancellationToken, Task> pump)
+        /** Register before acquisition: detach owns cancellation even while the backend is awaiting its reader. */
+        public async Task StartAsync<T>(string key,
+            Func<CancellationToken, Task<RemoteHostStream<T>>> initialize,
+            Func<IAsyncEnumerable<T>, CancellationToken, Task> pump)
         {
             CancellationTokenSource source;
             lock (_pumps)
             {
+                if (_stopped)
+                    throw new OperationCanceledException(lifetime);
                 if (_pumps.Remove(key, out var existing))
                     existing.Cancel();
                 source = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
                 _pumps[key] = source;
             }
-            _ = pump(source.Token);
+            // Registration is synchronous; backend acquisition must not occupy the frame reader.
+            await Task.Yield();
+            RemoteHostStream<T>? stream = null;
+            var handedOff = false;
+            try
+            {
+                source.Token.ThrowIfCancellationRequested();
+                stream = await initialize(source.Token).ConfigureAwait(false);
+                source.Token.ThrowIfCancellationRequested();
+                handedOff = true;
+                _ = RunAsync(key, source, stream, pump);
+            }
+            finally
+            {
+                if (!handedOff)
+                {
+                    try
+                    {
+                        if (stream is not null)
+                            await stream.DisposeAsync().ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        Complete(key, source);
+                    }
+                }
+            }
+        }
+
+        private async Task RunAsync<T>(string key, CancellationTokenSource source, RemoteHostStream<T> stream,
+            Func<IAsyncEnumerable<T>, CancellationToken, Task> pump)
+        {
+            try
+            {
+                await using (((IAsyncDisposable)stream).ConfigureAwait(false))
+                    await pump(stream, source.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                Complete(key, source);
+            }
+        }
+
+        private void Complete(string key, CancellationTokenSource source)
+        {
+            lock (_pumps)
+            {
+                if (_pumps.TryGetValue(key, out var current) && ReferenceEquals(current, source))
+                    _pumps.Remove(key);
+                source.Dispose();
+            }
         }
 
         public void Stop(string key)
         {
-            CancellationTokenSource? source;
             lock (_pumps)
-                _pumps.Remove(key, out source);
-            source?.Cancel();
+                if (_pumps.Remove(key, out var source))
+                    source.Cancel();
         }
 
         public void StopAll()
         {
-            CancellationTokenSource[] sources;
             lock (_pumps)
             {
-                sources = [.. _pumps.Values];
+                _stopped = true;
+                var sources = _pumps.Values.ToArray();
                 _pumps.Clear();
+                foreach (var source in sources)
+                    source.Cancel();
             }
-            foreach (var source in sources)
-                source.Cancel();
         }
     }
 }

@@ -14,16 +14,16 @@ public sealed class RemoteHostFileTransferTests
         await using var host = await HarnessHostFixture.CreateAsync("mft", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("files", Ct);
         var directory = Path.Combine(host.Environment.App.Home.Root, "transfer");
-        await client.CreateDirectoryAsync(Path.Combine(directory, "nested"), Ct);
+        await client.Files.CreateDirectoryAsync(Path.Combine(directory, "nested"), Ct);
         var content = new byte[(HostFileSystem.TransferChunkBytes * 5 / 2) + 17];
         new Random(20261015).NextBytes(content);
         var target = Path.Combine(directory, "nested", "blob.bin");
 
-        var stat = await client.UploadFileAsync(target, new MemoryStream(content), cancellationToken: Ct);
+        var stat = await client.Files.UploadFileAsync(target, new MemoryStream(content), cancellationToken: Ct);
         using var downloaded = new MemoryStream();
-        var copied = await client.DownloadFileAsync(target, downloaded, Ct);
+        var copied = await client.Files.DownloadFileAsync(target, downloaded, Ct);
 
-        Assert.True(client.Supports(HostCapabilities.FsTransfer));
+        Assert.True(client.Supports(FilesProtocol.Capability));
         Assert.Equal((true, false, (long)content.Length), (stat.Exists, stat.IsDirectory, stat.Size));
         Assert.Equal(content.Length, copied);
         Assert.Equal(content, downloaded.ToArray());
@@ -37,19 +37,19 @@ public sealed class RemoteHostFileTransferTests
         await using var host = await HarnessHostFixture.CreateAsync("mfa", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("files", Ct);
         var target = Path.Combine(host.Environment.App.Home.Root, "config.json");
-        await client.WriteFileAsync(target, "old"u8.ToArray(), Ct);
+        await client.Files.WriteFileAsync(target, "old"u8.ToArray(), Ct);
 
-        var upload = await client.BeginUploadAsync(target, cancellationToken: Ct);
-        var received = await client.UploadChunkAsync(upload.UploadId, 0, "new-"u8.ToArray(), Ct);
-        await Assert.ThrowsAsync<JsonRpcException>(() => client.UploadChunkAsync(upload.UploadId, 0, "new-"u8.ToArray(), Ct));
-        var midway = await client.ReadFileAsync(target, Ct);
-        await client.UploadChunkAsync(upload.UploadId, received, "content"u8.ToArray(), Ct);
-        var committed = await client.CommitUploadAsync(upload.UploadId, 11, Ct);
+        var upload = await client.Files.BeginUploadAsync(target, cancellationToken: Ct);
+        var received = await client.Files.UploadChunkAsync(upload.UploadId, 0, "new-"u8.ToArray(), Ct);
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Files.UploadChunkAsync(upload.UploadId, 0, "new-"u8.ToArray(), Ct));
+        var midway = await client.Files.ReadFileAsync(target, Ct);
+        await client.Files.UploadChunkAsync(upload.UploadId, received, "content"u8.ToArray(), Ct);
+        var committed = await client.Files.CommitUploadAsync(upload.UploadId, 11, Ct);
 
         Assert.Equal(4, received);
         Assert.Equal("old"u8.ToArray(), midway);
         Assert.Equal(11, committed.Size);
-        Assert.Equal("new-content"u8.ToArray(), await client.ReadFileAsync(target, Ct));
+        Assert.Equal("new-content"u8.ToArray(), await client.Files.ReadFileAsync(target, Ct));
         Assert.DoesNotContain(Directory.GetFiles(host.Environment.App.Home.Root), path => path.EndsWith(".part", StringComparison.Ordinal));
     }
 
@@ -60,15 +60,15 @@ public sealed class RemoteHostFileTransferTests
         var directory = Path.Combine(host.Environment.App.Home.Root, "drop");
         Directory.CreateDirectory(directory);
         var uploader = await host.ConnectAsync("uploader", Ct);
-        var upload = await uploader.BeginUploadAsync(Path.Combine(directory, "half.bin"), cancellationToken: Ct);
-        await uploader.UploadChunkAsync(upload.UploadId, 0, new byte[1024], Ct);
+        var upload = await uploader.Files.BeginUploadAsync(Path.Combine(directory, "half.bin"), cancellationToken: Ct);
+        await uploader.Files.UploadChunkAsync(upload.UploadId, 0, new byte[1024], Ct);
         Assert.Single(Directory.GetFiles(directory));
 
         await uploader.DisposeAsync();
 
         await WaitUntilAsync(() => Directory.GetFiles(directory).Length == 0);
         var other = await host.ConnectAsync("other", Ct);
-        Assert.False((await other.StatAsync(Path.Combine(directory, "half.bin"), Ct)).Exists);
+        Assert.False((await other.Files.StatAsync(Path.Combine(directory, "half.bin"), Ct)).Exists);
     }
 
     [Fact(Timeout = 60000)]
@@ -77,22 +77,22 @@ public sealed class RemoteHostFileTransferTests
         await using var host = await HarnessHostFixture.CreateAsync("mfd", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("files", Ct);
         var root = Path.Combine(host.Environment.App.Home.Root, "ops");
-        await client.CreateDirectoryAsync(Path.Combine(root, "a", "b"), Ct);
-        await client.WriteFileAsync(Path.Combine(root, "a", "b", "f.txt"), "x"u8.ToArray(), Ct);
-        await client.WriteFileAsync(Path.Combine(root, "other.txt"), "y"u8.ToArray(), Ct);
+        await client.Files.CreateDirectoryAsync(Path.Combine(root, "a", "b"), Ct);
+        await client.Files.WriteFileAsync(Path.Combine(root, "a", "b", "f.txt"), "x"u8.ToArray(), Ct);
+        await client.Files.WriteFileAsync(Path.Combine(root, "other.txt"), "y"u8.ToArray(), Ct);
 
-        await client.RenameAsync(Path.Combine(root, "a", "b", "f.txt"), Path.Combine(root, "a", "g.txt"), cancellationToken: Ct);
-        await Assert.ThrowsAsync<JsonRpcException>(() => client.RenameAsync(Path.Combine(root, "a", "g.txt"), Path.Combine(root, "other.txt"), cancellationToken: Ct));
-        await client.RenameAsync(Path.Combine(root, "a", "g.txt"), Path.Combine(root, "other.txt"), overwrite: true, Ct);
-        await Assert.ThrowsAsync<JsonRpcException>(() => client.DeleteAsync(Path.Combine(root, "a"), cancellationToken: Ct));
-        await client.DeleteAsync(Path.Combine(root, "a"), recursive: true, Ct);
+        await client.Files.RenameAsync(Path.Combine(root, "a", "b", "f.txt"), Path.Combine(root, "a", "g.txt"), cancellationToken: Ct);
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Files.RenameAsync(Path.Combine(root, "a", "g.txt"), Path.Combine(root, "other.txt"), cancellationToken: Ct));
+        await client.Files.RenameAsync(Path.Combine(root, "a", "g.txt"), Path.Combine(root, "other.txt"), overwrite: true, Ct);
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Files.DeleteAsync(Path.Combine(root, "a"), cancellationToken: Ct));
+        await client.Files.DeleteAsync(Path.Combine(root, "a"), recursive: true, Ct);
 
-        var directory = await client.StatAsync(root, Ct);
-        var file = await client.StatAsync(Path.Combine(root, "other.txt"), Ct);
+        var directory = await client.Files.StatAsync(root, Ct);
+        var file = await client.Files.StatAsync(Path.Combine(root, "other.txt"), Ct);
         Assert.Equal((true, true), (directory.Exists, directory.IsDirectory));
         Assert.Equal((true, false, 1L), (file.Exists, file.IsDirectory, file.Size));
-        Assert.Equal("x"u8.ToArray(), await client.ReadFileAsync(Path.Combine(root, "other.txt"), Ct));
-        Assert.False((await client.StatAsync(Path.Combine(root, "a"), Ct)).Exists);
+        Assert.Equal("x"u8.ToArray(), await client.Files.ReadFileAsync(Path.Combine(root, "other.txt"), Ct));
+        Assert.False((await client.Files.StatAsync(Path.Combine(root, "a"), Ct)).Exists);
     }
 
     [Fact(Timeout = 60000)]
@@ -105,17 +105,17 @@ public sealed class RemoteHostFileTransferTests
         var link = Path.Combine(host.Environment.App.Home.Root, "etc-link");
         File.CreateSymbolicLink(link, "/etc");
 
-        var direct = await Assert.ThrowsAsync<JsonRpcException>(() => client.ReadFileAsync("/etc/hostname", Ct));
-        var throughLink = await Assert.ThrowsAsync<JsonRpcException>(() => client.ReadFileAsync(Path.Combine(link, "hostname"), Ct));
-        await Assert.ThrowsAsync<JsonRpcException>(() => client.DownloadChunkAsync("/etc/hostname", 0, cancellationToken: Ct));
-        await Assert.ThrowsAsync<JsonRpcException>(() => client.BeginUploadAsync("/etc/dsh-probe", cancellationToken: Ct));
-        await Assert.ThrowsAsync<JsonRpcException>(() => client.ListDirectoryAsync("/", Ct));
-        var linkStat = await client.StatAsync(link, Ct);
+        var direct = await Assert.ThrowsAsync<JsonRpcException>(() => client.Files.ReadFileAsync("/etc/hostname", Ct));
+        var throughLink = await Assert.ThrowsAsync<JsonRpcException>(() => client.Files.ReadFileAsync(Path.Combine(link, "hostname"), Ct));
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Files.DownloadChunkAsync("/etc/hostname", 0, cancellationToken: Ct));
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Files.BeginUploadAsync("/etc/dsh-probe", cancellationToken: Ct));
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Files.ListDirectoryAsync("/", Ct));
+        var linkStat = await client.Files.StatAsync(link, Ct);
 
         Assert.Contains("outside", direct.Message, StringComparison.Ordinal);
         Assert.Contains("outside", throughLink.Message, StringComparison.Ordinal);
         Assert.True(linkStat.IsSymbolicLink);
-        Assert.Null((await client.ListDirectoryAsync("~", Ct)).Parent);
+        Assert.Null((await client.Files.ListDirectoryAsync("~", Ct)).Parent);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)

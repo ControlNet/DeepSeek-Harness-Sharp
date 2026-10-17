@@ -21,26 +21,26 @@ public sealed class IrohMultiplexingTests
         };
         try
         {
-            Assert.Equal("tcp-master-ok", await SshHostLauncher.RunRemoteAsync(master, "printf '%s' tcp-master-ok", ct));
-            await TestSshServer.RunAsync("ssh", ["-S", socket, "-O", "check", source.Target], ct);
+            Assert.Equal("tcp-master-ok", await new SshTransport(master).RunAsync("printf '%s' tcp-master-ok", ct));
+            await TestSshServer.RunAsync("ssh", ["-S", socket, "-O", "check", $"{source.User}@{source.ConnectionHost}"], ct);
             var endpoint = master with { Kind = MachineKinds.Iroh, Host = "", EndpointId = new string('0', IrohSshTransport.EndpointIdLength), RelayUrls = ["http://127.0.0.1:9"] };
             using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct);
             attempt.CancelAfter(TimeSpan.FromSeconds(10));
             try
             {
-                var observed = await SshHostLauncher.RunRemoteCaptureAsync(endpoint, "printf '%s' multiplexed-tcp-bypass; touch route-bypassed", attempt.Token);
+                var observed = await new SshTransport(endpoint).CaptureAsync("printf '%s' multiplexed-tcp-bypass; touch route-bypassed", attempt.Token);
                 Assert.NotEqual(0, observed.ExitCode);
             }
             catch (OperationCanceledException) when (attempt.IsCancellationRequested && !ct.IsCancellationRequested)
             {
             }
             Assert.False(File.Exists(Path.Combine(server.Home, "route-bypassed")));
-            Assert.Equal("tcp-master-still-ok", await SshHostLauncher.RunRemoteAsync(master, "printf '%s' tcp-master-still-ok", ct));
+            Assert.Equal("tcp-master-still-ok", await new SshTransport(master).RunAsync("printf '%s' tcp-master-still-ok", ct));
         }
         finally
         {
             if (File.Exists(socket))
-                await TestSshServer.RunAsync("ssh", ["-S", socket, "-O", "exit", source.Target], CancellationToken.None);
+                await TestSshServer.RunAsync("ssh", ["-S", socket, "-O", "exit", $"{source.User}@{source.ConnectionHost}"], CancellationToken.None);
             File.Delete(socket);
         }
     }

@@ -9,7 +9,7 @@ using Dsh.WebBridge;
 namespace Dsh.Tests;
 
 /**
- * Hub mode over real ssh: the bridge deploys dsharp to a user-mode sshd "remote" through its status connection, then gives every browser WebSocket its own `ssh -T ... host --serve --stdio` byte tunnel.
+ * Hub mode over real ssh: the bridge deploys dsharp to a user-mode sshd remote and every browser shares the Fleet connection, without per-browser SSH tunnels.
  * Same sshd recipe as FleetSshEndToEndTests: test keys and known_hosts in the test directory, so the real ~/.ssh and ~/.dsharp stay untouched.
  */
 [Collection(SerialProcessCollection.Name)]
@@ -22,7 +22,7 @@ public sealed class WebBridgeSshTunnelTests
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact(Timeout = 360000)]
-    public async Task EveryWebSocket_GetsItsOwnSshTunnel_ToTheDeployedRemoteHost()
+    public async Task BrowserSockets_ShareOneDeployedSshConnection_AndTerminalSurvivesInitiatingPageClose()
     {
         var ct = TestContext.Current.CancellationToken;
         var executable = FleetSshEndToEndTests.RequireEnvironment();
@@ -52,14 +52,14 @@ public sealed class WebBridgeSshTunnelTests
                 Assert.Equal(remoteHome, (await WebSocketRpc.RequestAsync(socket, 2, HostProtocol.MethodInfo, null)).GetProperty("HomeRoot").GetString());
             }
 
-            Assert.Equal(3, SshChildren(machine.Port));
-            var started = await WebSocketRpc.RequestAsync(first, 3, HostProtocol.MethodPtyStart, $$"""{"FileName":"/bin/sh","Arguments":["-c","echo tunnel-$((6*7)); sleep 30"],"Cwd":{{JsonSerializer.Serialize(remoteHome)}}}""");
+            Assert.Equal(1, SshChildren(machine.Port));
+            var started = await WebSocketRpc.RequestAsync(first, 3, PtyProtocol.MethodPtyStart, $$"""{"FileName":"/bin/sh","Arguments":["-c","echo tunnel-$((6*7)); sleep 30"],"Cwd":{{JsonSerializer.Serialize(remoteHome)}}}""");
             var ptyId = started.GetProperty("PtyId").GetString()!;
-            await WebSocketRpc.SendAsync(second, 4, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}"}""");
+            await WebSocketRpc.SendAsync(second, 4, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"ssh-terminal"}""");
             await WebBridgeHubTests.ReadTerminalUntilAsync(second, ptyId, "tunnel-42");
 
             await first.CloseAsync(WebSocketCloseStatus.NormalClosure, "", ct);
-            await WebSocketRpc.WaitForAsync(() => SshChildren(machine.Port) == 2);
+            Assert.Equal(1, SshChildren(machine.Port));
         }
         finally
         {
@@ -71,7 +71,7 @@ public sealed class WebBridgeSshTunnelTests
         guard.AssertUnchanged();
     }
 
-    /** Live ssh processes this test process started for the sshd on port: the bridge's status connection plus one tunnel per open WebSocket. */
+    /** Live SSH transports this test process started for the sshd: exactly one shared Fleet connection, independent of open browser pages. */
     private static int SshChildren(int port)
     {
         var parent = Environment.ProcessId.ToString(CultureInfo.InvariantCulture);

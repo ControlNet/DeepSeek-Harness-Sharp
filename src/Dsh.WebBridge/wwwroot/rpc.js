@@ -1,9 +1,8 @@
 // JSON-RPC 2.0 client for the dsharp web bridge.
-// The bridge relays every WebSocket text message verbatim to the host (one message is one JSON-RPC request, response or notification), so this module is the whole client-side protocol layer.
-// Method names and parameter shapes are the host's (Dsh.RemoteHost HostProtocol); parameter and result property names are PascalCase and case-sensitive.
+// Each WebSocket is a view transport over the bridge's shared Fleet client, not a raw host connection.
+// Host method names remain the user-operation API; bridge.view contains the server's authoritative render projection.
 
-/** JSON-RPC "method not found", returned for requests the host sends to the browser. */
-const METHOD_NOT_FOUND = -32601;
+import { JsonRpc } from '/protocol.js';
 
 /** Error code of requests made while the WebSocket is not open (the WebSocket close code of normal closure). */
 const CONNECTION_CLOSED = 1000;
@@ -51,7 +50,7 @@ export class HostRpc {
     if (this.#socket.readyState !== WebSocket.OPEN)
       return Promise.reject(new RpcError({ code: CONNECTION_CLOSED, message: 'not connected' }));
     const id = this.#nextId++;
-    const message = params === undefined ? { jsonrpc: '2.0', id, method } : { jsonrpc: '2.0', id, method, params };
+    const message = params === undefined ? { jsonrpc: JsonRpc.Version, id, method } : { jsonrpc: JsonRpc.Version, id, method, params };
     return new Promise((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
       this.#socket.send(JSON.stringify(message));
@@ -59,7 +58,7 @@ export class HostRpc {
   }
 
   notify(method, params) {
-    this.#socket.send(JSON.stringify(params === undefined ? { jsonrpc: '2.0', method } : { jsonrpc: '2.0', method, params }));
+    this.#socket.send(JSON.stringify(params === undefined ? { jsonrpc: JsonRpc.Version, method } : { jsonrpc: JsonRpc.Version, method, params }));
   }
 
   /** Subscribes to a host notification such as host.event or host.approval; returns the unsubscribe function. */
@@ -89,7 +88,7 @@ export class HostRpc {
       return;
     }
     if (message.id !== undefined) {
-      this.#socket.send(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: METHOD_NOT_FOUND, message: `method not found: ${message.method}` } }));
+      this.#socket.send(JSON.stringify({ jsonrpc: JsonRpc.Version, id: message.id, error: { code: JsonRpc.MethodNotFound, message: `method not found: ${message.method}` } }));
       return;
     }
     for (const handler of this.#handlers.get(message.method) ?? [])

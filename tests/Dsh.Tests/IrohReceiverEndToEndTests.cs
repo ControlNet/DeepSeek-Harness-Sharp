@@ -19,29 +19,29 @@ public sealed class IrohReceiverEndToEndTests
         var activation = Guid.NewGuid().ToString("N");
         try
         {
-            var first = IrohRemoteInstaller.ParseStatus(await SshHostLauncher.RunRemoteAsync(direct, $"{enable} --activation {activation}", ct));
+            var first = IrohRemoteInstaller.ParseStatus(await new SshTransport(direct).RunAsync($"{enable} --activation {activation}", ct));
             Assert.True(first.Running);
             var tunneled = direct with { Kind = MachineKinds.Iroh, Host = "192.0.2.1", EndpointId = first.EndpointId };
-            var observed = IrohRemoteInstaller.ParseStatus(await SshHostLauncher.RunRemoteAsync(tunneled, $"{command} info", ct));
+            var observed = IrohRemoteInstaller.ParseStatus(await new SshTransport(tunneled).RunAsync($"{command} info", ct));
             Assert.True(observed.Running);
             var otherActivation = Guid.NewGuid().ToString("N");
-            Assert.Equal(first.EndpointId, IrohRemoteInstaller.ParseStatus(await SshHostLauncher.RunRemoteAsync(direct, $"{enable} --activation {otherActivation}", ct)).EndpointId);
-            await SshHostLauncher.RunRemoteAsync(direct, $"{command} disable --activation {otherActivation}", ct);
-            Assert.Equal("receiver-ready", await SshHostLauncher.RunRemoteAsync(tunneled, "printf '%s' receiver-ready", ct));
-            await SshHostLauncher.RunRemoteAsync(direct, $"{command} disable --activation {activation}", ct);
-            var stopped = IrohRemoteInstaller.ParseStatus(await SshHostLauncher.RunRemoteAsync(direct, $"{command} info", ct));
+            Assert.Equal(first.EndpointId, IrohRemoteInstaller.ParseStatus(await new SshTransport(direct).RunAsync($"{enable} --activation {otherActivation}", ct)).EndpointId);
+            await new SshTransport(direct).RunAsync($"{command} disable --activation {otherActivation}", ct);
+            Assert.Equal("receiver-ready", await new SshTransport(tunneled).RunAsync("printf '%s' receiver-ready", ct));
+            await new SshTransport(direct).RunAsync($"{command} disable --activation {activation}", ct);
+            var stopped = IrohRemoteInstaller.ParseStatus(await new SshTransport(direct).RunAsync($"{command} info", ct));
             Assert.False(stopped.Running);
             Assert.Equal(first.EndpointId, stopped.EndpointId);
             var canceled = Guid.NewGuid().ToString("N");
-            await SshHostLauncher.RunRemoteAsync(direct, $"{command} disable --activation {canceled}", ct);
-            var delayed = await SshHostLauncher.RunRemoteCaptureAsync(direct, $"{enable} --activation {canceled}", ct);
+            await new SshTransport(direct).RunAsync($"{command} disable --activation {canceled}", ct);
+            var delayed = await new SshTransport(direct).CaptureAsync($"{enable} --activation {canceled}", ct);
             Assert.NotEqual(0, delayed.ExitCode);
-            Assert.False(IrohRemoteInstaller.ParseStatus(await SshHostLauncher.RunRemoteAsync(direct, $"{command} info", ct)).Running);
-            var restarted = IrohRemoteInstaller.ParseStatus(await SshHostLauncher.RunRemoteAsync(direct, enable, ct));
-            await SshHostLauncher.RunRemoteAsync(direct, $"{command} disable --activation {activation}", ct);
+            Assert.False(IrohRemoteInstaller.ParseStatus(await new SshTransport(direct).RunAsync($"{command} info", ct)).Running);
+            var restarted = IrohRemoteInstaller.ParseStatus(await new SshTransport(direct).RunAsync(enable, ct));
+            await new SshTransport(direct).RunAsync($"{command} disable --activation {activation}", ct);
             Assert.True(restarted.Running);
             Assert.Equal(first.EndpointId, restarted.EndpointId);
-            Assert.Equal("receiver-restarted", await SshHostLauncher.RunRemoteAsync(tunneled, "printf '%s' receiver-restarted", ct));
+            Assert.Equal("receiver-restarted", await new SshTransport(tunneled).RunAsync("printf '%s' receiver-restarted", ct));
         }
         finally
         {

@@ -3,8 +3,7 @@
 import { h, mount } from '../dom.js';
 import { prettyJson } from './common.js';
 
-/** System messages from this plugin source carry an ACP agent's plan, one `[status] content` line per entry. */
-const PLAN_SOURCE = 'acp-plan';
+import { SessionEventType, StreamChunkType, ContentBlockType, TurnEndKind, SessionEventSource } from '/protocol.js';
 
 /** Scroll distance from the bottom within which new content keeps the view pinned to the end. */
 const STICK_TO_BOTTOM_PX = 80;
@@ -52,7 +51,7 @@ export class Transcript {
   /** Streaming text of the current turn and step; the final assistant/message replaces it. */
   assistantChunk(data, event) {
     const chunk = data.chunk ?? {};
-    if (chunk.type !== 'text-delta' && chunk.type !== 'reasoning-delta')
+    if (chunk.type !== StreamChunkType.TextDelta && chunk.type !== StreamChunkType.ReasoningDelta)
       return;
     const key = `${data.turn}:${data.step}`;
     let live = this.#streaming.get(key);
@@ -60,7 +59,7 @@ export class Transcript {
       live = { node: this.#append(bubble('assistant streaming', 'Agent', ''), event.seq), text: '', thinking: '' };
       this.#streaming.set(key, live);
     }
-    if (chunk.type === 'text-delta')
+    if (chunk.type === StreamChunkType.TextDelta)
       live.text += chunk.text ?? '';
     else
       live.thinking += chunk.text ?? '';
@@ -110,7 +109,7 @@ export class Transcript {
   systemMessage(data, event) {
     const message = data.message ?? {};
     const text = messageText(message);
-    if (message.source?.plugin !== PLAN_SOURCE) {
+    if (message.source?.plugin !== SessionEventSource.AcpPlan) {
       this.#append(h('p', { className: 'system muted' }, text), event.seq);
       return;
     }
@@ -127,20 +126,20 @@ export class Transcript {
   }
 
   turnEnd(data, event) {
-    const reason = data.reason?.kind ?? 'completed';
-    if (reason !== 'completed')
+    const reason = data.reason?.kind ?? TurnEndKind.Completed;
+    if (reason !== TurnEndKind.Completed)
       this.#append(h('p', { className: 'turn-end muted' }, `Turn ended: ${reason}`), event.seq);
   }
 }
 
 const HANDLERS = {
-  'user/message': Transcript.prototype.userMessage,
-  'assistant/chunk': Transcript.prototype.assistantChunk,
-  'assistant/message': Transcript.prototype.assistantMessage,
-  'tool/call': Transcript.prototype.toolCall,
-  'tool/result': Transcript.prototype.toolResult,
-  'system/message': Transcript.prototype.systemMessage,
-  'turn/end': Transcript.prototype.turnEnd,
+  [SessionEventType.UserMessage]: Transcript.prototype.userMessage,
+  [SessionEventType.AssistantChunk]: Transcript.prototype.assistantChunk,
+  [SessionEventType.AssistantMessage]: Transcript.prototype.assistantMessage,
+  [SessionEventType.ToolCall]: Transcript.prototype.toolCall,
+  [SessionEventType.ToolResult]: Transcript.prototype.toolResult,
+  [SessionEventType.SystemMessage]: Transcript.prototype.systemMessage,
+  [SessionEventType.TurnEnd]: Transcript.prototype.turnEnd,
 };
 
 const PLAN_MARKS = { completed: '✓', in_progress: '◐', pending: '○' };
@@ -168,17 +167,17 @@ function messageText(message) {
   if (typeof content === 'string')
     return content;
   return (content ?? []).map((block) => {
-    if (block.type === 'text')
+    if (block.type === ContentBlockType.Text)
       return block.text ?? '';
-    if (block.type === 'image')
+    if (block.type === ContentBlockType.Image)
       return '[image]';
     return '';
   }).filter((text) => text.length > 0).join('\n');
 }
 
 function toolResultText(message) {
-  const blocks = message.block?.content ?? message.content?.find((block) => block.type === 'tool-result')?.content ?? [];
+  const blocks = message.block?.content ?? message.content?.find((block) => block.type === ContentBlockType.ToolResult)?.content ?? [];
   if (typeof blocks === 'string')
     return blocks;
-  return blocks.map((block) => (block.type === 'text' ? block.text ?? '' : `[${block.type}]`)).join('\n');
+  return blocks.map((block) => (block.type === ContentBlockType.Text ? block.text ?? '' : `[${block.type}]`)).join('\n');
 }

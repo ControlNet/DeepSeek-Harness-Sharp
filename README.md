@@ -52,6 +52,10 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
    终端 TUI 的后台 Git 面板、检查点和命令工具不继承交互终端输入,刷新或执行命令期间仍可逐键输入。普通命令的标准输入立即收到 EOF;需要持续输入的管道协议(如 `bash_persistent`)单独保持输入管道,交互式 shell 仍使用独立 PTY。窗口调整和子进程退出信号不会被误当作输入结束。正常 `/exit` 会恢复终端行模式、回显和主屏幕。
 
    Unix 的真实 PTY 输入、窗口调整、正常退出与完整 termios 恢复由 `Dsh.Tests.TuiRawModeEndToEndTests` 固定回归覆盖。可用 `dotnet run --project tests/Dsh.Tests -c Debug -- -class Dsh.Tests.TuiRawModeEndToEndTests -trait- Category=LlmSmoke` 运行无模型用例；在正常 `DSH_HOME` 中配置可用模型后，改用 `-trait Category=LlmSmoke` 执行真实模型回合。测试只操作自己的独立 PTY，不接管当前桌面终端；含凭据的配置与原始日志不可上传。
+
+   测试边界：raw 输入与退出恢复复用 `PtyTuiHarness` 的生产 PTY；系统 `/bin/sh` 在 CLI 退出后保留终端归属，`stty -g` 与 `stty -a` 对照完整模式、控制字符、速率及 Linux 行规程，不再构建专用原生测试程序。真实内核输入/resize/退出、tmux 跨客户端、SSH 部署与断线保留原 PTY、浏览器审批与手机可见 DOM 保留端到端覆盖；VT 解析、样式、屏幕快照及续流语义由直接消费生产 `VtScreen` 的组件测试覆盖，GUI 工作区复用 `HeadlessGui`/`HarnessHostFixture`，不为每项底层语义另起完整应用。
+
+   夹具先确认首帧同步输出已结束，再读取生产 VT 快照作为空输入基线；配置克隆通过 `HarnessSettings.Load`/`Save`/`SavePlugins` 解析与保存，合法的 `{}` 配置也不会与追加映射拼接。
 3. 插件运维:TUI 内用 `/plugins list|add <包|dll 路径>|remove <包> [--force]|disable <包>|enable <包>|ban_write <包>|enable_write <包>`(输入 `/plugins` 后按 Tab 可从浮层选单选子命令与包名);改动写回 `settings.yaml` 的 `plugins:` 段并保留注释。
 
     `ban_write`/`enable_write` 切换该插件的写权限(`plugins."<包>".permissions.write`),`enable`/`disable` 保留权限设置,`remove` 连同参数与权限一并清除。权限目前只记录在配置里,由后续版本的插件沙箱强制执行。
@@ -199,6 +203,9 @@ DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui --session <会话 id>
 ## 多机多会话
 
 一个客户端同时管理本机与多台 SSH 机器上的会话:harness 会话、外部 Agent(Codex、Claude Code、OpenCode 及任意 ACP Agent,需在目标机器上已安装对应 CLI)与终端。
+ACP 的本地 socket 与外部 Agent 进程共用 `Dsh.Acp.AcpClient`、`AcpMethods` 和 `Dsh.Sdk.JsonRpcLineTransport`，不另设 stdio 客户端或协议模型。
+权限请求等待人工回答时仍可接收后续更新、并发请求和响应；同一请求只接受第一个有效回答，取消回合或连接关闭会释放待决权限。
+客户端的文件与终端能力保持关闭，OpenCode 继续使用自身配置的模型和工具；传输写入完整 NDJSON 帧，协议损坏或写入失败会结束连接并使待决调用失败，不自动重试。
 机器清单写在 `settings.yaml` 的 `fleet:` 段,GUI、命令行与浏览器共用这一份:
 
 ```yaml
@@ -220,20 +227,35 @@ dsharp session list [--machine build]                 # 列出所有机器上的
 dsharp session attach build/<会话 id>                  # 接入终端会话,Ctrl+] 离开
 dsharp session stop build/<会话 id>                    # harness 中断当前回合；terminal、ACP、外部 Agent 结束进程
 dsharp doctor [--machine build]                        # 逐项诊断连接,并给出可复制的修复命令
-dsharp host install-service                            # 在远端把 host 装成 systemd --user 常驻服务(无 systemd 时 nohup)
+dsharp host serve                                     # 手动前台运行 Host; GUI/SSH 连接也会按需启动后台 Host
 ```
 
 - GUI:启动后进入总览,按 机器 → 项目 → 会话 分组,等待你审批的会话会高亮;`Ctrl+K` 快速跳转,`Esc` 返回;铃铛是通知中心,所有机器的待审批与提问都能在这里直接回答,先答者生效。侧栏还有文件、Git、机器三页;「设置 → 远程」与机器页是同一份机器清单。
+- 审批和提问由 Host 的单一待决队列拥有；`host.pending.changed` 在订阅时及每次变更后推送完整投影，结局可附首答者审计，所有客户端据此关闭已处理的对话，不保存已解决请求的记忆缓存。等待高亮只来自真实待决请求（包括 ACP 结构化权限请求）；外部终端仅显示进程状态，不再用屏幕文本或正则猜测审批、忙碌和等待。
 - 断线后每台机器独立重连,会话事件从断点续订,终端会重新接入。
-- 浏览器：`dsharp web` 是与 TUI/GUI 并行的插件入口（`dsharp host web` 进入同一入口），只监听 `127.0.0.1:8780`；`dsharp web --print-token` 打印一次性登录链接，其它设备先 `ssh -N -L 8780:127.0.0.1:8780 user@host` 转发再访问。
+- 机器收到已提供能力的初始会话、待决和通知快照后才显示已连接；初始化期间的心跳失败会结束该次尝试，按配置显示离线或重连中，启用自动重连时再重试。
+- Host 严格使用线协议版本 2；版本不一致时握手拒绝，不再兼容旧宿主的缺失方法、resize 空操作或按错误文本恢复会话。核心包括会话执行与事件、登记表和唯一待决队列；Agent、PTY、文件、Git、通知、会话编辑、模型目录和插件管理按领域组合。握手与 `host.info` 只声明该 Host 实际提供的能力，未提供的领域调用明确返回 method-not-found，不返回伪造的空列表或成功。客户端按能力显示可用操作；协议目录列出的已知能力不表示每个 Host 都支持。
+- C# 集成端的 `IRemoteHost` 只暴露核心会话和领域入口；文件/Git 等操作分别通过 `IRemoteFiles`、`IRemoteGit` 等领域接口调用，不再提供核心客户端上的平铺转发方法。会话登记与通知投影按序可靠排队，初始快照和后续更新不会因观察队列达到固定条数而被丢弃。
+- 会话订阅和 PTY attach 在异步获取后端读者之前就登记独立 reader ID；初始化期间退订或分离也会释放迟到取得的事件监听/daemon 订阅，不影响同一会话的其它视图，也不终止会话本身。未知会话或 PTY 的初始化错误直接返回该 RPC，不提前确认成功。
+- ACP 对话只使用与 harness 相同的 `SessionStore` / `ISessionPersistence` 会话持久化、全文查询和事件订阅；Host 重启或恢复 agent 时保留原会话 ID、回合与工具事件，不维护另一套 ACP JSONL 历史文件。
+- 通知与已读标记只保存为 `host/notifications.json` 原子快照，跨 Host 重启保留；不维护单独的追加日志、压缩、保留期或 JSONL 导入引擎。
+- 浏览器：先单独安装 `dsharp-web`（见下方发布形态），再运行 `dsharp web` 或 `dsharp-web`；`dsharp host web` 也是同一进程转发入口，TUI/GUI 不加载 WebBridge 或 ASP.NET。独立 WebHost 内的真实 WebBridge 插件拥有 Fleet 连接、协议桥和监听生命周期，只监听 `127.0.0.1:8780`；`dsharp web --print-token`（或 `dsharp-web --print-token`）打印登录链接，其它设备先 `ssh -N -L 8780:127.0.0.1:8780 user@host` 转发再访问。
 - 手机触摸或触控笔点按终端会取得输入焦点，不阻止正常滚动手势；首屏快照解析完成后才解除忙碌标记，使用终端键栏发送 `Ctrl+C` 后仍可继续输入。文字、回车和键栏按键按各自终端的输入顺序提交，切换页面不会把已排队的输入发送到新会话；发送失败会显示错误且不自动重放。
 - `@deepseek-ai/dsh-fleet` 提供机器客户端服务并拥有客户端连接的生命周期，禁用时断开客户端而不终止 Host 会话；可复用连接与部署实现位于 `Dsh.Fleet.Client`，GUI、WebBridge 和 CLI 共用它。
+- SSH 的认证（agent/key/password、askpass）、ProxyCommand、进程管道及上传由 `SshTransport` 独占；部署策略通过 `IRemoteMachineTransport` 决定版本复用、远端下载或本地上传，doctor 也只消费该传输边界。Host 协议握手不再公开未握手的 raw Web/隧道入口；杀掉 SSH 桥接仍不结束常驻 Host 和原 PTY。
+- Unix 密码认证的临时 askpass 脚本从创建起只授予当前用户权限；Host 握手成功即删除脚本，SSH 桥接仍保持连接，失败和退出时也会清理。
 - `@deepseek-ai/dsh-web-bridge` 拥有 WebUI 入口及桥接服务器生命周期，停用或退出入口会停止监听并删除临时访问凭据；它不是绕过插件装载的静态网页宿主。
+- 浏览器只渲染服务器下发的权威视图、会话事件和实际 PTY 输出，提交文件/Git/会话/审批等操作；机器重连、能力处理、按序续订和 PTY 重挂由与 GUI/CLI 共用的 Fleet/RemoteHost 提供，浏览器不保存第二套事件回放或已解决请求缓存。关闭发起页面不会终止 Host 里的会话。
+- GUI 文件树支持轻量编辑、目录操作与可取消上传下载；Web 文件页保留只读预览与下载。两者的远端操作都由同一 Host 文件服务执行：允许路径仅限用户 home、harness home 与已注册会话的项目目录，符号链接也由 Host 检查，客户端不能通过输入路径绕过限制。
+- 多个浏览器共享 Fleet 连接，但未提交上传仍归创建它的浏览器所有：关闭页面会取消其临时上传，包括尚未读到 begin 响应的上传，不影响另一页面继续分块或提交。取消单个会话/终端视图只停止该视图，不取消共享 WebSocket 上已经开始发送的帧。
 - GUI 本地终端与 SSH 终端都由 Host/PTY daemon 托管；关闭终端页只分离客户端。重接会恢复主屏/备用屏、光标、滚动区域、换行模式及 DEC 图形字符集，`tmux` 切窗和切 pane 不再共用错误的屏幕保存槽，窗格边框不会因字符集丢失变成字母；离线期间最新窗口尺寸在重新 attach 前应用。
 - 终端的非独占订阅也可在进程退出后读取最终屏幕并正常结束；瞬时结束的命令仍正常入册，不因 Host 建立观察订阅稍晚而误报启动失败。
 - 终端聚焦时 `Ctrl+B`、`Ctrl+K`、`Esc` 等按键原样送往 PTY，不再被窗口快捷键先行截获；点击终端外的导航区后再使用工作台快捷键。普通 Chat 重新显示或重新挂载时会恢复输入框焦点及事件订阅。
 - 后台工具、Git、浏览器和剪贴板命令不会继承活动终端的输入；持续协议保留自己的输入管道，Unix 信号打断读取后仍可继续输入。
+- TUI Git 面板与 GUI/Web 的 Git 检查共用 `Dsh.GitInspect`：面板仅展示排序、截断后的结构化统计；刷新使用单次 `--raw --numstat -z` diff，不请求 patch，也不逐文件启动 Git。暂存与未暂存改动一起对比 HEAD，干净仓库显示上次提交；首次提交按仓库对象格式计算空树，重命名、二进制及含制表符/换行的文件名由同一解析器处理。GUI/Web 的 status、逐文件 diff、log 和 worktree 管理保持不变。
+- 这里继续使用 Git CLI，而未引入 [LibGit2Sharp](https://github.com/libgit2/libgit2sharp)：它能省去进程启动和机器输出解析，但会增加托管绑定、原生 libgit2 资产及各发布 RID 的加载/NativeAOT 验证，并需重新核对既有 Git 配置、属性/textconv、重命名和 worktree 行为；不能仅因是托管 API 就认定 AOT 发布已兼容。当前 summary 已去掉逐文件进程与 patch 生成，保留安装 Git 的既有执行边界和统一解析实现，不额外维护第二套后端。
 - 同一 home 只允许一个常驻 Host 持有会话注册表，SSH 自动启动会等待真实监听就绪，避免并发启动用旧注册表替换仍在运行的 PTY。
+- 机器清单与部署偏好只读写 `settings.yaml` 的 `fleet` 段；不读取或自动导入 `fleet/machines.json`、旧 GUI 插件的 `remoteWorkspaces` 或私有代理配置。试用过这些布局的用户需在机器页、CLI 或 `fleet` 段显式重新添加配置；原文件和旧插件参数不会因读取配置而被改写或删除。
 - 本机下载发布包使用统一的 `network.outbound_proxy`，不再使用 GUI/Fleet 私有的 `downloadProxy`；旧值不自动迁移，请在统一设置中显式填写。
 - `fleet.deploy.serverProxy` 仅用于在远端下载部署包，不是每台服务器的一般网络出口；SSH 的跳板/代理命令仍配置在机器条目的 `proxy`。
 
@@ -301,6 +323,41 @@ Relay 也参与设备发现，“可直连”不等于可以禁用全部 relay�
 Linux systemd 用户服务跨退出登录或开机运行需要管理员按系统策略启用该用户的 linger，命令输出会说明当前机制。
 完整发行包以实际提供的 RID 资产为准；从源码构建会获取固定源码版本的 iroh-ssh，Windows 构建使用 PowerShell 7，跨架构构建还需要相应编译器与目标工具链。
 
+### 可选：由用户管理 systemd 服务
+
+Host 按需启动时是独立后台进程，关闭 GUI 或 SSH 桥接不会结束其会话；产品不安装系统服务，也不修改 systemd 或 linger。
+需要开机启动或由服务管理器监管时，可自行保存以下内容到 `~/.config/systemd/user/dsharp-host.service`，把 `ExecStart` 改为实际二进制的绝对路径：
+
+```ini
+[Unit]
+Description=DeepSeek Harness Host
+
+[Service]
+Type=simple
+ExecStart=%h/.dsharp/linux-x64/dsharp host serve
+WorkingDirectory=%h
+Restart=on-failure
+KillMode=process
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+mkdir -p ~/.config/systemd/user
+# 将上面的 unit 保存为 ~/.config/systemd/user/dsharp-host.service 后执行：
+systemctl --user daemon-reload
+systemctl --user enable --now dsharp-host.service
+# 查看或停止：
+systemctl --user status dsharp-host.service
+systemctl --user disable --now dsharp-host.service
+```
+
+服务与客户端须使用同一 harness home；默认是 `~/.dsh`，自定义根时在 unit 的 `[Service]` 中加入 `Environment=DSH_HOME=/absolute/harness/home`。
+若同一 home 已有按需启动的 Host，请先结束该 Host 进程再启动服务；独占锁会阻止另一个进程接管仍在运行的 Host。
+`KillMode=process` 使停止 Host 服务不会同时终止其 PTY daemon，后续 Host 可重接原终端。
+需要退出登录后保留用户服务或开机即运行时，由用户按机器策略执行 `loginctl enable-linger "$USER"`（可能需要管理员授权）；应用不会代为执行。
+外部服务的停止、升级与重启也由用户负责，自动部署不管理服务。
 
 ## 发布形态
 
@@ -318,6 +375,43 @@ Linux systemd 用户服务跨退出登录或开机运行需要管理员按系统
   - NativeAOT 不支持在运行期装载托管 dll:`plugins/` 中的托管插件启动时逐文件 WARN 并跳过(被跳过的插件不会出现在 `/plugins list`),其余插件照常启用、程序正常启动;要使用托管插件就把它编译进镜像;
   - 会话持久化(JSONL + Zstd)在 JIT 与 AOT 下均可用。
 
+
+### 独立 WebHost
+
+发布项目分别是 `DeepSeek-Harness-Sharp`（`dsharp`）、`DshGuiHost`（`dsh-gui`）和 `Dsh.WebHost`（`dsharp-web`）。只有最后一个引入 `Microsoft.AspNetCore.App`：ASP.NET Core 的 HTTP/WebSocket、Cookie 认证和嵌入资源服务不会沿引用图进入 TUI/GUI。Web 的 Host/Origin 校验继续防止 DNS rebinding 与 CSRF，Cookie 为 HttpOnly/SameSite=Strict，令牌及 Cookie 密钥随进程重启失效。
+登录页面及同源协议资源在登录前即可加载，但不包含访问令牌、机器清单或会话数据；后者仍需登录后才能读取。更新 WebHost 后重新加载页面即可使用随服务生成的同版本协议定义。
+
+```bash
+# 源码运行：WebHost 编译、激活 WebBridge 插件，再启动监听
+dotnet run --project Dsh.WebHost/Dsh.WebHost.csproj -- --port 8780
+# 独立发布（默认 JIT + partial trim + 自包含）
+dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r linux-x64
+dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r linux-x64
+# 不裁剪的 JIT / NativeAOT 档使用同一个入口
+dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r linux-x64 -p:PublishTrimmed=false
+dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r linux-x64 -p:PublishAot=true
+Dsh.WebHost/bin/Release/net10.0/linux-x64/publish/dsharp-web --port 8780
+```
+
+Release 将 Web 单独打包为 `dsharp-web-<rid>.tar.gz` / `dsharp-web-win-x64.zip`；AOT 资产在扩展名前加 `-aot`。默认安装脚本只安装原有 TUI/GUI 资产；需要 Web 时另下载对应平台和版本的 Web 资产，解压到独立目录，不要把 ASP.NET 程序集覆盖到 TUI/GUI 发布目录。把 Web 目录加入 PATH（或将 `dsharp-web` 链接到命令目录）即可保留 `dsharp web` 用户入口，例如：
+
+```bash
+mkdir -p "$HOME/.local/share/dsharp-web" "$HOME/.local/bin"
+tar -xzf dsharp-web-linux-x64.tar.gz -C "$HOME/.local/share/dsharp-web"
+ln -sf "$HOME/.local/share/dsharp-web/dsharp-web" "$HOME/.local/bin/dsharp-web"
+dsharp-web --print-token    # 另一个终端已经运行 dsharp-web 时，打印该 home 的登录链接
+```
+
+Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` 并将该目录加入用户 PATH，直接运行其中的 `dsharp-web.exe`。WebHost 与其它入口使用相同的 `DSH_HOME` / `settings.storage.root`；WebHost 自身也能执行共享的 `host serve` 命令，本机 Host 启动不依赖猜测另一个构建目录。
+
+CI 在真实三份发布产物上检查非 Web 的 `.deps.json`、`runtimeconfig.json` 和程序集隔离，打印各目录总字节数，并启动发布版进行 HTTP 登录、跨站拒绝、CSP、嵌入资源和 WebSocket/Fleet 转发冒烟；同一检查也用于 Web 的 NativeAOT 产物与解压后的 Release 归档：
+
+```powershell
+./scripts/smoke-web-host.ps1 `
+  -WebPublishDir Dsh.WebHost/bin/Release/net10.0/linux-x64/publish `
+  -TuiPublishDir DeepSeek-Harness-Sharp/bin/Release/net10.0/linux-x64/publish `
+  -GuiPublishDir DshGuiHost/bin/Release/net10.0/linux-x64/publish
+```
 ## 各版本新增功能
 
 0.1.1 起的发布说明未单独张贴,这里按版本折叠列出新增能力(0.1.0 的完整发布说明见[讨论区](https://github.com/deepseek-ai/deepseek-harness/discussions/8952))。

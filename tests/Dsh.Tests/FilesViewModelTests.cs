@@ -150,12 +150,30 @@ public sealed class FilesViewModelTests : IDisposable
         Assert.Equal([(FileEditorMode.TooLarge, true, ""), (FileEditorMode.Binary, true, "")], modes);
     }
 
+    [Fact(Timeout = 60000)]
+    public async Task PathsOutsideHostRoots_AreRejectedByTheHost_NotTheFileView()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("fvp", Ct);
+        var client = await host.ConnectAsync("files-view", Ct);
+        var outside = Path.GetPathRoot(host.Environment.App.Home.Root)!;
+        var viewModel = new FilesViewModel(client.Files, outside, RemotePaths.StyleFor((await client.InfoAsync(TestContext.Current.CancellationToken)).Platform));
+
+        Assert.False(await viewModel.LoadAsync());
+        Assert.True(viewModel.StatusIsError);
+        Assert.Contains("outside", viewModel.Status, StringComparison.Ordinal);
+        Assert.Empty(viewModel.Roots);
+        Assert.Null(await viewModel.DownloadAsync(Path.Combine(outside, "dsh-forbidden-probe"), Path.Combine(_local, "copy.bin")));
+        Assert.Contains("outside", viewModel.Status, StringComparison.Ordinal);
+        Assert.Empty(viewModel.Transfers);
+        Assert.Empty(Directory.GetFileSystemEntries(_local));
+    }
+
     /** 文件放在 host 的 harness home 下(属于 host 的允许根)。 */
     private static async Task<(FilesViewModel ViewModel, string Root)> OpenAsync(HarnessHostFixture host)
     {
         var root = Directory.CreateDirectory(Path.Combine(host.Environment.App.Home.Root, "project")).FullName;
         var client = await host.ConnectAsync("files-view", Ct);
-        var viewModel = new FilesViewModel(client, root);
+        var viewModel = new FilesViewModel(client.Files, root, RemotePaths.StyleFor((await client.InfoAsync(Ct)).Platform));
         Assert.True(await viewModel.LoadAsync(), viewModel.Status);
         return (viewModel, root);
     }

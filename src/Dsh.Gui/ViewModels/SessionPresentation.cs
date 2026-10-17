@@ -95,9 +95,9 @@ public static class SessionPresentation
         return cut < 0 || cut == trimmed.Length - 1 ? projectPath : trimmed[(cut + 1)..];
     }
 
-    /** Sessions that need the user: waiting for input or approval, or holding unanswered requests. */
+    /** Attention is backed by real unanswered requests, never terminal screen text. */
     public static bool NeedsAttention(RemoteHostSession session)
-        => session.Status == HostSessionStatuses.WaitingForUser || session.PendingCount > 0;
+        => session.PendingCount > 0;
 
     private static string Abbreviate(string kind)
         => kind.Length <= CustomBadgeLength ? kind.ToUpperInvariant() : kind[..CustomBadgeLength].ToUpperInvariant();

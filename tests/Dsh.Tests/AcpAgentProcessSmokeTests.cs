@@ -1,4 +1,5 @@
 using Dsh.AgentAdapters;
+using Dsh.Acp;
 using Dsh.AgentAdapters.Acp;
 
 namespace Dsh.Tests;
@@ -13,6 +14,12 @@ public sealed class AcpAgentProcessSmokeTests : IDisposable
 {
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan TurnTimeout = TimeSpan.FromMinutes(4);
+
+    /** Child-process-only OpenCode configuration: keep its configured model and ask before running tools. */
+    private static readonly IReadOnlyDictionary<string, string> PermissionEnvironment = new Dictionary<string, string>
+    {
+        ["OPENCODE_CONFIG_CONTENT"] = """{"permission":{"bash":"ask","edit":"ask"}}""",
+    };
 
     private readonly string _workspace = Path.GetFullPath(Path.Combine(
         AppContext.BaseDirectory, "../../../../../artifacts020/test-tmp", $"acp-{Guid.NewGuid():N}"));
@@ -35,7 +42,7 @@ public sealed class AcpAgentProcessSmokeTests : IDisposable
             .WaitAsync(HandshakeTimeout, TestContext.Current.CancellationToken);
         await agent.Client.CancelAsync(session.SessionId!, TestContext.Current.CancellationToken);
 
-        Assert.Equal(AcpProtocol.Version, info.ProtocolVersion);
+        Assert.Equal(AcpMethods.ProtocolVersion, info.ProtocolVersion);
         Assert.Equal("OpenCode", info.AgentInfo?.Name);
         Assert.True(info.CanLoadSession);
         Assert.False(string.IsNullOrEmpty(session.SessionId));
@@ -48,9 +55,9 @@ public sealed class AcpAgentProcessSmokeTests : IDisposable
     {
         await using var agent = StartOpenCode();
         var chunks = new List<string>();
-        agent.Client.SessionUpdated += update =>
+        agent.Client.SessionUpdate += update =>
         {
-            if (update is { Kind: AcpProtocol.UpdateAgentMessageChunk, Text: { } text })
+            if (update is { Kind: AcpMethods.UpdateAgentMessageChunk, Text: { } text })
                 chunks.Add(text);
         };
         var sessionId = await OpenSessionAsync(agent);
@@ -58,7 +65,7 @@ public sealed class AcpAgentProcessSmokeTests : IDisposable
         var stopReason = await agent.Client.PromptAsync(sessionId, "Reply with exactly the word pong and nothing else. Do not use any tools.", TestContext.Current.CancellationToken)
             .WaitAsync(TurnTimeout, TestContext.Current.CancellationToken);
 
-        Assert.Equal(AcpProtocol.StopEndTurn, stopReason);
+        Assert.Equal(AcpMethods.StopEndTurn, stopReason);
         Assert.Contains("pong", string.Concat(chunks), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -66,21 +73,38 @@ public sealed class AcpAgentProcessSmokeTests : IDisposable
     [Trait("Category", "LlmSmoke")]
     public async Task OpenCode_PermissionRequestIsAnsweredByTheCaller()
     {
-        // Inline OpenCode config for this child process only: make shell commands ask instead of running.
-        var askForShell = new Dictionary<string, string> { ["OPENCODE_CONFIG_CONTENT"] = """{"permission":{"bash":"ask","edit":"ask"}}""" };
-        await using var agent = StartOpenCode(askForShell);
+        await using var agent = StartOpenCode(PermissionEnvironment);
         var sessionId = await OpenSessionAsync(agent);
         var prompt = agent.Client.PromptAsync(sessionId, "Run exactly this shell command once: touch acp-probe.txt", TestContext.Current.CancellationToken);
 
         var permission = await agent.Client.PermissionRequests.ReadAsync(TestContext.Current.CancellationToken).AsTask()
             .WaitAsync(TurnTimeout, TestContext.Current.CancellationToken);
-        var reject = permission.Options.First(option => option.Kind is AcpProtocol.PermissionRejectOnce or AcpProtocol.PermissionRejectAlways);
+        var reject = permission.Options.First(option => option.Kind is AcpMethods.PermissionRejectOnce or AcpMethods.PermissionRejectAlways);
         Assert.True(permission.TrySelect(reject.OptionId));
         var stopReason = await prompt.WaitAsync(TurnTimeout, TestContext.Current.CancellationToken);
 
         Assert.Equal(sessionId, permission.SessionId);
         Assert.False(string.IsNullOrEmpty(permission.ToolCall.ToolCallId));
-        Assert.Contains(stopReason, new[] { AcpProtocol.StopEndTurn, AcpProtocol.StopCancelled });
+        Assert.Contains(stopReason, new[] { AcpMethods.StopEndTurn, AcpMethods.StopCancelled });
+        Assert.False(File.Exists(Path.Combine(_workspace, "acp-probe.txt")));
+    }
+
+    [Fact]
+    [Trait("Category", "LlmSmoke")]
+    public async Task OpenCode_CancelDuringPermissionWaitEndsTurnWithoutRunningTheTool()
+    {
+        await using var agent = StartOpenCode(PermissionEnvironment);
+        var sessionId = await OpenSessionAsync(agent);
+        var prompt = agent.Client.PromptAsync(sessionId, "Run exactly this shell command once: touch acp-probe.txt", TestContext.Current.CancellationToken);
+        var permission = await agent.Client.PermissionRequests.ReadAsync(TestContext.Current.CancellationToken).AsTask()
+            .WaitAsync(TurnTimeout, TestContext.Current.CancellationToken);
+
+        await agent.Client.CancelAsync(sessionId, TestContext.Current.CancellationToken);
+        var stopReason = await prompt.WaitAsync(TurnTimeout, TestContext.Current.CancellationToken);
+
+        Assert.Equal(AcpMethods.StopCancelled, stopReason);
+        Assert.Equal(AcpMethods.OutcomeCancelled, (await permission.Outcome).Outcome);
+        Assert.False(permission.TrySelect(permission.Options[0].OptionId));
         Assert.False(File.Exists(Path.Combine(_workspace, "acp-probe.txt")));
     }
 

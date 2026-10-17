@@ -42,16 +42,16 @@ public sealed class HostChatSession : IDisposable
     {
         fleet.Start();
         var lease = await fleet.Find(MachineSpec.LocalName)!.WaitConnectedAsync(cancellationToken);
-        if (!lease.Client.Supports(HostCapabilities.SessionEditing)
-            || !lease.Client.Supports(HostCapabilities.PluginManagement)
-            || !lease.Client.Supports(HostCapabilities.ModelCatalog))
+        if (!lease.Client.Supports(SessionEditingProtocol.Capability)
+            || !lease.Client.Supports(PluginsProtocol.Capability)
+            || !lease.Client.Supports(ModelsProtocol.Capability))
             throw new InvalidOperationException("本机 Host 版本不支持完整 Chat；请升级 dsharp 并重启 Host");
         var info = sessionId is null
             ? await lease.Client.CreateSessionAsync(cwd, model.Selection, model.Provider, cancellationToken)
             : await lease.Client.ResumeSessionAsync(sessionId, model.Selection, model.Provider, cancellationToken);
         var snapshot = await lease.Client.GetSessionSnapshotAsync(info.Id, cancellationToken);
         var chat = new HostChatSession(fleet, info, snapshot, model.Selection);
-        chat.Commands = await lease.Client.ListSessionCommandsAsync(info.Id, cancellationToken);
+        chat.Commands = await lease.Client.SessionEditing.ListSessionCommandsAsync(info.Id, cancellationToken);
         return chat;
     }
 
@@ -111,7 +111,7 @@ public sealed class HostChatSession : IDisposable
         var client = await ClientAsync(cancellationToken);
         var info = await client.ResumeSessionAsync(id, model.Selection, model.Provider, cancellationToken);
         var snapshot = await client.GetSessionSnapshotAsync(id, cancellationToken);
-        var commands = await client.ListSessionCommandsAsync(id, cancellationToken);
+        var commands = await client.SessionEditing.ListSessionCommandsAsync(id, cancellationToken);
         if (navigation != _navigationGeneration || _lifetime.IsCancellationRequested)
             return;
         _subscription?.Cancel();
@@ -153,14 +153,14 @@ public sealed class HostChatSession : IDisposable
     public async Task RefreshCommandsAsync()
     {
         var id = Info.Id;
-        var commands = await (await ClientAsync(_lifetime.Token)).ListSessionCommandsAsync(id, _lifetime.Token);
+        var commands = await (await ClientAsync(_lifetime.Token)).SessionEditing.ListSessionCommandsAsync(id, _lifetime.Token);
         if (Info.Id == id && !_lifetime.IsCancellationRequested)
             Commands = commands;
     }
 
     public async Task<RemoteCommandResult> ExecuteAsync(string line)
     {
-        var result = await (await ClientAsync(_lifetime.Token)).ExecuteSessionCommandAsync(Info.Id, line, _lifetime.Token);
+        var result = await (await ClientAsync(_lifetime.Token)).SessionEditing.ExecuteSessionCommandAsync(Info.Id, line, _lifetime.Token);
         if (result.Known)
         {
             await ReloadAsync(_lifetime.Token);

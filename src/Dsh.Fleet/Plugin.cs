@@ -6,7 +6,7 @@ using Dsh.Runtime;
 
 namespace Dsh.Fleet;
 
-/** Activates the shared machine service; unloading closes frontend links, not host sessions. */
+/** Provides the plugin-lifetime owner; unloading disposes its clients while host sessions remain independent. */
 public sealed class Plugin : IDshPlugin
 {
     public string[] Inject => [];

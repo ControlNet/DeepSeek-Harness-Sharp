@@ -177,8 +177,8 @@ internal static class FleetCli
         if (machine.IsLocal)
             return await FailAsync($"{machine.Name} is this computer; it runs this dsharp and needs no deployment");
         var deploy = context.Store.Load().Deploy;
-        var result = await RemoteDsharpInstaller.EnsureAsync(
-            machine, deploy, step => Console.Error.WriteLine(step), context.Cancellation, force: context.Arguments.Has("--force"),
+        var result = await new RemoteDsharpInstaller(new SshTransport(machine)).EnsureAsync(
+            deploy, step => Console.Error.WriteLine(step), context.Cancellation, force: context.Arguments.Has("--force"),
             localProxy: context.Options(deploy: true, startLocalHost: false).LocalProxy);
         await Console.Out.WriteLineAsync(result.AlreadyPresent
             ? $"{machine.Name}: {result.CommandPath} is already at {RemoteHostServer.ReleaseVersion} or newer (use --force to redeploy)"
@@ -252,7 +252,7 @@ internal static class FleetCli
         {
             var lease = await connection.WaitConnectedAsync(context.Cancellation);
             if (session.Kind is HostSessionKinds.Terminal or HostSessionKinds.External)
-                return await AttachTerminalAsync(lease.Client, connection.Machine, session, context.Cancellation);
+                return await AttachTerminalAsync(lease.Client.Pty, connection.Machine, session, context.Cancellation);
             if (session.Kind != HostSessionKinds.Harness)
                 return await FailAsync($"{session.Kind} sessions have no terminal to attach to; open them in the GUI");
             if (!connection.Machine.IsLocal)
@@ -262,12 +262,12 @@ internal static class FleetCli
         return await context.ResumeHarness(context.HomeOf(connection.Machine), session.SessionId);
     }
 
-    private static async Task<int> AttachTerminalAsync(RemoteHostClient client, MachineSpec machine, RemoteHostSession session, CancellationToken cancellationToken)
+    private static async Task<int> AttachTerminalAsync(IRemotePty pty, MachineSpec machine, RemoteHostSession session, CancellationToken cancellationToken)
     {
         await Console.Out.WriteLineAsync($"dsharp: attaching to {machine.Name}/{session.SessionId}; leave with {ConsoleTunnel.DetachKeyName} (the session keeps running)");
         await ConsoleTunnel.RunAsync(
-            (input, output, token) => client.AttachPtyAsync(session.SessionId, input, output, token),
-            (columns, rows, token) => client.ResizePtyAsync(session.SessionId, columns, rows, token),
+            (input, output, token) => pty.AttachPtyAsync(session.SessionId, input, output, token),
+            (columns, rows, token) => pty.ResizePtyAsync(session.SessionId, columns, rows, token),
             cancellationToken);
         await Console.Out.WriteLineAsync($"dsharp: detached from {machine.Name}/{session.SessionId}");
         return 0;
@@ -283,7 +283,7 @@ internal static class FleetCli
             switch (session.Kind)
             {
                 case HostSessionKinds.Terminal:
-                    await client.StopPtyAsync(session.SessionId, context.Cancellation);
+                    await client.Pty.StopPtyAsync(session.SessionId, context.Cancellation);
                     await Console.Out.WriteLineAsync($"stopped {target}");
                     return 0;
                 case HostSessionKinds.Harness:
@@ -292,7 +292,7 @@ internal static class FleetCli
                     return 0;
                 case HostSessionKinds.Acp:
                 case HostSessionKinds.External:
-                    await client.StopAgentAsync(session.SessionId, context.Cancellation);
+                    await client.Agent.StopAgentAsync(session.SessionId, context.Cancellation);
                     await Console.Out.WriteLineAsync($"stopped {target}");
                     return 0;
                 default:

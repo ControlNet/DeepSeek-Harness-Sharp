@@ -54,12 +54,16 @@ internal static class UnixPtyNative
     /** Darwin arm64 passes variadic arguments on the stack, so ioctl's argument has to follow the eight register arguments. */
     private static readonly bool VariadicArgumentsOnStack = OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
 
-    public static (int MasterFd, int Pid) Spawn(PtyStartInfo info)
+    public static (int MasterFd, int Pid) Spawn(PtyStartInfo info) => Spawn(info, terminal: true);
+
+    public static int SpawnBackground(PtyStartInfo info) => Spawn(info, terminal: false).Pid;
+
+    private static (int MasterFd, int Pid) Spawn(PtyStartInfo info, bool terminal)
     {
         // openpty cannot atomically set CLOEXEC: another PTY spawn must not inherit its still-open slave before the flags are set.
         using var spawnScope = SpawnGate.EnterScope();
         var allocated = new List<IntPtr>();
-        var (master, slave, slaveName) = OpenPty(info.Rows, info.Columns);
+        var (master, slave, slaveName) = terminal ? OpenPty(info.Rows, info.Columns) : (-1, -1, "/dev/null");
         try
         {
             var file = AllocAnsi(info.FileName);
@@ -82,12 +86,13 @@ internal static class UnixPtyNative
             // attr 是不透明类型, 尺寸随实现变化: 用零填充缓冲 + 官方 init/destroy 访问。
             var attributes = Marshal.AllocHGlobal(SpawnAttrBytes);
             Marshal.Copy(new byte[SpawnAttrBytes], 0, attributes, SpawnAttrBytes);
-            var attributesReady = posix_spawnattr_init(attributes) == 0;
-            if (attributesReady)
-                ConfigureSpawnAttributes(attributes, allocated);
+            var attributesReady = false;
             try
             {
-                // 用 addopen 而不是 adddup2: 子进程以新会话首进程身份 open 从端, 内核才会把该 tty 设为其控制终端。
+                ThrowIfSpawnActionError(posix_spawnattr_init(attributes), "posix_spawnattr_init");
+                attributesReady = true;
+                ConfigureSpawnAttributes(attributes, allocated);
+                // Opening the PTY slave after setsid supplies a controlling terminal; background daemons instead open /dev/null.
                 ThrowIfSpawnActionError(
                     posix_spawn_file_actions_addopen(ref actions, 0, slavePath, ORdwr, 0),
                     "posix_spawn_file_actions_addopen(stdin)");
@@ -107,7 +112,7 @@ internal static class UnixPtyNative
                     out var pid,
                     file,
                     ref actions,
-                    attributesReady ? attributes : IntPtr.Zero,
+                    attributes,
                     argv,
                     envp);
                 if (spawnError != 0)
@@ -125,12 +130,14 @@ internal static class UnixPtyNative
         }
         catch
         {
-            close(master);
+            if (master >= 0)
+                close(master);
             throw;
         }
         finally
         {
-            close(slave);
+            if (slave >= 0)
+                close(slave);
             FreeAll(allocated);
         }
     }
@@ -151,7 +158,9 @@ internal static class UnixPtyNative
         sigemptyset(mask);
         posix_spawnattr_setsigdefault(attributes, defaults);
         posix_spawnattr_setsigmask(attributes, mask);
-        posix_spawnattr_setflags(attributes, (short)(PosixSpawnSetsid | PosixSpawnSetSigDefault | PosixSpawnSetSigMask));
+        ThrowIfSpawnActionError(
+            posix_spawnattr_setflags(attributes, (short)(PosixSpawnSetsid | PosixSpawnSetSigDefault | PosixSpawnSetSigMask)),
+            "posix_spawnattr_setflags");
     }
 
     private static (int Master, int Slave, string SlaveName) OpenPty(int rows, int cols)

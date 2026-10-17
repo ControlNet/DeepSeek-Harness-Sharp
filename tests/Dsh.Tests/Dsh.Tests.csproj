@@ -27,10 +27,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 
@@ -65,6 +61,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\Dsh.WebHost\Dsh.WebHost.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Account\Dsh.Account.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Board\Dsh.Board.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Llm\Dsh.Llm.csproj" />
@@ -135,20 +132,6 @@
     <Copy SourceFiles="@(_McpResourceServerRuntime)"
           DestinationFiles="@(_McpResourceServerRuntime->'$(TargetDir)mcp-resource-server/%(RecursiveDir)%(Filename)%(Extension)')"
           SkipUnchangedFiles="true" />
-  </Target>
-
-  <!-- Native OS-only PTY fixture: fork/exec and a live Darwin session owner must never run inside a CLR child. -->
-  <Target Name="BuildUnixRawModeTerminal" AfterTargets="Build"
-          Condition="$([MSBuild]::IsOSPlatform('Linux')) Or $([MSBuild]::IsOSPlatform('OSX'))">
-    <PropertyGroup>
-      <DshNativeCompiler Condition="'$(DshNativeCompiler)' == ''">cc</DshNativeCompiler>
-      <_UnixRawModeOutput>$(IntermediateOutputPath)unix-raw-mode/dsh_unix_raw_mode_terminal</_UnixRawModeOutput>
-      <_UnixRawModeLibraries Condition="$([MSBuild]::IsOSPlatform('Linux'))">-lutil</_UnixRawModeLibraries>
-    </PropertyGroup>
-    <MakeDir Directories="$(IntermediateOutputPath)unix-raw-mode" />
-    <Exec Command="$(DshNativeCompiler) -std=c11 -O2 -Wall -Wextra -Werror &quot;$(MSBuildProjectDirectory)/Native/unix_raw_mode_terminal.c&quot; -o &quot;$(_UnixRawModeOutput)&quot; $(_UnixRawModeLibraries)"
-          StandardOutputImportance="low" />
-    <Copy SourceFiles="$(_UnixRawModeOutput)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

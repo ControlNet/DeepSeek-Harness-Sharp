@@ -127,8 +127,8 @@ public sealed partial class NewSessionViewModel : ObservableObject
 
     public event Action<NewSessionViewModel>? Completed;
 
-    /** The view shows the remote folder picker for the machine's host and returns the chosen directory. */
-    public event Func<IRemoteHost, string?, Task<string?>>? BrowseRequested;
+    /** The view shows the remote folder picker for the machine's files domain and returns the chosen directory. */
+    public event Func<IRemoteFiles, string?, Task<string?>>? BrowseRequested;
 
     partial void OnMachineChanged(string? value) => _ = LoadCatalogAsync();
 
@@ -148,7 +148,7 @@ public sealed partial class NewSessionViewModel : ObservableObject
     {
         if (BrowseRequested is not { } browse || await LeaseAsync() is not { } lease)
             return;
-        if (await browse(lease.Client, ProjectPath.Length > 0 ? ProjectPath : null) is { } picked)
+        if (await browse(lease.Client.Files, ProjectPath.Length > 0 ? ProjectPath : null) is { } picked)
             ProjectPath = picked;
     }
 
@@ -211,7 +211,7 @@ public sealed partial class NewSessionViewModel : ObservableObject
             return;
         try
         {
-            foreach (var entry in await lease.Client.AgentCatalogAsync(CancellationToken.None))
+            foreach (var entry in await lease.Client.Agent.AgentCatalogAsync(CancellationToken.None))
                 Agents.Add(new AgentChoiceViewModel(entry));
             Agent = Agents.FirstOrDefault(item => item.IsAvailable);
             Status = "";
@@ -229,7 +229,7 @@ public sealed partial class NewSessionViewModel : ObservableObject
             return;
         try
         {
-            foreach (var worktree in await lease.Client.ListWorktreesAsync(ProjectPath.Trim(), CancellationToken.None))
+            foreach (var worktree in await lease.Client.Git.ListWorktreesAsync(ProjectPath.Trim(), CancellationToken.None))
                 Worktrees.Add(worktree);
             ExistingWorktree = Worktrees.FirstOrDefault(item => !item.IsMain) ?? Worktrees.FirstOrDefault();
         }

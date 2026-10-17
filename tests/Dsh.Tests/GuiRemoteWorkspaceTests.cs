@@ -131,7 +131,7 @@ public sealed class GuiRemoteWorkspaceTests
             Capture(window, "headless-remote-workspace-connected");
 
             // 远端目录列举(供“选择远端目录”): 真实走 ssh 通道, 家目录应至少含目录项。
-            var home = await lease.Client.ListDirectoryAsync("~", TestContext.Current.CancellationToken);
+            var home = await lease.Client.Files.ListDirectoryAsync("~", TestContext.Current.CancellationToken);
             Assert.True(home.Entries.Count > 0, $"远端 {spec.Host} 家目录列举为空");
             Assert.Contains(home.Entries, entry => entry.IsDirectory);
 
@@ -163,8 +163,7 @@ public sealed class GuiRemoteWorkspaceTests
         try
         {
             var workspace = spec.ToMachine();
-            var result = await RemoteDsharpInstaller.EnsureAsync(
-                workspace,
+            var result = await new RemoteDsharpInstaller(new SshTransport(workspace)).EnsureAsync(
                 new DeploySettings { ReleaseBaseUrl = "https://example.invalid", Via = DownloadVia.Client },
                 null,
                 TestContext.Current.CancellationToken,

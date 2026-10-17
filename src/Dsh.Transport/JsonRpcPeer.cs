@@ -53,6 +53,9 @@ public sealed class JsonRpcPeer : IAsyncDisposable
     /** 入向请求处理: 返回 result 原样回填; 抛 JsonRpcException 回该 error; null 表示不支持(回 method not found)。 */
     public Func<JsonRpcMessage, CancellationToken, ValueTask<JsonElement?>>? RequestHandler { get; set; }
 
+    /** Optional lightweight registration in frame-receive order; null delegates to RequestHandler, otherwise the returned operation supplies this request's result. */
+    public Func<JsonRpcMessage, CancellationToken, ValueTask<JsonElement?>?>? RequestPreparation { get; set; }
+
     /** 入向通知(无需响应)。 */
     public event Action<JsonRpcMessage>? NotificationReceived;
 
@@ -216,17 +219,31 @@ public sealed class JsonRpcPeer : IAsyncDisposable
 
         if (message.IsRequest && message.Id is { } requestId)
         {
+            ValueTask<JsonElement?>? prepared;
+            try
+            {
+                prepared = RequestPreparation?.Invoke(message, cancellationToken);
+            }
+            catch (Exception error)
+            {
+                prepared = ValueTask.FromException<JsonElement?>(error);
+            }
             // A handler's synchronous prelude must not occupy the frame reader either.
             await Task.Yield();
-            if (cancellationToken.IsCancellationRequested)
+            if (cancellationToken.IsCancellationRequested && prepared is null)
                 return;
             var response = new JsonRpcMessage { Id = requestId };
             try
             {
-                var handler = RequestHandler;
-                response.Result = handler is null
-                    ? throw new JsonRpcException(MethodNotFound, $"method not found: {message.Method}")
-                    : await handler(message, cancellationToken).ConfigureAwait(false) ?? JsonNull;
+                if (prepared is { } operation)
+                    response.Result = await operation.ConfigureAwait(false) ?? JsonNull;
+                else
+                {
+                    var handler = RequestHandler;
+                    response.Result = handler is null
+                        ? throw new JsonRpcException(MethodNotFound, $"method not found: {message.Method}")
+                        : await handler(message, cancellationToken).ConfigureAwait(false) ?? JsonNull;
+                }
             }
             catch (JsonRpcException error)
             {

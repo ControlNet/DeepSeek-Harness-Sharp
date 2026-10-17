@@ -2,6 +2,7 @@
 // The first answer from any client wins; cards disappear when host.pending.resolved arrives, whoever answered.
 import { h, mount, link, toast } from '../dom.js';
 import { describe } from '../hub.js';
+import { HostProtocol, PendingKind } from '/protocol.js';
 import { sessionRoute, sessionTitle, emptyState, syncList, prettyJson } from './common.js';
 
 export function pendingView(container, hub) {
@@ -28,10 +29,10 @@ export function pendingCard(hub, item) {
   const machineLink = hub.link(item.machine);
   const session = machineLink?.sessions.get(item.request.SessionId);
   const head = h('header', { className: 'pending-head' },
-    h('span', { className: `chip kind-${item.kind}` }, item.kind === 'approval' ? 'Approval' : 'Question'),
+    h('span', { className: `chip kind-${item.kind}` }, item.kind === PendingKind.Approval ? 'Approval' : 'Question'),
     h('span', { className: 'muted' }, item.machine, ' · '),
     link(sessionRoute(item.machine, item.request.SessionId), {}, session ? sessionTitle(session) : item.request.SessionId));
-  const body = item.kind === 'approval' ? approvalBody(machineLink, item.request) : questionBody(machineLink, item.request);
+  const body = item.kind === PendingKind.Approval ? approvalBody(machineLink, item.request) : questionBody(machineLink, item.request);
   return h('article', { className: `pending card ${item.kind}`, dataset: { request: item.request.RequestId, kind: item.kind } }, head, body);
 }
 
@@ -42,7 +43,7 @@ function approvalBody(machineLink, request) {
   async function answer(allowed) {
     allow.disabled = reject.disabled = true;
     try {
-      const applied = await machineLink.request('host.approval.respond', { RequestId: request.RequestId, Allow: allowed, Reason: null });
+      const applied = await machineLink.request(HostProtocol.MethodApprovalRespond, { RequestId: request.RequestId, Allow: allowed, Reason: null });
       if (!applied)
         toast('Someone else already answered this request.');
     } catch (error) {
@@ -68,7 +69,7 @@ function questionBody(machineLink, request) {
       event.preventDefault();
       submit.disabled = true;
       try {
-        const applied = await machineLink.request('host.question.respond', { RequestId: request.RequestId, Answers: fields.map((field) => field.answer()) });
+        const applied = await machineLink.request(HostProtocol.MethodQuestionRespond, { RequestId: request.RequestId, Answers: fields.map((field) => field.answer()) });
         if (!applied)
           toast('Someone else already answered this question.');
       } catch (error) {

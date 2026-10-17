@@ -1,6 +1,7 @@
 // Dashboard: every machine, its projects and their sessions, with totals, an attention filter and search.
 import { h, mount, link, ago, when } from '../dom.js';
-import { SessionStatus, needsAttention } from '../hub.js';
+import { needsAttention } from '../hub.js';
+import { SessionStatus } from '/protocol.js';
 import { sessionRoute, sessionTitle, statusChip, machineChip, emptyState, filesRoute, gitRoute } from './common.js';
 
 /** Filters survive navigating away and back within the page. */

@@ -289,6 +289,20 @@ public sealed class WebUiBrowserTests
         await chrome.EvaluateAsync("[...document.querySelectorAll('#file-list button.file-row')].find((row) => row.textContent === 'README.md').click()", Ct);
         await chrome.WaitUntilAsync("document.getElementById('file-text')?.textContent", "hello web\nchanged line\n", Ct);
         await chrome.ScreenshotAsync(Path.Combine(Artifacts, "files-preview.png"), Ct);
+        await chrome.EvaluateAsync("""
+            (() => {
+              const create = URL.createObjectURL;
+              URL.createObjectURL = (blob) => {
+                window.__downloadedFile = blob;
+                URL.createObjectURL = create;
+                return create.call(URL, blob);
+              };
+              return '';
+            })()
+            """, Ct);
+        await chrome.ClickAsync("#file-preview button", Ct);
+        await chrome.WaitForAsync("window.__downloadedFile instanceof Blob", Ct);
+        Assert.Equal("hello web\nchanged line\n", await chrome.EvaluateAsync("window.__downloadedFile.text()", Ct));
 
         await chrome.NavigateAsync(new Uri($"{origin}/#/m/{LocalMachine}/git?project={Uri.EscapeDataString(repository)}"), Ct);
         await chrome.WaitForAsync("document.querySelector('#git-status button.file-row')", Ct);
@@ -302,6 +316,11 @@ public sealed class WebUiBrowserTests
         await chrome.NavigateAsync(new Uri($"{origin}/#/m/{LocalMachine}/git?project={Uri.EscapeDataString(repository)}"), Ct);
         await chrome.WaitForAsync("document.querySelector('#git-status p.empty')", Ct);
         Assert.Equal("false", await chrome.EvaluateAsync("String(Boolean(document.querySelector('#git-status button.file-row')))", Ct));
+
+        var forbiddenRoot = Path.GetPathRoot(repository)!;
+        await chrome.NavigateAsync(new Uri($"{origin}/#/m/{LocalMachine}/files?path={Uri.EscapeDataString(forbiddenRoot)}"), Ct);
+        await chrome.WaitForAsync("document.querySelector('#file-list .error')?.textContent.includes('outside')", Ct);
+        Assert.Equal("0", await chrome.EvaluateAsync("String(document.querySelectorAll('#file-list .file-row').length)", Ct));
     }
 
     /** Fills in and submits the New session form like a user; returns the new session's id from the session page the form opens. */

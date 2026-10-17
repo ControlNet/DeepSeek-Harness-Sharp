@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Dsh.Acp;
 using Dsh.AgentAdapters;
 using Dsh.AgentAdapters.Acp;
 using Dsh.Notifications;
@@ -38,7 +39,7 @@ internal sealed class AcpAgentSession : IAsyncDisposable
         _process = process;
         _transcript = transcript;
         _services = services;
-        process.Client.SessionUpdated += OnUpdate;
+        process.Client.SessionUpdate += OnUpdate;
         _ = PumpPermissionsAsync();
     }
 
@@ -150,8 +151,8 @@ internal sealed class AcpAgentSession : IAsyncDisposable
         }
         var response = await answer.ConfigureAwait(false);
         string[] wanted = response?.Allow == true
-            ? [AcpProtocol.PermissionAllowOnce, AcpProtocol.PermissionAllowAlways]
-            : [AcpProtocol.PermissionRejectOnce, AcpProtocol.PermissionRejectAlways];
+            ? [AcpMethods.PermissionAllowOnce, AcpMethods.PermissionAllowAlways]
+            : [AcpMethods.PermissionRejectOnce, AcpMethods.PermissionRejectAlways];
         var option = response is null ? null : wanted.Select(kind => permission.Options.FirstOrDefault(candidate => candidate.Kind == kind)).FirstOrDefault(found => found is not null);
         if (option is null || !permission.TrySelect(option.OptionId))
             permission.TryCancel();
@@ -161,7 +162,7 @@ internal sealed class AcpAgentSession : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _lifetime.CancelAsync().ConfigureAwait(false);
-        _process.Client.SessionUpdated -= OnUpdate;
+        _process.Client.SessionUpdate -= OnUpdate;
         await _process.DisposeAsync().ConfigureAwait(false);
         _lifetime.Dispose();
     }

@@ -48,11 +48,3 @@ public sealed record NotificationFilter(string? MachineId = null, string? Sessio
            && (!UnreadOnly || !record.IsRead);
 }
 
-/** History bounds: the newest MaxEntries notifications that are younger than MaxAge are kept. */
-public sealed record NotificationRetention(int MaxEntries, TimeSpan MaxAge)
-{
-    public const int DefaultMaxEntries = 1000;
-    public const int DefaultMaxAgeDays = 30;
-
-    public static NotificationRetention Default { get; } = new(DefaultMaxEntries, TimeSpan.FromDays(DefaultMaxAgeDays));
-}

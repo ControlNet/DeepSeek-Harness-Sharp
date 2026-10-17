@@ -17,7 +17,7 @@ public sealed class IrohHostEndToEndTests
         var source = server.Machine("iroh-host", root);
         try
         {
-            var receiver = IrohRemoteInstaller.ParseStatus(await SshHostLauncher.RunRemoteAsync(source, $"{RemoteShell.Prelude(source)}{RemoteShell.Quote(executable)} remote enable --ssh-port {source.Port}", ct));
+            var receiver = IrohRemoteInstaller.ParseStatus(await new SshTransport(source).RunAsync($"{RemoteShell.Prelude(source)}{RemoteShell.Quote(executable)} remote enable --ssh-port {source.Port}", ct));
             var endpoint = source with { Kind = MachineKinds.Iroh, Host = "192.0.2.1", EndpointId = receiver.EndpointId };
             var options = FleetConnectionTests.TestOptions with
             {
@@ -31,9 +31,9 @@ public sealed class IrohHostEndToEndTests
             Assert.True(connection.State == MachineConnectionState.Connected, connection.Detail);
             var first = await connection.WaitConnectedAsync(ct);
             var identity = LocalEndpointToken.Read(RemoteHostEndpoint.EndpointFile(root));
-            var session = await first.Client.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", [], root, Title: "iroh-host-shell"), ct);
-            await first.Client.WriteFileAsync(Path.Combine(root, "rpc.txt"), "file-through-iroh"u8.ToArray(), ct);
-            Assert.Equal("file-through-iroh", System.Text.Encoding.UTF8.GetString(await first.Client.ReadFileAsync(Path.Combine(root, "rpc.txt"), ct)));
+            var session = await first.Client.Pty.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", [], root, Title: "iroh-host-shell"), ct);
+            await first.Client.Files.WriteFileAsync(Path.Combine(root, "rpc.txt"), "file-through-iroh"u8.ToArray(), ct);
+            Assert.Equal("file-through-iroh", System.Text.Encoding.UTF8.GetString(await first.Client.Files.ReadFileAsync(Path.Combine(root, "rpc.txt"), ct)));
             await using (var capture = RemoteHostPtyTests.TerminalCapture.Attach(first.Client, session))
             {
                 await capture.SendAsync("printf '%s\\n' \"$$\" > original.pid; echo original-$((6*7))\n");

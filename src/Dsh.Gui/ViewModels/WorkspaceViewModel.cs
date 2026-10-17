@@ -26,6 +26,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
 {
     private readonly Dictionary<(string Machine, string Session), FleetSessionViewModel> _windows = [];
     private readonly Action<string, string, bool> _toast;
+    private (string Machine, string SessionId)? _pendingOpen;
 
     public WorkspaceViewModel(FleetWorkspace fleet, Func<HarnessModelChoice> harnessModel, Action<string, string, bool> toast)
     {
@@ -106,6 +107,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     /** Shows a session in the main window, unless its own window already shows it. */
     public void OpenSession(string machine, string sessionId)
     {
+        _pendingOpen = null;
         if (_windows.TryGetValue((machine, sessionId), out var windowed))
         {
             SessionWindowFocusRequested?.Invoke(windowed);
@@ -154,6 +156,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     [RelayCommand]
     public void ShowDashboard()
     {
+        _pendingOpen = null;
         _ = CloseActiveAsync();
         PageContent = null;
         ActivePage = null;
@@ -165,6 +168,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     {
         if (entry is null)
             return;
+        _pendingOpen = null;
         var context = new WorkspacePageContext(Fleet, ActiveSession?.Machine, ActiveSession?.Card.ProjectPath);
         PageContent = entry.Create(context);
         ActivePage = entry;
@@ -178,18 +182,18 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     public void RegisterHostPages(Geometry filesIcon, Geometry gitIcon, Geometry machinesIcon)
     {
         Pages.Register(new WorkspacePageEntry(WorkspacePages.Files, "文件", filesIcon, context => new HostPageViewModel(
-            Fleet, "文件", HostCapabilities.FsTransfer, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? RemotePaths.Home,
-            async (host, _, path) =>
+            Fleet, "文件", FilesProtocol.Capability, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? RemotePaths.Home,
+            async (host, _, path, style) =>
             {
-                var files = new FilesViewModel(host, path);
+                var files = new FilesViewModel(host.Files, path, style);
                 await files.LoadAsync();
                 return files;
             })));
         Pages.Register(new WorkspacePageEntry(WorkspacePages.Git, "Git", gitIcon, context => new HostPageViewModel(
-            Fleet, "Git", HostCapabilities.GitInspect, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? "",
-            async (host, machine, path) =>
+            Fleet, "Git", GitProtocol.Capability, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? "",
+            async (host, machine, path, style) =>
             {
-                var git = new GitViewModel(host, path);
+                var git = new GitViewModel(host.Git, host.Files, path, style);
                 git.NewSessionRequested += worktree => NewSession(machine, worktree.Path);
                 await git.RefreshAsync();
                 return git;
@@ -287,7 +291,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
         try
         {
             var resumed = await Actions.ResumeAsync(card.Machine, card.Session, CancellationToken.None);
-            if (resumed.SessionId != card.SessionId && ActiveSession?.SessionId == card.SessionId)
+            if (resumed != card.SessionId && ActiveSession?.SessionId == card.SessionId)
                 await OpenWhenListedAsync(card.Machine, resumed);
         }
         catch (Exception error) when (error is IOException or JsonRpcException or InvalidOperationException or OperationCanceledException)
@@ -300,22 +304,30 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     {
         form.Completed -= OnNewSessionCompleted;
         if (form.Machine is { } machine && form.Started is { } started)
-            _ = OpenWhenListedAsync(machine, started);
+            _ = OpenWhenListedAsync(machine, started.SessionId);
     }
 
-    /** The actions already recorded the session on its machine; refreshing now gives it a card before the coalesced update arrives. */
-    private async Task OpenWhenListedAsync(string machine, RemoteHostSession session)
+    /** Navigation waits for the Host registry projection instead of adding a speculative local session. */
+    private async Task OpenWhenListedAsync(string machine, string sessionId)
     {
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
+            _pendingOpen = (machine, sessionId);
             Dashboard.Refresh();
-            OpenSession(machine, session.SessionId);
+            OpenPendingSession();
         });
+    }
+
+    private void OpenPendingSession()
+    {
+        if (_pendingOpen is { } pending && Dashboard.Find(pending.Machine, pending.SessionId) is not null)
+            OpenSession(pending.Machine, pending.SessionId);
     }
 
     private void OnFleetChanged()
     {
         if (Palette.IsOpen)
             Palette.Search();
+        OpenPendingSession();
     }
 }

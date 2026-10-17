@@ -15,11 +15,12 @@ public sealed class IrohBootstrapEndToEndTests
         await using var server = await TestSshServer.StartAsync(ct);
         var root = TempTree.CreateSocketDirectory("ib");
         var original = server.Machine("bootstrap", root);
+        var transport = new SshTransport(original);
         try
         {
-            Assert.Equal("ordinary-ssh", await SshHostLauncher.RunRemoteAsync(original, "printf '%s' ordinary-ssh", ct));
+            Assert.Equal("ordinary-ssh", await transport.RunAsync("printf '%s' ordinary-ssh", ct));
             if (preexistingReceiver)
-                await SshHostLauncher.RunRemoteAsync(original, $"{RemoteShell.Prelude(original)}{RemoteShell.Quote(executable)} remote enable --ssh-port {original.Port}", ct);
+                await transport.RunAsync($"{RemoteShell.Prelude(original)}{RemoteShell.Quote(executable)} remote enable --ssh-port {original.Port}", ct);
             var previous = await IrohReceiver.InfoAsync(new HarnessHome(root), ct);
             var wrongKey = Path.Combine(server.Root, "untrusted_key");
             await TestSshServer.RunAsync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", wrongKey], ct);
@@ -41,7 +42,7 @@ public sealed class IrohBootstrapEndToEndTests
             Assert.Equal(preexistingReceiver, status.Running);
             if (preexistingReceiver)
                 Assert.Equal(previous.EndpointId, status.EndpointId);
-            Assert.Equal("ordinary-ssh-after-failure", await SshHostLauncher.RunRemoteAsync(original, "printf '%s' ordinary-ssh-after-failure", ct));
+            Assert.Equal("ordinary-ssh-after-failure", await transport.RunAsync("printf '%s' ordinary-ssh-after-failure", ct));
         }
         finally
         {

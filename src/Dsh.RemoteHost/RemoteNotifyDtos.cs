@@ -16,5 +16,5 @@ public sealed record RemoteNotifyPage(IReadOnlyList<NotificationRecord> Items, i
 /** host.notify.markRead: All marks every unread notification (of SessionId when given); otherwise Ids. */
 public sealed record RemoteNotifyMarkRead(IReadOnlyList<string>? Ids = null, bool All = false, string? SessionId = null);
 
-/** host.notify.changed: notifications that became read, and the unread count afterwards. */
-public sealed record RemoteNotifyChanged(IReadOnlyList<string> ReadIds, int UnreadCount);
+/** Authoritative notification projection with optional audit information for the triggering change. */
+public sealed record RemoteNotificationChange(RemoteNotifyPage Page, NotificationRecord? Added = null, IReadOnlyList<string>? ReadIds = null);

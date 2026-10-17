@@ -1,8 +1,15 @@
 using System.Net;
 using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 using Dsh.WebBridge;
+using Dsh.Core;
+using Dsh.Fleet;
+using Dsh.GitInspect;
+using Dsh.Llm;
+using Dsh.Notifications;
 
 namespace Dsh.Tests;
 
@@ -14,25 +21,121 @@ public sealed class WebBridgeTests
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact(Timeout = 30000)]
-    public async Task WebSocket_RelaysHostInfoAndPushedSessionEvents()
+    public async Task WebSocket_UsesSharedFleetForRealSessionEvents()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        await using var fixture = await BridgeFixture.StartAsync(cancellationToken);
-        using var socket = await fixture.Access.ConnectWebSocketAsync(await fixture.Access.LoginAsync(cancellationToken), fixture.Access.Origin, cancellationToken);
-
+        await using var host = await HarnessHostFixture.CreateAsync("wbe", cancellationToken);
+        await using var bridge = WebBridgeServer.Start(new WebBridgeOptions(host.Root, 0));
+        var access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(host.Root))!);
+        await access.WaitForMachinesAsync(statuses => statuses.Values.All(state => state == "Connected"), TimeSpan.FromSeconds(10), cancellationToken);
+        using var socket = await access.ConnectWebSocketAsync(await access.LoginAsync(cancellationToken), access.Origin, cancellationToken);
         var info = await WebSocketRpc.RequestAsync(socket, 1, HostProtocol.MethodInfo, null);
         Assert.Equal(HostProtocol.Version, info.GetProperty("ProtocolVersion").GetInt32());
-        Assert.Equal("fake", info.GetProperty("HostVersion").GetString());
-
-        var created = await WebSocketRpc.RequestAsync(socket, 2, HostProtocol.MethodSessionCreate, """{"Cwd":"/work"}""");
+        var request = new RemoteSessionCreateRequest(host.Root, RemoteHostMultiClientTests.Selection, RemoteHostMultiClientTests.Spec);
+        var parameters = System.Text.Json.JsonSerializer.Serialize(request, HostProtocolJsonContext.Default.RemoteSessionCreateRequest);
+        var created = await WebSocketRpc.RequestAsync(socket, 2, HostProtocol.MethodSessionCreate, parameters);
         var sessionId = created.GetProperty("Id").GetString();
-        await WebSocketRpc.RequestAsync(socket, 3, HostProtocol.MethodSessionSubscribe, $$"""{"SessionId":"{{sessionId}}","FromSeq":0}""");
-        await WebSocketRpc.SendAsync(socket, 4, HostProtocol.MethodSessionMessage, $$"""{"SessionId":"{{sessionId}}","Text":"hi"}""");
-        var pushed = await WebSocketRpc.ReceiveUntilAsync(socket, message => message.TryGetProperty("method", out var method) && method.GetString() == HostProtocol.NotificationEvent);
-
-        Assert.False(pushed.TryGetProperty("id", out _));
+        await WebSocketRpc.RequestAsync(socket, 3, HostProtocol.MethodSessionSubscribe, $$"""{"SessionId":"{{sessionId}}","ViewId":"web-events","FromSeq":0}""");
+        await WebSocketRpc.SendAsync(socket, 4, HostProtocol.MethodSessionMessage, $$"""{"SessionId":"{{sessionId}}","Text":"web-user-message"}""");
+        var pushed = await WebSocketRpc.ReceiveUntilAsync(socket, message => message.TryGetProperty("method", out var method)
+            && method.GetString() == HostProtocol.NotificationEvent
+            && message.GetProperty("params").GetProperty("EventJson").GetString()!.Contains("web-user-message", StringComparison.Ordinal));
         Assert.Equal(sessionId, pushed.GetProperty("params").GetProperty("SessionId").GetString());
-        Assert.Equal("user:hi", pushed.GetProperty("params").GetProperty("EventJson").GetString());
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task DetachingOneBusyTerminalView_KeepsOtherViewsAndBrowserRequestsAlive()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("wbv", TestContext.Current.CancellationToken);
+        await using var bridge = WebBridgeServer.Start(new WebBridgeOptions(host.Root, 0));
+        var access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(host.Root))!);
+        await access.WaitForMachinesAsync(statuses => statuses.Values.All(state => state == "Connected"), TimeSpan.FromSeconds(10), Ct);
+        var cookies = await access.LoginAsync(Ct);
+        using var browser = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
+        using var otherBrowser = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
+        var creator = await host.ConnectAsync("terminal-owner", Ct);
+        var ptyId = await creator.Pty.StartPtyAsync(new RemotePtyStartRequest(TestShell.FileName, TestShell.Arguments, Cwd: host.Environment.App.Home.Root), Ct);
+        await WebSocketRpc.RequestAsync(browser, 1, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-local","Columns":120,"Rows":40}""");
+        await WebSocketRpc.RequestAsync(otherBrowser, 1, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-remote","Columns":120,"Rows":40}""");
+        await WebSocketRpc.RequestAsync(browser, 2, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view","Columns":120,"Rows":40}""");
+        const int floodLineCount = 10_000;
+        var echo = TestShell.EchoAnswer("view-output");
+        var flood = OperatingSystem.IsWindows()
+            ? $"for /l %i in (1,1,{floodLineCount}) do @({echo})"
+            : $$"""i=0; while [ "$i" -lt {{floodLineCount}} ]; do {{echo}}; i=$((i+1)); done""";
+        var input = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{flood}\r"));
+        await WebSocketRpc.SendAsync(browser, 3, PtyProtocol.MethodPtyWrite, $$"""{"PtyId":"{{ptyId}}","Base64":"{{input}}"}""");
+        await WebBridgeHubTests.ReadTerminalUntilAsync(browser, ptyId, "view-output-42", "closing-view");
+        await WebSocketRpc.RequestAsync(browser, 4, PtyProtocol.MethodPtyDetach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view"}""");
+        Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(browser, 5, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
+        Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(otherBrowser, 2, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
+        var command = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{TestShell.EchoAnswer("surviving-view")}\r"));
+        await WebSocketRpc.SendAsync(browser, 6, PtyProtocol.MethodPtyWrite, $$"""{"PtyId":"{{ptyId}}","Base64":"{{command}}"}""");
+        await WebBridgeHubTests.ReadTerminalUntilAsync(browser, ptyId, "surviving-view-42", "kept-local");
+        await WebBridgeHubTests.ReadTerminalUntilAsync(otherBrowser, ptyId, "surviving-view-42", "kept-remote");
+        Assert.Equal(WebSocketState.Open, browser.State);
+        Assert.Equal(WebSocketState.Open, otherBrowser.State);
+    }
+
+    [Theory(Timeout = 60000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ClosingBrowser_AbortsOnlyItsUnfinishedUploads_IncludingUnreadBeginReply(bool closeBeforeReadingBeginReply)
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("wbu", TestContext.Current.CancellationToken);
+        await using var bridge = WebBridgeServer.Start(new WebBridgeOptions(host.Root, 0));
+        var access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(host.Root))!);
+        await access.WaitForMachinesAsync(statuses => statuses.Values.All(state => state == "Connected"), TimeSpan.FromSeconds(10), Ct);
+        var cookies = await access.LoginAsync(Ct);
+        using var closing = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
+        using var retained = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
+        var abandonedDirectory = Path.Combine(host.Environment.App.Home.Root, "abandoned-browser");
+        var retainedDirectory = Path.Combine(host.Environment.App.Home.Root, "retained-browser");
+        Directory.CreateDirectory(abandonedDirectory);
+        Directory.CreateDirectory(retainedDirectory);
+        var abandonedPath = Path.Combine(abandonedDirectory, "unfinished.bin");
+        var retainedPath = Path.Combine(retainedDirectory, "kept.bin");
+        var retainedBegin = JsonSerializer.Serialize(new RemoteUploadBegin(retainedPath), FilesProtocolJsonContext.Default.RemoteUploadBegin);
+        var retainedUpload = (await WebSocketRpc.RequestAsync(retained, 1, FilesProtocol.MethodFsUploadBegin, retainedBegin)).GetProperty("UploadId").GetString()!;
+        var prefix = Encoding.UTF8.GetBytes("second-");
+        var chunk = JsonSerializer.Serialize(new RemoteUploadChunk(retainedUpload, 0, Convert.ToBase64String(prefix)), FilesProtocolJsonContext.Default.RemoteUploadChunk);
+        Assert.Equal(prefix.Length, (await WebSocketRpc.RequestAsync(retained, 2, FilesProtocol.MethodFsUploadChunk, chunk)).GetInt64());
+        var abandonedBegin = JsonSerializer.Serialize(new RemoteUploadBegin(abandonedPath), FilesProtocolJsonContext.Default.RemoteUploadBegin);
+        await WebSocketRpc.SendAsync(closing, 1, FilesProtocol.MethodFsUploadBegin, abandonedBegin);
+        if (!closeBeforeReadingBeginReply)
+        {
+            var reply = await WebSocketRpc.ReceiveUntilAsync(closing, message => message.TryGetProperty("id", out var id) && id.GetInt32() == 1);
+            var uploadId = reply.GetProperty("result").GetProperty("UploadId").GetString()!;
+            Assert.Single(Directory.GetFiles(abandonedDirectory));
+            // Separate browser connections used to provide this ownership boundary at the Host.
+            var foreignAbort = JsonSerializer.Serialize(new RemoteUploadRef(uploadId), FilesProtocolJsonContext.Default.RemoteUploadRef);
+            await WebSocketRpc.SendAsync(retained, 3, FilesProtocol.MethodFsUploadAbort, foreignAbort);
+            var refused = await WebSocketRpc.ReceiveUntilAsync(retained, message => message.TryGetProperty("id", out var id) && id.GetInt32() == 3);
+            Assert.Equal(-32602, refused.GetProperty("error").GetProperty("code").GetInt32());
+            Assert.Single(Directory.GetFiles(abandonedDirectory));
+        }
+        if (closeBeforeReadingBeginReply)
+        {
+            // Observe real Host allocation without consuming the begin response, then lose the browser transport.
+            // The relay must recover its late UploadId before finishing cleanup.
+            await WebSocketRpc.WaitForAsync(() => Directory.GetFiles(abandonedDirectory).Length == 1);
+            closing.Abort();
+        }
+        else
+            await closing.CloseAsync(WebSocketCloseStatus.NormalClosure, "", Ct);
+        await WebSocketRpc.WaitForAsync(() => Directory.GetFiles(abandonedDirectory).Length == 0);
+        Assert.False(File.Exists(abandonedPath));
+        Assert.Single(Directory.GetFiles(retainedDirectory));
+        Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(retained, 4, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
+        var suffix = Encoding.UTF8.GetBytes("continued");
+        var continued = JsonSerializer.Serialize(new RemoteUploadChunk(retainedUpload, prefix.Length, Convert.ToBase64String(suffix)), FilesProtocolJsonContext.Default.RemoteUploadChunk);
+        Assert.Equal(prefix.Length + suffix.Length, (await WebSocketRpc.RequestAsync(retained, 5, FilesProtocol.MethodFsUploadChunk, continued)).GetInt64());
+        var commit = JsonSerializer.Serialize(new RemoteUploadCommit(retainedUpload, prefix.Length + suffix.Length), FilesProtocolJsonContext.Default.RemoteUploadCommit);
+        await WebSocketRpc.RequestAsync(retained, 6, FilesProtocol.MethodFsUploadCommit, commit);
+        Assert.Equal("second-continued", await File.ReadAllTextAsync(retainedPath, Ct));
+        Assert.Equal(["kept.bin"], Directory.GetFiles(retainedDirectory).Select(Path.GetFileName));
+        Assert.Empty(Directory.GetFiles(abandonedDirectory));
+        Assert.Equal(WebSocketState.Open, retained.State);
     }
 
     [Fact(Timeout = 30000)]
@@ -76,8 +179,8 @@ public sealed class WebBridgeTests
         using var accepted = await fixture.Access.PostLoginAsync(client, fixture.Token, fixture.Access.Origin, cancellationToken);
         Assert.Equal(HttpStatusCode.NoContent, accepted.StatusCode);
         var setCookie = Assert.Single(accepted.Headers.GetValues("Set-Cookie"));
-        Assert.Contains("HttpOnly", setCookie, StringComparison.Ordinal);
-        Assert.Contains("SameSite=Strict", setCookie, StringComparison.Ordinal);
+        Assert.Contains("HttpOnly", setCookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SameSite=Strict", setCookie, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(fixture.Token, setCookie, StringComparison.Ordinal);
         Assert.Equal(HttpStatusCode.NoContent, (await client.GetAsync(fixture.Access.Url(WebBridgeServer.SessionPath), cancellationToken)).StatusCode);
     }
@@ -109,51 +212,88 @@ public sealed class WebBridgeTests
 
         using var script = await client.GetAsync(fixture.Access.Url("/rpc.js"), cancellationToken);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
+
+        using var protocol = await client.GetAsync(fixture.Access.Url("/protocol.js"), cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, protocol.StatusCode);
+        Assert.Equal("text/javascript", protocol.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("nosniff", Assert.Single(protocol.Headers.GetValues("X-Content-Type-Options")));
+        Assert.Contains("script-src 'self'", Assert.Single(protocol.Headers.GetValues("Content-Security-Policy")), StringComparison.Ordinal);
+        Assert.DoesNotContain(fixture.Token, await protocol.Content.ReadAsStringAsync(cancellationToken), StringComparison.Ordinal);
+        Assert.False(protocol.Headers.Contains("Access-Control-Allow-Origin"));
+        using var forbiddenProtocol = new HttpRequestMessage(HttpMethod.Get, fixture.Access.Url("/protocol.js"));
+        forbiddenProtocol.Headers.Host = "evil.example";
+        using var rejectedProtocol = await client.SendAsync(forbiddenProtocol, cancellationToken);
+        Assert.Equal(HttpStatusCode.Forbidden, rejectedProtocol.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(fixture.Access.Url("/missing.js"), cancellationToken)).StatusCode);
     }
 
     [Fact(Timeout = 30000)]
-    public async Task ClosingWebSocket_ReleasesItsHostConnection()
+    public async Task BusyPort_DoesNotReplaceRunningBridgeCredentials()
     {
-        var cancellationToken = TestContext.Current.CancellationToken;
-        await using var fixture = await BridgeFixture.StartAsync(cancellationToken);
-        using var socket = await fixture.Access.ConnectWebSocketAsync(await fixture.Access.LoginAsync(cancellationToken), fixture.Access.Origin, cancellationToken);
-        await WebSocketRpc.RequestAsync(socket, 1, HostProtocol.MethodInfo, null);
-        Assert.Equal(1, fixture.RelayedConnections);
-
-        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "", cancellationToken);
-
-        await WebSocketRpc.WaitForAsync(() => fixture.RelayedConnections == 0);
-        Assert.Equal(WebSocketState.Closed, socket.State);
+        await using var fixture = await BridgeFixture.StartAsync(TestContext.Current.CancellationToken);
+        var token = fixture.Token;
+        Assert.Throws<IOException>(() => WebBridgeServer.Start(new WebBridgeOptions(fixture.Root, fixture.Bridge.Port)));
+        Assert.Equal(token, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(fixture.Root)));
+        var cookies = await fixture.Access.LoginAsync(Ct);
+        using var client = BridgeAccess.CreateHttpClient(cookies);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.GetAsync(fixture.Access.Url(WebBridgeServer.SessionPath), Ct)).StatusCode);
     }
 
     [Fact(Timeout = 30000)]
-    public async Task HostShutdown_ClosesWebSocketAsEndpointUnavailable()
+    public async Task RestartBridge_RejectsCookieFromPreviousProcessLifetime()
+    {
+        await using var fixture = await BridgeFixture.StartAsync(TestContext.Current.CancellationToken);
+        var cookies = await fixture.Access.LoginAsync(Ct);
+        await fixture.Bridge.DisposeAsync();
+        await using var replacement = WebBridgeServer.Start(new WebBridgeOptions(fixture.Root, 0));
+        var access = new BridgeAccess(replacement.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(fixture.Root))!);
+        using var client = BridgeAccess.CreateHttpClient(cookies);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(access.Url(WebBridgeServer.SessionPath), Ct)).StatusCode);
+        using var login = await access.PostLoginAsync(client, access.Token, access.Origin, Ct);
+        Assert.Equal(HttpStatusCode.NoContent, login.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.GetAsync(access.Url(WebBridgeServer.SessionPath), Ct)).StatusCode);
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task BrowserSockets_ShareFleetConnection_AndClosingOneKeepsTheOtherUsable()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var fixture = await BridgeFixture.StartAsync(cancellationToken);
+        var cookies = await fixture.Access.LoginAsync(cancellationToken);
+        using var first = await fixture.Access.ConnectWebSocketAsync(cookies, fixture.Access.Origin, cancellationToken);
+        using var second = await fixture.Access.ConnectWebSocketAsync(cookies, fixture.Access.Origin, cancellationToken);
+        await WebSocketRpc.RequestAsync(first, 1, HostProtocol.MethodInfo, null);
+        await WebSocketRpc.RequestAsync(second, 1, HostProtocol.MethodInfo, null);
+        Assert.Equal(0, fixture.RelayedConnections);
+        await first.CloseAsync(WebSocketCloseStatus.NormalClosure, "", cancellationToken);
+        Assert.Equal("fake", (await WebSocketRpc.RequestAsync(second, 2, HostProtocol.MethodInfo, null)).GetProperty("HostVersion").GetString());
+        Assert.Equal(0, fixture.RelayedConnections);
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task HostShutdown_PublishesAuthoritativeOfflineView_WithoutClosingBrowserTransport()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var fixture = await BridgeFixture.StartAsync(cancellationToken);
         using var socket = await fixture.Access.ConnectWebSocketAsync(await fixture.Access.LoginAsync(cancellationToken), fixture.Access.Origin, cancellationToken);
         await WebSocketRpc.RequestAsync(socket, 1, HostProtocol.MethodInfo, null);
-
         await fixture.StopDaemonAsync();
-        var received = await socket.ReceiveAsync(new byte[1024], cancellationToken);
-
-        Assert.Equal(WebSocketMessageType.Close, received.MessageType);
-        Assert.Equal(WebSocketCloseStatus.EndpointUnavailable, socket.CloseStatus);
+        var view = await WebSocketRpc.ReceiveUntilAsync(socket, message => message.TryGetProperty("method", out var method)
+            && method.GetString() == "bridge.view" && message.GetProperty("params").GetProperty("State").GetString() != "Connected");
+        Assert.NotEqual("Connected", view.GetProperty("params").GetProperty("State").GetString());
+        Assert.Equal(WebSocketState.Open, socket.State);
     }
 
     [Fact(Timeout = 30000)]
-    public async Task WebSocket_WithoutHostDaemon_ClosesWithReason()
+    public async Task WebSocket_WithoutHostDaemon_PublishesOfflineView()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var fixture = await BridgeFixture.StartAsync(cancellationToken, withDaemon: false);
         using var socket = await fixture.Access.ConnectWebSocketAsync(await fixture.Access.LoginAsync(cancellationToken), fixture.Access.Origin, cancellationToken);
-
-        var received = await socket.ReceiveAsync(new byte[1024], cancellationToken);
-
-        Assert.Equal(WebSocketMessageType.Close, received.MessageType);
-        Assert.Equal(WebSocketCloseStatus.InternalServerError, socket.CloseStatus);
-        Assert.Contains("not reachable", socket.CloseStatusDescription, StringComparison.Ordinal);
+        var view = await WebSocketRpc.ReceiveUntilAsync(socket, message => message.TryGetProperty("method", out var method)
+            && method.GetString() == "bridge.view" && message.GetProperty("params").GetProperty("State").GetString() == "Offline");
+        Assert.False(string.IsNullOrEmpty(view.GetProperty("params").GetProperty("Detail").GetString()));
+        Assert.Equal(WebSocketState.Open, socket.State);
     }
 
     [Fact(Timeout = 30000)]
@@ -229,6 +369,72 @@ public sealed class WebBridgeTests
         await chrome.NavigateAsync(new Uri($"{fixture.Access.Url("/")}#token={fixture.Token}"), cancellationToken);
         await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "connected", cancellationToken);
         await chrome.WaitUntilAsync("document.querySelector('section.machine .host-version')?.textContent", $"dsharp {RemoteHostServer.ReleaseVersion}", cancellationToken);
+        using (var protocol = JsonDocument.Parse(await chrome.EvaluateAsync("""
+            (async () => {
+              const protocol = await import('/protocol.js');
+              if (!Object.values(protocol).every(Object.isFrozen))
+                throw new Error('protocol definitions must be immutable');
+              return JSON.stringify(protocol);
+            })()
+            """, cancellationToken)))
+        {
+            var values = protocol.RootElement;
+            Assert.Equal(HostSessionStatuses.Running, values.GetProperty("SessionStatus").GetProperty("Running").GetString());
+            Assert.Equal(HostSessionStatuses.WaitingForUser, values.GetProperty("SessionStatus").GetProperty("WaitingForUser").GetString());
+            Assert.Equal(HostSessionStatuses.Idle, values.GetProperty("SessionStatus").GetProperty("Idle").GetString());
+            Assert.Equal(HostSessionStatuses.Exited, values.GetProperty("SessionStatus").GetProperty("Exited").GetString());
+            Assert.Equal(HostSessionKinds.Harness, values.GetProperty("SessionKind").GetProperty("Harness").GetString());
+            Assert.Equal(HostSessionKinds.External, values.GetProperty("SessionKind").GetProperty("External").GetString());
+            Assert.Equal(HostSessionKinds.Acp, values.GetProperty("SessionKind").GetProperty("Acp").GetString());
+            Assert.Equal(HostSessionKinds.Terminal, values.GetProperty("SessionKind").GetProperty("Terminal").GetString());
+            var capabilities = values.GetProperty("Capability");
+            Assert.Equal(HostProtocolCatalog.KnownCapabilities.Count, capabilities.EnumerateObject().Count());
+            foreach (var (name, wireValue) in HostProtocolCatalog.KnownCapabilities)
+                Assert.Equal(wireValue, capabilities.GetProperty(name).GetString());
+            Assert.Equal(RemoteAgentModes.Terminal, values.GetProperty("AgentMode").GetProperty("Terminal").GetString());
+            Assert.Equal(RemoteAgentModes.Acp, values.GetProperty("AgentMode").GetProperty("Acp").GetString());
+            Assert.Equal(HostProtocol.MethodSessionMessage, values.GetProperty("HostProtocol").GetProperty(nameof(HostProtocol.MethodSessionMessage)).GetString());
+            Assert.Equal(AgentProtocol.MethodAgentStart, values.GetProperty("AgentProtocol").GetProperty(nameof(AgentProtocol.MethodAgentStart)).GetString());
+            Assert.Equal(PtyProtocol.NotificationPtyOutput, values.GetProperty("PtyProtocol").GetProperty(nameof(PtyProtocol.NotificationPtyOutput)).GetString());
+            Assert.Equal(FilesProtocol.MethodFsDownload, values.GetProperty("FilesProtocol").GetProperty(nameof(FilesProtocol.MethodFsDownload)).GetString());
+            Assert.Equal(GitProtocol.MethodGitDiff, values.GetProperty("GitProtocol").GetProperty(nameof(GitProtocol.MethodGitDiff)).GetString());
+            Assert.Equal(NotificationsProtocol.MethodNotifyMarkRead, values.GetProperty("NotificationsProtocol").GetProperty(nameof(NotificationsProtocol.MethodNotifyMarkRead)).GetString());
+            Assert.Equal(BridgeProtocol.NotificationView, values.GetProperty("BridgeProtocol").GetProperty(nameof(BridgeProtocol.NotificationView)).GetString());
+            Assert.Equal(BridgeProtocol.NotificationStreamError, values.GetProperty("BridgeProtocol").GetProperty(nameof(BridgeProtocol.NotificationStreamError)).GetString());
+            Assert.Equal(PendingKinds.Approval, values.GetProperty("PendingKind").GetProperty(nameof(PendingKinds.Approval)).GetString());
+            Assert.Equal(PendingKinds.Question, values.GetProperty("PendingKind").GetProperty(nameof(PendingKinds.Question)).GetString());
+            foreach (var state in Enum.GetValues<MachineConnectionState>())
+                Assert.Equal(state.ToString(), values.GetProperty("MachineConnectionState").GetProperty(state.ToString()).GetString());
+            foreach (var kind in Enum.GetValues<NotificationKind>())
+                Assert.Equal(kind.ToString(), values.GetProperty("NotificationKind").GetProperty(kind.ToString()).GetString());
+            foreach (var view in Enum.GetValues<NotificationView>())
+                Assert.Equal(view.ToString(), values.GetProperty("NotificationView").GetProperty(view.ToString()).GetString());
+            Assert.Equal(nameof(GitDiffSource.Staged), values.GetProperty("GitDiffSource").GetProperty(nameof(GitDiffSource.Staged)).GetString());
+            Assert.Equal(SessionEventTypes.UserMessage, values.GetProperty("SessionEventType").GetProperty(nameof(SessionEventTypes.UserMessage)).GetString());
+            Assert.Equal(StreamChunkTypes.TextDelta, values.GetProperty("StreamChunkType").GetProperty(nameof(StreamChunkTypes.TextDelta)).GetString());
+            Assert.Equal(ContentBlockTypes.Text, values.GetProperty("ContentBlockType").GetProperty(nameof(ContentBlockTypes.Text)).GetString());
+            Assert.Equal(SessionEventSources.AcpPlan, values.GetProperty("SessionEventSource").GetProperty(nameof(SessionEventSources.AcpPlan)).GetString());
+            Assert.Equal(JsonRpcPeer.MethodNotFound, values.GetProperty("JsonRpc").GetProperty(nameof(JsonRpcPeer.MethodNotFound)).GetInt32());
+        }
+        Assert.Equal("true", await chrome.EvaluateAsync("""
+            (async () => {
+              const { Transcript } = await import('/views/transcript.js');
+              const { machineChip } = await import('/views/common.js');
+              const { SessionEventType: Event, StreamChunkType: Chunk, ContentBlockType: Block,
+                MachineConnectionState: State, TurnEndKind } = await import('/protocol.js');
+              const transcript = new Transcript();
+              transcript.apply({ type: Event.UserMessage, seq: 1, data: { content: [{ type: Block.Text, text: 'protocol-user' }] } });
+              transcript.apply({ type: Event.AssistantChunk, seq: 2, data: { turn: 1, step: 1, chunk: { type: Chunk.TextDelta, text: 'protocol-reply' } } });
+              transcript.apply({ type: Event.AssistantMessage, seq: 3, data: { turn: 1, step: 1, message: { content: [{ type: Block.Text, text: 'protocol-final' }] } } });
+              transcript.apply({ type: Event.ToolCall, seq: 4, data: { callId: 'call', name: 'read' } });
+              transcript.apply({ type: Event.ToolResult, seq: 5, data: { message: { block: { toolCallId: 'call', content: [{ type: Block.Text, text: 'protocol-output' }] } } } });
+              transcript.apply({ type: Event.TurnEnd, seq: 6, data: { reason: { kind: TurnEndKind.Completed } } });
+              const text = transcript.element.textContent;
+              const deploying = machineChip({ connected: false, state: 'connecting', bridgeStatus: { State: State.Deploying } });
+              return String(text.includes('protocol-user') && text.includes('protocol-final') && text.includes('protocol-output')
+                && !text.includes('protocol-reply') && !transcript.element.querySelector('.turn-end') && deploying.textContent === 'Deploying');
+            })()
+            """, cancellationToken));
 
         Assert.DoesNotContain(fixture.Token, await chrome.EvaluateAsync("location.href", cancellationToken), StringComparison.Ordinal);
         Assert.Equal("none", await chrome.EvaluateAsync("getComputedStyle(document.getElementById('login')).display", cancellationToken));
@@ -271,7 +477,7 @@ public sealed class WebBridgeTests
 
         public string Token { get; }
 
-        /** Host connections opened for WebSockets: the bridge's own status connection to its machine is not one of them. */
+        /** Extra host connections beyond the single shared Fleet connection: browser transports must not open any. */
         public int RelayedConnections => Backend.OpenConnections - 1;
 
         public BridgeAccess Access => new(Bridge.Port, Token);
@@ -297,7 +503,11 @@ public sealed class WebBridgeTests
 
             var bridge = WebBridgeServer.Start(new WebBridgeOptions(root, 0));
             if (withDaemon)
+            {
                 await WebSocketRpc.WaitForAsync(() => backend.OpenConnections == 1);
+                var access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(root))!);
+                await access.WaitForMachinesAsync(statuses => statuses.Values.All(state => state == "Connected"), TimeSpan.FromSeconds(10), cancellationToken);
+            }
             return new BridgeFixture(root, backend, daemonStop, daemon, bridge);
         }
 

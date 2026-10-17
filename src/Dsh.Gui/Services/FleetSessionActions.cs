@@ -24,24 +24,17 @@ public sealed class FleetSessionActions(FleetWorkspace fleet, Func<HarnessModelC
     public async Task StopAsync(string machine, string sessionId, CancellationToken cancellationToken)
     {
         var lease = await LeaseAsync(machine, cancellationToken);
-        await lease.Client.StopAgentAsync(sessionId, cancellationToken);
+        await lease.Client.Agent.StopAgentAsync(sessionId, cancellationToken);
     }
 
-    /** Resumes an exited session; a terminal-mode agent comes back under a new session id, which the returned record carries. */
-    public async Task<RemoteHostSession> ResumeAsync(string machine, RemoteHostSession session, CancellationToken cancellationToken)
+    /** Resumes an exited session and returns its actual ID, including a new terminal-mode agent ID. */
+    public async Task<string> ResumeAsync(string machine, RemoteHostSession session, CancellationToken cancellationToken)
     {
         var lease = await LeaseAsync(machine, cancellationToken);
-        RemoteHostSession resumed;
         if (session.Kind != HostSessionKinds.Harness)
-            resumed = await lease.Client.ResumeAgentAsync(session.SessionId, cancellationToken);
-        else
-        {
-            var (selection, provider) = HarnessModel;
-            await lease.Client.ResumeSessionAsync(session.SessionId, selection, provider, cancellationToken);
-            resumed = (await lease.Client.ListHostSessionsAsync(cancellationToken)).FirstOrDefault(item => item.SessionId == session.SessionId) ?? session;
-        }
-        Connection(machine).Remember(resumed);
-        return resumed;
+            return (await lease.Client.Agent.ResumeAgentAsync(session.SessionId, cancellationToken)).SessionId;
+        var (selection, provider) = HarnessModel;
+        return (await lease.Client.ResumeSessionAsync(session.SessionId, selection, provider, cancellationToken)).Id;
     }
 
     /** Starts a session of any kind; harness sessions use the GUI's current model unless the request names one. */
@@ -53,8 +46,6 @@ public sealed class FleetSessionActions(FleetWorkspace fleet, Func<HarnessModelC
             var (selection, provider) = HarnessModel;
             request = request with { Selection = selection, Provider = provider };
         }
-        var started = await lease.Client.StartAgentAsync(request, cancellationToken);
-        Connection(machine).Remember(started);
-        return started;
+        return await lease.Client.Agent.StartAgentAsync(request, cancellationToken);
     }
 }

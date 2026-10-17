@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Channels;
@@ -320,22 +319,11 @@ public static class PtyDaemonClient
     {
         var executable = Environment.ProcessPath
             ?? throw new InvalidOperationException("failed to resolve the current executable to start dsharp tui daemon");
-        var startInfo = new ProcessStartInfo(executable)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
+        List<string> arguments = [];
         if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
-            startInfo.ArgumentList.Add(Environment.GetCommandLineArgs()[0]);
-        startInfo.ArgumentList.Add("tui");
-        startInfo.ArgumentList.Add("daemon");
-        var process = Process.Start(startInfo);
-        if (process is null)
-            throw new InvalidOperationException("failed to start dsharp tui daemon");
-        _ = process;
+            arguments.Add(Environment.GetCommandLineArgs()[0]);
+        arguments.AddRange(["tui", "daemon"]);
+        BackgroundProcess.Start(executable, arguments, Directory.GetCurrentDirectory(), new Dictionary<string, string?>());
     }
 
     /**

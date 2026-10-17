@@ -62,10 +62,10 @@ public sealed class WebBridgeHubTests
         Assert.Equal(hub.SecondHome, (await WebSocketRpc.RequestAsync(second, 2, HostProtocol.MethodInfo, null)).GetProperty("HomeRoot").GetString());
 
         var arguments = TestShell.RunThenWait(TestShell.EchoAnswer("hub"), 30);
-        var started = await WebSocketRpc.RequestAsync(second, 3, HostProtocol.MethodPtyStart, $$"""{"FileName":{{JsonSerializer.Serialize(TestShell.FileName)}},"Arguments":{{JsonSerializer.Serialize(arguments)}},"Cwd":{{JsonSerializer.Serialize(hub.SecondHome)}},"Title":"hub-shell"}""");
+        var started = await WebSocketRpc.RequestAsync(second, 3, PtyProtocol.MethodPtyStart, $$"""{"FileName":{{JsonSerializer.Serialize(TestShell.FileName)}},"Arguments":{{JsonSerializer.Serialize(arguments)}},"Cwd":{{JsonSerializer.Serialize(hub.SecondHome)}},"Title":"hub-shell"}""");
         var ptyId = started.GetProperty("PtyId").GetString()!;
         // The snapshot push can overtake attach's own response, so the reply is not awaited before reading output.
-        await WebSocketRpc.SendAsync(second, 4, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}"}""");
+        await WebSocketRpc.SendAsync(second, 4, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"hub-terminal"}""");
         await ReadTerminalUntilAsync(second, ptyId, "hub-42");
 
         var onSecond = await WebSocketRpc.RequestAsync(second, 5, HostProtocol.MethodSessionsList, null);
@@ -75,7 +75,7 @@ public sealed class WebBridgeHubTests
     }
 
     [Fact(Timeout = 120000)]
-    public async Task WebSocket_ToUnknownOrOfflineMachine_IsRefused()
+    public async Task UnknownMachine_IsRefused_AndOfflineMachineHasRedactedAuthoritativeView()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var hub = await HubFixture.StartAsync();
@@ -86,22 +86,24 @@ public sealed class WebBridgeHubTests
 
         await hub.WaitForMachinesAsync(machines => machines[OfflineMachine] == "Offline");
         using var offline = await hub.Access.ConnectWebSocketAsync(cookies, hub.Access.Origin, ct, OfflineMachine);
-        var received = await offline.ReceiveAsync(new byte[1024], ct);
-
-        Assert.Equal(WebSocketMessageType.Close, received.MessageType);
-        Assert.Equal(WebSocketCloseStatus.InternalServerError, offline.CloseStatus);
-        Assert.Contains("offline", offline.CloseStatusDescription, StringComparison.Ordinal);
-        Assert.All(SecretValues, secret => Assert.DoesNotContain(secret, offline.CloseStatusDescription, StringComparison.Ordinal));
+        var view = await WebSocketRpc.ReceiveUntilAsync(offline, message => message.TryGetProperty("method", out var method)
+            && method.GetString() == "bridge.view" && message.GetProperty("params").GetProperty("State").GetString() == "Offline");
+        var detail = view.GetProperty("params").GetProperty("Detail").GetString() ?? "";
+        Assert.False(string.IsNullOrEmpty(detail));
+        Assert.All(SecretValues, secret => Assert.DoesNotContain(secret, detail, StringComparison.Ordinal));
+        Assert.Equal(WebSocketState.Open, offline.State);
     }
 
     internal static async Task HelloAsync(ClientWebSocket socket)
     {
+        await WebSocketRpc.ReceiveUntilAsync(socket, message => message.TryGetProperty("method", out var method)
+            && method.GetString() == "bridge.view" && message.GetProperty("params").GetProperty("State").GetString() == "Connected");
         var hello = await WebSocketRpc.RequestAsync(socket, 1, HostProtocol.MethodHello, $$"""{"ProtocolVersion":{{HostProtocol.Version}},"ClientName":"hub-test"}""");
         Assert.True(hello.GetProperty("Ok").GetBoolean());
     }
 
     /** Decodes host.pty.output pushes of one PTY until the screen text contains the expected output. */
-    internal static async Task ReadTerminalUntilAsync(ClientWebSocket socket, string ptyId, string expected)
+    internal static async Task ReadTerminalUntilAsync(ClientWebSocket socket, string ptyId, string expected, string? viewId = null)
     {
         var screen = new StringBuilder();
         var seen = new List<string>();
@@ -115,8 +117,9 @@ public sealed class WebBridgeHubTests
                 {
                     seen.Add(message.ToString());
                     return message.TryGetProperty("method", out var method)
-                        && method.GetString() == HostProtocol.NotificationPtyOutput
-                        && message.GetProperty("params").GetProperty("PtyId").GetString() == ptyId;
+                        && method.GetString() == PtyProtocol.NotificationPtyOutput
+                        && message.GetProperty("params").GetProperty("PtyId").GetString() == ptyId
+                        && (viewId is null || message.GetProperty("params").GetProperty("ViewId").GetString() == viewId);
                 }).WaitAsync(timeout.Token);
                 screen.Append(Encoding.UTF8.GetString(Convert.FromBase64String(output.GetProperty("params").GetProperty("Base64").GetString()!)));
             }

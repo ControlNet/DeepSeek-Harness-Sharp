@@ -30,15 +30,13 @@ public sealed partial class NotificationItemViewModel(string machine, Notificati
 
     public bool HasSession => Record.SessionId is not null;
 
-    [ObservableProperty]
-    private bool _isRead = record.IsRead;
+    public bool IsRead => Record.IsRead;
 
     [ObservableProperty]
     private string _sessionTitle = "";
 
     public bool IsUnread => !IsRead;
 
-    partial void OnIsReadChanged(bool value) => OnPropertyChanged(nameof(IsUnread));
 }
 
 /** An entry of a notification filter drop-down: a label and the value it filters by (null = no filter). */

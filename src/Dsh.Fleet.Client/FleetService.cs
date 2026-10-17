@@ -3,7 +3,7 @@ using Dsh.Runtime;
 
 namespace Dsh.Fleet;
 
-/** Owns frontend client links for one harness home, never the sessions running on its hosts. */
+/** Plugin-lifetime owner of frontend clients, never host sessions or a second connection/state cache. */
 public sealed class FleetService(HarnessHome home, Context? context = null) : IDisposable
 {
     public const string ServiceName = "fleet";

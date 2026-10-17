@@ -19,8 +19,7 @@ public sealed class IrohSshTransportTests
     [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaag")]
     public async Task InvalidEndpointCannotFallBackToOrdinaryTcp(string? endpoint)
     {
-        await Assert.ThrowsAsync<InvalidOperationException>(() => SshHostLauncher.RunRemoteCaptureAsync(
-            Machine with { EndpointId = endpoint }, "true", TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new SshTransport(Machine with { EndpointId = endpoint }).CaptureAsync("true", TestContext.Current.CancellationToken));
     }
 
     [Theory]
@@ -29,8 +28,7 @@ public sealed class IrohSshTransportTests
     [InlineData("ProxyJump=jump")]
     public async Task ExplicitIrohCannotBeOverriddenByAnotherSshRoute(string option)
     {
-        await Assert.ThrowsAsync<InvalidOperationException>(() => SshHostLauncher.RunRemoteCaptureAsync(
-            Machine with { SshOptions = [option] }, "true", TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new SshTransport(Machine with { SshOptions = [option] }).CaptureAsync("true", TestContext.Current.CancellationToken));
     }
 
     [Theory]

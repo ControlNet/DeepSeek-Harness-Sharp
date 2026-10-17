@@ -1,5 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Dsh.Boot;
 
 namespace Dsh.Fleet;
@@ -8,30 +6,17 @@ namespace Dsh.Fleet;
  * The machine list and deployment preferences shared by the GUI, the CLI and the web bridge: the `fleet:` section of settings.yaml.
  * settings.yaml is owner-only, so the SSH passwords of password authentication stay private.
  * Reading never creates settings.yaml; saving rewrites only the fleet section and keeps comments, the other sections and the file's line endings.
- * Earlier layouts are imported on the first read and then removed, so there is only ever one list: `<home>/fleet/machines.json`, and the remote workspaces older GUI builds kept under plugins."@deepseek-ai/dsh-gui".
+ * Only settings.yaml is read or written; configurations from experimental layouts must be added explicitly.
  */
 public sealed class MachineStore(HarnessHome home)
 {
-    public const string LegacyDirectoryName = "fleet";
-    public const string LegacyFileName = "machines.json";
-
     public string FilePath => home.SettingsFile;
-
-    public string LegacyFilePath => Path.Combine(home.SubPath(LegacyDirectoryName), LegacyFileName);
 
     public FleetConfig Load()
     {
-        if (File.Exists(LegacyFilePath))
-            return ImportLegacyFile();
-        if (!File.Exists(FilePath))
-            return FleetConfig.Empty;
-        if (HarnessSettings.Load(home).Fleet is { } fleet)
-            return FromSettings(fleet);
-        if (LegacyGuiWorkspaces.Read(home) is not { } legacy)
-            return FleetConfig.Empty;
-        Save(legacy);
-        LegacyGuiWorkspaces.Remove(home);
-        return legacy;
+        return File.Exists(FilePath) && HarnessSettings.Load(home).Fleet is { } fleet
+            ? FromSettings(fleet)
+            : FleetConfig.Empty;
     }
 
     /** Settings are re-read right before writing, so a section another client changed in the meantime is not reverted. */
@@ -62,17 +47,6 @@ public sealed class MachineStore(HarnessHome home)
             return false;
         Save(config with { Machines = machines });
         return true;
-    }
-
-    /** machines.json was the whole list while it existed, so it replaces whatever settings.yaml holds. */
-    private FleetConfig ImportLegacyFile()
-    {
-        var document = JsonSerializer.Deserialize(File.ReadAllText(LegacyFilePath), FleetJsonContext.Default.LegacyMachineDocument)
-            ?? throw new JsonException("the legacy fleet configuration must be a JSON object");
-        var config = new FleetConfig(document.Machines ?? [], document.Deploy ?? new DeploySettings());
-        Save(config);
-        File.Delete(LegacyFilePath);
-        return config;
     }
 
     private static FleetConfig FromSettings(FleetSettings fleet)
@@ -171,14 +145,3 @@ public sealed class MachineStore(HarnessHome home)
     }
 }
 
-/** The layout of `<home>/fleet/machines.json`, read once to import it into settings.yaml. */
-internal sealed record LegacyMachineDocument(List<MachineSpec>? Machines, DeploySettings? Deploy);
-
-/** Source-generated JSON for the legacy machine list and for reading event envelopes (AOT and trimming safe). */
-[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
-[JsonSerializable(typeof(LegacyMachineDocument))]
-[JsonSerializable(typeof(EventEnvelope))]
-internal sealed partial class FleetJsonContext : JsonSerializerContext;
-
-/** The part of a session event the client needs to resume a subscription. */
-internal sealed record EventEnvelope(long Seq);

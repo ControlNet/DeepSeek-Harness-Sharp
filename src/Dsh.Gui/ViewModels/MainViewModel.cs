@@ -88,7 +88,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _sortMode = snapshot.SortSessions;
         _onlyWithSessions = snapshot.ShowOnlyWithSessions;
         _isSidebarVisible = snapshot.SidebarVisible;
-        Preferences = new SettingsViewModel(_ctx, app.Home, CurrentRemoteModel, chat.RunAsync, Gui, _settings, () => chat.ClientAsync());
+        Preferences = new SettingsViewModel(
+            _ctx, app.Home, CurrentRemoteModel, chat.RunAsync, Gui, _settings,
+            async () => (await chat.ClientAsync()).Models,
+            async () => (await chat.ClientAsync()).Plugins);
         Preferences.Models.CollectionChanged += (_, _) => RefreshFilteredModels();
         Preferences.ReasoningEfforts.CollectionChanged += (_, _) => HasReasoningEfforts = Preferences.ReasoningEfforts.Count > 0;
         HasReasoningEfforts = Preferences.ReasoningEfforts.Count > 0;
@@ -721,7 +724,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var title = node.RenameDraft.Trim();
         if (title.Length == 0 || title == node.Title)
             return;
-        await (await _chat.ClientAsync()).RenameSessionAsync(node.SessionId.Value, title);
+        await (await _chat.ClientAsync()).SessionEditing.RenameSessionAsync(node.SessionId.Value, title);
         node.Title = title;
         if (node.SessionId == _chat.Id)
         {
@@ -749,7 +752,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             StatusText = "不能删除当前正在使用的会话";
             return;
         }
-        await (await _chat.ClientAsync()).DeleteSessionAsync(node.SessionId.Value);
+        await (await _chat.ClientAsync()).SessionEditing.DeleteSessionAsync(node.SessionId.Value);
         StatusText = "会话已删除";
         RefreshSessions();
     }
@@ -1356,7 +1359,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task ApplyApprovalPolicyAsync(ApprovalPolicy policy, SessionMode mode, string status)
     {
-        await (await _chat.ClientAsync()).SetSessionApprovalPolicyAsync(_chat.Id.Value, policy.ToString());
+        await (await _chat.ClientAsync()).SessionEditing.SetSessionApprovalPolicyAsync(_chat.Id.Value, policy.ToString());
         await _chat.ReloadAsync();
         Mode = mode;
         RefreshPermissionLabel();

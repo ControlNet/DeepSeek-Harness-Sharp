@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dsh.Notifications;
 
 namespace Dsh.Tests;
@@ -9,9 +10,8 @@ public sealed class NotificationHistoryTests : IDisposable
     private readonly string _directory = Path.GetFullPath(Path.Combine(
         AppContext.BaseDirectory, "../../../../../artifacts020/test-tmp", $"notifications-{Guid.NewGuid():N}"));
 
-    private readonly ManualTimeProvider _time = new(Start);
 
-    private string FilePath => Path.Combine(_directory, "history.jsonl");
+    private string FilePath => Path.Combine(_directory, "history.json");
 
     public void Dispose()
     {
@@ -36,7 +36,7 @@ public sealed class NotificationHistoryTests : IDisposable
     }
 
     [Fact]
-    public async Task ReadMarks_AreAppendedAndSurviveReopen()
+    public async Task ReadMarks_SurviveReopen()
     {
         var history = await OpenAsync();
         await history.AppendAsync(Record("n1", "m1", "s1", minutes: 0), TestContext.Current.CancellationToken);
@@ -47,9 +47,13 @@ public sealed class NotificationHistoryTests : IDisposable
         var reopened = await OpenAsync();
 
         Assert.Equal((2, 0), (marked.Count, markedAgain.Count));
-        Assert.Equal(3, (await File.ReadAllLinesAsync(FilePath, TestContext.Current.CancellationToken)).Length);
+        Assert.Equal(["n2", "n1"], Ids(reopened.Query()));
         Assert.All(reopened.Query(), record => Assert.True(record.IsRead));
         Assert.Equal(0, reopened.CountUnread());
+        await reopened.AppendAsync(Record("n3", "m1", "s1", minutes: 2), TestContext.Current.CancellationToken);
+        var afterAppend = await OpenAsync();
+        Assert.Equal(["n3", "n2", "n1"], Ids(afterAppend.Query()));
+        Assert.Equal(["n3"], Ids(afterAppend.Query(new NotificationFilter(UnreadOnly: true))));
     }
 
     [Fact]
@@ -67,37 +71,38 @@ public sealed class NotificationHistoryTests : IDisposable
     }
 
     [Fact]
-    public async Task Retention_KeepsNewestEntriesWithinCountAndAge()
+    public async Task FailedSave_DoesNotPublishReadMarksOrLosePersistedNotifications()
     {
-        var retention = new NotificationRetention(MaxEntries: 3, MaxAge: TimeSpan.FromDays(1));
-        var history = await OpenAsync(retention);
-        foreach (var minute in Enumerable.Range(0, 5))
-            await history.AppendAsync(Record($"n{minute}", "m1", null, minutes: minute), TestContext.Current.CancellationToken);
-        Assert.Equal(["n4", "n3", "n2"], Ids(history.Query()));
+        var history = await OpenAsync();
+        await history.AppendAsync(Record("n1", "m1", "s1", 0), TestContext.Current.CancellationToken);
+        var changes = 0;
+        history.Changed += () => changes++;
+        Directory.CreateDirectory($"{FilePath}.tmp");
 
-        _time.Now = Start.AddDays(1).AddMinutes(3).AddSeconds(30);
-        var reopened = await OpenAsync(retention);
+        var error = await Xunit.Record.ExceptionAsync(() => history.MarkReadAsync(["n1"], TestContext.Current.CancellationToken));
 
-        Assert.Equal(["n4"], Ids(reopened.Query()));
-        Assert.Single(await File.ReadAllLinesAsync(FilePath, TestContext.Current.CancellationToken));
+        Assert.True(error is IOException or UnauthorizedAccessException, error?.ToString());
+        Assert.Equal(0, changes);
+        Assert.Equal(1, history.CountUnread());
+        Assert.False(Assert.Single((await OpenAsync()).Query()).IsRead);
     }
 
     [Fact]
-    public async Task Open_SkipsTornLineAndKeepsLaterAppendsReadable()
+    public async Task SavingReadMarks_AllowsAnExistingSnapshotReader()
     {
         var history = await OpenAsync();
-        await history.AppendAsync(Record("n1", "m1", "s1", minutes: 0), TestContext.Current.CancellationToken);
-        await File.AppendAllTextAsync(FilePath, """{"type":"added","notification":{"id":"to""", TestContext.Current.CancellationToken);
+        await history.AppendAsync(Record("n1", "m1", "s1", 0), TestContext.Current.CancellationToken);
+        await using var oldSnapshot = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
 
-        var recovered = await OpenAsync();
-        await recovered.AppendAsync(Record("n2", "m1", "s1", minutes: 1), TestContext.Current.CancellationToken);
-        var reopened = await OpenAsync();
+        await history.MarkReadAsync(["n1"], TestContext.Current.CancellationToken);
 
-        Assert.Equal(["n2", "n1"], Ids(reopened.Query()));
+        Assert.True(Assert.Single((await OpenAsync()).Query()).IsRead);
+        var oldRecords = await JsonSerializer.DeserializeAsync(oldSnapshot, NotificationsJsonContext.Default.IReadOnlyListNotificationRecord, TestContext.Current.CancellationToken);
+        Assert.False(Assert.Single(oldRecords!).IsRead);
     }
 
-    private Task<NotificationHistory> OpenAsync(NotificationRetention? retention = null)
-        => NotificationHistory.OpenAsync(FilePath, retention, _time, TestContext.Current.CancellationToken);
+    private Task<NotificationHistory> OpenAsync()
+        => NotificationHistory.OpenAsync(FilePath, TestContext.Current.CancellationToken);
 
     private static NotificationRecord Record(string id, string machine, string? session, int minutes)
         => new(id, machine, session, NotificationKind.ApprovalRequest, $"title {id}", null, Start.AddMinutes(minutes),
@@ -105,10 +110,4 @@ public sealed class NotificationHistoryTests : IDisposable
 
     private static string[] Ids(IEnumerable<NotificationRecord> records) => records.Select(record => record.Id).ToArray();
 
-    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
-    {
-        public DateTimeOffset Now { get; set; } = now;
-
-        public override DateTimeOffset GetUtcNow() => Now;
-    }
 }

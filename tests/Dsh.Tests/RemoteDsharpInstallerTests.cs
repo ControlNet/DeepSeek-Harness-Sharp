@@ -55,34 +55,6 @@ public sealed class RemoteDsharpInstallerTests
     public void Installed_Version_Is_Reused_Only_When_Not_Older(string? installed, string current, bool reuse)
         => Assert.Equal(reuse, ReleaseVersions.CanReuse(installed, current));
 
-    [Fact]
-    public void Server_Download_Script_Downloads_Before_Stopping_The_Old_Host()
-    {
-        var stop = RemoteDsharpInstaller.StopHostCommand("/opt/old/dsharp");
-        var script = RemoteDsharpInstaller.BuildServerDownloadScript(new DeploySettings { ReleaseBaseUrl = "https://host/releases" }, "linux-x64", stop);
-        Assert.Contains("command -v curl", script);
-        Assert.Contains("command -v wget", script);
-        Assert.Contains("/latest/download/dsharp-linux-x64.tar.gz", script);
-        Assert.Contains("exit 42", script);
-        Assert.DoesNotContain("-x '", script);
-        Assert.DoesNotContain(".dsh/run", script);
-        Assert.True(script.IndexOf("curl", StringComparison.Ordinal) < script.IndexOf(stop, StringComparison.Ordinal));
-        Assert.True(script.IndexOf(stop, StringComparison.Ordinal) < script.IndexOf("tar -xf", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void Server_Download_Script_Passes_Remote_Proxy()
-    {
-        var settings = new DeploySettings { ReleaseBaseUrl = "https://host/releases", Via = DownloadVia.Server, ServerProxy = "http://proxy.local:8080" };
-        var script = RemoteDsharpInstaller.BuildServerDownloadScript(settings, "linux-x64", "");
-        Assert.Contains("-x 'http://proxy.local:8080'", script);
-        // wget 分支也必须带上代理, 否则只有 wget 的远端会直连失败。
-        Assert.Contains("-e use_proxy=yes -e https_proxy='http://proxy.local:8080'", script);
-    }
-
-    [Fact]
-    public void Stop_Command_Is_Empty_When_Nothing_Is_Installed()
-        => Assert.Equal("", RemoteDsharpInstaller.StopHostCommand(null));
 
     /** 真实 shell: 只停“旧二进制路径 + host serve”的进程, 同机另一个 dsharp 的宿主与执行脚本的 shell 都不受影响。 */
     [Fact(Timeout = 30000)]
@@ -116,6 +88,7 @@ public sealed class RemoteDsharpInstallerTests
             TempTree.Delete(root);
         }
     }
+
 
     /** A stand-in executable whose command line looks like `<path> host serve` while it runs. */
     [UnsupportedOSPlatform("windows")]

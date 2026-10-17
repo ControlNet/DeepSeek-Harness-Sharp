@@ -10,6 +10,7 @@ using Dsh.Fleet;
 using Dsh.Gui;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
+using Dsh.RemoteHost;
 
 namespace Dsh.GuiViewsHarness;
 
@@ -62,19 +63,20 @@ internal static class Program
         window.Closed += async (_, _) => await connection.DisposeAsync();
         connection.Start();
         var host = (await connection.WaitConnectedAsync(CancellationToken.None)).Client;
-        window.Content = view == "files" ? await FilesAsync(host, project) : await GitAsync(host, project);
+        var style = RemotePaths.StyleFor((await host.InfoAsync()).Platform);
+        window.Content = view == "files" ? await FilesAsync(host.Files, project, style) : await GitAsync(host.Git, host.Files, project, style);
     }
 
-    private static async Task<Control> FilesAsync(Dsh.RemoteHost.IRemoteHost host, string project)
+    private static async Task<Control> FilesAsync(IRemoteFiles filesDomain, string project, RemotePathStyle style)
     {
-        var files = new FilesViewModel(host, project);
+        var files = new FilesViewModel(filesDomain, project, style);
         await files.LoadAsync();
         return new FilesView { DataContext = files };
     }
 
-    private static async Task<Control> GitAsync(Dsh.RemoteHost.IRemoteHost host, string project)
+    private static async Task<Control> GitAsync(IRemoteGit gitDomain, IRemoteFiles filesDomain, string project, RemotePathStyle style)
     {
-        var git = new GitViewModel(host, project);
+        var git = new GitViewModel(gitDomain, filesDomain, project, style);
         git.NewSessionRequested += async worktree => await Console.Out.WriteLineAsync($"new session requested in {worktree.Path}");
         await git.RefreshAsync();
         return new GitView { DataContext = git };

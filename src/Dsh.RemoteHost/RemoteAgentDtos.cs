@@ -29,15 +29,6 @@ public sealed record RemoteAgentCatalogEntry(
 public sealed record RemoteAgentCommand(string Executable, IReadOnlyList<string> Arguments);
 
 /**
- * Regex rules over the last screen lines of a terminal-mode session, for agents the host has no built-in rules for.
- * They only drive status and notifications (WaitingForUser while a rule matches), never task completion.
- */
-public sealed record RemoteScreenRules(
-    IReadOnlyList<string>? Approval = null,
-    IReadOnlyList<string>? Busy = null,
-    IReadOnlyList<string>? Idle = null);
-
-/**
  * Optional git worktree for a new session: an existing worktree of the project's repository at Path is reused, otherwise one is added there.
  * NewBranch and StartPoint follow `git worktree add -b <NewBranch> <Path> <StartPoint>`.
  */
@@ -47,7 +38,7 @@ public sealed record RemoteWorktreeChoice(string Path, string? NewBranch = null,
  * host.agent.start: one entry point for every session kind.
  * AgentKind "dsharp" starts a harness session (Selection/Provider as in host.session.create); built-in adapter kinds start that CLI;
  * "terminal" and "acp" run Command. Mode defaults to acp for "acp" and terminal otherwise.
- * Environment is added to the agent process only; ScreenRules apply to terminal-mode sessions without built-in rules.
+ * Environment is added to the agent process only; terminal status reflects process lifecycle only.
  */
 public sealed record RemoteAgentStartRequest(
     string AgentKind,
@@ -60,7 +51,6 @@ public sealed record RemoteAgentStartRequest(
     int? Columns = null,
     int? Rows = null,
     IReadOnlyDictionary<string, string>? Environment = null,
-    RemoteScreenRules? ScreenRules = null,
     RemoteModelSelection? Selection = null,
     RemoteProviderSpec? Provider = null);
 

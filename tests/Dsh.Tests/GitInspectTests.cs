@@ -114,6 +114,62 @@ public sealed class GitInspectTests : IDisposable
     }
 
     [Fact]
+    public async Task DiffSummary_MatchesFullDiffStatisticsForEveryTarget()
+    {
+        _repo.Commit(("a.txt", "alpha\nbeta\ngamma\ndelta\n"), ("logo.bin", "\0original"));
+        _repo.Git("mv", "a.txt", "renamed [file].txt");
+        _repo.Write("staged.txt", "staged\n");
+        _repo.Git("add", "staged.txt");
+        _repo.Write("renamed [file].txt", "alpha\nbeta\ngamma\ndelta\nadded\n");
+        _repo.Write("logo.bin", "\0changed");
+        var inspector = new GitInspector(_repo.Root);
+        GitDiffTarget[] targets = [GitDiffTarget.WorkingTree, GitDiffTarget.Staged, GitDiffTarget.Uncommitted, GitDiffTarget.OfCommit("HEAD")];
+
+        foreach (var target in targets)
+        {
+            var summary = await inspector.DiffSummaryAsync(target, cancellationToken: TestContext.Current.CancellationToken);
+            var diff = await inspector.DiffAsync(target, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(diff.Files.Select(file => new GitFileStat(file.Path, file.OriginalPath, file.Kind, file.Added, file.Deleted)), summary.Files);
+        }
+    }
+
+    [Fact]
+    public async Task DiffSummary_DoesNotRequestPatchesOrRunTextconv()
+    {
+        _repo.Commit((".gitattributes", "*.txt diff=summary\n"), ("a.txt", "original\n"), ("b.txt", "original\n"));
+        _repo.Git("config", "diff.summary.textconv", "dsh-git-test-textconv-must-not-run");
+        _repo.Write("a.txt", "changed\n");
+        _repo.Write("b.txt", "changed too\n");
+        var inspector = new GitInspector(_repo.Root);
+        var ct = TestContext.Current.CancellationToken;
+
+        var summary = await inspector.DiffSummaryAsync(GitDiffTarget.Uncommitted, cancellationToken: ct);
+        var lines = await Dsh.Tui.ChatWindow.LoadGitLinesAsync(_repo.Root, ct);
+
+        Assert.Equal(2, summary.Files.Count);
+        Assert.All(summary.Files, file => Assert.Equal((1, 1), (file.Added, file.Deleted)));
+        Assert.Equal(["未提交改动", "a.txt 1+ 1-", "b.txt 1+ 1-"], lines);
+        await Assert.ThrowsAsync<GitCommandException>(() => inspector.DiffAsync(GitDiffTarget.Uncommitted, cancellationToken: ct));
+    }
+
+    [Fact]
+    public async Task DiffSummary_FromSubdirectory_UsesLiteralPathFilter()
+    {
+        _repo.Commit(("src/[app].txt", "original\n"), ("README.txt", "original\n"));
+        _repo.Write("src/[app].txt", "changed\n");
+        _repo.Write("README.txt", "changed\n");
+        var inspector = new GitInspector(Path.Combine(_repo.Root, "src"));
+
+        var summary = await inspector.DiffSummaryAsync(
+            GitDiffTarget.WorkingTree,
+            [Path.Combine(_repo.Root, "src/[app].txt")],
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("src/[app].txt", Assert.Single(summary.Files).Path);
+    }
+
+    [Fact]
     public async Task Diff_Commit_HandlesRootCommitAndRenames()
     {
         var root = _repo.Commit(("a.txt", "alpha\nbeta\ngamma\ndelta\n"));

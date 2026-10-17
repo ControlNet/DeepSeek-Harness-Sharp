@@ -62,6 +62,52 @@ public sealed class RemoteHostTests
     }
 
     [Fact(Timeout = 30000)]
+    public async Task ClientRejectsAnAcceptedHelloWithTheWrongVersion()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var socket = new TcpClient();
+        var accept = listener.AcceptTcpClientAsync(TestContext.Current.CancellationToken);
+        await socket.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, Ct);
+        using var accepted = await accept;
+        await using var peer = new JsonRpcPeer(accepted.GetStream());
+        peer.RequestHandler = (_, _) => ValueTask.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(
+            new HostHelloResponse(true, HostProtocol.Version - 1, "old", null), HostProtocolJsonContext.Default.HostHelloResponse));
+        peer.Start();
+
+        var error = await Assert.ThrowsAsync<IOException>(() => RemoteHostClient.ConnectAsync(socket.GetStream(), cancellationToken: Ct));
+        Assert.Contains("version", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task ResumeAndResizeErrorsAreNotCompatibilitySuccesses()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var socket = new TcpClient();
+        var accept = listener.AcceptTcpClientAsync(TestContext.Current.CancellationToken);
+        await socket.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, Ct);
+        using var accepted = await accept;
+        await using var peer = new JsonRpcPeer(accepted.GetStream());
+        peer.RequestHandler = (message, _) =>
+        {
+            return message.Method switch
+            {
+                HostProtocol.MethodHello => ValueTask.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(
+                    new HostHelloResponse(true, HostProtocol.Version, "strict", null), HostProtocolJsonContext.Default.HostHelloResponse)),
+                HostProtocol.MethodSessionResume => throw new JsonRpcException(-32602, "session already running"),
+                _ => throw new JsonRpcException(JsonRpcPeer.MethodNotFound, "method not found")
+            };
+        };
+        peer.Start();
+        await using var client = await RemoteHostClient.ConnectAsync(socket.GetStream(), cancellationToken: Ct);
+
+        var resume = await Assert.ThrowsAsync<JsonRpcException>(() => client.ResumeSessionAsync("session", cancellationToken: Ct));
+        Assert.Contains("already", resume.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Pty.ResizePtyAsync("pty", 120, 40, Ct));
+    }
+
+    [Fact(Timeout = 30000)]
     public async Task DecisionsArrivingBeforeEnumerationAreRetained()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -80,18 +126,16 @@ public sealed class RemoteHostTests
         await using var client = await RemoteHostClient.ConnectAsync(socket.GetStream(), cancellationToken: cancellationToken);
         var approval = new RemoteApprovalRequest("approval", "session", "bash", null, "allow?");
         var question = new RemoteQuestionRequest("question", "session", []);
-        await peer.NotifyAsync(HostProtocol.NotificationApproval,
-            JsonSerializer.SerializeToElement(approval, HostProtocolJsonContext.Default.RemoteApprovalRequest), cancellationToken);
-        await peer.NotifyAsync(HostProtocol.NotificationQuestion,
-            JsonSerializer.SerializeToElement(question, HostProtocolJsonContext.Default.RemoteQuestionRequest), cancellationToken);
-        // The ping reply follows both notifications on the same TCP stream, so both have arrived before enumeration begins.
+        var pending = new RemotePendingChange(new RemotePendingList([approval], [question]));
+        await peer.NotifyAsync(HostProtocol.NotificationPendingChanged,
+            JsonSerializer.SerializeToElement(pending, HostProtocolJsonContext.Default.RemotePendingChange), cancellationToken);
+        // The ping reply follows the notification on the same TCP stream, so it arrived before enumeration begins.
         await client.PingAsync(cancellationToken);
-        await using var approvals = client.ApprovalsAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
-        Assert.True(await approvals.MoveNextAsync());
-        Assert.Equal(approval, approvals.Current);
-        await using var questions = client.QuestionsAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
-        Assert.True(await questions.MoveNextAsync());
-        Assert.Equal(question.RequestId, questions.Current.RequestId);
+        await using var changes = client.PendingChangesAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
+        Assert.True(await changes.MoveNextAsync());
+        Assert.Equal(approval, Assert.Single(changes.Current.Pending.Approvals));
+        Assert.Equal(question.RequestId, Assert.Single(changes.Current.Pending.Questions).RequestId);
+        Assert.Null(changes.Current.Resolution);
     }
 
     /** 一对经 TCP loopback 相连的 host server / client。 */

@@ -19,21 +19,21 @@ public sealed class HostChatProtocolTests
         var created = await editor.CreateSessionAsync(host.Environment.App.Home.Root,
             RemoteHostMultiClientTests.Selection, RemoteHostMultiClientTests.Spec, Ct);
 
-        var commands = await editor.ListSessionCommandsAsync(created.Id, Ct);
+        var commands = await editor.SessionEditing.ListSessionCommandsAsync(created.Id, Ct);
         Assert.Contains(commands, command => command.Name == "provider");
-        Assert.True((await editor.ExecuteSessionCommandAsync(created.Id, "/provider list", Ct)).Known);
-        Assert.False((await editor.ExecuteSessionCommandAsync(created.Id, "/does-not-exist", Ct)).Known);
-        await editor.RenameSessionAsync(created.Id, "shared title", Ct);
-        await editor.SetSessionApprovalPolicyAsync(created.Id, nameof(ApprovalPolicy.Never), Ct);
+        Assert.True((await editor.SessionEditing.ExecuteSessionCommandAsync(created.Id, "/provider list", Ct)).Known);
+        Assert.False((await editor.SessionEditing.ExecuteSessionCommandAsync(created.Id, "/does-not-exist", Ct)).Known);
+        await editor.SessionEditing.RenameSessionAsync(created.Id, "shared title", Ct);
+        await editor.SessionEditing.SetSessionApprovalPolicyAsync(created.Id, nameof(ApprovalPolicy.Never), Ct);
         var snapshot = await observer.GetSessionSnapshotAsync(created.Id, Ct);
         Assert.Equal("shared title", DshJson.Deserialize<SessionHeader>(snapshot.HeaderJson)!.Title);
         Assert.Contains(snapshot.Events, item => DshJson.Deserialize<SessionEvent>(item.EventJson)?.Data
             is ApprovalPolicyPayload { Policy: ApprovalPolicy.Never });
 
-        await editor.DeleteSessionAsync(created.Id, Ct);
+        await editor.SessionEditing.DeleteSessionAsync(created.Id, Ct);
         var removed = await RemoteHostMultiClientTests.NextAsync(observer.HostSessionChangesAsync(Ct),
-            item => item.SessionId == created.Id && item.Deleted);
-        Assert.Equal(created.Id, removed.SessionId);
+            item => item.Session?.SessionId == created.Id && item.Session.Deleted);
+        Assert.Equal(created.Id, removed.Session!.SessionId);
         Assert.DoesNotContain(await observer.ListHostSessionsAsync(Ct), item => item.SessionId == created.Id);
         Assert.DoesNotContain(await observer.ListSessionsAsync(Ct), item => item.Id == created.Id);
     }
@@ -73,13 +73,13 @@ public sealed class HostChatProtocolTests
         var editor = await host.ConnectAsync("editor", Ct);
         var observer = await host.ConnectAsync("observer", Ct);
         const string package = "@deepseek-ai/dsh-gui";
-        Assert.Contains(await observer.ListPluginsAsync(Ct), plugin => plugin.Package == package);
-        await editor.SetPluginPermissionAsync(package, "network", false, Ct);
-        var changed = Assert.Single(await observer.ListPluginsAsync(Ct), plugin => plugin.Package == package);
+        Assert.Contains(await observer.Plugins.ListPluginsAsync(Ct), plugin => plugin.Package == package);
+        await editor.Plugins.SetPluginPermissionAsync(package, "network", false, Ct);
+        var changed = Assert.Single(await observer.Plugins.ListPluginsAsync(Ct), plugin => plugin.Package == package);
         Assert.True(changed.ReadAllowed);
         Assert.True(changed.WriteAllowed);
         Assert.False(changed.NetworkAllowed);
-        await editor.SetPluginPermissionAsync(package, "network", true, Ct);
-        Assert.True(Assert.Single(await observer.ListPluginsAsync(Ct), plugin => plugin.Package == package).NetworkAllowed);
+        await editor.Plugins.SetPluginPermissionAsync(package, "network", true, Ct);
+        Assert.True(Assert.Single(await observer.Plugins.ListPluginsAsync(Ct), plugin => plugin.Package == package).NetworkAllowed);
     }
 }

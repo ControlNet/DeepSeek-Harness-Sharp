@@ -27,11 +27,6 @@ public sealed class GuiWorkspaceTests
     /** Fast heartbeat and backoff, so a stopped host is noticed and the reconnect happens within the test. */
     private static readonly FleetOptions Options = FleetConnectionTests.TestOptions with { ClientName = "gui-workspace-test" };
 
-    /** Prints a prompt and waits; the screen rule turns the session into WaitingForUser while the prompt is the last line. */
-    private static readonly RemoteScreenRules WaitingRules = new(Idle: [@"\[y/N\]\s*$"]);
-
-    private const string WaitingScript = "printf 'Deploy now? [y/N] '; read answer; echo \"deploying $answer\"; sleep 30";
-
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact(Timeout = 120000)]
@@ -51,7 +46,8 @@ public sealed class GuiWorkspaceTests
             try
             {
                 await ConnectedAsync(workspace);
-                var waiting = await StartTerminalAsync(workspace, "alpha", appProject, "deploy 等待确认", WaitingScript, WaitingRules);
+                var waiting = (await workspace.Actions.StartAsync("alpha", Harness(appProject, "deploy 等待确认"), ct)).SessionId;
+                var approval = RemoteHostMultiClientTests.RaiseApprovalAsync(alpha, RemoteHostMultiClientTests.Agent(alpha, waiting), "deploy");
                 var busy = await StartTerminalAsync(workspace, "alpha", appProject, "build 长任务", "sleep 30");
                 var done = await StartTerminalAsync(workspace, "beta", serviceProject, "构建完成", "exit 0");
                 var dashboard = workspace.Dashboard;
@@ -97,6 +93,8 @@ public sealed class GuiWorkspaceTests
                 workspace.ShowDashboard();
                 Assert.Null(workspace.ActiveSession);
                 Assert.Equal(DashboardSort.Title, dashboard.Sort);
+                await Assert.Single(workspace.Notifications.Pending).RejectCommand.ExecuteAsync(null);
+                Assert.Equal(ApprovalOutcome.Rejected, await approval.WaitAsync(Arrival, ct));
             }
             finally
             {
@@ -128,10 +126,11 @@ public sealed class GuiWorkspaceTests
             {
                 await ConnectedAsync(workspace);
                 var approval = RemoteHostMultiClientTests.RaiseApprovalAsync(alpha, alpha.Environment.Agent, "bash");
-                var waiting = await StartTerminalAsync(workspace, "beta", betaProject, "等待输入", WaitingScript, WaitingRules);
-                await UntilAsync(() => notifications.Pending.Count == 1
+                var waiting = (await workspace.Actions.StartAsync("beta", Harness(betaProject, "等待审批"), ct)).SessionId;
+                var betaApproval = RemoteHostMultiClientTests.RaiseApprovalAsync(beta, RemoteHostMultiClientTests.Agent(beta, waiting), "deploy");
+                await UntilAsync(() => notifications.Pending.Count == 2
                     && notifications.Items.Any(item => item is { Machine: "alpha", Kind: NotificationKind.ApprovalRequest })
-                    && notifications.Items.Any(item => item is { Machine: "beta", Kind: NotificationKind.WaitingForInput }), "approval and waiting notifications");
+                    && notifications.Items.Any(item => item is { Machine: "beta", Kind: NotificationKind.ApprovalRequest }), "structured approval notifications");
                 Assert.True(notifications.UnreadTotal >= 2);
                 Assert.Contains(desktop, title => title.StartsWith("alpha · ", StringComparison.Ordinal));
                 Assert.Contains(desktop, title => title.StartsWith("beta · ", StringComparison.Ordinal));
@@ -147,23 +146,23 @@ public sealed class GuiWorkspaceTests
                 // Another client of alpha marks everything read: this client's marks and counts follow.
                 var alphaUnread = workspace.Fleet.Find("alpha")!.UnreadNotifications;
                 Assert.True(alphaUnread > 0);
-                await bob.MarkNotificationsReadAsync(new RemoteNotifyMarkRead(All: true), ct);
+                await bob.Notifications.MarkNotificationsReadAsync(new RemoteNotifyMarkRead(All: true), ct);
                 await UntilAsync(() => workspace.Fleet.Find("alpha")!.UnreadNotifications == 0
                     && notifications.Items.Where(item => item.Machine == "alpha").All(item => item.IsRead), "read marks from another client");
 
                 // Marking one read here reaches the host (and every other client).
                 var betaItem = notifications.Items.First(item => item is { Machine: "beta", IsUnread: true });
                 await notifications.MarkReadCommand.ExecuteAsync(betaItem);
-                var betaPage = await carol.ListNotificationsAsync(new RemoteNotifyQuery(Limit: NotificationCenterViewModel.HistoryLimit), ct);
+                var betaPage = await carol.Notifications.ListNotificationsAsync(cancellationToken: ct);
                 Assert.True(betaPage.Items.Single(record => record.Id == betaItem.Id).IsRead);
 
                 // The first answer wins: bob answers, the request leaves this client's list, and answering it here is refused.
-                var pending = Assert.Single(notifications.Pending);
+                var pending = Assert.Single(notifications.Pending, item => item.Machine == "alpha");
                 Assert.Equal(("alpha", "bash"), (pending.Machine, pending.Item.Approval!.Tool));
                 var seen = Assert.Single((await bob.ListPendingAsync(ct)).Approvals);
                 Assert.True(await bob.RespondApprovalAsync(seen.RequestId, true, cancellationToken: ct));
                 Assert.Equal(ApprovalOutcome.AllowedOnce, await approval.WaitAsync(Arrival, ct));
-                await UntilAsync(() => notifications.Pending.Count == 0, "resolution removes the request");
+                await UntilAsync(() => notifications.Pending.Count == 1 && notifications.Pending.All(item => item.Machine == "beta"), "resolution removes the request");
                 await pending.AllowCommand.ExecuteAsync(null);
                 Assert.Contains("请求已被处理", toasts);
 
@@ -172,6 +171,9 @@ public sealed class GuiWorkspaceTests
                 await notifications.OpenCommand.ExecuteAsync(waitingItem);
                 Assert.Equal(waiting, workspace.ActiveSession?.SessionId);
                 Assert.True(waitingItem.IsRead);
+                await Assert.Single(notifications.Pending).RejectCommand.ExecuteAsync(null);
+                Assert.Equal(ApprovalOutcome.Rejected, await betaApproval.WaitAsync(Arrival, ct));
+                await UntilAsync(() => notifications.Pending.Count == 0, "all real pending requests resolved");
             }
             finally
             {
@@ -290,7 +292,6 @@ public sealed class GuiWorkspaceTests
                 await beta.StopHostAsync();
                 var card = Card(workspace, "beta", started.SessionId)!;
                 await UntilAsync(() => !card.IsMachineOnline && workspace.Dashboard.OfflineMachineCount == 1, "the machine is shown unreachable");
-                Assert.Equal("重连中", card.StatusLabel);
                 await beta.StartHostAsync(ct);
                 await UntilAsync(() => workspace.Dashboard.OfflineMachineCount == 0 && card.IsExited, "the machine is back and the session exited");
 
@@ -468,10 +469,10 @@ public sealed class GuiWorkspaceTests
         => Directory.CreateDirectory(Path.Combine(host.Root, name)).FullName;
 
     private static async Task<string> StartTerminalAsync(
-        WorkspaceViewModel workspace, string machine, string project, string title, string script, RemoteScreenRules? rules = null)
+        WorkspaceViewModel workspace, string machine, string project, string title, string script)
     {
         var request = new RemoteAgentStartRequest(
-            AgentKinds.Terminal, project, Command: new RemoteAgentCommand("/bin/sh", ["-c", script]), Title: title, ScreenRules: rules);
+            AgentKinds.Terminal, project, Command: new RemoteAgentCommand("/bin/sh", ["-c", script]), Title: title);
         return (await workspace.Actions.StartAsync(machine, request, Ct)).SessionId;
     }
 

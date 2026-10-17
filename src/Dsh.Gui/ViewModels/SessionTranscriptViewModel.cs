@@ -93,7 +93,7 @@ public sealed partial class SessionTranscriptViewModel : ObservableObject, IDisp
         try
         {
             var lease = await _machine.WaitConnectedAsync(_lifetime.Token);
-            await lease.Client.CancelAgentAsync(_card.SessionId, _lifetime.Token);
+            await lease.Client.Agent.CancelAgentAsync(_card.SessionId, _lifetime.Token);
         }
         catch (Exception error) when (error is IOException or JsonRpcException or InvalidOperationException or OperationCanceledException)
         {
@@ -109,11 +109,11 @@ public sealed partial class SessionTranscriptViewModel : ObservableObject, IDisp
         var lease = await _machine.WaitConnectedAsync(_lifetime.Token);
         if (_card.Kind != HostSessionKinds.Harness)
         {
-            await lease.Client.PromptAgentAsync(_card.SessionId, text, _lifetime.Token);
+            await lease.Client.Agent.PromptAgentAsync(_card.SessionId, text, _lifetime.Token);
             return;
         }
         var style = RemotePaths.StyleFor(_machine.Info?.Platform ?? "");
-        var (remaining, images) = await PromptImages.ExtractRemoteAsync(lease.Client, _card.ProjectPath ?? "", style, text, _lifetime.Token);
+        var (remaining, images) = await PromptImages.ExtractRemoteAsync(lease.Client.Files, _card.ProjectPath ?? "", style, text, _lifetime.Token);
         await lease.Client.SendMessageAsync(_card.SessionId, remaining, images, _lifetime.Token);
     }
 

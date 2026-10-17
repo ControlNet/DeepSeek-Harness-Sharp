@@ -8,7 +8,7 @@ using Dsh.Tui;
 
 namespace Dsh.Tests;
 
-/** Real CLI consumers of the kernel terminal, not the daemon/proxy snapshot harness. */
+/** Real CLI consumers of the kernel terminal, using the same production PTY fixture as other TUI E2E. */
 [SupportedOSPlatform("linux")]
 [SupportedOSPlatform("macos")]
 [Collection(SerialProcessCollection.Name)]
@@ -23,10 +23,10 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
     [InlineData(5)]
     [InlineData(6)]
     [InlineData(7)]
-    public void RealCli_RawInputSurvivesBackgroundRefreshAndKernelResize_ThenRestoresTerminal(int run)
+    public async Task RealCli_RawInputSurvivesBackgroundRefreshAndKernelResize_ThenRestoresTerminal(int run)
     {
         RequireUnix();
-        using var terminal = UnixRawModeTerminal.Start(copyRealConfiguration: false);
+        using var terminal = await PtyTuiHarness.StartOwnedTerminalAsync(copyRealConfiguration: false);
         var scenario = new Scenario(terminal);
         scenario.WaitForRawInput();
         foreach (var probe in new[] { "zqx", "vkj", "ypw" })
@@ -36,15 +36,15 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
 
     [Fact]
     [Trait("Category", "LlmSmoke")]
-    public void RealCli_RealAssistantTurnRenders_ThenRestoresTerminal()
+    public async Task RealCli_RealAssistantTurnRenders_ThenRestoresTerminal()
     {
         RequireUnix();
-        using var terminal = UnixRawModeTerminal.Start(copyRealConfiguration: true);
+        using var terminal = await PtyTuiHarness.StartOwnedTerminalAsync(copyRealConfiguration: true);
         var scenario = new Scenario(terminal);
         scenario.WaitForRawInput();
         // The answer is deliberately absent from the prompt: input echo cannot satisfy the assertion.
-        terminal.Write("Spell out in English the number equal to six times seven. Reply only with the answer, without digits or tools.\r");
-        scenario.WaitFor(() => terminal.ContainsVisible("forty-two", ignoreCase: true)
+        scenario.Write("Spell out in English the number equal to six times seven. Reply only with the answer, without digits or tools.\r");
+        scenario.WaitFor(() => scenario.ContainsVisible("forty-two", ignoreCase: true)
                 && HasPersistedCompletedTurn(terminal.Home),
             TimeSpan.FromSeconds(120), "The real assistant answer did not complete in the visible TUI.");
         scenario.ExitAndAssertRestored(output, "real model turn");
@@ -92,18 +92,21 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
             Assert.Skip("Kernel termios and Unix PTY session ownership require Linux/macOS.");
     }
 
-    private sealed class Scenario(UnixRawModeTerminal terminal)
+    private sealed class Scenario(PtyTuiHarness terminal)
     {
         private bool _rawSeen;
         private bool _exitSent;
+        private VtScreen _screen = new(140, 40);
+        private int _mode;
+        private bool _hasRenderedFrame;
 
         public void WaitForRawInput()
         {
-            Assert.Equal(7, terminal.InitialMode); // ICANON, ECHO and ISIG before the real executable takes ownership.
-            WaitFor(() => terminal.Screen.IsAlternateScreen && terminal.Mode == 0 && terminal.HasRenderedFrame,
+            WaitFor(() => _screen.IsAlternateScreen && _mode == 0 && _hasRenderedFrame,
                 TimeSpan.FromSeconds(90), "The built real CLI did not render its input after taking ownership of the terminal.");
+            Assert.Equal(7, ModeBits(File.ReadAllText(Path.Combine(terminal.Home, "termios-before"))));
             Assert.True(_rawSeen, "The real CLI never entered raw mode.");
-            Assert.Equal(0, terminal.Mode);
+            Assert.Equal(0, _mode);
         }
 
         public void ExerciseInputAcrossRefreshAndResize(string probe)
@@ -112,17 +115,17 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
             var deadline = Stopwatch.GetTimestamp() + 10 * Stopwatch.Frequency;
             for (var length = 1; length <= probe.Length; length++)
             {
-                terminal.Write(probe.Substring(length - 1, 1));
+                Write(probe.Substring(length - 1, 1));
                 var prefix = probe[..length];
                 WaitUntil(() => InputContains(prefix), deadline,
                     "A character sent without Enter did not render in the real input row.");
             }
 
             // TIOCSWINSZ generates the real foreground-group SIGWINCH, not a synthetic managed resize event.
-            terminal.Resize(41, 141);
+            terminal.Session.Resize(41, 141);
             WaitUntil(() => InputContains(probe), deadline,
                 "Typed input did not survive the larger kernel viewport.");
-            terminal.Resize(40, 140);
+            terminal.Session.Resize(40, 140);
             WaitUntil(() => InputContains(probe), deadline,
                 "Typed input did not survive restoring the kernel viewport.");
 
@@ -134,7 +137,7 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
 
             for (var length = probe.Length; length > 0; length--)
             {
-                terminal.Write("\u007f");
+                Write("\u007f");
                 var oldPrefix = probe[..length];
                 var remaining = probe[..(length - 1)];
                 WaitUntil(() => length == 1
@@ -147,18 +150,20 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
         public void ExitAndAssertRestored(ITestOutputHelper output, string description)
         {
             _exitSent = true;
-            terminal.Write("/exit\r");
-            int? exitCode = null;
+            Write("/exit\r");
             var deadline = Stopwatch.GetTimestamp() + 30 * Stopwatch.Frequency;
-            WaitUntil(() => (exitCode = terminal.ExitCode()) is not null, deadline,
-                "Normal /exit did not terminate the real CLI.");
-            Assert.Equal(0, exitCode);
-            // The native owner remains alive here on both Unix kernels; Darwin has not revoked the tty.
-            var restored = terminal.CompareRestoredTermios();
-            Assert.Equal(UnixRawModeTerminal.TermiosFields.None, restored.ChangedFields);
-            WaitUntil(() => !terminal.Screen.IsAlternateScreen && terminal.ContainsVisible(UnixRawModeTerminal.MainScreenMarker),
+            var exitPath = Path.Combine(terminal.Home, "exit-code");
+            WaitUntil(() => File.Exists(exitPath), deadline, "Normal /exit did not terminate the real CLI.");
+            Assert.Equal("0", File.ReadAllText(exitPath).Trim());
+            // The existing shell owner keeps Darwin's tty alive; its next canonical read processes PENDIN.
+            Write("\n");
+            var restoredPath = Path.Combine(terminal.Home, "termios-after");
+            WaitUntil(() => File.Exists(restoredPath), deadline, "The caller could not inspect its restored terminal.");
+            // -g captures all flags and control characters; -a additionally reports speeds and Linux's line discipline.
+            Assert.Equal(File.ReadAllText(Path.Combine(terminal.Home, "termios-before")), File.ReadAllText(restoredPath));
+            WaitUntil(() => !_screen.IsAlternateScreen && ContainsVisible("DSH-RAW-MAIN-SCREEN"),
                 deadline, "Normal exit did not restore the caller's original main screen.");
-            output.WriteLine($"{description}: raw entered; normal exit=0; every termios field restored; original main screen restored; kernel PENDIN before FIONREAD={restored.KernelPendingRetype}");
+            output.WriteLine($"{description}: raw entered; normal exit=0; complete stty state restored; original main screen restored");
         }
 
         public void WaitFor(Func<bool> predicate, TimeSpan budget, string failure)
@@ -176,22 +181,83 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
 
         private void Observe()
         {
-            terminal.Observe();
-            if (terminal.Mode == 0) _rawSeen = true;
+            TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+            // Certify completion before copying the production VT state. Checking the live transcript
+            // afterwards could validate an older, half-painted first frame as the empty-input baseline.
+            _hasRenderedFrame = terminal.Snapshot().Contains("\u001b[?2026l", StringComparison.Ordinal);
+            _screen = terminal.ReadTerminalScreen();
+            var ttyPath = Path.Combine(terminal.Home, "terminal");
+            if (!File.Exists(ttyPath))
+                return;
+            var info = new ProcessStartInfo("stty",
+                [OperatingSystem.IsMacOS() ? "-f" : "-F", File.ReadAllText(ttyPath).Trim(), "-a"])
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            info.Environment["LC_ALL"] = "C";
+            using var process = Process.Start(info) ?? throw new InvalidOperationException("stty did not start.");
+            var state = process.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+            Assert.Equal(0, process.ExitCode);
+            _mode = ModeBits(state);
+            if (_mode == 0) _rawSeen = true;
             if (_rawSeen && !_exitSent)
-                Assert.True(terminal.Mode == 0, $"The TUI lost raw input before normal exit (ICANON/ECHO/ISIG bits={terminal.Mode}).");
+                Assert.True(_mode == 0, $"The TUI lost raw input before normal exit (ICANON/ECHO/ISIG bits={_mode}).");
+        }
+
+        public void Write(string text) => terminal.WriteTextAsync(text).GetAwaiter().GetResult();
+
+        private static int ModeBits(string state)
+        {
+            var flags = state.Split([' ', ';', '\r', '\n', '\t'], StringSplitOptions.RemoveEmptyEntries);
+            Assert.True(flags.Contains("icanon") || flags.Contains("-icanon"), "stty did not report canonical mode.");
+            Assert.True(flags.Contains("echo") || flags.Contains("-echo"), "stty did not report echo mode.");
+            Assert.True(flags.Contains("isig") || flags.Contains("-isig"), "stty did not report signal mode.");
+            return (flags.Contains("icanon") ? 1 : 0) | (flags.Contains("echo") ? 2 : 0) | (flags.Contains("isig") ? 4 : 0);
+        }
+
+        public bool ContainsVisible(string marker, bool ignoreCase = false)
+            => ContainsVisible(marker, 0, _screen.Height, ignoreCase);
+
+        private bool ContainsVisible(string marker, int firstRow, int endRow, bool ignoreCase = false)
+        {
+            for (var y = firstRow; y < endRow; y++)
+            {
+                var row = _screen.Row(y);
+                for (var start = 0; start < row.Length; start++)
+                {
+                    var index = 0;
+                    for (var x = start; x < row.Length && index < marker.Length; x++)
+                    {
+                        var character = row[x].Character;
+                        if (character == '\0') continue;
+                        var expected = marker[index];
+                        if (ignoreCase)
+                        {
+                            character = char.ToLowerInvariant(character);
+                            expected = char.ToLowerInvariant(expected);
+                        }
+                        if (character != expected) break;
+                        index++;
+                    }
+                    if (index == marker.Length) return true;
+                }
+            }
+            return false;
         }
 
         private bool InputContains(string marker)
         {
-            var input = LayoutEngine.Calculate(terminal.Screen.Width, terminal.Screen.Height).Input;
-            return terminal.ContainsVisible(marker, input.Y, input.Y + 1);
+            var input = LayoutEngine.Calculate(_screen.Width, _screen.Height).Input;
+            return ContainsVisible(marker, input.Y, input.Y + 1);
         }
 
         private char[] SnapshotInputRow()
         {
-            var input = LayoutEngine.Calculate(terminal.Screen.Width, terminal.Screen.Height).Input;
-            var row = terminal.Screen.Row(input.Y);
+            var input = LayoutEngine.Calculate(_screen.Width, _screen.Height).Input;
+            var row = _screen.Row(input.Y);
             var characters = new char[row.Length];
             for (var x = 0; x < row.Length; x++)
                 characters[x] = row[x].Character;
@@ -200,8 +266,8 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
 
         private bool InputEquals(ReadOnlySpan<char> expected)
         {
-            var input = LayoutEngine.Calculate(terminal.Screen.Width, terminal.Screen.Height).Input;
-            var row = terminal.Screen.Row(input.Y);
+            var input = LayoutEngine.Calculate(_screen.Width, _screen.Height).Input;
+            var row = _screen.Row(input.Y);
             if (row.Length != expected.Length) return false;
             for (var x = 0; x < row.Length; x++)
                 if (row[x].Character != expected[x]) return false;

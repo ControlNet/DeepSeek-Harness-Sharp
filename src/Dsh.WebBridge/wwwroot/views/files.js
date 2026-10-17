@@ -1,6 +1,7 @@
 // Light file browsing and git inspection of one machine: list directories, preview text files read-only, download, git status and per-file diffs.
 import { h, mount, link, toast, base64ToBytes, bytesToText, baseName, ago, when } from '../dom.js';
-import { Capability, describe } from '../hub.js';
+import { describe } from '../hub.js';
+import { Capability, FilesProtocol, GitProtocol, GitDiffSource } from '/protocol.js';
 import { filesRoute, gitRoute, emptyState } from './common.js';
 
 /** Larger files are offered for download only. */
@@ -53,7 +54,7 @@ function filePanel(body, machineLink, path) {
 
 async function listDirectory(machineLink, path, listing, preview, location) {
   try {
-    const directory = await machineLink.request('host.file.list', { Path: path });
+    const directory = await machineLink.request(FilesProtocol.MethodFileList, { Path: path });
     location.value = directory.Path;
     const entries = [...directory.Entries].sort((left, right) => Number(right.IsDirectory) - Number(left.IsDirectory) || left.Name.localeCompare(right.Name));
     mount(listing,
@@ -74,7 +75,7 @@ async function showFile(machineLink, path, preview) {
   mount(preview, h('header', { className: 'preview-head' }, h('h2', { title: path }, baseName(path)), download), content);
   preview.scrollIntoView({ block: 'nearest' });
   try {
-    const stat = machineLink.supports(Capability.FsTransfer) ? await machineLink.request('host.fs.stat', { Path: path }) : null;
+    const stat = machineLink.supports(Capability.FsTransfer) ? await machineLink.request(FilesProtocol.MethodFsStat, { Path: path }) : null;
     if (stat !== null && stat.Size > PREVIEW_LIMIT_BYTES) {
       mount(content, emptyState(`${formatSize(stat.Size)}: too large to preview; download it instead.`));
       return;
@@ -92,11 +93,11 @@ async function showFile(machineLink, path, preview) {
 /** Whole file bytes: chunked host.fs.download where available, host.file.read otherwise. */
 async function readFile(machineLink, path) {
   if (!machineLink.supports(Capability.FsTransfer))
-    return base64ToBytes((await machineLink.request('host.file.read', { Path: path })).Base64);
+    return base64ToBytes((await machineLink.request(FilesProtocol.MethodFileRead, { Path: path })).Base64);
   const chunks = [];
   let offset = 0;
   while (true) {
-    const chunk = await machineLink.request('host.fs.download', { Path: path, Offset: offset });
+    const chunk = await machineLink.request(FilesProtocol.MethodFsDownload, { Path: path, Offset: offset });
     const bytes = base64ToBytes(chunk.Base64);
     chunks.push(bytes);
     offset += bytes.length;
@@ -155,7 +156,7 @@ function gitPanel(body, machineLink, project) {
 
 async function loadStatus(machineLink, project, status, diff) {
   try {
-    const result = await machineLink.request('host.git.status', { ProjectPath: project });
+    const result = await machineLink.request(GitProtocol.MethodGitStatus, { ProjectPath: project });
     const branch = result.Branch;
     const tracking = branch.Upstream ? ` → ${branch.Upstream}${branch.Ahead || branch.Behind ? ` (+${branch.Ahead ?? 0} −${branch.Behind ?? 0})` : ''}` : '';
     const section = (title, changes, source) => (changes.length === 0 ? null : h('section', {},
@@ -166,9 +167,9 @@ async function loadStatus(machineLink, project, status, diff) {
     const untracked = result.Untracked.map((path) => ({ Path: path }));
     mount(status,
       h('p', {}, h('strong', {}, branch.Head ?? `detached ${branch.Oid?.slice(0, 8) ?? ''}`), tracking),
-      section('Conflicted', result.Conflicted, 'WorkingTree'),
-      section('Staged', result.Staged, 'Staged'),
-      section('Changed', result.Unstaged, 'WorkingTree'),
+      section('Conflicted', result.Conflicted, GitDiffSource.WorkingTree),
+      section('Staged', result.Staged, GitDiffSource.Staged),
+      section('Changed', result.Unstaged, GitDiffSource.WorkingTree),
       section('Untracked', untracked, null),
       result.IsClean ? emptyState('Working tree clean.') : null);
   } catch (error) {
@@ -186,7 +187,7 @@ async function showDiff(machineLink, project, change, source, diff) {
     return;
   }
   try {
-    const result = await machineLink.request('host.git.diff', { ProjectPath: project, Target: { Source: source }, Paths: [change.Path] });
+    const result = await machineLink.request(GitProtocol.MethodGitDiff, { ProjectPath: project, Target: { Source: source }, Paths: [change.Path] });
     const file = result.Files[0];
     mount(diff, h('h2', {}, change.Path),
       file === undefined ? emptyState('No differences.') : file.Added === null || file.Added === undefined ? emptyState('Binary file changed.') : patchView(file));
