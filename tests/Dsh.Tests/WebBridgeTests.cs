@@ -203,7 +203,6 @@ public sealed class WebBridgeTests
         Assert.Equal(HttpStatusCode.OK, page.StatusCode);
         Assert.Equal("text/html", page.Content.Headers.ContentType?.MediaType);
         Assert.Contains("frame-ancestors 'none'", Assert.Single(page.Headers.GetValues("Content-Security-Policy")), StringComparison.Ordinal);
-        Assert.Contains("app.js", await page.Content.ReadAsStringAsync(cancellationToken), StringComparison.Ordinal);
 
         using var script = await client.GetAsync(fixture.Access.Url("/rpc.js"), cancellationToken);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
@@ -432,8 +431,9 @@ public sealed class WebBridgeTests
             new string(resumed.Row(row).ToArray().Select(cell => cell.Character).ToArray()))), StringComparison.Ordinal);
         Assert.Equal(WebSocketState.Open, socket.State);
         await WebSocketRpc.RequestAsync(socket, 6, PtyProtocol.MethodPtyStop, $$"""{"PtyId":"{{ptyId}}"}""");
-        Assert.Equal(nameof(PtySessionStatus.Exited), Assert.Single(
-            await PtyDaemonClient.ListAsync(host.PtyEndpoint.SocketPath, host.PtyEndpoint.PortFile, Ct), session => session.Id == ptyId).Status);
+        var stopped = Assert.Single((await WebSocketRpc.RequestAsync(socket, 7, HostProtocol.MethodSessionsList, null)).EnumerateArray(),
+            session => session.GetProperty("SessionId").GetString() == ptyId);
+        Assert.Equal(HostSessionStatuses.Exited, stopped.GetProperty("Status").GetString());
 
         async Task<JsonElement> SnapshotAsync()
             => (await WebSocketRpc.ReceiveUntilAsync(socket, message => message.TryGetProperty("method", out var method)

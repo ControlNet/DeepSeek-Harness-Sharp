@@ -93,6 +93,7 @@ internal sealed class AcpAgentSession : IAsyncDisposable
     {
         lock (_turnGate)
         {
+            _lifetime.Token.ThrowIfCancellationRequested();
             if (!_turn.IsCompleted)
                 throw new InvalidOperationException($"session {SessionId} is still running a turn; cancel it first");
             _transcript.BeginTurn(text);
@@ -165,8 +166,12 @@ internal sealed class AcpAgentSession : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _lifetime.CancelAsync().ConfigureAwait(false);
+        Task turn;
+        lock (_turnGate)
+            turn = _turn;
         _process.Client.SessionUpdate -= OnUpdate;
         await _process.DisposeAsync().ConfigureAwait(false);
+        await turn.ConfigureAwait(false);
         await _transcript.DisposeAsync().ConfigureAwait(false);
         _services.Registry.MarkExited(SessionId, await Exited.ConfigureAwait(false));
         _lifetime.Dispose();

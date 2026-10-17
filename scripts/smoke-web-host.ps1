@@ -15,7 +15,10 @@ foreach ($directory in @($TuiPublishDir, $GuiPublishDir)) {
     }
 }
 foreach ($directory in @($TuiPublishDir, $GuiPublishDir, $WebPublishDir)) {
-    $bytes = (Get-ChildItem $directory -Recurse -File | Measure-Object -Property Length -Sum).Sum
+    $files = @(Get-ChildItem $directory -Recurse -File)
+    $bundledSqlite = @($files | Where-Object { $_.Name -match '^(?:lib)?(?:e_sqlite3|sqlite3|winsqlite3)(?:\.\d+)*\.(?:dll|so|dylib|a|lib)(?:\.\d+)*$' })
+    if ($bundledSqlite.Count -ne 0) { throw "Publish bundles optional system SQLite libraries: $($bundledSqlite.Name -join ', ')" }
+    $bytes = ($files | Measure-Object -Property Length -Sum).Sum
     Write-Host "$directory : $bytes bytes"
 }
 
