@@ -49,6 +49,13 @@ public sealed class IrohReceiverEndToEndTests
             Assert.Equal(first.EndpointId, restarted.EndpointId);
             Assert.Equal("receiver-restarted", await new SshTransport(tunneled).RunAsync("printf '%s' receiver-restarted", ct));
         }
+        catch
+        {
+            var log = Path.Combine(IrohReceiver.ReceiverRoot(new HarnessHome(root)), "receiver.log");
+            if (File.Exists(log))
+                TestContext.Current.TestOutputHelper?.WriteLine(await File.ReadAllTextAsync(log, CancellationToken.None));
+            throw;
+        }
         finally
         {
             await IrohReceiver.DisableAsync(new HarnessHome(root), null, CancellationToken.None);

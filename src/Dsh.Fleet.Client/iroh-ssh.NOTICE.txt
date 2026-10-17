@@ -8,7 +8,7 @@ Either a current direct address is discovered by a temporary non-announcing mDNS
 signed record is acknowledged by the existing N0 PKARR service after relay registration.
 The original background publishers remain responsible for subsequent address changes.
 Patch: iroh-ssh.READINESS.patch, bundled next to this notice.
-Patch SHA256: a6f373997ca554e3730d6691a2cf86a4a224c02f995a9760222075a9678eade8
+Patch SHA256: cb3296f1833176ad012b9a427f1ad5ef1119adc2bcb830889404ca77cf80270f
 License: MIT, reproduced in iroh-ssh.LICENSE.txt next to this notice.
 Locked Rust dependency package versions, license expressions, and their bundled license files are reproduced in iroh-ssh.THIRD-PARTY-LICENSES.txt.
 Each package entry includes a version-specific source download URL so recipients can obtain its corresponding source, including the MPL-2.0-covered attohttpc crate.

@@ -76,6 +76,28 @@ jobs:
             bash scripts/fetch-iroh-ssh.sh "${{ matrix.rid }}"
           fi
 
+      - name: 取证 macOS 原生 mDNS 就绪（临时）
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/iroh-diagnostics
+          ifconfig
+          netstat -g
+          sudo tcpdump -n -l -i pktap,all 'udp port 5353' > artifacts/iroh-diagnostics/packets.txt 2>&1 &
+          capture=$!
+          artifacts/iroh-ssh/osx-arm64/iroh-ssh server --persist --key-dir "$PWD/artifacts/iroh-diagnostics/identity" --ready-file "$PWD/artifacts/iroh-diagnostics/ready" --ssh-port 9 --relay-url http://127.0.0.1:9 > artifacts/iroh-diagnostics/server.txt 2>&1 &
+          receiver=$!
+          trap 'kill "$receiver" 2>/dev/null || true; sudo kill "$capture" 2>/dev/null || true' EXIT
+          sleep 12
+          if [ -f artifacts/iroh-diagnostics/ready ]; then
+            echo 'native discovery acknowledgement is present'
+          else
+            echo 'native discovery acknowledgement is absent'
+          fi
+          cat artifacts/iroh-diagnostics/server.txt
+          cat artifacts/iroh-diagnostics/packets.txt
+
       - name: 打包原生组件（保留 Unix 执行权限）
         shell: pwsh
         run: |

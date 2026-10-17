@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $RootDir = Split-Path -Parent $PSScriptRoot
 $Revision = '82e99719f8b4e44c69622140f4acb25e5ae54184'
 $SourceSha256 = 'cfcafde6b789b076bd6e4c28abbc9a92476db122efa5d644bdded35380d6a8ac'
-$PatchSha256 = 'a6f373997ca554e3730d6691a2cf86a4a224c02f995a9760222075a9678eade8'
+$PatchSha256 = 'cb3296f1833176ad012b9a427f1ad5ef1119adc2bcb830889404ca77cf80270f'
 $Patch = Join-Path $PSScriptRoot 'iroh-ssh-readiness.patch'
 if ((Get-FileHash -LiteralPath $Patch -Algorithm SHA256).Hash.ToLowerInvariant() -ne $PatchSha256) { throw 'iroh-ssh readiness patch SHA256 mismatch.' }
 $Toolchain = '1.93.0'
