@@ -382,8 +382,9 @@ systemctl --user disable --now dsharp-host.service
   - 会话持久化(JSONL + Zstd)在 JIT 与 AOT 下均可用。
 
 
-### 独立 WebHost
+### Web 入口与独立宿主
 
+TUI、GUI、Web 是同一产品的三个入口，共用 Host/Fleet 和会话数据；各自的宿主与发布目录用于隔离运行时依赖。
 发布项目分别是 `DeepSeek-Harness-Sharp`（`dsharp`）、`DshGuiHost`（`dsh-gui`）和 `Dsh.WebHost`（`dsharp-web`）。只有最后一个引入 `Microsoft.AspNetCore.App`：ASP.NET Core 的 HTTP/WebSocket、Cookie 认证和嵌入资源服务不会沿引用图进入 TUI/GUI。Web 的 Host/Origin 校验继续防止 DNS rebinding 与 CSRF，Cookie 为 HttpOnly/SameSite=Strict，令牌及 Cookie 密钥随进程重启失效。
 登录页面及同源协议资源在登录前即可加载，但不包含访问令牌、机器清单或会话数据；后者仍需登录后才能读取。更新 WebHost 后重新加载页面即可使用随服务生成的同版本协议定义。
 
@@ -410,7 +411,7 @@ dsharp-web --print-token    # 另一个终端已经运行 dsharp-web 时，打�
 
 Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` 并将该目录加入用户 PATH，直接运行其中的 `dsharp-web.exe`。WebHost 与其它入口使用相同的 `DSH_HOME` / `settings.storage.root`；WebHost 自身也能执行共享的 `host serve` 命令，本机 Host 启动不依赖猜测另一个构建目录。
 
-CI 在真实三份发布产物上检查非 Web 的 `.deps.json`、`runtimeconfig.json` 和程序集隔离，打印各目录总字节数，并启动发布版进行 HTTP 登录、跨站拒绝、CSP、嵌入资源和 WebSocket/Fleet 转发冒烟；同一检查也用于 Web 的 NativeAOT 产物与解压后的 Release 归档：
+发布验证检查同一轮构建产生的三个入口，核对非 Web 的 `.deps.json`、`runtimeconfig.json` 和程序集隔离，打印各目录总字节数，并启动发布版进行 HTTP 登录、跨站拒绝、CSP、嵌入资源和 WebSocket/Fleet 转发冒烟；同一检查也用于 Web 的 NativeAOT 产物与解压后的 Release 归档：
 
 ```powershell
 ./scripts/smoke-web-host.ps1 `
