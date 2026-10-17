@@ -1,21 +1,16 @@
 name: 构建校验
 
-# 不创建任何 Release；发布由 release.yml 在打 tag 时负责。
-# 触发与分工（本仓库 push 居多、PR 很少：约 170 个 commit 只有 1 个 merged PR）：
-#   - push 到 master：跑测试 + JIT 发布校验；
-#   - PR 的 open|sync|reopen：跑测试 + JIT 发布校验 + AOT 构建（原生插件与 guard 走 AOT 产物，PR 阶段就要校验）；
-#   - PR 被 merge（closed 且 merged=true）：在 merge 提交上再跑一遍；
-#   - 手动 workflow_dispatch：aot 开关决定是否跑 AOT。
-# 也就是说：直接 push 不会跑 AOT，AOT 出现在 PR、合入与手动触发三处。
+# Keep a lightweight result for every push/PR so skipped heavy jobs do not leave required checks pending.
+# Merges are checked by the master push event rather than a second pull_request.closed run.
 on:
   push:
     branches: [master]
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       aot:
-        description: '同时构建 AOT 档（Windows + Linux，较慢）'
+        description: '同时构建 AOT 档（Windows + Linux）'
         type: boolean
         default: true
 
@@ -23,247 +18,89 @@ permissions:
   contents: read
 
 concurrency:
-  # 按 ref + 事件分组: 手动 dispatch(跑 AOT)不应取消正在跑的 push 校验, 反之亦然; 同一来源的重复触发仍互相取消。
   group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: 判定受影响校验
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tests: ${{ steps.select.outputs.tests }}
+      suites: ${{ steps.select.outputs.suites }}
+      jit: ${{ steps.select.outputs.jit }}
+      aot: ${{ steps.select.outputs.aot }}
+      validate: ${{ steps.select.outputs.validate }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 根据变更选择作业
+        id: select
+        shell: bash
+        run: >
+          python3 scripts/select-ci.py
+          --event '${{ github.event_name }}'
+          --base '${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}'
+          --head '${{ github.sha }}'
+          --aot '${{ inputs.aot == true }}'
+          --output "$GITHUB_OUTPUT"
+
+  validate:
+    name: 工作流与选测规则校验
+    needs: changes
+    if: needs.changes.outputs.validate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker://rhysd/actionlint:1.7.12
+      - name: 验证变更选择边界
+        run: python3 -m unittest discover -s tests/ci -v
+
   test:
-    name: 测试（${{ matrix.os }}）
-    # PR 被关闭但没合并时不必再跑。
-    if: ${{ github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true }}
+    name: 测试（${{ matrix.platform.os }}，${{ matrix.suite }}）
+    needs: changes
+    if: needs.changes.outputs.tests == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - os: windows-latest
+            native-cc: cl
+            native-cc-alt: clang-cl
+          - os: ubuntu-latest
+            native-cc: clang
+            native-cc-alt: ''
+          - os: macos-latest
+            native-cc: clang
+            native-cc-alt: ''
+        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
+        exclude:
+          - platform:
+              os: windows-latest
+              native-cc: cl
+              native-cc-alt: clang-cl
+            suite: raw
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: ${{ matrix.platform.os }}
+      native-cc: ${{ matrix.platform.native-cc }}
+      native-cc-alt: ${{ matrix.platform.native-cc-alt }}
+      suite: ${{ matrix.suite }}
+
+  build:
+    name: 发布校验（${{ matrix.os }}，${{ matrix.project }}，JIT）
+    needs: changes
+    if: needs.changes.outputs.jit == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
-        # 原生库(guard 与 fault probe)的 C 编译器驱动, 经 -p:DshNativeCompiler 交给 PluginGuard.props。
-        # Windows 主构建用发布所用的 MSVC(cl), 再用 clang-cl 重建并重跑原生遏制回归。
-        include:
-          - os: windows-latest
-            native-cc: cl
-            native-cc-alt: clang-cl
-          - os: ubuntu-latest
-            native-cc: clang
-          - os: macos-latest
-            native-cc: clang
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # 开放 PR 检出实时 merge ref；关闭事件与其它事件使用 github.sha。
-          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-          cache: true
-          cache-dependency-path: '**/*.csproj'
-
-      - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            pwsh -NoProfile -File scripts/fetch-dryioc-feed.ps1 -UseGhArtifact
-          else
-            bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
-          fi
-
-      - name: 检查 C 工具链（Clang/LLVM；Windows 另需 MSVC）
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            if ! command -v clang-cl >/dev/null 2>&1; then
-              choco install llvm --no-progress -y
-              echo 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
-              export PATH="/c/Program Files/LLVM/bin:$PATH"
-            fi
-            clang-cl --version
-            "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' \
-              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'Common7\Tools\VsDevCmd.bat'
-          else
-            if ! command -v clang >/dev/null 2>&1; then
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends clang
-            fi
-            clang --version
-          fi
-
-      - name: 编译测试工程（Debug，含插件夹具与 fault probe）
-        run: >
-          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
-          -p:DshNativeCompiler=${{ matrix.native-cc }}
-
-      - name: 真实 Unix TUI 的 raw 输入与退出恢复
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          dotnet build DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj -c Debug --nologo -m:2 -p:DshNativeCompiler=${{ matrix.native-cc }}
-          python3 scripts/check-tui-raw-mode.py --runs 8 --home-template artifacts/raw/empty-template
-
-      - name: 安装 sqlite3（Windows；SQLitePCLRaw.provider.sqlite3 需要系统 sqlite3.dll）
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/install-sqlite-runtime.ps1
-
-      - name: 启动当前产物的独立 PTY daemon
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .daemon-tests
-          HOME_DIR="$(mktemp -d "$PWD/.daemon-tests/qXXXXXX")"
-          cp src/Dsh.Boot/Profiles/Templates/settings.yaml "$HOME_DIR/settings.yaml"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            DSH_HOME="$(cygpath -w "$HOME_DIR")"
-          else
-            DSH_HOME="$HOME_DIR"
-          fi
-          export DSH_HOME
-          echo "DSH_HOME=$DSH_HOME" >> "$GITHUB_ENV"
-          DAEMON="DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp"
-          if [ ! -x "$DAEMON" ]; then
-            DAEMON="$DAEMON.exe"
-          fi
-          "$DAEMON" tui daemon > "$HOME_DIR/daemon.log" 2>&1 &
-          DAEMON_PID=$!
-          for ATTEMPT in {1..200}; do
-            if [ -e "$HOME_DIR/run/dsh.sock" ] || [ -e "$HOME_DIR/run/dsh.port" ]; then
-              exit 0
-            fi
-            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-              cat "$HOME_DIR/daemon.log"
-              exit 1
-            fi
-            sleep 0.05
-          done
-          echo "::error::当前构建的独立 PTY daemon 未发布端点"
-          cat "$HOME_DIR/daemon.log"
-          exit 1
-
-      - name: 运行测试（排除 GpuStress / OnlyGpu / LlmSmoke / RenderBench）
-        shell: bash
-        run: |
-          set -euo pipefail
-          # GpuStress 需要真实 GPU 压测；OnlyGpu 是功能性的 GPU/桌面渲染用例(无 GPU/EGL 的 runner 跑不了)；
-          # RenderBench 需要桌面渲染环境；LlmSmoke 需要外部模型接口与密钥。
-          # GitHub 托管 runner 无 GPU, 需要 GPU 的度量请在带 GPU 的无头机上直接跑(不加 trait 过滤)。
-          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
-          if [ ! -x "$EXE" ]; then
-            EXE="$EXE.exe"
-          fi
-          ARGS=("$EXE" -noColor
-            -trait- "Category=GpuStress"
-            -trait- "Category=OnlyGpu"
-            -trait- "Category=LlmSmoke"
-            -trait- "Category=RenderBench")
-          # macOS 串行执行: PTY 主端读在 macOS 上会阻塞调用线程, 并行调度下会拖死线程池而挂死;
-          # 串行执行全部用例通过(约 90s)。看门狗兜底, 避免未来回归时卡满 job 超时(25 分钟)。
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            ARGS+=(-parallel none)
-            echo "运行: ${ARGS[*]}"
-            "${ARGS[@]}" &
-            TESTPID=$!
-            ( sleep 600; kill -9 "$TESTPID" 2>/dev/null ) &
-            WATCH=$!
-            set +e
-            wait "$TESTPID"
-            CODE=$?
-            kill "$WATCH" 2>/dev/null || true
-            exit $CODE
-          fi
-          if command -v timeout >/dev/null 2>&1; then
-            ARGS=(timeout 900 "${ARGS[@]}")
-          fi
-          echo "运行: ${ARGS[*]}"
-          "${ARGS[@]}"
-
-      - name: 偶发失败根因回归（连续三轮，不重试失败）
-        shell: bash
-        run: |
-          set -euo pipefail
-          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
-          if [ ! -x "$EXE" ]; then
-            EXE="$EXE.exe"
-          fi
-          ARGS=(-noColor
-            -class Dsh.Tests.PtyDaemonSubscribeTests
-            -class Dsh.Tests.PtyDaemonTests
-            -class Dsh.Tests.PtyOwnershipTests
-            -class Dsh.Tests.PtyOutputReaderTests
-            -class Dsh.Tests.UnixPtyDescriptorOwnershipTests
-            -class Dsh.Tests.PtyConsoleResizeTests
-            -class Dsh.Tests.MouseReportPtyTests
-            -class Dsh.Tests.TuiOverlayCpuTests
-            -class Dsh.Tests.PtySessionSubscriptionTests
-            -class Dsh.Tests.ChatWindowKeyBindingTests
-            -class Dsh.Tests.ChatWindowPaneTests
-            -class 'Dsh.Tests.JobsTests*'
-            -class Dsh.Tests.Runtime.PluginLifecycleTests
-            -class Dsh.Tests.Runtime.PluginSchedulerTests
-            -class Dsh.Tests.Runtime.RuntimePluginTests
-            -class Dsh.Tests.Runtime.PluginUnloadTests
-            -class Dsh.Tests.AcpTests
-            -class Dsh.Tests.AcpClientTests
-            -class Dsh.Tests.LspTests
-            -class Dsh.Tests.SdkTests
-            -class Dsh.Tests.Mcp.McpResourceToolsTests
-            -class Dsh.Tests.ProjectMemoryTests
-            -class Dsh.Tests.SessionAutoRenameTests
-            -class Dsh.Tests.SessionLogCompatibilityTests
-            -class Dsh.Tests.RemoteHostCapabilityTests
-            -class Dsh.Tests.RemoteHostTests
-            -class Dsh.Tests.FrameCodecTests
-            -class Dsh.Tests.PluginTemplateTests
-            -class Dsh.Tests.SettingsTemplateTests
-            -class Dsh.Tests.ExportSessionLogTests)
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            ARGS+=(-parallel none)
-          fi
-          for ROUND in 1 2 3; do
-            echo "根因回归 round $ROUND/3"
-            "$EXE" "${ARGS[@]}"
-          done
-      - name: 定时提醒时区回归（发布档 invariant globalization）
-        shell: pwsh
-        run: |
-          $runtime = Get-Content tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.runtimeconfig.json -Raw | ConvertFrom-Json -AsHashtable
-          $runtime.runtimeOptions.configProperties['System.Globalization.Invariant'] = $true
-          $config = Join-Path $env:RUNNER_TEMP 'schedule-invariant.runtimeconfig.json'
-          $runtime | ConvertTo-Json -Depth 20 | Set-Content $config
-          dotnet exec --runtimeconfig $config tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.dll -noColor -class 'Dsh.Tests.ScheduleTests+Rules' -class 'Dsh.Tests.ScheduleClockCompatibilityTests' -class 'Dsh.Tests.ScheduleCronCompatibilityTests' -class 'Dsh.Tests.ScheduleToolCompatibilityTests' -class 'Dsh.Tests.ScheduleUpstreamReferenceTests' -failSkips
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: 原生遏制回归（NativeGuardTests，${{ matrix.native-cc }}，跳过即失败）
-        shell: bash
-        run: |
-          set -euo pipefail
-          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
-          if [ ! -x "$EXE" ]; then
-            EXE="$EXE.exe"
-          fi
-          "$EXE" -noColor -class Dsh.Tests.NativeGuardTests -failSkips
-
-      - name: 换用 ${{ matrix.native-cc-alt }} 重建原生库并重跑原生遏制回归
-        if: matrix.native-cc-alt != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo \
-            -p:DshNativeCompiler=${{ matrix.native-cc-alt }} "-flp:verbosity=normal;logfile=native-alt.log"
-          # 构建日志里的编译命令证明 guard 与 probe 确由替换后的驱动重建。
-          grep -E '${{ matrix.native-cc-alt }} /nologo' native-alt.log
-          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -class Dsh.Tests.NativeGuardTests -failSkips
-
-  build:
-    name: 发布校验（${{ matrix.os }}，JIT）
-    if: ${{ github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
+        project: [DeepSeek-Harness-Sharp, DshGuiHost]
         include:
           - os: windows-latest
             rid: win-x64
@@ -276,15 +113,11 @@ jobs:
             native-cc: clang
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
-
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
           cache: true
           cache-dependency-path: '**/*.csproj'
-
       - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
         shell: bash
         run: |
@@ -294,33 +127,21 @@ jobs:
           else
             bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
           fi
-
       - name: JIT 发布校验（Release + 裁剪 + 自包含）
         run: >
-          dotnet publish DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj
+          dotnet publish ${{ matrix.project }}/${{ matrix.project }}.csproj
           -c Release -r ${{ matrix.rid }}
           -p:DebugSymbols=false -p:DebugType=none
           -p:DshNativeCompiler=${{ matrix.native-cc }}
           --nologo -v m
-
-      - name: GUI 启动器 JIT 发布校验（dsh-gui）
-        run: >
-          dotnet publish DshGuiHost/DshGuiHost.csproj
-          -c Release -r ${{ matrix.rid }}
-          -p:DebugSymbols=false -p:DebugType=none
-          -p:DshNativeCompiler=${{ matrix.native-cc }}
-          --nologo -v m
-
       - name: 校验发布产物含原生故障遏制库
         shell: bash
         run: |
           set -euo pipefail
-          PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/${{ matrix.rid }}/publish"
-          ls "$PUB" | grep -E '^(lib)?dsh_plugin_guard\.(dll|so|dylib)$' || { echo "::error::发布产物缺少 dsh_plugin_guard"; exit 1; }
-
+          PUB="${{ matrix.project }}/bin/Release/net10.0/${{ matrix.rid }}/publish"
+          printf '%s\n' "$PUB"/* | grep -E '/(lib)?dsh_plugin_guard\.(dll|so|dylib)$' || { echo "::error::发布产物缺少 dsh_plugin_guard"; exit 1; }
       - name: GUI 主线程冒烟（macOS）
-        # 无显示环境不保证能起窗口: 只断言 GUI 不再在子线程初始化 Avalonia(尽力而为)。
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.project == 'DshGuiHost'
         shell: bash
         run: |
           set -euo pipefail
@@ -345,12 +166,8 @@ jobs:
 
   aot:
     name: AOT 构建（${{ matrix.rid }}）
-    # 独立流水线：PR 的 open|sync|reopen 与被 merge 时（在 merge 提交上）跑，或手动 dispatch 且 aot=true。
-    # 直接 push 到 master 不跑（本仓库 push 居多）。
-    # 不依赖 test：AOT 是独立校验，test 未过也不应阻止 AOT 构建或手动触发。
-    if: ${{ (github.event_name == 'pull_request' && (github.event.action != 'closed' || github.event.pull_request.merged == true)) || (github.event_name == 'workflow_dispatch' && inputs.aot) }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    needs: changes
+    if: needs.changes.outputs.aot == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -361,114 +178,24 @@ jobs:
           - os: ubuntu-latest
             rid: linux-x64
             native-cc: clang
+    uses: ./.github/workflows/ci-aot.yml
+    with:
+      os: ${{ matrix.os }}
+      rid: ${{ matrix.rid }}
+      native-cc: ${{ matrix.native-cc }}
+
+  result:
+    name: CI 结果
+    needs: [changes, validate, test, build, aot]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-          cache: true
-          cache-dependency-path: '**/*.csproj'
-
-      - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
+      - name: 汇总必需校验结果
         shell: bash
         run: |
-          set -euo pipefail
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            pwsh -NoProfile -File scripts/fetch-dryioc-feed.ps1 -UseGhArtifact
-          else
-            bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
-          fi
-
-      - name: 安装 AOT 工具链（Linux）
-        if: matrix.rid == 'linux-x64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld zlib1g-dev
-
-      - name: AOT 发布 + 原生产物硬校验 + 冒烟
-        shell: bash
-        env:
-          RID: ${{ matrix.rid }}
-          NATIVE_CC: ${{ matrix.native-cc }}
-        run: |
-          set -euo pipefail
-          # 原生库由 PluginGuard.props 构建; AOT 产物附带 fault probe, 供在目标机上回归 guard 的遏制。
-          NATIVE_ARGS=(-p:DshNativeCompiler="$NATIVE_CC" -p:DshShipFaultProbe=true)
-          dotnet publish DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj \
-            -c Release -r "$RID" -p:PublishAot=true \
-            -p:DebugSymbols=false -p:DebugType=none "${NATIVE_ARGS[@]}" \
-            --nologo -v m
-          # GUI 启动器一并 AOT 发布并叠加进主产物。
-          dotnet publish DshGuiHost/DshGuiHost.csproj \
-            -c Release -r "$RID" -p:PublishAot=true \
-            -p:DebugSymbols=false -p:DebugType=none "${NATIVE_ARGS[@]}" \
-            --nologo -v m
-          PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
-          GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
-          test -d "$GUI_PUB"
-          cp -R "$GUI_PUB"/. "$PUB"/
-          rm -f "$PUB"/dsh-gui*.pdb "$PUB"/dsh-gui*.dbg
-          # 结构特征判别是否真的 AOT（JIT 发布同样会产出 apphost，光看文件存在拦不住）。
-          bash scripts/assert-aot-output.sh "$PUB"
-          for NATIVE in dsh_plugin_guard dsh_fault_probe; do
-            ls "$PUB" | grep -E "^(lib)?$NATIVE\.(dll|so|dylib)$" || { echo "::error::AOT 产物缺少 $NATIVE"; exit 1; }
-          done
-          # 调试旁文件不进产物（AOT 的 .pdb/.dbg 动辄数百 MB）。
-          rm -f "$PUB"/*.pdb "$PUB"/*.dbg
-          mkdir -p "$PUB/plugins"
-          EXE="$PUB/dsharp"
-          if [ ! -f "$EXE" ]; then
-            EXE="$EXE.exe"
-          fi
-          chmod +x "$EXE" 2>/dev/null || true
-          if command -v timeout >/dev/null 2>&1; then
-            timeout 120 "$EXE" --help > "$RUNNER_TEMP/aot-smoke.out" 2>&1
-          else
-            "$EXE" --help > "$RUNNER_TEMP/aot-smoke.out" 2>&1
-          fi || {
-            echo "::error::AOT 冒烟失败"
-            tail -20 "$RUNNER_TEMP/aot-smoke.out"
+          if [ '${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}' = 'true' ]; then
+            echo '::error::受影响的 CI 校验失败或被取消'
             exit 1
-          }
-          echo "AOT 冒烟通过"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: aot-${{ matrix.rid }}
-          path: DeepSeek-Harness-Sharp/bin/Release/net10.0/${{ matrix.rid }}/publish
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: 用 AOT 产物里的 guard 与 probe 回归原生遏制（Linux 另跑 AOT 插件 ABI 端到端）
-        shell: bash
-        env:
-          RID: ${{ matrix.rid }}
-          NATIVE_CC: ${{ matrix.native-cc }}
-        run: |
-          set -euo pipefail
-          PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
-          BIN="tests/Dsh.Tests/bin/Debug/net10.0"
-          CLASSES=(-class Dsh.Tests.NativeGuardTests)
-          if [ "$RID" = "linux-x64" ]; then
-            # NativeAOT 发布的样例插件(NativeLib=Shared), 由 NativePluginAbiTests 经 guard 装载并调用。
-            dotnet publish tests/Dsh.NativePluginSample -c Release --nologo -v m
-            CLASSES+=(-class Dsh.Tests.NativePluginAbiTests)
           fi
-          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo -v m -p:DshNativeCompiler="$NATIVE_CC"
-          # 测试宿主是 JIT 进程, 把它旁边的 guard 与 probe 换成 AOT 产物里随发布附带的那两份。
-          for NATIVE in dsh_plugin_guard dsh_fault_probe; do
-            FILE="$(ls "$PUB" | grep -E "^(lib)?$NATIVE\.(dll|so|dylib)$")"
-            cp "$PUB/$FILE" "$BIN/$FILE"
-            cmp "$PUB/$FILE" "$BIN/$FILE"
-            echo "回归使用 AOT 产物: $PUB/$FILE"
-          done
-          EXE="$BIN/Dsh.Tests"
-          if [ ! -x "$EXE" ]; then
-            EXE="$EXE.exe"
-          fi
-          "$EXE" -noColor "${CLASSES[@]}" -failSkips
+          echo '受影响的 CI 校验全部通过；不相关的校验已跳过'
