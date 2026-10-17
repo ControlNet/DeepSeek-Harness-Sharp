@@ -403,9 +403,6 @@ public static class HarnessEntrypoint
 
     /** GUI 连接本机 host 时按需拉起: 以脱离会话的方式起 `host serve`, 与 CLI 的 `session *` 一致。 */
     private static Task StartLocalHostAsync(string harnessHome, CancellationToken cancellationToken)
-    {
-        HostAutostart.StartDetached(token: null, harnessHome);
-        return Task.CompletedTask;
-    }
+        => HostAutostart.EnsureRunningAsync(HarnessHome.Resolve(harnessHome), token: null, cancellationToken);
 }
 

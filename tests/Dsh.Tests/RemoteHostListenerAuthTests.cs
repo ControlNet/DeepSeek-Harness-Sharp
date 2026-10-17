@@ -54,6 +54,60 @@ public sealed class RemoteHostListenerAuthTests
         });
     }
 
+    [Fact(Timeout = 30000)]
+    public async Task OwnedStartup_OutlivesOrdinaryProbeBudget_AndAuthenticatesWhenReady()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = RealHostProcesses.CreateHome("rs");
+        var startup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Process? host = null;
+        try
+        {
+            var connecting = RemoteHostListener.ConnectAsync(root, cancellationToken, attempts: 1, startupLifetime: startup.Task);
+            await Assert.ThrowsAsync<IOException>(() => RemoteHostListener.ConnectAsync(root, cancellationToken, attempts: 1));
+            host = RealHostProcesses.StartHost(RealHostProcesses.Executable, root);
+            await using var stream = await connecting;
+            await using var client = await RemoteHostClient.ConnectAsync(stream, null, cancellationToken);
+            Assert.Equal(HostProtocol.Version, (await client.InfoAsync(cancellationToken)).ProtocolVersion);
+        }
+        finally
+        {
+            startup.TrySetResult();
+            RealHostProcesses.KillAll(root);
+            host?.Dispose();
+            TempTree.Delete(root);
+        }
+    }
+
+    [Theory(Timeout = 30000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OwnedStartup_StopsWaitingOnExitOrCancellation(bool cancel)
+    {
+        var root = TempTree.CreateSocketDirectory("rx");
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var startup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var connecting = RemoteHostListener.ConnectAsync(root, cancellation.Token, attempts: 1, startupLifetime: startup.Task);
+            if (cancel)
+            {
+                await cancellation.CancelAsync();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => connecting);
+            }
+            else
+            {
+                startup.SetResult();
+                await Assert.ThrowsAsync<IOException>(() => connecting);
+            }
+        }
+        finally
+        {
+            startup.TrySetResult();
+            TempTree.Delete(root);
+        }
+    }
+
     [Fact(Timeout = 120000)]
     public async Task KilledHost_IsReplacedWithAnEndpointReaderOpen_AndFreshClientAuthenticates()
     {

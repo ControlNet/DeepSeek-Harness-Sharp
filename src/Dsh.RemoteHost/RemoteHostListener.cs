@@ -150,11 +150,11 @@ public static class RemoteHostListener
         }
     }
 
-    /** 连接到常驻 daemon 并出示其 token; 带重试, 覆盖“刚 spawn 起来还没 bind”的窗口。 */
-    public static async Task<Stream> ConnectAsync(string? root, CancellationToken cancellationToken, int attempts = 50)
+    /** An owned startup remains pending until its process exits or the endpoint becomes reachable; ordinary connects retain their probe budget. */
+    public static async Task<Stream> ConnectAsync(string? root, CancellationToken cancellationToken, int attempts = 50, Task? startupLifetime = null)
     {
         Exception? last = null;
-        for (var attempt = 0; attempt < attempts; attempt++)
+        for (var attempt = 0; attempt < attempts || startupLifetime is { IsCompleted: false }; attempt++)
         {
             try
             {

@@ -453,10 +453,7 @@ internal sealed record FleetCliContext(
     public HarnessHome HomeOf(MachineSpec machine) => machine.HarnessHome is { } home ? HarnessHome.Resolve(home) : Home;
 
     private static Task StartLocalHostAsync(MachineSpec machine, CancellationToken cancellationToken)
-    {
-        HostAutostart.StartDetached(token: null, machine.HarnessHome);
-        return Task.CompletedTask;
-    }
+        => HostAutostart.EnsureRunningAsync(HarnessHome.Resolve(machine.HarnessHome), token: null, cancellationToken);
 
     private static void ReportDeployment(MachineConnection machine)
     {

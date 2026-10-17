@@ -30,6 +30,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify the checkout contains the current PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -91,7 +101,9 @@ jobs:
 
       - name: Install real SSH end-to-end prerequisites (Linux)
         if: inputs.suite != 'raw' && runner.os == 'Linux'
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends openssh-server openssh-sftp-server
           sudo mkdir -p /run/sshd
@@ -124,7 +136,6 @@ jobs:
         if: inputs.suite == 'quick' && runner.os == 'macOS'
         shell: bash
         run: bash scripts/test-iroh-macos-lan.sh
-
       - name: Start a standalone PTY daemon from the current build
         shell: bash
         run: |
@@ -167,6 +178,15 @@ jobs:
             -class Dsh.Tests.TuiRawModeEndToEndTests \
             -trait- "Category=LlmSmoke"
 
+      - name: Check real Unix TUI raw input and exit restoration (eight native rounds)
+        if: inputs.suite == 'raw' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests -noColor \
+            -class Dsh.Tests.TuiRawModeEndToEndTests \
+            -trait- "Category=LlmSmoke" -failSkips
+
       - name: Run quick tests (excluding GpuStress / OnlyGpu / LlmSmoke / RenderBench)
         if: inputs.suite == 'quick'
         shell: bash
@@ -183,7 +203,9 @@ jobs:
             -trait- "Category=GpuStress"
             -trait- "Category=OnlyGpu"
             -trait- "Category=LlmSmoke"
-            -trait- "Category=RenderBench")
+            -trait- "Category=RenderBench"
+            -class- Dsh.Tests.TuiRawModeEndToEndTests)
+          # The native eight-round raw regression runs in its own Unix suite.
           # macOS PTY reads block their calling thread and can starve the parallel test thread pool.
           # Keep serial execution and the existing watchdog budget.
           # Raw input and the exact headless SSH LAN Fact run in their dedicated stages.

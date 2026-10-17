@@ -35,7 +35,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
           fetch-depth: 0
+      - name: 校验检出提交包含当前 PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
       - name: 根据变更选择作业
         id: select
         shell: bash
@@ -43,7 +50,7 @@ jobs:
           python3 scripts/select-ci.py
           --event '${{ github.event_name }}'
           --base '${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}'
-          --head '${{ github.sha }}'
+          --head HEAD
           --aot '${{ inputs.aot == true }}'
           --output "$GITHUB_OUTPUT"
 
@@ -55,6 +62,15 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+      - name: 校验检出提交包含当前 PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
       - uses: docker://rhysd/actionlint:1.7.12
       - name: 验证变更选择边界
         run: python3 -m unittest discover -s tests/ci -v
@@ -77,6 +93,15 @@ jobs:
             rid: osx-arm64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+      - name: 校验检出提交包含当前 PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
       - name: 缓存固定源码构建的 iroh-ssh
         id: iroh-cache
         uses: actions/cache@v4
@@ -181,6 +206,15 @@ jobs:
             native-cc: clang
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+      - name: 校验检出提交包含当前 PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
@@ -214,6 +248,7 @@ jobs:
           -p:DebugSymbols=false -p:DebugType=none
           -p:DshNativeCompiler=${{ matrix.native-cc }}
           --nologo -v m
+
       - name: 校验发布产物的内置 Iroh 与原生故障遏制库
         shell: bash
         run: |
@@ -229,23 +264,30 @@ jobs:
           test -s "$PUB/tools/iroh-ssh.NOTICE.txt"
           cmp scripts/iroh-ssh-readiness.patch "$PUB/tools/iroh-ssh.READINESS.patch"
           printf '%s\n' "$PUB"/* | grep -E '/(lib)?dsh_plugin_guard\.(dll|so|dylib)$' || { echo "::error::发布产物缺少 dsh_plugin_guard"; exit 1; }
+      - name: 归档完整发布根
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUB="${{ matrix.project }}/bin/Release/net10.0/${{ matrix.rid }}/publish"
           mkdir -p artifacts
-          TAR=tar
-          if [ "$RUNNER_OS" = "Windows" ]; then TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"; fi
-          "$TAR" -cf "artifacts/jit-${{ matrix.rid }}-${{ matrix.project }}.tar" -C "$PUB" .
+          TAR="tar"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"
+          fi
+          "$TAR" -cf "artifacts/${{ matrix.rid }}-${{ matrix.project }}.tar" -C "$PUB" .
       - uses: actions/upload-artifact@v4
         with:
           name: jit-publish-${{ matrix.rid }}-${{ matrix.project }}
-          path: artifacts/jit-${{ matrix.rid }}-${{ matrix.project }}.tar
+          path: artifacts/${{ matrix.rid }}-${{ matrix.project }}.tar
           if-no-files-found: error
           retention-days: 1
 
-  web-smoke:
-    name: 三发布产物与 WebHost 验收（${{ matrix.rid }}）
+  jit-smoke:
+    name: 三产品真实发布验收（${{ matrix.rid }}，JIT）
     needs: [changes, build]
     if: needs.changes.outputs.jit == 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -258,35 +300,43 @@ jobs:
             rid: osx-arm64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+      - name: 校验检出提交包含当前 PR head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git merge-base --is-ancestor "$EXPECTED_HEAD_SHA" HEAD
       - uses: actions/download-artifact@v4
         with:
           pattern: jit-publish-${{ matrix.rid }}-*
-          path: artifacts
+          path: artifacts/jit-publish
           merge-multiple: true
-      - name: 解包各入口发布产物（保留 Unix 执行权限）
+      - name: 恢复三个独立发布根并运行真实 WebHost 门禁
         shell: bash
         run: |
           set -euo pipefail
-          TAR=tar
-          if [ "$RUNNER_OS" = "Windows" ]; then TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"; fi
-          for PROJECT in DeepSeek-Harness-Sharp DshGuiHost Dsh.WebHost; do
-            PUB="$PROJECT/bin/Release/net10.0/${{ matrix.rid }}/publish"
-            mkdir -p "$PUB"
-            "$TAR" -xf "artifacts/jit-${{ matrix.rid }}-$PROJECT.tar" -C "$PUB"
-          done
-      - name: 三发布产物隔离、体积和真实 WebHost 冒烟
-        shell: pwsh
-        run: |
-          ./scripts/smoke-web-host.ps1 `
-            -WebPublishDir Dsh.WebHost/bin/Release/net10.0/${{ matrix.rid }}/publish `
-            -TuiPublishDir DeepSeek-Harness-Sharp/bin/Release/net10.0/${{ matrix.rid }}/publish `
-            -GuiPublishDir DshGuiHost/bin/Release/net10.0/${{ matrix.rid }}/publish
+          RID='${{ matrix.rid }}'
+          TAR="tar"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"
+          fi
+          mkdir -p artifacts/jit/cli artifacts/jit/gui artifacts/jit/web
+          "$TAR" -xf "artifacts/jit-publish/$RID-DeepSeek-Harness-Sharp.tar" -C artifacts/jit/cli
+          "$TAR" -xf "artifacts/jit-publish/$RID-DshGuiHost.tar" -C artifacts/jit/gui
+          "$TAR" -xf "artifacts/jit-publish/$RID-Dsh.WebHost.tar" -C artifacts/jit/web
+          pwsh -NoProfile -File scripts/smoke-web-host.ps1 \
+            -WebPublishDir artifacts/jit/web \
+            -TuiPublishDir artifacts/jit/cli \
+            -GuiPublishDir artifacts/jit/gui
       - name: GUI 主线程冒烟（macOS）
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          PUB="DshGuiHost/bin/Release/net10.0/${{ matrix.rid }}/publish"
+          PUB="artifacts/jit/gui"
           EXE="$PUB/dsh-gui"
           test -f "$EXE" || { echo "::error::找不到 $EXE"; exit 1; }
           chmod +x "$EXE"
@@ -328,7 +378,7 @@ jobs:
 
   result:
     name: CI 结果
-    needs: [changes, validate, iroh-component, test, build, web-smoke, aot]
+    needs: [changes, validate, iroh-component, test, build, jit-smoke, aot]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -27,6 +27,18 @@ jobs:
         entry: [cli, gui, web]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+
+      - name: Check PR merge checkout contains the current head
+        if: github.event_name == 'pull_request' && github.event.action != 'closed'
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$PR_HEAD_SHA" HEAD
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -72,16 +84,20 @@ jobs:
           set -euo pipefail
           RID='${{ inputs.rid }}'
           ENTRY='${{ matrix.entry }}'
-          if [ "$ENTRY" = "cli" ]; then
-            PROJECT="DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj"
-            PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
-          elif [ "$ENTRY" = "gui" ]; then
-            PROJECT="DshGuiHost/DshGuiHost.csproj"
-            PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
-          else
-            PROJECT="Dsh.WebHost/Dsh.WebHost.csproj"
-            PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"
-          fi
+          case "$ENTRY" in
+            cli)
+              PROJECT="DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj"
+              PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
+              ;;
+            gui)
+              PROJECT="DshGuiHost/DshGuiHost.csproj"
+              PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
+              ;;
+            web)
+              PROJECT="Dsh.WebHost/Dsh.WebHost.csproj"
+              PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"
+              ;;
+          esac
           NATIVE_ARGS=(-p:DshNativeCompiler='${{ inputs.native-cc }}' -p:DshShipFaultProbe=true)
           dotnet publish "$PROJECT" \
             -c Release -r "$RID" -p:PublishAot=true --self-contained true \
@@ -124,6 +140,18 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+
+      - name: Check PR merge checkout contains the current head
+        if: github.event_name == 'pull_request' && github.event.action != 'closed'
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$PR_HEAD_SHA" HEAD
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -209,25 +237,23 @@ jobs:
             cmp src/Dsh.Fleet.Client/iroh-ssh.NOTICE.txt "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
             cmp scripts/iroh-ssh-readiness.patch "$OUTPUT/tools/iroh-ssh.READINESS.patch"
           done
+          bash scripts/assert-aot-output.sh "$PUB"
+          bash scripts/assert-aot-output.sh "$GUI_PUB" dsh-gui
           bash scripts/assert-aot-output.sh "$WEB_PUB" dsharp-web
+          for ROOT in "$PUB" "$GUI_PUB" "$WEB_PUB"; do
+            for NATIVE in dsh_plugin_guard dsh_fault_probe; do
+              printf '%s\n' "$ROOT"/* | grep -E "/(lib)?$NATIVE\.(dll|so|dylib)$" || { echo "::error::AOT output is missing $NATIVE in $ROOT"; exit 1; }
+            done
+          done
           pwsh -NoProfile -File scripts/smoke-web-host.ps1 \
             -WebPublishDir "$WEB_PUB" \
             -TuiPublishDir "$PUB" \
             -GuiPublishDir "$GUI_PUB"
-          # Overlay the GUI publish tree onto the CLI publish tree, as in the original job.
-          cp -R "$GUI_PUB"/. "$PUB"/
-          rm -f "$PUB"/dsh-gui*.pdb "$PUB"/dsh-gui*.dbg
-          bash scripts/assert-aot-output.sh "$PUB"
-          for NATIVE in dsh_plugin_guard dsh_fault_probe; do
-            printf '%s\n' "$PUB"/* | grep -E "/(lib)?$NATIVE\.(dll|so|dylib)$" || { echo "::error::AOT output is missing $NATIVE"; exit 1; }
-          done
-          rm -f "$PUB"/*.pdb "$PUB"/*.dbg
           mkdir -p "$PUB/plugins"
           EXE="$PUB/dsharp"
           if [ ! -f "$EXE" ]; then
             EXE="$EXE.exe"
           fi
-          chmod +x "$EXE" 2>/dev/null || true
           if command -v timeout >/dev/null 2>&1; then
             timeout 120 "$EXE" --help > "$RUNNER_TEMP/aot-smoke.out" 2>&1
           else
@@ -242,7 +268,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: aot-${{ inputs.rid }}
-          path: DeepSeek-Harness-Sharp/bin/Release/net10.0/${{ inputs.rid }}/publish
+          path: artifacts/aot-${{ inputs.rid }}-*.tar
           if-no-files-found: error
           retention-days: 7
 

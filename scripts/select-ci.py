@@ -40,9 +40,8 @@ def classify_changes(paths, event, aot=False, full=False):
             jit = True
         elif is_documentation(path) or path in LIGHT_WORKFLOWS:
             continue
-        elif path == "tests/Dsh.Tests/TuiRawModeEndToEndTests.cs":
-            suites.add("raw")
         elif path.startswith("tests/Dsh.Tests/"):
+            # This project owns the native raw tests and their shared fixtures.
             suites.update(SUITES)
         else:
             suites.update(SUITES)
