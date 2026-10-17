@@ -254,11 +254,12 @@ jobs:
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
           BIN="tests/Dsh.Tests/bin/Debug/net10.0"
           CLASSES=(-class Dsh.Tests.NativeGuardTests)
+          # The test project restores the generator required by the native sample on a fresh runner.
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo -v m -p:DshNativeCompiler='${{ inputs.native-cc }}'
           if [ "$RID" = "linux-x64" ]; then
             dotnet publish tests/Dsh.NativePluginSample -c Release --nologo -v m
             CLASSES+=(-class Dsh.Tests.NativePluginAbiTests)
           fi
-          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo -v m -p:DshNativeCompiler='${{ inputs.native-cc }}'
           test ! -d "artifacts/iroh-ssh/$RID/target"
           test ! -f "artifacts/iroh-ssh/$RID/source.tar.gz"
           # Run the real JIT test host with the guard and probe from the assembled release.
