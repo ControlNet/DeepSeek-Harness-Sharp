@@ -9,8 +9,10 @@ namespace Dsh.Tests;
 
 public sealed class FleetBootstrapTests
 {
-    [Fact(Timeout = 30000)]
-    public async Task SilentPeerBeforeInitialSnapshots_SettlesOfflineAfterHeartbeatTimeout()
+    [Theory(Timeout = 30000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SilentPeerBeforeInitialSnapshots_SettlesDisconnectedAfterHeartbeatTimeout(bool reconnect)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -27,14 +29,16 @@ public sealed class FleetBootstrapTests
         {
             await using var connection = new MachineConnection(MachineSpec.Local(root), new FleetOptions
             {
-                AutoReconnect = false,
+                AutoReconnect = reconnect,
+                MinBackoff = TimeSpan.FromSeconds(30),
+                MaxBackoff = TimeSpan.FromSeconds(30),
                 HeartbeatInterval = TimeSpan.FromMilliseconds(50),
                 HeartbeatTimeout = TimeSpan.FromMilliseconds(250),
             });
             connection.Start();
             await connection.WaitSettledAsync(lifetime.Token).WaitAsync(TimeSpan.FromSeconds(10), lifetime.Token);
             Assert.True(ping.Task.IsCompletedSuccessfully);
-            Assert.Equal(MachineConnectionState.Offline, connection.State);
+            Assert.Equal(reconnect ? MachineConnectionState.Reconnecting : MachineConnectionState.Offline, connection.State);
             Assert.NotNull(connection.Info);
         }
         finally

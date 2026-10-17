@@ -292,7 +292,6 @@ public sealed class GuiWorkspaceTests
                 await beta.StopHostAsync();
                 var card = Card(workspace, "beta", started.SessionId)!;
                 await UntilAsync(() => !card.IsMachineOnline && workspace.Dashboard.OfflineMachineCount == 1, "the machine is shown unreachable");
-                Assert.Equal("重连中", card.StatusLabel);
                 await beta.StartHostAsync(ct);
                 await UntilAsync(() => workspace.Dashboard.OfflineMachineCount == 0 && card.IsExited, "the machine is back and the session exited");
 

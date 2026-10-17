@@ -140,7 +140,7 @@ public sealed class MachineConnection : IAsyncDisposable
                 await ServeAsync(link, cancellationToken).ConfigureAwait(false);
             }
 
-            SetState(MachineConnectionState.Offline, Detail);
+            SetState(_options.AutoReconnect ? MachineConnectionState.Reconnecting : MachineConnectionState.Offline, Detail);
             _settled.TrySetResult();
             if (!_options.AutoReconnect || !await DelayAsync(_options.Backoff(failures), cancellationToken).ConfigureAwait(false))
                 break;
