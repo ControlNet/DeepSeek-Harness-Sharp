@@ -22,15 +22,18 @@ internal sealed class HarnessHostFixture : IAsyncDisposable
     private readonly PtyDaemon _ptyDaemon;
     private readonly List<RemoteHostClient> _clients = [];
     private HarnessRemoteHostBackend? _backend;
+    private readonly Func<IRemoteHostBackend, IRemoteHostBackend>? _decorateBackend;
     private CancellationTokenSource? _serving;
     private Task? _listener;
 
-    private HarnessHostFixture(string root, PtyDaemon ptyDaemon, HostPtyDaemon endpoint, GuiTestEnvironment environment)
+    private HarnessHostFixture(string root, PtyDaemon ptyDaemon, HostPtyDaemon endpoint, GuiTestEnvironment environment,
+        Func<IRemoteHostBackend, IRemoteHostBackend>? decorateBackend)
     {
         Root = root;
         _ptyDaemon = ptyDaemon;
         PtyEndpoint = endpoint;
         Environment = environment;
+        _decorateBackend = decorateBackend;
     }
 
     /** host.sock 与 PTY daemon 的 dsh.sock 都在这个浅目录下(套接字路径有 108 字符上限)。 */
@@ -42,7 +45,8 @@ internal sealed class HarnessHostFixture : IAsyncDisposable
 
     public HarnessRemoteHostBackend Backend => _backend ?? throw new InvalidOperationException("host is not running");
 
-    public static async Task<HarnessHostFixture> CreateAsync(string prefix, CancellationToken cancellationToken)
+    public static async Task<HarnessHostFixture> CreateAsync(string prefix, CancellationToken cancellationToken,
+        Func<IRemoteHostBackend, IRemoteHostBackend>? decorateBackend = null)
     {
         var root = TempTree.CreateSocketDirectory(prefix);
         var socketPath = Path.Combine(root, "dsh.sock");
@@ -50,7 +54,7 @@ internal sealed class HarnessHostFixture : IAsyncDisposable
         var ptyDaemon = new PtyDaemon(new PtyHost(), socketPath, portFile);
         await ptyDaemon.StartAsync(cancellationToken);
         var endpoint = new HostPtyDaemon(socketPath, portFile, _ => Task.CompletedTask);
-        var fixture = new HarnessHostFixture(root, ptyDaemon, endpoint, await GuiTestEnvironment.CreateAsync());
+        var fixture = new HarnessHostFixture(root, ptyDaemon, endpoint, await GuiTestEnvironment.CreateAsync(), decorateBackend);
         await fixture.StartHostAsync(cancellationToken);
         return fixture;
     }
@@ -95,7 +99,7 @@ internal sealed class HarnessHostFixture : IAsyncDisposable
     public async Task StartHostAsync(CancellationToken cancellationToken)
     {
         _backend = await HarnessRemoteHostBackend.CreateAsync(Environment.App, PtyEndpoint, cancellationToken);
-        var server = new RemoteHostServer(new RemoteHostServerOptions(), _backend);
+        var server = new RemoteHostServer(new RemoteHostServerOptions(), _decorateBackend?.Invoke(_backend) ?? _backend);
         _serving = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var serving = _serving.Token;
         _listener = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(server, Root, serving), cancellationToken);
