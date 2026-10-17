@@ -101,7 +101,7 @@ public sealed class FleetConnectionTests
     }
 
     [Fact(Timeout = 90000)]
-    public async Task Shared_Subscription_Replays_FansOut_And_Survives_OneReader_Reset_And_Reconnect()
+    public async Task Independent_Readers_Keep_Their_Cursors_Through_Cancel_Reset_And_Reconnect()
     {
         await using var host = await HarnessHostFixture.CreateAsync("ff", TestContext.Current.CancellationToken);
         await using var connection = new MachineConnection(MachineSpec.Local(host.Root), TestOptions);
@@ -118,7 +118,7 @@ public sealed class FleetConnectionTests
         session.Append(new TurnStartPayload(1));
         await WaitForAsync(() => Events(first).Count == session.Seq);
 
-        // Joining later with a different cursor must replay from the shared feed, not replace the wire subscription.
+        // Each late reader gets its own Host history without replacing another reader's subscription.
         var secondTask = ReadEventsAsync(connection.SubscribeAsync(session.Id.Value, sharedFrom, secondStop.Token), second);
         await WaitForAsync(() => Events(second).Count == 1);
         Assert.Equal(sharedFrom, EventSeq(Events(second)[0]));

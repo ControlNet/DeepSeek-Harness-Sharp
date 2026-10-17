@@ -14,12 +14,14 @@ public sealed class RemoteHostPtyTests
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = 90000)]
-    public async Task TwoClients_ShareOnePty_SeeEachOthersInput_AndSurviveDisconnect()
+    [Theory(Timeout = 90000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TwoViews_ShareOnePty_SeeEachOthersInput_AndSurviveDisconnect(bool shareClient)
     {
         await using var host = await HarnessHostFixture.CreateAsync("mhp", TestContext.Current.CancellationToken);
         var alice = await host.ConnectAsync("alice", Ct);
-        var bob = await host.ConnectAsync("bob", Ct);
+        var bob = shareClient ? alice : await host.ConnectAsync("bob", Ct);
         var (fileName, arguments) = RemoteHostMultiClientTests.Shell;
         var ptyId = await alice.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments, Columns: 100, Rows: 30), Ct);
 
@@ -35,7 +37,8 @@ public sealed class RemoteHostPtyTests
         await aliceView.WaitForAsync(bobMarker, Arrival);
 
         await aliceView.DisposeAsync();
-        await alice.DisposeAsync();
+        if (!shareClient)
+            await alice.DisposeAsync();
         var (afterDisconnect, afterMarker) = MarkerCommand("C", 60, 6);
         await bobView.SendAsync(afterDisconnect);
         await bobView.WaitForAsync(afterMarker, Arrival);

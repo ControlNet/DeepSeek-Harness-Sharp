@@ -4,10 +4,18 @@
 public sealed record RemoteSessionInfo(string Id, string Cwd, string Status, long StartedAt, string? Title, string? Summary, long UpdatedAt);
 
 /** 会话事件流的一条: EventJson 是该 SessionEvent 的完整序列化(含 type/seq/time/data/surfaceOp), 本地据此重建会话。 */
-public sealed record RemoteEventInfo(string SessionId, string EventJson, bool Reset = false);
+public sealed record RemoteEventInfo(string SessionId, string EventJson, long Sequence, bool Reset = false);
 
-/** 订阅会话事件: FromSeq 之前的作为历史先补发, 之后的实时推送(local 重连后可见增量)。 */
-public sealed record RemoteSubscribeRequest(string SessionId, long FromSeq);
+/** 每个读者有独立订阅标识，历史和实时事件均由 Host 提供。 */
+public sealed record RemoteSubscribeRequest(string SessionId, long FromSeq, string SubscriptionId);
+
+public sealed record RemoteSubscriptionRef(string SubscriptionId);
+
+public readonly record struct RemoteEventFrame(string SubscriptionId, RemoteEventInfo Event);
+
+public sealed record RemotePtyAttachRequest(string PtyId, string SubscriptionId);
+
+public readonly record struct RemotePtyFrame(string SubscriptionId, RemotePtyOutput Output);
 
 public sealed record RemoteSessionSnapshot(string HeaderJson, IReadOnlyList<RemoteEventInfo> Events, string? ApprovalPolicy = null);
 

@@ -247,11 +247,11 @@ public sealed class RemoteHostServer(
                 {
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteSubscribeRequest, "subscribe requires sessionId");
                     var events = await backend.SubscribeAsync(request.SessionId, request.FromSeq, lifetime).ConfigureAwait(false);
-                    _eventPumps.Start(request.SessionId, token => PumpAsync(events, HostProtocol.NotificationEvent, HostProtocolJsonContext.Default.RemoteEventInfo, token));
+                    _eventPumps.Start(request.SubscriptionId, token => PumpAsync(events, HostProtocol.NotificationEvent, item => new RemoteEventFrame(request.SubscriptionId, item), HostProtocolJsonContext.Default.RemoteEventFrame, token));
                     return True;
                 }
                 case HostProtocol.MethodSessionUnsubscribe:
-                    _eventPumps.Stop(Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "unsubscribe requires sessionId").SessionId);
+                    _eventPumps.Stop(Require(message, HostProtocolJsonContext.Default.RemoteSubscriptionRef, "unsubscribe requires subscriptionId").SubscriptionId);
                     return True;
                 case HostProtocol.MethodSessionMessage:
                 {
@@ -322,13 +322,13 @@ public sealed class RemoteHostServer(
                     return True;
                 case HostProtocol.MethodPtyAttach:
                 {
-                    var ptyId = Require(message, HostProtocolJsonContext.Default.RemotePtyRef, "pty attach requires ptyId").PtyId;
-                    var output = await backend.AttachPtyAsync(ptyId, lifetime).ConfigureAwait(false);
-                    _ptyPumps.Start(ptyId, token => PumpAsync(output, HostProtocol.NotificationPtyOutput, HostProtocolJsonContext.Default.RemotePtyOutput, token));
+                    var request = Require(message, HostProtocolJsonContext.Default.RemotePtyAttachRequest, "pty attach requires ptyId and subscriptionId");
+                    var output = await backend.AttachPtyAsync(request.PtyId, lifetime).ConfigureAwait(false);
+                    _ptyPumps.Start(request.SubscriptionId, token => PumpAsync(output, HostProtocol.NotificationPtyOutput, item => new RemotePtyFrame(request.SubscriptionId, item), HostProtocolJsonContext.Default.RemotePtyFrame, token));
                     return True;
                 }
                 case HostProtocol.MethodPtyDetach:
-                    _ptyPumps.Stop(Require(message, HostProtocolJsonContext.Default.RemotePtyRef, "pty detach requires ptyId").PtyId);
+                    _ptyPumps.Stop(Require(message, HostProtocolJsonContext.Default.RemoteSubscriptionRef, "pty detach requires subscriptionId").SubscriptionId);
                     return True;
                 default:
                     throw new JsonRpcException(JsonRpcPeer.MethodNotFound, $"method not found: {name}");
@@ -358,12 +358,12 @@ public sealed class RemoteHostServer(
             }
         }
 
-        private async Task PumpAsync<T>(IAsyncEnumerable<T> items, string method, JsonTypeInfo<T> info, CancellationToken cancellationToken)
+        private async Task PumpAsync<T, TFrame>(IAsyncEnumerable<T> items, string method, Func<T, TFrame> frame, JsonTypeInfo<TFrame> info, CancellationToken cancellationToken)
         {
             try
             {
                 await foreach (var item in items.WithCancellation(cancellationToken).ConfigureAwait(false))
-                    await peer.NotifyAsync(method, Serialize(item, info), cancellationToken).ConfigureAwait(false);
+                    await peer.NotifyAsync(method, Serialize(frame(item), info), cancellationToken).ConfigureAwait(false);
             }
             catch (Exception error) when (error is OperationCanceledException or IOException or ObjectDisposedException)
             {
@@ -371,7 +371,7 @@ public sealed class RemoteHostServer(
         }
     }
 
-    /** 每个 key(会话 id / PTY id)至多一个推送泵: 重复订阅先停旧的, 避免同一内容被推送多次。 */
+    /** 推送泵归属于订阅读者，释放一个读者不会影响同一会话或 PTY 的其他视图。 */
     private sealed class KeyedPumps(CancellationToken lifetime)
     {
         private readonly Dictionary<string, CancellationTokenSource> _pumps = new(StringComparer.Ordinal);
@@ -386,27 +386,42 @@ public sealed class RemoteHostServer(
                 source = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
                 _pumps[key] = source;
             }
-            _ = pump(source.Token);
+            _ = RunAsync(key, source, pump);
+        }
+
+        private async Task RunAsync(string key, CancellationTokenSource source, Func<CancellationToken, Task> pump)
+        {
+            try
+            {
+                await pump(source.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_pumps)
+                {
+                    if (_pumps.TryGetValue(key, out var current) && ReferenceEquals(current, source))
+                        _pumps.Remove(key);
+                    source.Dispose();
+                }
+            }
         }
 
         public void Stop(string key)
         {
-            CancellationTokenSource? source;
             lock (_pumps)
-                _pumps.Remove(key, out source);
-            source?.Cancel();
+                if (_pumps.Remove(key, out var source))
+                    source.Cancel();
         }
 
         public void StopAll()
         {
-            CancellationTokenSource[] sources;
             lock (_pumps)
             {
-                sources = [.. _pumps.Values];
+                var sources = _pumps.Values.ToArray();
                 _pumps.Clear();
+                foreach (var source in sources)
+                    source.Cancel();
             }
-            foreach (var source in sources)
-                source.Cancel();
         }
     }
 }

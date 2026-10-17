@@ -55,7 +55,7 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
         var services = new AcpSessionServices(sessions, pending, notifications);
         var ptys = new HostPtySessions(sessions, ptyDaemon ?? HostPtyDaemon.Default(), app.Home.Root);
         await ptys.RestoreAsync(cancellationToken).ConfigureAwait(false);
-        var agents = await ExternalAgentSessions.OpenAsync(app.Home.HostPath, services, ptys, cancellationToken).ConfigureAwait(false);
+        var agents = await ExternalAgentSessions.OpenAsync(app.Home.HostPath, app.Ctx, services, ptys, cancellationToken).ConfigureAwait(false);
         return new HarnessRemoteHostBackend(app, services, ptys, agents);
     }
 
@@ -412,28 +412,37 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
     public Task<IAsyncEnumerable<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken)
         => _ptys.AttachAsync(ptyId, cancellationToken);
 
-    /** 活会话先挂监听、再记下补发截止点, 两者之间新追加的事件不会漏; 非活会话只补发持久化的历史。 */
-    public Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+    /** 历史和实时通知使用同一个会话来源，代理重启不会要求 UI 重新订阅。 */
+    public async Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
     {
-        if (_agents.IsAcp(sessionId))
-            return _agents.SubscribeAsync(sessionId, fromSeq, cancellationToken);
         var id = SessionId.Create(sessionId);
-        if (Registry.Get(id) is not { } live)
-            return Task.FromResult(ReadPersisted(id, fromSeq).Select(sessionEvent => ToInfo(sessionId, sessionEvent)).ToAsyncEnumerable());
+        var session = _agents.IsAcp(sessionId)
+            ? await _agents.SessionAsync(sessionId).ConfigureAwait(false)
+            : Registry.Get(id)?.Session;
+        var stored = session is null ? Persistence?.Stat(id) : null;
+        if (session is null && stored is null)
+            throw new InvalidOperationException($"unknown session: {sessionId}");
+        var reset = fromSeq > (session?.Seq ?? stored?.EventCount ?? long.MaxValue);
         var buffer = Channel.CreateUnbounded<RemoteEventInfo>();
         var unsubscribe = _app.Ctx.On<SessionEventNotification>(notification =>
         {
-            if (string.Equals(notification.Session.Id.Value, sessionId, StringComparison.Ordinal))
+            if (notification.Session.Id == id)
                 buffer.Writer.TryWrite(ToInfo(sessionId, notification.Event));
         });
-        void OnTruncated(Session _, long count) => buffer.Writer.TryWrite(new RemoteEventInfo(sessionId, "", Reset: true));
-        live.Session.Truncated += OnTruncated;
-        var history = live.Session.SnapshotEvents(fromSeq, live.Session.Seq);
-        return Task.FromResult(LiveEventsAsync(sessionId, history, buffer, () =>
+        var unsubscribeTruncate = _app.Ctx.On<SessionTruncateNotification>(notification =>
         {
-            live.Session.Truncated -= OnTruncated;
+            if (notification.Session.Id != id)
+                return;
+            buffer.Writer.TryWrite(new RemoteEventInfo(sessionId, "", 0, Reset: true));
+            foreach (var item in notification.Session.SnapshotEvents())
+                buffer.Writer.TryWrite(ToInfo(sessionId, item));
+        });
+        var history = session?.SnapshotEvents(reset ? 0 : fromSeq) ?? ReadPersisted(id, reset ? 0 : fromSeq);
+        return LiveEventsAsync(sessionId, history, buffer, () =>
+        {
+            unsubscribeTruncate();
             return unsubscribe();
-        }, cancellationToken));
+        }, fromSeq, reset, cancellationToken);
     }
 
     private static async IAsyncEnumerable<RemoteEventInfo> LiveEventsAsync(
@@ -441,14 +450,27 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
         IReadOnlyList<SessionEvent> history,
         Channel<RemoteEventInfo> buffer,
         Func<bool> unsubscribe,
+        long fromSeq,
+        bool reset,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         try
         {
+            var next = reset ? 0 : fromSeq;
+            if (reset)
+                yield return new RemoteEventInfo(sessionId, "", 0, Reset: true);
             foreach (var sessionEvent in history)
+            {
+                next = sessionEvent.Seq + 1;
                 yield return ToInfo(sessionId, sessionEvent);
+            }
             await foreach (var item in buffer.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (!item.Reset && item.Sequence < next)
+                    continue;
+                next = item.Reset ? 0 : item.Sequence + 1;
                 yield return item;
+            }
         }
         finally
         {
@@ -498,7 +520,7 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
     }
 
     private static RemoteEventInfo ToInfo(string sessionId, SessionEvent sessionEvent)
-        => new(sessionId, DshJson.Serialize(sessionEvent));
+        => new(sessionId, DshJson.Serialize(sessionEvent), sessionEvent.Seq);
 
     private IReadOnlyList<SessionEvent> ReadPersisted(SessionId id, long fromSeq)
     {

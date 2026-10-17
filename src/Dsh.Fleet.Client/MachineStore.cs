@@ -168,11 +168,7 @@ public sealed class MachineStore(HarnessHome home)
 /** The layout of `<home>/fleet/machines.json`, read once to import it into settings.yaml. */
 internal sealed record LegacyMachineDocument(List<MachineSpec>? Machines, DeploySettings? Deploy);
 
-/** Source-generated JSON for the legacy machine list and for reading event envelopes (AOT and trimming safe). */
+/** Source-generated JSON for the legacy machine list (AOT and trimming safe). */
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(LegacyMachineDocument))]
-[JsonSerializable(typeof(EventEnvelope))]
 internal sealed partial class FleetJsonContext : JsonSerializerContext;
-
-/** The part of a session event the client needs to resume a subscription. */
-internal sealed record EventEnvelope(long Seq);

@@ -14,7 +14,7 @@ public static class HostProtocol
      * 线协议版本: 只在帧格式/握手/既有方法的语义发生不兼容变化时递增, 不匹配时握手显式拒绝。
      * 新增的方法、推送与可选字段不改版本, 由握手响应与 host.info 里的 capabilities 声明(见 HostCapabilities)。
      */
-    public const int Version = 1;
+    public const int Version = 2;
 
     public const string MethodHello = "host.hello";
     public const string MethodPing = "host.ping";
@@ -181,6 +181,10 @@ public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Pl
 [JsonSerializable(typeof(RemoteModelSelection))]
 [JsonSerializable(typeof(RemoteProviderSpec))]
 [JsonSerializable(typeof(RemoteSubscribeRequest))]
+[JsonSerializable(typeof(RemoteSubscriptionRef))]
+[JsonSerializable(typeof(RemoteEventFrame))]
+[JsonSerializable(typeof(RemotePtyAttachRequest))]
+[JsonSerializable(typeof(RemotePtyFrame))]
 [JsonSerializable(typeof(RemoteMessageRequest))]
 [JsonSerializable(typeof(RemoteImageBlock))]
 [JsonSerializable(typeof(IReadOnlyList<RemoteImageBlock>))]
