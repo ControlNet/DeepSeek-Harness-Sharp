@@ -32,8 +32,8 @@ public sealed class HostChatProtocolTests
 
         await editor.DeleteSessionAsync(created.Id, Ct);
         var removed = await RemoteHostMultiClientTests.NextAsync(observer.HostSessionChangesAsync(Ct),
-            item => item.SessionId == created.Id && item.Deleted);
-        Assert.Equal(created.Id, removed.SessionId);
+            item => item.Session?.SessionId == created.Id && item.Session.Deleted);
+        Assert.Equal(created.Id, removed.Session!.SessionId);
         Assert.DoesNotContain(await observer.ListHostSessionsAsync(Ct), item => item.SessionId == created.Id);
         Assert.DoesNotContain(await observer.ListSessionsAsync(Ct), item => item.Id == created.Id);
     }

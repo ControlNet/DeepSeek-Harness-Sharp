@@ -225,7 +225,7 @@ public sealed class MachineConnection : IAsyncDisposable
             PumpAsync(client.PendingChangesAsync(cancellationToken), change => ReplacePending(change.Pending)),
             PumpAsync(client.HostSessionChangesAsync(cancellationToken), ApplySession),
         ];
-        if (!client.Supports(HostCapabilities.NotifyHistory))
+        if (!client.Supports(NotificationsProtocol.Capability))
             return pumps;
         return
         [
@@ -260,7 +260,7 @@ public sealed class MachineConnection : IAsyncDisposable
         }
 
         SessionsChanged?.Invoke(this);
-        if (!client.Supports(HostCapabilities.NotifyHistory))
+        if (!client.Supports(NotificationsProtocol.Capability))
             return;
         var history = await client.ListNotificationsAsync(new RemoteNotifyQuery(Limit: 1), cancellationToken).ConfigureAwait(false);
         lock (_gate)

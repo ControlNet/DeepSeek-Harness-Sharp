@@ -30,7 +30,7 @@ public sealed class RemoteHostGitTests : IDisposable
         var commitDiff = await client.GitDiffAsync(new RemoteGitDiffRequest(_repo.Root, GitDiffTarget.OfCommit(first)), Ct);
         var log = await client.GitLogAsync(new RemoteGitLogRequest(_repo.Root, MaxCount: 1), Ct);
 
-        Assert.True(client.Supports(HostCapabilities.GitInspect));
+        Assert.True(client.Supports(GitProtocol.Capability));
         Assert.Equal("main", status.Branch.Head);
         Assert.Equal(new GitFileChange("a.txt", GitChangeKind.Modified), Assert.Single(status.Unstaged));
         Assert.Equal(["new.txt"], status.Untracked);

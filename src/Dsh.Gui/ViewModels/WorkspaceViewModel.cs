@@ -178,7 +178,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     public void RegisterHostPages(Geometry filesIcon, Geometry gitIcon, Geometry machinesIcon)
     {
         Pages.Register(new WorkspacePageEntry(WorkspacePages.Files, "文件", filesIcon, context => new HostPageViewModel(
-            Fleet, "文件", HostCapabilities.FsTransfer, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? RemotePaths.Home,
+            Fleet, "文件", FilesProtocol.Capability, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? RemotePaths.Home,
             async (host, _, path) =>
             {
                 var files = new FilesViewModel(host, path);
@@ -186,7 +186,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
                 return files;
             })));
         Pages.Register(new WorkspacePageEntry(WorkspacePages.Git, "Git", gitIcon, context => new HostPageViewModel(
-            Fleet, "Git", HostCapabilities.GitInspect, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? "",
+            Fleet, "Git", GitProtocol.Capability, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? "",
             async (host, machine, path) =>
             {
                 var git = new GitViewModel(host, path);

@@ -11,15 +11,15 @@ internal static class HostNotifyMethods
     {
         switch (name)
         {
-            case HostProtocol.MethodNotifyList:
+            case NotificationsProtocol.MethodNotifyList:
             {
-                var query = message.Params is { } element ? JsonSerializer.Deserialize(element, HostProtocolJsonContext.Default.RemoteNotifyQuery) : null;
-                return Serialize(notifications.Query(query ?? new RemoteNotifyQuery()), HostProtocolJsonContext.Default.RemoteNotifyPage);
+                var query = message.Params is { } element ? JsonSerializer.Deserialize(element, NotificationsProtocolJsonContext.Default.RemoteNotifyQuery) : null;
+                return Serialize(notifications.Query(query ?? new RemoteNotifyQuery()), NotificationsProtocolJsonContext.Default.RemoteNotifyPage);
             }
-            case HostProtocol.MethodNotifyMarkRead:
+            case NotificationsProtocol.MethodNotifyMarkRead:
             {
-                var request = Require(message, HostProtocolJsonContext.Default.RemoteNotifyMarkRead, "markRead requires ids or all");
-                return Serialize(await notifications.MarkReadAsync(request, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.Int32);
+                var request = Require(message, NotificationsProtocolJsonContext.Default.RemoteNotifyMarkRead, "markRead requires ids or all");
+                return Serialize(await notifications.MarkReadAsync(request, cancellationToken).ConfigureAwait(false), NotificationsProtocolJsonContext.Default.Int32);
             }
             default:
                 throw MethodNotFound(name);

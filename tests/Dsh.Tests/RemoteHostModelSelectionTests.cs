@@ -19,7 +19,7 @@ public sealed class RemoteHostModelSelectionTests
         await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, TestContext.Current.CancellationToken);
         var llm = environment.App.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName)!;
 
-        var created = await backend.CreateSessionAsync("/work", Selection, Spec, TestContext.Current.CancellationToken);
+        var created = await backend.Session.CreateSessionAsync("/work", Selection, Spec, TestContext.Current.CancellationToken);
 
         Assert.Equal("client-provider", Assert.Single(llm.ListProviders()).Id);
         var agent = environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(SessionId.Create(created.Id))!;
@@ -28,7 +28,7 @@ public sealed class RemoteHostModelSelectionTests
         Assert.Equal("high", agent.Options.ReasoningEffort?.Value);
 
         // 同一 provider id 再次注册必须幂等(跳过), 不能因重复注册抛异常。
-        var again = await backend.CreateSessionAsync("/work", Selection, Spec, TestContext.Current.CancellationToken);
+        var again = await backend.Session.CreateSessionAsync("/work", Selection, Spec, TestContext.Current.CancellationToken);
         Assert.NotEqual(created.Id, again.Id);
         Assert.Single(llm.ListProviders());
     }
@@ -50,7 +50,7 @@ public sealed class RemoteHostModelSelectionTests
         using (environment)
         {
             await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, TestContext.Current.CancellationToken);
-            await backend.ResumeSessionAsync(sessionId.Value, Selection, Spec, TestContext.Current.CancellationToken);
+            await backend.Session.ResumeSessionAsync(sessionId.Value, Selection, Spec, TestContext.Current.CancellationToken);
 
             var llm = environment.App.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName)!;
             Assert.Equal("client-provider", Assert.Single(llm.ListProviders()).Id);

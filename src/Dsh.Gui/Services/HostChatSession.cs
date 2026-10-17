@@ -42,9 +42,9 @@ public sealed class HostChatSession : IDisposable
     {
         fleet.Start();
         var lease = await fleet.Find(MachineSpec.LocalName)!.WaitConnectedAsync(cancellationToken);
-        if (!lease.Client.Supports(HostCapabilities.SessionEditing)
-            || !lease.Client.Supports(HostCapabilities.PluginManagement)
-            || !lease.Client.Supports(HostCapabilities.ModelCatalog))
+        if (!lease.Client.Supports(SessionEditingProtocol.Capability)
+            || !lease.Client.Supports(PluginsProtocol.Capability)
+            || !lease.Client.Supports(ModelsProtocol.Capability))
             throw new InvalidOperationException("本机 Host 版本不支持完整 Chat；请升级 dsharp 并重启 Host");
         var info = sessionId is null
             ? await lease.Client.CreateSessionAsync(cwd, model.Selection, model.Provider, cancellationToken)

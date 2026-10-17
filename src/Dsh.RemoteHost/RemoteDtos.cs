@@ -13,31 +13,9 @@ public sealed record RemoteSubscriptionRef(string SubscriptionId);
 
 public readonly record struct RemoteEventFrame(string SubscriptionId, RemoteEventInfo Event);
 
-public sealed record RemotePtyAttachRequest(string PtyId, string SubscriptionId);
-
-public readonly record struct RemotePtyFrame(string SubscriptionId, RemotePtyOutput Output);
 
 public sealed record RemoteSessionSnapshot(string HeaderJson, IReadOnlyList<RemoteEventInfo> Events, string? ApprovalPolicy = null);
 
-public sealed record RemoteCommandRequest(string SessionId, string Line);
-
-public sealed record RemoteCommandResult(bool Known, string? Text, string? FollowupPrompt);
-
-public sealed record RemoteCommandDescriptor(string Name, string Description);
-
-public sealed record RemoteSessionRenameRequest(string SessionId, string Title);
-
-public sealed record RemoteSessionPolicyRequest(string SessionId, string Policy);
-
-public sealed record RemoteSubagentInfo(string SessionId, string? Parent, int Depth, string Mode, string? Label, bool HasChildren, bool IsLive, long CreatedAt);
-
-public sealed record RemotePluginInfo(string Package, string Description, bool Enabled, bool ReadAllowed, bool WriteAllowed, bool NetworkAllowed);
-
-public sealed record RemotePluginPermissionRequest(string Package, string Permission, bool Allowed);
-
-public sealed record RemoteModelRef(string Provider, string Model);
-
-public sealed record RemoteProviderRef(string Provider);
 
 /** 远端发起的审批/问答: 需本地决策, 用 RequestId 回填。 */
 public sealed record RemoteApprovalRequest(string RequestId, string SessionId, string Tool, string? Arguments, string? Reason);
@@ -77,35 +55,6 @@ public sealed record RemoteImageBlock(string MediaType, int Width, int Height, s
 
 public sealed record RemoteApprovalResponse(string RequestId, bool Allow, string? Reason, bool RememberForSession = false);
 
-public sealed record RemoteFilePath(string Path);
-
-/**
- * 远端文件系统中的一项: 名称 + 绝对路径 + 是否目录。
- * Size(文件字节数, 目录为 0)与 ModifiedAt(Unix 毫秒)是后加的可选字段, 旧 host 不发送时为 null。
- */
-public sealed record RemoteDirectoryEntry(string Name, string Path, bool IsDirectory, long? Size = null, long? ModifiedAt = null);
-
-/** 一次远端目录列举: 被列举目录的绝对路径 + 父目录(根为 null) + 子项。 */
-public sealed record RemoteDirectoryListing(string Path, string? Parent, IReadOnlyList<RemoteDirectoryEntry> Entries);
-
-public sealed record RemoteFileContent(string Path, string Base64);
-
-/** 起 PTY: Cwd/Title 为空时取远端家目录与命令行; 尺寸为空时用 daemon 默认值。 */
-public sealed record RemotePtyStartRequest(
-    string FileName,
-    IReadOnlyList<string> Arguments,
-    string? Cwd = null,
-    int? Columns = null,
-    int? Rows = null,
-    string? Title = null);
-
-public sealed record RemotePtyResize(string PtyId, int Columns, int Rows);
-
-public sealed record RemotePtyRef(string PtyId);
-
-public sealed record RemotePtyInput(string PtyId, string Base64);
-
-public sealed record RemotePtyOutput(string PtyId, string Base64, bool Eof);
 
 /** 全部未决的审批与问答(host.pending.list), 也是新连接补发的内容。 */
 public sealed record RemotePendingList(IReadOnlyList<RemoteApprovalRequest> Approvals, IReadOnlyList<RemoteQuestionRequest> Questions);
@@ -154,6 +103,9 @@ public sealed record RemoteHostSession(
     int PendingCount,
     int? ExitCode,
     bool Deleted = false);
+
+/** Registry stream starts with a complete snapshot, followed by per-session changes. */
+public sealed record RemoteSessionChange(IReadOnlyList<RemoteHostSession>? Snapshot = null, RemoteHostSession? Session = null);
 
 public static class HostSessionKinds
 {

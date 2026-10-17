@@ -11,7 +11,7 @@ public interface IRemoteHostBackend
     IRemoteAgentBackend? Agent { get; }
     IRemotePtyBackend? Pty { get; }
     HostFileSystem? Files { get; }
-    HostPathPolicy? Git { get; }
+    HostGitService? Git { get; }
     HostNotificationCenter? Notifications { get; }
     IRemoteSessionEditingBackend? SessionEditing { get; }
     IRemotePluginsBackend? Plugins { get; }

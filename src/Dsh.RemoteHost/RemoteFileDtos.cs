@@ -30,3 +30,13 @@ public sealed record RemoteUploadCommit(string UploadId, long? Size = null);
 public sealed record RemoteDownloadRequest(string Path, long Offset, int? Length = null);
 
 public sealed record RemoteFileChunk(string Path, long Offset, string Base64, long TotalSize, bool Eof);
+
+public sealed record RemoteFilePath(string Path);
+
+/** A file or directory entry; timestamps are Unix milliseconds. */
+public sealed record RemoteDirectoryEntry(string Name, string Path, bool IsDirectory, long? Size = null, long? ModifiedAt = null);
+
+/** One directory listing, including its parent when present. */
+public sealed record RemoteDirectoryListing(string Path, string? Parent, IReadOnlyList<RemoteDirectoryEntry> Entries);
+
+public sealed record RemoteFileContent(string Path, string Base64);

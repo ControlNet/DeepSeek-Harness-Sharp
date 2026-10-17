@@ -3,6 +3,8 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
 using Dsh.Core;
+using Dsh.Host;
+using Dsh.Transport;
 using Dsh.Llm;
 using Dsh.RemoteHost;
 
@@ -161,6 +163,78 @@ public sealed class RemoteHostCapabilityTests
         }
     }
 
+    [Theory(Timeout = 30000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RealHarnessCoreWorksWithOrWithoutOptionalDomains(bool includeOptional)
+    {
+        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, Ct);
+        IRemoteHostBackend composed = includeOptional ? backend : new CoreOnlyBackend(backend);
+        await using var fixture = await HostFixture.CreateAsync(composed, Ct);
+        var client = fixture.Client;
+        var info = await client.InfoAsync(Ct);
+        Assert.Equal(client.Hello.Capabilities, info.Capabilities);
+        Assert.Contains(HostProtocol.PendingBroadcastCapability, info.Capabilities!);
+        Assert.Contains(HostProtocol.SessionRegistryCapability, info.Capabilities!);
+
+        var created = await client.CreateSessionAsync(info.HomeRoot, cancellationToken: Ct);
+        Assert.Equal(created.Id, (await client.ResumeSessionAsync(created.Id, cancellationToken: Ct)).Id);
+        Assert.Contains(await client.ListSessionsAsync(Ct), session => session.Id == created.Id);
+        Assert.NotNull(await client.GetSessionSnapshotAsync(created.Id, Ct));
+        Assert.Empty((await client.ListPendingAsync(Ct)).Approvals);
+
+        var file = Path.Combine(info.HomeRoot, "domain-contract.txt");
+        if (includeOptional)
+        {
+            Assert.Contains(FilesProtocol.Capability, info.Capabilities!);
+            await client.WriteFileAsync(file, "domain"u8.ToArray(), Ct);
+            Assert.Equal("domain"u8.ToArray(), await client.ReadFileAsync(file, Ct));
+            await client.RenameSessionAsync(created.Id, "domain title", Ct);
+            Assert.Contains(await client.ListSessionsAsync(Ct), session => session.Id == created.Id && session.Title == "domain title");
+        }
+        else
+        {
+            Assert.Equal(2, info.Capabilities!.Count);
+            var denied = await Assert.ThrowsAsync<JsonRpcException>(() => client.WriteFileAsync(file, "denied"u8.ToArray(), Ct));
+            Assert.Equal(JsonRpcPeer.MethodNotFound, denied.Code);
+            Assert.False(File.Exists(file));
+            var editDenied = await Assert.ThrowsAsync<JsonRpcException>(() => client.RenameSessionAsync(created.Id, "denied", Ct));
+            Assert.Equal(JsonRpcPeer.MethodNotFound, editDenied.Code);
+            Func<Task>[] otherDomains =
+            [
+                () => client.AgentCatalogAsync(Ct),
+                () => client.StartPtyAsync(new RemotePtyStartRequest("unused", []), Ct),
+                () => client.GitStatusAsync(info.HomeRoot, Ct),
+                () => client.ListNotificationsAsync(cancellationToken: Ct),
+                () => client.ListPluginsAsync(Ct),
+                () => client.ListProviderModelsAsync("unused", Ct),
+            ];
+            foreach (var operation in otherDomains)
+            {
+                var unsupported = await Assert.ThrowsAsync<JsonRpcException>(operation);
+                Assert.Equal(JsonRpcPeer.MethodNotFound, unsupported.Code);
+            }
+            Assert.Equal(created.Id, (await client.ResumeSessionAsync(created.Id, cancellationToken: Ct)).Id);
+        }
+    }
+
+    private sealed class CoreOnlyBackend(IRemoteHostBackend backend) : IRemoteHostBackend
+    {
+        public HostPendingDecisions Pending => backend.Pending;
+        public HostSessionRegistry Sessions => backend.Sessions;
+        public IRemoteSessionBackend Session => backend.Session;
+        public Task<HostInfo> InfoAsync(CancellationToken cancellationToken) => backend.InfoAsync(cancellationToken);
+        public IRemoteAgentBackend? Agent => null;
+        public IRemotePtyBackend? Pty => null;
+        public HostFileSystem? Files => null;
+        public HostGitService? Git => null;
+        public HostNotificationCenter? Notifications => null;
+        public IRemoteSessionEditingBackend? SessionEditing => null;
+        public IRemotePluginsBackend? Plugins => null;
+        public IRemoteModelsBackend? Models => null;
+    }
+
     private static async Task WaitForAsync(Func<bool> condition, CancellationToken cancellationToken)
     {
         for (var attempt = 0; attempt < 500 && !condition(); attempt++)
@@ -169,7 +243,7 @@ public sealed class RemoteHostCapabilityTests
     }
 
     /** 记录/回放式的远端后端替身; 不依赖 harness。待决策队列、会话登记表、文件系统(限于 Root)与通知历史用真实实现。 */
-    internal sealed class FakeBackend : IRemoteHostBackend, IAsyncDisposable
+    internal sealed class FakeBackend : IRemoteHostBackend, IRemoteSessionBackend, IRemotePtyBackend, IAsyncDisposable
     {
         private readonly string _directory;
         private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
@@ -184,6 +258,7 @@ public sealed class RemoteHostCapabilityTests
             Sessions = sessions;
             Notifications = notifications;
             Files = new HostFileSystem(new HostPathPolicy([directory], () => []));
+            Git = new HostGitService(Files.Policy);
         }
 
         public static async Task<FakeBackend> CreateAsync(CancellationToken cancellationToken)
@@ -203,6 +278,14 @@ public sealed class RemoteHostCapabilityTests
         public HostSessionRegistry Sessions { get; }
 
         public HostFileSystem Files { get; }
+
+        public IRemoteSessionBackend Session => this;
+        public IRemotePtyBackend Pty => this;
+        public IRemoteAgentBackend? Agent => null;
+        public HostGitService Git { get; }
+        public IRemoteSessionEditingBackend? SessionEditing => null;
+        public IRemotePluginsBackend? Plugins => null;
+        public IRemoteModelsBackend? Models => null;
 
         public HostNotificationCenter Notifications { get; }
 
@@ -235,26 +318,6 @@ public sealed class RemoteHostCapabilityTests
 
         public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public Task<RemoteCommandResult> ExecuteSessionCommandAsync(string sessionId, string line, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<RemoteCommandDescriptor>> ListSessionCommandsAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task SetSessionApprovalPolicyAsync(string sessionId, string policy, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<RemoteSubagentInfo>> ListSubagentsAsync(string rootSessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<RemotePluginInfo>> ListPluginsAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<string> SetPluginPermissionAsync(string package, string permission, bool allowed, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<string>> ListReasoningEffortsAsync(string provider, string model, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<string>> ListProviderModelsAsync(string provider, CancellationToken cancellationToken) => throw new NotSupportedException();
-
         public RemoteModelSelection? LastSelection { get; private set; }
 
         public RemoteProviderSpec? LastProvider { get; private set; }
@@ -279,18 +342,6 @@ public sealed class RemoteHostCapabilityTests
 
         public Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<string>>(["read", "write"]);
-
-        public Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task StopAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken)
         {

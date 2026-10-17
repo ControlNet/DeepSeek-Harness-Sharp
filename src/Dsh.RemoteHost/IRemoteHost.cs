@@ -1,5 +1,4 @@
 ﻿using Dsh.GitInspect;
-using Dsh.Notifications;
 
 namespace Dsh.RemoteHost;
 
@@ -62,8 +61,8 @@ public interface IRemoteHost
     /** 统一会话登记表的当前全量。 */
     Task<IReadOnlyList<RemoteHostSession>> ListHostSessionsAsync(CancellationToken cancellationToken = default);
 
-    /** 登记表的变化推送: 每条是变化后那个会话的完整记录。 */
-    IAsyncEnumerable<RemoteHostSession> HostSessionChangesAsync(CancellationToken cancellationToken = default);
+    /** Starts with the complete registry snapshot, then per-session deltas. */
+    IAsyncEnumerable<RemoteSessionChange> HostSessionChangesAsync(CancellationToken cancellationToken = default);
 
     Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken = default);
 
@@ -144,9 +143,6 @@ public interface IRemoteHost
     /** Returns how many notifications became read. */
     Task<int> MarkNotificationsReadAsync(RemoteNotifyMarkRead request, CancellationToken cancellationToken = default);
 
-    /** host.notify.added pushes. */
-    IAsyncEnumerable<NotificationRecord> NotificationsAddedAsync(CancellationToken cancellationToken = default);
-
-    /** host.notify.changed pushes (read marks made by any client). */
-    IAsyncEnumerable<RemoteNotifyChanged> NotificationChangesAsync(CancellationToken cancellationToken = default);
+    /** Authoritative notification pages; Added and ReadIds describe the triggering change only. */
+    IAsyncEnumerable<RemoteNotificationChange> NotificationChangesAsync(CancellationToken cancellationToken = default);
 }

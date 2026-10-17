@@ -23,7 +23,7 @@ public sealed class RemoteHostFileTransferTests
         using var downloaded = new MemoryStream();
         var copied = await client.DownloadFileAsync(target, downloaded, Ct);
 
-        Assert.True(client.Supports(HostCapabilities.FsTransfer));
+        Assert.True(client.Supports(FilesProtocol.Capability));
         Assert.Equal((true, false, (long)content.Length), (stat.Exists, stat.IsDirectory, stat.Size));
         Assert.Equal(content.Length, copied);
         Assert.Equal(content, downloaded.ToArray());

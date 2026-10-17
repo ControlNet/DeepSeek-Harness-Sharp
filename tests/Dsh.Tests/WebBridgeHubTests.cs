@@ -62,10 +62,10 @@ public sealed class WebBridgeHubTests
         Assert.Equal(hub.SecondHome, (await WebSocketRpc.RequestAsync(second, 2, HostProtocol.MethodInfo, null)).GetProperty("HomeRoot").GetString());
 
         var arguments = TestShell.RunThenWait(TestShell.EchoAnswer("hub"), 30);
-        var started = await WebSocketRpc.RequestAsync(second, 3, HostProtocol.MethodPtyStart, $$"""{"FileName":{{JsonSerializer.Serialize(TestShell.FileName)}},"Arguments":{{JsonSerializer.Serialize(arguments)}},"Cwd":{{JsonSerializer.Serialize(hub.SecondHome)}},"Title":"hub-shell"}""");
+        var started = await WebSocketRpc.RequestAsync(second, 3, PtyProtocol.MethodPtyStart, $$"""{"FileName":{{JsonSerializer.Serialize(TestShell.FileName)}},"Arguments":{{JsonSerializer.Serialize(arguments)}},"Cwd":{{JsonSerializer.Serialize(hub.SecondHome)}},"Title":"hub-shell"}""");
         var ptyId = started.GetProperty("PtyId").GetString()!;
         // The snapshot push can overtake attach's own response, so the reply is not awaited before reading output.
-        await WebSocketRpc.SendAsync(second, 4, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"hub-terminal"}""");
+        await WebSocketRpc.SendAsync(second, 4, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"hub-terminal"}""");
         await ReadTerminalUntilAsync(second, ptyId, "hub-42");
 
         var onSecond = await WebSocketRpc.RequestAsync(second, 5, HostProtocol.MethodSessionsList, null);
@@ -117,7 +117,7 @@ public sealed class WebBridgeHubTests
                 {
                     seen.Add(message.ToString());
                     return message.TryGetProperty("method", out var method)
-                        && method.GetString() == HostProtocol.NotificationPtyOutput
+                        && method.GetString() == PtyProtocol.NotificationPtyOutput
                         && message.GetProperty("params").GetProperty("PtyId").GetString() == ptyId
                         && (viewId is null || message.GetProperty("params").GetProperty("ViewId").GetString() == viewId);
                 }).WaitAsync(timeout.Token);

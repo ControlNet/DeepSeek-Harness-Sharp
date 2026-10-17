@@ -1,58 +1,56 @@
 using System.Text.Json;
-using Dsh.GitInspect;
 using Dsh.Transport;
 using static Dsh.RemoteHost.HostRpc;
 
 namespace Dsh.RemoteHost;
 
-/** host.git.*: Dsh.GitInspect on a project directory; the project path and every worktree path must pass the host's path policy. */
+/** host.git.* requests delegated to the configured Git domain service. */
 internal static class HostGitMethods
 {
-    public static async ValueTask<JsonElement?> HandleAsync(HostPathPolicy policy, string name, JsonRpcMessage message, CancellationToken cancellationToken)
+    public static async ValueTask<JsonElement?> HandleAsync(HostGitService backend, string name, JsonRpcMessage message, CancellationToken cancellationToken)
     {
         switch (name)
         {
-            case HostProtocol.MethodGitStatus:
+            case GitProtocol.MethodGitStatus:
             {
-                var inspector = Inspector(policy, Require(message, HostProtocolJsonContext.Default.RemoteGitRequest, "git status requires projectPath").ProjectPath);
-                return Serialize(await inspector.StatusAsync(cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.GitStatus);
+                var request = Require(message, GitProtocolJsonContext.Default.RemoteGitRequest, "git status requires projectPath");
+                return Serialize(await backend.StatusAsync(request, cancellationToken).ConfigureAwait(false), GitProtocolJsonContext.Default.GitStatus);
             }
-            case HostProtocol.MethodGitDiff:
+            case GitProtocol.MethodGitDiff:
             {
-                var request = Require(message, HostProtocolJsonContext.Default.RemoteGitDiffRequest, "git diff requires projectPath and target");
-                var diff = await Inspector(policy, request.ProjectPath).DiffAsync(request.Target, request.Limits, request.Paths, cancellationToken).ConfigureAwait(false);
-                return Serialize(diff, HostProtocolJsonContext.Default.GitDiff);
+                var request = Require(message, GitProtocolJsonContext.Default.RemoteGitDiffRequest, "git diff requires projectPath and target");
+                var diff = await backend.DiffAsync(request, cancellationToken).ConfigureAwait(false);
+                return Serialize(diff, GitProtocolJsonContext.Default.GitDiff);
             }
-            case HostProtocol.MethodGitLog:
+            case GitProtocol.MethodGitLog:
             {
-                var request = Require(message, HostProtocolJsonContext.Default.RemoteGitLogRequest, "git log requires projectPath");
-                var commits = await Inspector(policy, request.ProjectPath).LogAsync(request.MaxCount ?? GitInspector.DefaultLogCount, request.Revision, cancellationToken).ConfigureAwait(false);
-                return Serialize(commits, HostProtocolJsonContext.Default.IReadOnlyListGitCommitSummary);
+                var request = Require(message, GitProtocolJsonContext.Default.RemoteGitLogRequest, "git log requires projectPath");
+                var commits = await backend.LogAsync(request, cancellationToken).ConfigureAwait(false);
+                return Serialize(commits, GitProtocolJsonContext.Default.IReadOnlyListGitCommitSummary);
             }
             default:
-                return await HandleWorktreeAsync(policy, name, message, cancellationToken).ConfigureAwait(false);
+                return await HandleWorktreeAsync(backend, name, message, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private static async ValueTask<JsonElement?> HandleWorktreeAsync(HostPathPolicy policy, string name, JsonRpcMessage message, CancellationToken cancellationToken)
+    private static async ValueTask<JsonElement?> HandleWorktreeAsync(HostGitService backend, string name, JsonRpcMessage message, CancellationToken cancellationToken)
     {
         switch (name)
         {
-            case HostProtocol.MethodGitWorktreeList:
+            case GitProtocol.MethodGitWorktreeList:
             {
-                var inspector = Inspector(policy, Require(message, HostProtocolJsonContext.Default.RemoteGitRequest, "worktree list requires projectPath").ProjectPath);
-                return Serialize(await inspector.ListWorktreesAsync(cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.IReadOnlyListGitWorktree);
+                var request = Require(message, GitProtocolJsonContext.Default.RemoteGitRequest, "worktree list requires projectPath");
+                return Serialize(await backend.ListWorktreesAsync(request, cancellationToken).ConfigureAwait(false), GitProtocolJsonContext.Default.IReadOnlyListGitWorktree);
             }
-            case HostProtocol.MethodGitWorktreeAdd:
+            case GitProtocol.MethodGitWorktreeAdd:
             {
-                var request = Require(message, HostProtocolJsonContext.Default.RemoteGitWorktreeAdd, "worktree add requires projectPath and path");
-                var added = new GitWorktreeAddRequest(policy.Resolve(request.Path), request.NewBranch, request.StartPoint);
-                return Serialize(await Inspector(policy, request.ProjectPath).AddWorktreeAsync(added, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.GitWorktree);
+                var request = Require(message, GitProtocolJsonContext.Default.RemoteGitWorktreeAdd, "worktree add requires projectPath and path");
+                return Serialize(await backend.AddWorktreeAsync(request, cancellationToken).ConfigureAwait(false), GitProtocolJsonContext.Default.GitWorktree);
             }
-            case HostProtocol.MethodGitWorktreeRemove:
+            case GitProtocol.MethodGitWorktreeRemove:
             {
-                var request = Require(message, HostProtocolJsonContext.Default.RemoteGitWorktreeRemove, "worktree remove requires projectPath and path");
-                await Inspector(policy, request.ProjectPath).RemoveWorktreeAsync(policy.Resolve(request.Path), request.Force, cancellationToken).ConfigureAwait(false);
+                var request = Require(message, GitProtocolJsonContext.Default.RemoteGitWorktreeRemove, "worktree remove requires projectPath and path");
+                await backend.RemoveWorktreeAsync(request, cancellationToken).ConfigureAwait(false);
                 return True;
             }
             default:
@@ -60,5 +58,4 @@ internal static class HostGitMethods
         }
     }
 
-    private static GitInspector Inspector(HostPathPolicy policy, string projectPath) => new(policy.Resolve(projectPath));
 }

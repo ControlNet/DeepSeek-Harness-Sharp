@@ -53,9 +53,9 @@ public sealed class WebBridgeSshTunnelTests
             }
 
             Assert.Equal(1, SshChildren(machine.Port));
-            var started = await WebSocketRpc.RequestAsync(first, 3, HostProtocol.MethodPtyStart, $$"""{"FileName":"/bin/sh","Arguments":["-c","echo tunnel-$((6*7)); sleep 30"],"Cwd":{{JsonSerializer.Serialize(remoteHome)}}}""");
+            var started = await WebSocketRpc.RequestAsync(first, 3, PtyProtocol.MethodPtyStart, $$"""{"FileName":"/bin/sh","Arguments":["-c","echo tunnel-$((6*7)); sleep 30"],"Cwd":{{JsonSerializer.Serialize(remoteHome)}}}""");
             var ptyId = started.GetProperty("PtyId").GetString()!;
-            await WebSocketRpc.SendAsync(second, 4, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"ssh-terminal"}""");
+            await WebSocketRpc.SendAsync(second, 4, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"ssh-terminal"}""");
             await WebBridgeHubTests.ReadTerminalUntilAsync(second, ptyId, "tunnel-42");
 
             await first.CloseAsync(WebSocketCloseStatus.NormalClosure, "", ct);

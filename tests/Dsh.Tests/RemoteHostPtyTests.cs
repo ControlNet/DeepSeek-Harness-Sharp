@@ -78,7 +78,7 @@ public sealed class RemoteHostPtyTests
         var changes = late.HostSessionChangesAsync(Ct);
         await late.StopPtyAsync(ptyId, Ct);
         // Throttled activity pushes from the earlier output may still arrive first, so wait for the exit itself.
-        await RemoteHostMultiClientTests.NextAsync(changes, session => session.SessionId == ptyId && session.Status == HostSessionStatuses.Exited);
+        await RemoteHostMultiClientTests.NextAsync(changes, change => change.Session?.SessionId == ptyId && change.Session.Status == HostSessionStatuses.Exited);
         await lateView.Completion.WaitAsync(Arrival, Ct);
     }
 

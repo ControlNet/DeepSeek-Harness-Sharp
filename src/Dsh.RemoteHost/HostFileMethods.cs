@@ -12,35 +12,35 @@ internal static class HostFileMethods
     {
         switch (name)
         {
-            case HostProtocol.MethodFileRead:
+            case FilesProtocol.MethodFileRead:
             {
-                var request = Require(message, HostProtocolJsonContext.Default.RemoteFilePath, "read requires path");
+                var request = Require(message, FilesProtocolJsonContext.Default.RemoteFilePath, "read requires path");
                 var bytes = await files.ReadAsync(request.Path, cancellationToken).ConfigureAwait(false);
-                return Serialize(new RemoteFileContent(request.Path, Convert.ToBase64String(bytes)), HostProtocolJsonContext.Default.RemoteFileContent);
+                return Serialize(new RemoteFileContent(request.Path, Convert.ToBase64String(bytes)), FilesProtocolJsonContext.Default.RemoteFileContent);
             }
-            case HostProtocol.MethodFileWrite:
+            case FilesProtocol.MethodFileWrite:
             {
-                var request = Require(message, HostProtocolJsonContext.Default.RemoteFileContent, "write requires path and content");
+                var request = Require(message, FilesProtocolJsonContext.Default.RemoteFileContent, "write requires path and content");
                 await files.WriteAsync(request.Path, Convert.FromBase64String(request.Base64), cancellationToken).ConfigureAwait(false);
                 return True;
             }
-            case HostProtocol.MethodFileList:
-                return Serialize(files.List(Require(message, HostProtocolJsonContext.Default.RemoteFilePath, "list requires path").Path), HostProtocolJsonContext.Default.RemoteDirectoryListing);
-            case HostProtocol.MethodFsStat:
-                return Serialize(files.Stat(Require(message, HostProtocolJsonContext.Default.RemoteFilePath, "stat requires path").Path), HostProtocolJsonContext.Default.RemoteFileStat);
-            case HostProtocol.MethodFsMkdir:
-                files.CreateDirectory(Require(message, HostProtocolJsonContext.Default.RemoteFilePath, "mkdir requires path").Path);
+            case FilesProtocol.MethodFileList:
+                return Serialize(files.List(Require(message, FilesProtocolJsonContext.Default.RemoteFilePath, "list requires path").Path), FilesProtocolJsonContext.Default.RemoteDirectoryListing);
+            case FilesProtocol.MethodFsStat:
+                return Serialize(files.Stat(Require(message, FilesProtocolJsonContext.Default.RemoteFilePath, "stat requires path").Path), FilesProtocolJsonContext.Default.RemoteFileStat);
+            case FilesProtocol.MethodFsMkdir:
+                files.CreateDirectory(Require(message, FilesProtocolJsonContext.Default.RemoteFilePath, "mkdir requires path").Path);
                 return True;
-            case HostProtocol.MethodFsRename:
-                files.Rename(Require(message, HostProtocolJsonContext.Default.RemoteFsRename, "rename requires from and to"));
+            case FilesProtocol.MethodFsRename:
+                files.Rename(Require(message, FilesProtocolJsonContext.Default.RemoteFsRename, "rename requires from and to"));
                 return True;
-            case HostProtocol.MethodFsDelete:
-                files.Delete(Require(message, HostProtocolJsonContext.Default.RemoteFsDelete, "delete requires path"));
+            case FilesProtocol.MethodFsDelete:
+                files.Delete(Require(message, FilesProtocolJsonContext.Default.RemoteFsDelete, "delete requires path"));
                 return True;
-            case HostProtocol.MethodFsDownload:
+            case FilesProtocol.MethodFsDownload:
             {
-                var request = Require(message, HostProtocolJsonContext.Default.RemoteDownloadRequest, "download requires path and offset");
-                return Serialize(await files.DownloadAsync(request, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteFileChunk);
+                var request = Require(message, FilesProtocolJsonContext.Default.RemoteDownloadRequest, "download requires path and offset");
+                return Serialize(await files.DownloadAsync(request, cancellationToken).ConfigureAwait(false), FilesProtocolJsonContext.Default.RemoteFileChunk);
             }
             default:
                 return await HandleUploadAsync(files, uploads, name, message, cancellationToken).ConfigureAwait(false);
@@ -51,27 +51,27 @@ internal static class HostFileMethods
     {
         switch (name)
         {
-            case HostProtocol.MethodFsUploadBegin:
+            case FilesProtocol.MethodFsUploadBegin:
             {
-                var upload = files.BeginUpload(Require(message, HostProtocolJsonContext.Default.RemoteUploadBegin, "upload begin requires path"));
+                var upload = files.BeginUpload(Require(message, FilesProtocolJsonContext.Default.RemoteUploadBegin, "upload begin requires path"));
                 uploads.Add(upload);
-                return Serialize(new RemoteUploadRef(upload.Id, HostFileSystem.TransferChunkBytes), HostProtocolJsonContext.Default.RemoteUploadRef);
+                return Serialize(new RemoteUploadRef(upload.Id, HostFileSystem.TransferChunkBytes), FilesProtocolJsonContext.Default.RemoteUploadRef);
             }
-            case HostProtocol.MethodFsUploadChunk:
+            case FilesProtocol.MethodFsUploadChunk:
             {
-                var request = Require(message, HostProtocolJsonContext.Default.RemoteUploadChunk, "upload chunk requires uploadId, offset and content");
+                var request = Require(message, FilesProtocolJsonContext.Default.RemoteUploadChunk, "upload chunk requires uploadId, offset and content");
                 var received = await uploads.Get(request.UploadId).AppendAsync(request.Offset, Convert.FromBase64String(request.Base64), cancellationToken).ConfigureAwait(false);
-                return Serialize(received, HostProtocolJsonContext.Default.Int64);
+                return Serialize(received, FilesProtocolJsonContext.Default.Int64);
             }
-            case HostProtocol.MethodFsUploadCommit:
+            case FilesProtocol.MethodFsUploadCommit:
             {
-                var request = Require(message, HostProtocolJsonContext.Default.RemoteUploadCommit, "upload commit requires uploadId");
+                var request = Require(message, FilesProtocolJsonContext.Default.RemoteUploadCommit, "upload commit requires uploadId");
                 await using var upload = uploads.Take(request.UploadId);
-                return Serialize(await upload.CommitAsync(request.Size, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteFileStat);
+                return Serialize(await upload.CommitAsync(request.Size, cancellationToken).ConfigureAwait(false), FilesProtocolJsonContext.Default.RemoteFileStat);
             }
-            case HostProtocol.MethodFsUploadAbort:
+            case FilesProtocol.MethodFsUploadAbort:
             {
-                await using var upload = uploads.Take(Require(message, HostProtocolJsonContext.Default.RemoteUploadRef, "upload abort requires uploadId").UploadId);
+                await using var upload = uploads.Take(Require(message, FilesProtocolJsonContext.Default.RemoteUploadRef, "upload abort requires uploadId").UploadId);
                 return True;
             }
             default:

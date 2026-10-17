@@ -115,7 +115,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
                 {
                     var lease = ConnectedLease();
                     hello = lease.Client.Hello;
-                    if (lease.Client.Supports(HostCapabilities.NotifyHistory))
+                    if (lease.Client.Supports(NotificationsProtocol.Capability))
                         notifications = await lease.Client.ListNotificationsAsync(new RemoteNotifyQuery(Limit: 50), _lifetime.Token).ConfigureAwait(false);
                 }
                 catch (Exception error) when (error is IOException or JsonRpcException or ObjectDisposedException) { }
@@ -163,7 +163,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
             case HostProtocol.MethodSessionUnsubscribe:
                 StopSubscription(Required(parameters, "ViewId"));
                 return True;
-            case HostProtocol.MethodPtyAttach:
+            case PtyProtocol.MethodPtyAttach:
             {
                 var ptyId = Required(parameters, "PtyId");
                 var viewId = Required(parameters, "ViewId");
@@ -175,10 +175,10 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
                 Track(FollowTerminalAsync(terminal));
                 return True;
             }
-            case HostProtocol.MethodPtyDetach:
+            case PtyProtocol.MethodPtyDetach:
                 StopTerminal(Required(parameters, "ViewId"));
                 return True;
-            case HostProtocol.MethodPtyResize:
+            case PtyProtocol.MethodPtyResize:
             {
                 var ptyId = Required(parameters, "PtyId");
                 var size = (Columns: parameters!.Value.GetProperty("Columns").GetInt32(), Rows: parameters.Value.GetProperty("Rows").GetInt32());
@@ -190,9 +190,9 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
                 return True;
             }
         }
-        if (request.Method == HostProtocol.MethodFsUploadBegin)
+        if (request.Method == FilesProtocol.MethodFsUploadBegin)
             return await BeginUploadAsync(parameters).ConfigureAwait(false);
-        if (request.Method is HostProtocol.MethodFsUploadChunk or HostProtocol.MethodFsUploadCommit or HostProtocol.MethodFsUploadAbort)
+        if (request.Method is FilesProtocol.MethodFsUploadChunk or FilesProtocol.MethodFsUploadCommit or FilesProtocol.MethodFsUploadAbort)
             return await ForwardUploadAsync(request.Method, parameters).ConfigureAwait(false);
         var lease = ConnectedLease();
         if (request.Method == HostProtocol.MethodHello)
@@ -205,7 +205,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
         var lease = ConnectedLease();
         // Once sent, begin must reach its response even if this browser closes. Otherwise the
         // newly created UploadId and its FileShare.None temporary handle would be orphaned.
-        var result = await lease.Client.RequestAsync(HostProtocol.MethodFsUploadBegin, parameters, lease.Lifetime).ConfigureAwait(false);
+        var result = await lease.Client.RequestAsync(FilesProtocol.MethodFsUploadBegin, parameters, lease.Lifetime).ConfigureAwait(false);
         var uploadId = Required(result, "UploadId");
         _uploads[uploadId] = lease;
         if (_lifetime.IsCancellationRequested && _uploads.TryRemove(uploadId, out _))
@@ -223,12 +223,12 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
         try { result = await lease.Client.RequestAsync(method, parameters, lease.Lifetime).ConfigureAwait(false); }
         catch
         {
-            if (method is HostProtocol.MethodFsUploadCommit or HostProtocol.MethodFsUploadAbort
+            if (method is FilesProtocol.MethodFsUploadCommit or FilesProtocol.MethodFsUploadAbort
                 && _uploads.TryRemove(uploadId, out _))
                 await AbortUploadAsync(uploadId, lease).ConfigureAwait(false);
             throw;
         }
-        if (method is HostProtocol.MethodFsUploadCommit or HostProtocol.MethodFsUploadAbort)
+        if (method is FilesProtocol.MethodFsUploadCommit or FilesProtocol.MethodFsUploadAbort)
             _uploads.TryRemove(uploadId, out _);
         return result;
     }
@@ -292,7 +292,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
                     await client.ResizePtyAsync(terminal.PtyId, geometry.Columns, geometry.Rows, token).ConfigureAwait(false);
                 terminal.SnapshotNext = true;
             }).ConfigureAwait(false);
-            await NotifyAsync(HostProtocol.NotificationPtyOutput, new WebTerminalOutput(terminal.PtyId, "", true, false, terminal.ViewId), WebBridgeJsonContext.Default.WebTerminalOutput, terminal.Token).ConfigureAwait(false);
+            await NotifyAsync(PtyProtocol.NotificationPtyOutput, new WebTerminalOutput(terminal.PtyId, "", true, false, terminal.ViewId), WebBridgeJsonContext.Default.WebTerminalOutput, terminal.Token).ConfigureAwait(false);
         }
         catch (Exception error) when (IsConnectionEnd(error) || error is JsonRpcException)
         {
@@ -347,7 +347,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
         {
             var snapshot = SnapshotNext;
             SnapshotNext = false;
-            await owner.NotifyAsync(HostProtocol.NotificationPtyOutput, new WebTerminalOutput(ptyId, Convert.ToBase64String(buffer.Span), false, snapshot, viewId), WebBridgeJsonContext.Default.WebTerminalOutput, cancellationToken).ConfigureAwait(false);
+            await owner.NotifyAsync(PtyProtocol.NotificationPtyOutput, new WebTerminalOutput(ptyId, Convert.ToBase64String(buffer.Span), false, snapshot, viewId), WebBridgeJsonContext.Default.WebTerminalOutput, cancellationToken).ConfigureAwait(false);
         }
         protected override void Dispose(bool disposing) { if (disposing && Interlocked.Exchange(ref _stopped, 1) == 0) _stop.Cancel(); base.Dispose(disposing); }
         public override bool CanRead => false;

@@ -50,22 +50,22 @@ public sealed class WebBridgeTests
         using var otherBrowser = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
         var creator = await host.ConnectAsync("terminal-owner", Ct);
         var ptyId = await creator.StartPtyAsync(new RemotePtyStartRequest(TestShell.FileName, TestShell.Arguments, Cwd: host.Environment.App.Home.Root), Ct);
-        await WebSocketRpc.RequestAsync(browser, 1, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-local","Columns":120,"Rows":40}""");
-        await WebSocketRpc.RequestAsync(otherBrowser, 1, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-remote","Columns":120,"Rows":40}""");
-        await WebSocketRpc.RequestAsync(browser, 2, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view","Columns":120,"Rows":40}""");
+        await WebSocketRpc.RequestAsync(browser, 1, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-local","Columns":120,"Rows":40}""");
+        await WebSocketRpc.RequestAsync(otherBrowser, 1, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-remote","Columns":120,"Rows":40}""");
+        await WebSocketRpc.RequestAsync(browser, 2, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view","Columns":120,"Rows":40}""");
         const int floodLineCount = 10_000;
         var echo = TestShell.EchoAnswer("view-output");
         var flood = OperatingSystem.IsWindows()
             ? $"for /l %i in (1,1,{floodLineCount}) do @({echo})"
             : $$"""i=0; while [ "$i" -lt {{floodLineCount}} ]; do {{echo}}; i=$((i+1)); done""";
         var input = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{flood}\r"));
-        await WebSocketRpc.SendAsync(browser, 3, HostProtocol.MethodPtyWrite, $$"""{"PtyId":"{{ptyId}}","Base64":"{{input}}"}""");
+        await WebSocketRpc.SendAsync(browser, 3, PtyProtocol.MethodPtyWrite, $$"""{"PtyId":"{{ptyId}}","Base64":"{{input}}"}""");
         await WebBridgeHubTests.ReadTerminalUntilAsync(browser, ptyId, "view-output-42", "closing-view");
-        await WebSocketRpc.RequestAsync(browser, 4, HostProtocol.MethodPtyDetach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view"}""");
+        await WebSocketRpc.RequestAsync(browser, 4, PtyProtocol.MethodPtyDetach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view"}""");
         Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(browser, 5, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
         Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(otherBrowser, 2, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
         var command = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{TestShell.EchoAnswer("surviving-view")}\r"));
-        await WebSocketRpc.SendAsync(browser, 6, HostProtocol.MethodPtyWrite, $$"""{"PtyId":"{{ptyId}}","Base64":"{{command}}"}""");
+        await WebSocketRpc.SendAsync(browser, 6, PtyProtocol.MethodPtyWrite, $$"""{"PtyId":"{{ptyId}}","Base64":"{{command}}"}""");
         await WebBridgeHubTests.ReadTerminalUntilAsync(browser, ptyId, "surviving-view-42", "kept-local");
         await WebBridgeHubTests.ReadTerminalUntilAsync(otherBrowser, ptyId, "surviving-view-42", "kept-remote");
         Assert.Equal(WebSocketState.Open, browser.State);
@@ -90,21 +90,21 @@ public sealed class WebBridgeTests
         Directory.CreateDirectory(retainedDirectory);
         var abandonedPath = Path.Combine(abandonedDirectory, "unfinished.bin");
         var retainedPath = Path.Combine(retainedDirectory, "kept.bin");
-        var retainedBegin = JsonSerializer.Serialize(new RemoteUploadBegin(retainedPath), HostProtocolJsonContext.Default.RemoteUploadBegin);
-        var retainedUpload = (await WebSocketRpc.RequestAsync(retained, 1, HostProtocol.MethodFsUploadBegin, retainedBegin)).GetProperty("UploadId").GetString()!;
+        var retainedBegin = JsonSerializer.Serialize(new RemoteUploadBegin(retainedPath), FilesProtocolJsonContext.Default.RemoteUploadBegin);
+        var retainedUpload = (await WebSocketRpc.RequestAsync(retained, 1, FilesProtocol.MethodFsUploadBegin, retainedBegin)).GetProperty("UploadId").GetString()!;
         var prefix = Encoding.UTF8.GetBytes("second-");
-        var chunk = JsonSerializer.Serialize(new RemoteUploadChunk(retainedUpload, 0, Convert.ToBase64String(prefix)), HostProtocolJsonContext.Default.RemoteUploadChunk);
-        Assert.Equal(prefix.Length, (await WebSocketRpc.RequestAsync(retained, 2, HostProtocol.MethodFsUploadChunk, chunk)).GetInt64());
-        var abandonedBegin = JsonSerializer.Serialize(new RemoteUploadBegin(abandonedPath), HostProtocolJsonContext.Default.RemoteUploadBegin);
-        await WebSocketRpc.SendAsync(closing, 1, HostProtocol.MethodFsUploadBegin, abandonedBegin);
+        var chunk = JsonSerializer.Serialize(new RemoteUploadChunk(retainedUpload, 0, Convert.ToBase64String(prefix)), FilesProtocolJsonContext.Default.RemoteUploadChunk);
+        Assert.Equal(prefix.Length, (await WebSocketRpc.RequestAsync(retained, 2, FilesProtocol.MethodFsUploadChunk, chunk)).GetInt64());
+        var abandonedBegin = JsonSerializer.Serialize(new RemoteUploadBegin(abandonedPath), FilesProtocolJsonContext.Default.RemoteUploadBegin);
+        await WebSocketRpc.SendAsync(closing, 1, FilesProtocol.MethodFsUploadBegin, abandonedBegin);
         if (!closeBeforeReadingBeginReply)
         {
             var reply = await WebSocketRpc.ReceiveUntilAsync(closing, message => message.TryGetProperty("id", out var id) && id.GetInt32() == 1);
             var uploadId = reply.GetProperty("result").GetProperty("UploadId").GetString()!;
             Assert.Single(Directory.GetFiles(abandonedDirectory));
             // Separate browser connections used to provide this ownership boundary at the Host.
-            var foreignAbort = JsonSerializer.Serialize(new RemoteUploadRef(uploadId), HostProtocolJsonContext.Default.RemoteUploadRef);
-            await WebSocketRpc.SendAsync(retained, 3, HostProtocol.MethodFsUploadAbort, foreignAbort);
+            var foreignAbort = JsonSerializer.Serialize(new RemoteUploadRef(uploadId), FilesProtocolJsonContext.Default.RemoteUploadRef);
+            await WebSocketRpc.SendAsync(retained, 3, FilesProtocol.MethodFsUploadAbort, foreignAbort);
             var refused = await WebSocketRpc.ReceiveUntilAsync(retained, message => message.TryGetProperty("id", out var id) && id.GetInt32() == 3);
             Assert.Equal(-32602, refused.GetProperty("error").GetProperty("code").GetInt32());
             Assert.Single(Directory.GetFiles(abandonedDirectory));
@@ -123,10 +123,10 @@ public sealed class WebBridgeTests
         Assert.Single(Directory.GetFiles(retainedDirectory));
         Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(retained, 4, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
         var suffix = Encoding.UTF8.GetBytes("continued");
-        var continued = JsonSerializer.Serialize(new RemoteUploadChunk(retainedUpload, prefix.Length, Convert.ToBase64String(suffix)), HostProtocolJsonContext.Default.RemoteUploadChunk);
-        Assert.Equal(prefix.Length + suffix.Length, (await WebSocketRpc.RequestAsync(retained, 5, HostProtocol.MethodFsUploadChunk, continued)).GetInt64());
-        var commit = JsonSerializer.Serialize(new RemoteUploadCommit(retainedUpload, prefix.Length + suffix.Length), HostProtocolJsonContext.Default.RemoteUploadCommit);
-        await WebSocketRpc.RequestAsync(retained, 6, HostProtocol.MethodFsUploadCommit, commit);
+        var continued = JsonSerializer.Serialize(new RemoteUploadChunk(retainedUpload, prefix.Length, Convert.ToBase64String(suffix)), FilesProtocolJsonContext.Default.RemoteUploadChunk);
+        Assert.Equal(prefix.Length + suffix.Length, (await WebSocketRpc.RequestAsync(retained, 5, FilesProtocol.MethodFsUploadChunk, continued)).GetInt64());
+        var commit = JsonSerializer.Serialize(new RemoteUploadCommit(retainedUpload, prefix.Length + suffix.Length), FilesProtocolJsonContext.Default.RemoteUploadCommit);
+        await WebSocketRpc.RequestAsync(retained, 6, FilesProtocol.MethodFsUploadCommit, commit);
         Assert.Equal("second-continued", await File.ReadAllTextAsync(retainedPath, Ct));
         Assert.Equal(["kept.bin"], Directory.GetFiles(retainedDirectory).Select(Path.GetFileName));
         Assert.Empty(Directory.GetFiles(abandonedDirectory));

@@ -62,6 +62,55 @@ public sealed class RemoteHostTests
     }
 
     [Fact(Timeout = 30000)]
+    public async Task ClientRejectsAnAcceptedHelloWithTheWrongVersion()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var socket = new TcpClient();
+        var accept = listener.AcceptTcpClientAsync(Ct);
+        await socket.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, Ct);
+        using var accepted = await accept;
+        await using var peer = new JsonRpcPeer(accepted.GetStream());
+        peer.RequestHandler = (_, _) => ValueTask.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(
+            new HostHelloResponse(true, HostProtocol.Version - 1, "old", null), HostProtocolJsonContext.Default.HostHelloResponse));
+        peer.Start();
+
+        var error = await Assert.ThrowsAsync<IOException>(() => RemoteHostClient.ConnectAsync(socket.GetStream(), cancellationToken: Ct));
+        Assert.Contains("version", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task ResumeAndResizeErrorsAreNotCompatibilitySuccesses()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var socket = new TcpClient();
+        var accept = listener.AcceptTcpClientAsync(Ct);
+        await socket.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, Ct);
+        using var accepted = await accept;
+        await using var peer = new JsonRpcPeer(accepted.GetStream());
+        List<string> methods = [];
+        peer.RequestHandler = (message, _) =>
+        {
+            methods.Add(message.Method!);
+            return message.Method switch
+            {
+                HostProtocol.MethodHello => ValueTask.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(
+                    new HostHelloResponse(true, HostProtocol.Version, "strict", null), HostProtocolJsonContext.Default.HostHelloResponse)),
+                HostProtocol.MethodSessionResume => throw new JsonRpcException(-32602, "session already running"),
+                _ => throw new JsonRpcException(JsonRpcPeer.MethodNotFound, "method not found")
+            };
+        };
+        peer.Start();
+        await using var client = await RemoteHostClient.ConnectAsync(socket.GetStream(), cancellationToken: Ct);
+
+        var resume = await Assert.ThrowsAsync<JsonRpcException>(() => client.ResumeSessionAsync("session", cancellationToken: Ct));
+        Assert.Contains("already", resume.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.ResizePtyAsync("pty", 120, 40, Ct));
+        Assert.Equal([HostProtocol.MethodHello, HostProtocol.MethodSessionResume, PtyProtocol.MethodPtyResize], methods);
+    }
+
+    [Fact(Timeout = 30000)]
     public async Task DecisionsArrivingBeforeEnumerationAreRetained()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

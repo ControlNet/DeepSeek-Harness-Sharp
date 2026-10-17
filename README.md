@@ -233,6 +233,7 @@ dsharp host serve                                     # 手动前台运行 Host;
 - GUI:启动后进入总览,按 机器 → 项目 → 会话 分组,等待你审批的会话会高亮;`Ctrl+K` 快速跳转,`Esc` 返回;铃铛是通知中心,所有机器的待审批与提问都能在这里直接回答,先答者生效。侧栏还有文件、Git、机器三页;「设置 → 远程」与机器页是同一份机器清单。
 - 审批和提问由 Host 的单一待决队列拥有；`host.pending.changed` 在订阅时及每次变更后推送完整投影，结局可附首答者审计，所有客户端据此关闭已处理的对话，不保存已解决请求的记忆缓存。等待高亮只来自真实待决请求（包括 ACP 结构化权限请求）；外部终端仅显示进程状态，不再用屏幕文本或正则猜测审批、忙碌和等待。
 - 断线后每台机器独立重连,会话事件从断点续订,终端会重新接入。
+- Host 严格使用线协议版本 2；版本不一致时握手拒绝，不再兼容旧宿主的缺失方法、resize 空操作或按错误文本恢复会话。核心包括会话执行与事件、登记表和唯一待决队列；Agent、PTY、文件、Git、通知、会话编辑、模型目录和插件管理按领域组合。握手与 `host.info` 只声明该 Host 实际提供的能力，未提供的领域调用明确返回 method-not-found，不返回伪造的空列表或成功。客户端按能力显示可用操作；协议目录列出的已知能力不表示每个 Host 都支持。
 - ACP 对话只使用与 harness 相同的 `SessionStore` / `ISessionPersistence` 会话持久化、全文查询和事件订阅；Host 重启或恢复 agent 时保留原会话 ID、回合与工具事件，不维护另一套 ACP JSONL 历史文件。
 - 通知与已读标记只保存为 `host/notifications.json` 原子快照，跨 Host 重启保留；不维护单独的追加日志、压缩、保留期或 JSONL 导入引擎。
 - 浏览器：先单独安装 `dsharp-web`（见下方发布形态），再运行 `dsharp web` 或 `dsharp-web`；`dsharp host web` 也是同一进程转发入口，TUI/GUI 不加载 WebBridge 或 ASP.NET。独立 WebHost 内的真实 WebBridge 插件拥有 Fleet 连接、协议桥和监听生命周期，只监听 `127.0.0.1:8780`；`dsharp web --print-token`（或 `dsharp-web --print-token`）打印登录链接，其它设备先 `ssh -N -L 8780:127.0.0.1:8780 user@host` 转发再访问。

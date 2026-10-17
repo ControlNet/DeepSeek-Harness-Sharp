@@ -131,30 +131,33 @@ public sealed class RemoteHostMultiClientTests
         var creator = await host.ConnectAsync("creator", Ct);
         var watcher = await host.ConnectAsync("watcher", Ct);
         var changes = watcher.HostSessionChangesAsync(Ct);
+        var initial = await NextAsync(changes);
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<RemoteHostSession>>(initial.Snapshot));
+        Assert.Null(initial.Session);
         var cwd = host.Environment.App.Home.Root;
 
         var created = await creator.CreateSessionAsync(cwd, Selection, Spec, Ct);
-        var registered = await NextAsync(changes, session => session.SessionId == created.Id);
+        var registered = (await NextAsync(changes, change => change.Session?.SessionId == created.Id)).Session!;
         Assert.Equal(HostSessionKinds.Harness, registered.Kind);
         Assert.Equal(HostAgentKinds.Dsharp, registered.AgentKind);
         Assert.Equal(cwd, registered.ProjectPath);
         Assert.Equal(HostSessionStatuses.Idle, registered.Status);
 
         var approval = RaiseApprovalAsync(host, Agent(host, created.Id), "bash");
-        var waiting = await NextAsync(changes, session => session.SessionId == created.Id && session.Status == HostSessionStatuses.WaitingForUser);
+        var waiting = (await NextAsync(changes, change => change.Session?.SessionId == created.Id && change.Session.Status == HostSessionStatuses.WaitingForUser)).Session!;
         Assert.Equal(1, waiting.PendingCount);
         Assert.Contains(await creator.ListHostSessionsAsync(Ct), session => session == waiting);
 
         var request = Assert.Single((await NextAsync(creator.PendingChangesAsync(Ct), change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
         await creator.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct);
         await approval.WaitAsync(Arrival, Ct);
-        var answered = await NextAsync(changes, session => session.SessionId == created.Id && session.PendingCount == 0);
+        var answered = (await NextAsync(changes, change => change.Session?.SessionId == created.Id && change.Session.PendingCount == 0)).Session!;
         Assert.Equal(HostSessionStatuses.Idle, answered.Status);
         var activity = answered.LastActivityAt + 10_000;
         host.Backend.Sessions.Touch(created.Id, activity);
         host.Backend.Sessions.Touch(created.Id, activity + 1);
-        Assert.Equal(activity, (await NextAsync(changes, session => session.SessionId == created.Id && session.LastActivityAt == activity)).LastActivityAt);
-        Assert.Equal(activity + 1, (await NextAsync(changes, session => session.SessionId == created.Id && session.LastActivityAt == activity + 1)).LastActivityAt);
+        Assert.Equal(activity, (await NextAsync(changes, change => change.Session?.SessionId == created.Id && change.Session.LastActivityAt == activity)).Session!.LastActivityAt);
+        Assert.Equal(activity + 1, (await NextAsync(changes, change => change.Session?.SessionId == created.Id && change.Session.LastActivityAt == activity + 1)).Session!.LastActivityAt);
     }
 
     [Fact(Timeout = 60000)]
@@ -177,10 +180,13 @@ public sealed class RemoteHostMultiClientTests
         Assert.Equal(HostSessionStatuses.Running, restoredTerminal.Status);
 
         var changes = after.HostSessionChangesAsync(Ct);
+        var initial = await NextAsync(changes);
+        Assert.Equal(sessions, initial.Snapshot);
+        Assert.Null(initial.Session);
         await after.ResumeSessionAsync(harness.Id, Selection, Spec, Ct);
-        Assert.Equal(HostSessionStatuses.Idle, (await NextAsync(changes, session => session.SessionId == harness.Id)).Status);
+        Assert.Equal(HostSessionStatuses.Idle, (await NextAsync(changes, change => change.Session?.SessionId == harness.Id)).Session!.Status);
         await after.StopPtyAsync(ptyId, Ct);
-        Assert.Equal(HostSessionStatuses.Exited, (await NextAsync(changes, session => session.SessionId == ptyId)).Status);
+        Assert.Equal(HostSessionStatuses.Exited, (await NextAsync(changes, change => change.Session?.SessionId == ptyId && change.Session.Status == HostSessionStatuses.Exited)).Session!.Status);
     }
 
     [Fact(Timeout = 30000)]
@@ -226,13 +232,22 @@ public sealed class RemoteHostMultiClientTests
     {
         await using var host = await HarnessHostFixture.CreateAsync("mhv", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("probe", Ct);
+        List<string> expectedCapabilities =
+        [
+            HostProtocol.PendingBroadcastCapability, HostProtocol.SessionRegistryCapability,
+            AgentProtocol.Capability, PtyProtocol.Capability, PtyProtocol.ResizeCapability,
+            FilesProtocol.Capability, GitProtocol.Capability, NotificationsProtocol.Capability,
+            SessionEditingProtocol.Capability
+        ];
+        if (host.Backend.Plugins is not null) expectedCapabilities.Add(PluginsProtocol.Capability);
+        if (host.Backend.Models is not null) expectedCapabilities.Add(ModelsProtocol.Capability);
 
         Assert.Equal(HostProtocol.Version, client.Hello.ProtocolVersion);
-        Assert.Equal(HostCapabilities.All, client.Hello.Capabilities);
+        Assert.Equal(expectedCapabilities, client.Hello.Capabilities);
         Assert.False(string.IsNullOrEmpty(client.Hello.ConnectionId));
         var info = await client.InfoAsync(Ct);
         Assert.Equal(RemoteHostServer.ReleaseVersion, info.HostVersion);
-        Assert.Equal(HostCapabilities.All, info.Capabilities);
+        Assert.Equal(expectedCapabilities, info.Capabilities);
     }
 
     internal static readonly RemoteProviderSpec Spec = new("client-provider", "openai-compatible", "https://example.invalid", "sk-test");
