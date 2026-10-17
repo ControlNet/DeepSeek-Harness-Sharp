@@ -11,6 +11,7 @@ public sealed class AcpClient : IAsyncDisposable
 {
     private readonly JsonRpcLineTransport _transport;
     private readonly ConcurrentDictionary<string, AcpPermissionRequest> _pendingPermissions = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _cancelledSessions = new(StringComparer.Ordinal);
     private readonly Channel<AcpPermissionRequest> _permissionQueue = Channel.CreateUnbounded<AcpPermissionRequest>();
 
     public AcpClient(JsonRpcLineTransport transport)
@@ -55,6 +56,8 @@ public sealed class AcpClient : IAsyncDisposable
 
     public async Task<string> PromptAsync(string sessionId, string text, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        _cancelledSessions.TryRemove(sessionId, out _);
         var response = await CallAsync(AcpMethods.Prompt, new AcpPromptRequest(sessionId, [AcpTextContent.Of(text)]),
             AcpJsonContext.Default.AcpPromptRequest, AcpJsonContext.Default.AcpPromptResponse, cancellationToken).ConfigureAwait(false);
         return response.StopReason;
@@ -71,6 +74,8 @@ public sealed class AcpClient : IAsyncDisposable
         }
         finally
         {
+            // A permission already buffered by the agent can arrive after session/cancel was written.
+            _cancelledSessions[sessionId] = 0;
             foreach (var permission in _pendingPermissions.Values)
                 if (permission.SessionId == sessionId)
                     permission.TryCancel();
@@ -79,8 +84,11 @@ public sealed class AcpClient : IAsyncDisposable
     }
 
     public async Task CloseSessionAsync(string sessionId, CancellationToken cancellationToken = default)
-        => await _transport.RequestAsync(AcpMethods.CloseSession,
+    {
+        await _transport.RequestAsync(AcpMethods.CloseSession,
             JsonSerializer.SerializeToElement(new AcpSessionIdParams(sessionId), AcpJsonContext.Default.AcpSessionIdParams), cancellationToken).ConfigureAwait(false);
+        _cancelledSessions.TryRemove(sessionId, out _);
+    }
 
     private async Task<AcpSessionResponse> SessionAsync(string method, AcpSessionRequest request, CancellationToken cancellationToken)
     {
@@ -118,6 +126,8 @@ public sealed class AcpClient : IAsyncDisposable
         var permission = new AcpPermissionRequest(decoded.SessionId, AcpPermissionRequest.ToolCallOf(decoded.ToolCall), decoded.Options);
         _pendingPermissions[permission.RequestId] = permission;
         using var registration = _transport.ConnectionClosed.Register(() => permission.TryCancel());
+        if (_cancelledSessions.ContainsKey(decoded.SessionId))
+            permission.TryCancel();
         _permissionQueue.Writer.TryWrite(permission);
         try
         {

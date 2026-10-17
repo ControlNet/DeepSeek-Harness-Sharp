@@ -121,6 +121,34 @@ public sealed class AcpDuplexClientTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Cancel_AnswersLatePermissionButDoesNotCancelTheNextTurn()
+    {
+        var prompt = _client.PromptAsync("s1", "long task", TestContext.Current.CancellationToken);
+        var request = await AgentReadAsync();
+        await _client.CancelAsync("s1", TestContext.Current.CancellationToken);
+        Assert.Equal(AcpMethods.Cancel, (await AgentReadAsync()).GetProperty("method").GetString());
+
+        await AgentSendAsync(PermissionRequestLine("late-permission"));
+        var cancelled = await _client.PermissionRequests.ReadAsync(TestContext.Current.CancellationToken).AsTask().WaitAsync(StepTimeout, TestContext.Current.CancellationToken);
+        var cancelledResponse = await AgentReadAsync();
+        Assert.Equal(AcpMethods.OutcomeCancelled, cancelledResponse.GetProperty("result").GetProperty("outcome").GetProperty("outcome").GetString());
+        Assert.True(cancelled.IsResolved);
+        await AgentReplyAsync(request, """{"stopReason":"cancelled"}""");
+        Assert.Equal(AcpMethods.StopCancelled, await prompt.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+
+        var next = _client.PromptAsync("s1", "next turn", TestContext.Current.CancellationToken);
+        var nextRequest = await AgentReadAsync();
+        await AgentSendAsync(PermissionRequestLine("next-permission"));
+        var permission = await _client.PermissionRequests.ReadAsync(TestContext.Current.CancellationToken).AsTask().WaitAsync(StepTimeout, TestContext.Current.CancellationToken);
+        Assert.False(permission.IsResolved);
+        Assert.True(permission.TrySelect("deny"));
+        var selectedResponse = await AgentReadAsync();
+        Assert.Equal(AcpMethods.OutcomeSelected, selectedResponse.GetProperty("result").GetProperty("outcome").GetProperty("outcome").GetString());
+        await AgentReplyAsync(nextRequest, """{"stopReason":"end_turn"}""");
+        Assert.Equal(AcpMethods.StopEndTurn, await next.WaitAsync(StepTimeout, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task UnsupportedAgentRequest_GetsMethodNotFound()
     {
         await AgentSendAsync("""{"jsonrpc":"2.0","id":7,"method":"fs/read_text_file","params":{"sessionId":"s1","path":"/etc/hosts"}}""");
