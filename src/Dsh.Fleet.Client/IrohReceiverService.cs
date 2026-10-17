@@ -242,7 +242,8 @@ public static partial class IrohReceiver
         private async Task StartDetachedAsync(string executable, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
         {
             var command = string.Join(' ', new[] { executable }.Concat(arguments).Select(RemoteShell.Quote));
-            var script = $"umask 077; nohup {command} </dev/null >>{RemoteShell.Quote(LogPath)} 2>&1 & echo $!";
+            // Ignoring HUP directly also works when macOS nohup cannot detach from a headless SSH console.
+            var script = $"umask 077; trap '' HUP; {command} </dev/null >>{RemoteShell.Quote(LogPath)} 2>&1 & echo $!";
             cancellationToken.ThrowIfCancellationRequested();
             var result = await RunCommandAsync("/bin/sh", ["-c", script], CancellationToken.None).ConfigureAwait(false);
             if (result.ExitCode != 0 || !int.TryParse(result.Output, out var pid))

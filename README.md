@@ -323,7 +323,7 @@ SSH-over-iroh 使用独立的主机密钥别名，不借用普通 TCP SSH 的已
 
 Linux systemd 用户服务跨退出登录或开机运行需要管理员按系统策略启用该用户的 linger，命令输出会说明当前机制。
 macOS 15 及以后，LaunchAgent 的局域网发现和直连需要用户在「系统设置 → 隐私与安全性 → 本地网络」允许 `dsharp Iroh`（`iroh-ssh`）；用途声明已嵌入接收端，但不会代替用户授权。
-从 Terminal 或 SSH 启动的命令行及其子进程由 macOS 自动允许本地网络访问；从这两种上下文启用且没有图形登录会话时，detached 接收端沿用命令行上下文。
+从 Terminal 或 SSH 启动的命令行及其子进程由 macOS 自动允许本地网络访问；从这两种上下文启用且没有图形登录会话时，detached 接收端沿用命令行上下文，无需为启用命令分配 TTY，并在启动 SSH 连接退出后继续运行。
 这些规则不影响已有的 SSH 认证与 host-key 校验；未授权 LAN 且配置的 relay 不可达时，启用会失败并保留原 Endpoint ID，不会提权、替换 relay 或退回旧 IP。
 详见 Apple [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)。
 

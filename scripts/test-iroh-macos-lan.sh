@@ -86,26 +86,6 @@ for attempt in {1..20}; do
     sudo launchctl print "system/$SSHD_LABEL" >/dev/null
     sleep 0.1
 done
-cat > "$WORK_DIR/native-probe.sh" <<'SH'
-set -euo pipefail
-root=$1
-work=$2/native-probe
-mkdir -p "$work"
-printf 'Native SSH-context diagnostic UID: %s\n' "$(id -u)"
-"$root/tests/Dsh.Tests/bin/Debug/net10.0/tools/iroh-ssh" server --persist --ssh-port "$3" \
-    --key-dir "$work/keys" --relay-url http://127.0.0.1:9 --ready-file "$work/ready" >"$work/native.log" 2>&1 &
-pid=$!
-trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; cat "$work/native.log"' EXIT
-for attempt in {1..100}; do
-    if [ -s "$work/ready" ]; then echo 'Native SSH-context LAN readiness: acknowledged'; exit 0; fi
-    sleep 0.2
-done
-echo 'Native SSH-context LAN readiness: not acknowledged'
-SH
-printf -v probe '/bin/bash %q %q %q %q' "$WORK_DIR/native-probe.sh" "$ROOT_DIR" "$WORK_DIR/home" "$SSH_PORT"
-ssh -F /dev/null -i "$WORK_DIR/client_key" -o IdentitiesOnly=yes -o BatchMode=yes \
-    -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$WORK_DIR/known_hosts" \
-    -o GlobalKnownHostsFile=/dev/null -p "$SSH_PORT" "$ACCOUNT@127.0.0.1" "$probe"
 printf -v command 'test "$(id -u)" -ne 0 && ! launchctl print "gui/$(id -u)" >/dev/null 2>&1 && cd %q && exec %q -noColor -failSkips -method Dsh.Tests.IrohReceiverEndToEndTests.TargetCli_Lan_Readiness_And_Restart_Work_Without_A_Relay' \
     "$ROOT_DIR" "$ROOT_DIR/tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
 ssh -F /dev/null -i "$WORK_DIR/client_key" -o IdentitiesOnly=yes -o BatchMode=yes \
