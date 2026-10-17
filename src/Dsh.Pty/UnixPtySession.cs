@@ -18,7 +18,7 @@ internal sealed class UnixPtySession : IDisposable
         _pid = pid;
         _handle = handle;
         _stream = stream;
-        Completion = MonitorAsync();
+        Completion = WaitForExitAsync(pid);
     }
 
     public Task<int?> Completion { get; }
@@ -84,11 +84,11 @@ internal sealed class UnixPtySession : IDisposable
      * Polls until the child is reaped, also after Dispose.
      * On macOS a killed child whose tty output nobody reads finishes exiting only when the master closes, and the monitor is its only reaper; stopping at Dispose left a zombie.
      */
-    private async Task<int?> MonitorAsync()
+    internal static async Task<int?> WaitForExitAsync(int pid)
     {
         while (true)
         {
-            if (UnixPtyNative.TryWait(_pid, out var exitCode))
+            if (UnixPtyNative.TryWait(pid, out var exitCode))
             {
                 return exitCode;
             }

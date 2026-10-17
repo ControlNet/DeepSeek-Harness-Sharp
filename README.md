@@ -225,7 +225,7 @@ dsharp session list [--machine build]                 # 列出所有机器上的
 dsharp session attach build/<会话 id>                  # 接入终端会话,Ctrl+] 离开
 dsharp session stop build/<会话 id>                    # harness 中断当前回合；terminal、ACP、外部 Agent 结束进程
 dsharp doctor [--machine build]                        # 逐项诊断连接,并给出可复制的修复命令
-dsharp host install-service                            # 在远端把 host 装成 systemd --user 常驻服务(无 systemd 时 nohup)
+dsharp host serve                                     # 手动前台运行 Host; GUI/SSH 连接也会按需启动后台 Host
 ```
 
 - GUI:启动后进入总览,按 机器 → 项目 → 会话 分组,等待你审批的会话会高亮;`Ctrl+K` 快速跳转,`Esc` 返回;铃铛是通知中心,所有机器的待审批与提问都能在这里直接回答,先答者生效。侧栏还有文件、Git、机器三页;「设置 → 远程」与机器页是同一份机器清单。
@@ -251,6 +251,42 @@ network:
     url: http://127.0.0.1:7890  # 留空跟随系统代理
     bypass: [example.com, "*.example.org"]
 ```
+
+### 可选：由用户管理 systemd 服务
+
+Host 按需启动时是独立后台进程，关闭 GUI 或 SSH 桥接不会结束其会话；产品不安装系统服务，也不修改 systemd 或 linger。
+需要开机启动或由服务管理器监管时，可自行保存以下内容到 `~/.config/systemd/user/dsharp-host.service`，把 `ExecStart` 改为实际二进制的绝对路径：
+
+```ini
+[Unit]
+Description=DeepSeek Harness Host
+
+[Service]
+Type=simple
+ExecStart=%h/.dsharp/linux-x64/dsharp host serve
+WorkingDirectory=%h
+Restart=on-failure
+KillMode=process
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+mkdir -p ~/.config/systemd/user
+# 将上面的 unit 保存为 ~/.config/systemd/user/dsharp-host.service 后执行：
+systemctl --user daemon-reload
+systemctl --user enable --now dsharp-host.service
+# 查看或停止：
+systemctl --user status dsharp-host.service
+systemctl --user disable --now dsharp-host.service
+```
+
+服务与客户端须使用同一 harness home；默认是 `~/.dsh`，自定义根时在 unit 的 `[Service]` 中加入 `Environment=DSH_HOME=/absolute/harness/home`。
+若同一 home 已有按需启动的 Host，请先结束该 Host 进程再启动服务；独占锁会阻止另一个进程接管仍在运行的 Host。
+`KillMode=process` 使停止 Host 服务不会同时终止其 PTY daemon，后续 Host 可重接原终端。
+需要退出登录后保留用户服务或开机即运行时，由用户按机器策略执行 `loginctl enable-linger "$USER"`（可能需要管理员授权）；应用不会代为执行。
+外部服务的停止、升级与重启也由用户负责，自动部署不管理服务。
 
 ## 发布形态
 

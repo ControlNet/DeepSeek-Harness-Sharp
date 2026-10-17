@@ -166,15 +166,11 @@ public static class HarnessEntrypoint
             case "host":
                 {
                     var subcommand = positional.Skip(1).FirstOrDefault();
-                    if (subcommand == "install-service")
-                        return await HostAutostart.InstallAsync(harnessHome, Console.Out);
-                    if (subcommand == "uninstall-service")
-                        return await HostAutostart.UninstallAsync(Console.Out);
                     if (subcommand is "serve" || hostServe)
                         return await RunHostServeAsync(harnessHome, hostStdio, hostToken);
                     if (subcommand is "web")
                         return await RunHostWebAsync(harnessHome, positional.Skip(2).ToList());
-                    await Console.Error.WriteLineAsync("dsharp: host requires a subcommand (serve | web | install-service | uninstall-service)");
+                    await Console.Error.WriteLineAsync("dsharp: host requires a subcommand (serve | web)");
                     return 1;
                 }
             case "headless":
@@ -221,7 +217,7 @@ public static class HarnessEntrypoint
             eventArgs.Cancel = true;
             cancellation.Cancel();
         };
-        // systemctl stop 与部署脚本的 pkill 发 SIGTERM: 同样走正常收尾(登记表落盘、删 socket), 而不是被运行时直接终止。
+        // SIGTERM 同样走正常收尾(登记表落盘、删 socket), 而不是被运行时直接终止。
         using var termination = System.Runtime.InteropServices.PosixSignalRegistration.Create(System.Runtime.InteropServices.PosixSignal.SIGTERM, context =>
         {
             context.Cancel = true;
@@ -354,9 +350,7 @@ public static class HarnessEntrypoint
                    dsharp gui [--session <id>]
                    dsharp web [--port N] [--print-token]   (浏览器工作台，与 GUI/TUI 并行入口)
                    dsharp headless "task"
-                   dsharp host --serve [--stdio] [--token <t>]   (远端工作区宿主: 默认 loopback socket, --stdio 走 ssh)
-                   dsharp host install-service   (常驻远端宿主: systemd --user 服务并尽量启用 linger; 无 systemd 时 nohup 启动)
-                   dsharp host uninstall-service (停用并删除 systemd --user 服务)
+                   dsharp host serve [--stdio] [--token <t>]   (后台工作区宿主: --stdio 通过 ssh 桥接, 不安装系统服务)
                    dsharp host web [--port N] [--print-token]   (浏览器桥: 只监听 127.0.0.1, 跨设备用 ssh -L 转发)
                    dsharp register-terminal    (Linux: 注册为桌面环境的默认终端)
                    dsharp storage paths        (打印 storage.root 与各分区解析结果)

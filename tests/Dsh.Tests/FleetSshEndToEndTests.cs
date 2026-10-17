@@ -12,7 +12,7 @@ namespace Dsh.Tests;
 /**
  * Dsh.Fleet over real ssh: a user-mode sshd on a loopback port (test-only keys, AuthorizedKeysFile in the test directory, UsePAM no) stands in for a remote machine.
  * The sshd gives sessions a test HOME and starts them there, so deployment lands in the test directory exactly as it would in a real home; nothing under the real ~/.ssh or ~/.dsharp is touched.
- * Covers automatic deployment, the nohup fallback without a systemd user manager, `host --serve --stdio`, listing sessions, reconnecting after the ssh process dies, and the CLI on that machine.
+ * Covers automatic deployment, the on-demand detached host, `host --serve --stdio`, listing sessions, reconnecting after the ssh process dies, and the CLI on that machine.
  */
 public sealed class FleetSshEndToEndTests
 {
@@ -42,13 +42,6 @@ public sealed class FleetSshEndToEndTests
             };
             await using var connection = new MachineConnection(machine, options);
             var states = FleetConnectionTests.RecordStates(connection);
-            var steps = new List<string>();
-            connection.StateChanged += changed =>
-            {
-                if (changed is { State: MachineConnectionState.Deploying, Detail: { } step })
-                    lock (steps)
-                        steps.Add(step);
-            };
             connection.Start();
             using (var settle = CancellationTokenSource.CreateLinkedTokenSource(Ct))
             {
@@ -58,12 +51,11 @@ public sealed class FleetSshEndToEndTests
 
             Assert.True(connection.State == MachineConnectionState.Connected, connection.Detail);
             Assert.Contains(MachineConnectionState.Deploying, states);
-            // Without a systemd user manager, `host install-service` falls back to a detached host.
-            Assert.Contains(steps, step => step.StartsWith("host install-service:", StringComparison.Ordinal) && step.Contains("nohup", StringComparison.Ordinal));
             var deployed = Path.Combine(server.Home, ".dsharp", Rid);
             Assert.Equal(RemoteHostServer.ReleaseVersion, await File.ReadAllTextAsync(Path.Combine(deployed, ".dsharp-version"), Ct));
             Assert.Equal(harness, connection.Info!.HomeRoot);
-            Assert.True(File.Exists(Path.Combine(harness, "run", "host.sock")), "install-service must have started the host under the machine's harness home");
+            Assert.True(File.Exists(Path.Combine(harness, "run", "host.sock")), "the first connection must start the host under the machine's harness home");
+            Assert.False(Directory.Exists(Path.Combine(server.Home, ".config", "systemd", "user")), "deployment and on-demand startup must not install a user service");
 
             var reused = await RemoteDsharpInstaller.EnsureAsync(machine, options.Deploy, null, Ct, options.ArchiveFactory);
             Assert.True(reused.AlreadyPresent);
@@ -80,6 +72,11 @@ public sealed class FleetSshEndToEndTests
                 await before.WaitForAsync("before-42", TimeSpan.FromSeconds(20));
             }
             var shellPid = await File.ReadAllTextAsync(Path.Combine(harness, "before.pid"), Ct);
+            var duplicate = await SshHostLauncher.RunRemoteCaptureAsync(
+                machine, $"{RemoteShell.Prelude(machine)}{RemoteShell.Quote(reused.CommandPath)} host serve", Ct);
+            Assert.True(duplicate.ExitCode == 0, duplicate.FailureDetail);
+            Assert.True(hostIdentity == LocalEndpointToken.Read(RemoteHostEndpoint.EndpointFile(harness)),
+                "a competing host start must leave the live owner and endpoint untouched");
 
             var ssh = connection.LinkProcess!;
             ssh.Kill();
@@ -125,7 +122,6 @@ public sealed class FleetSshEndToEndTests
             Assert.True(doctor.ExitCode == 0, doctor.Output);
             foreach (var check in new[] { "ssh", "platform", "dsharp", "host", "permissions", "connection" })
                 Assert.Contains($"[ok] {check}:", doctor.Output, StringComparison.Ordinal);
-            Assert.Contains("[skipped] service:", doctor.Output, StringComparison.Ordinal);
         }
         finally
         {
@@ -177,7 +173,7 @@ public sealed class FleetSshEndToEndTests
 
 /**
  * A user-mode OpenSSH server for one test: host and client keys, authorized_keys and known_hosts all live in the test directory.
- * Sessions get HOME=<test>/home, start in it (ForceCommand) and see no systemd user manager (XDG_RUNTIME_DIR points nowhere), like a fresh machine without one.
+ * Sessions get HOME=<test>/home and start there (ForceCommand), keeping deployment and host state in the test directory.
  */
 internal sealed class TestSshServer : IAsyncDisposable
 {
@@ -268,7 +264,7 @@ internal sealed class TestSshServer : IAsyncDisposable
         KbdInteractiveAuthentication no
         PubkeyAuthentication yes
         Subsystem sftp {SftpServer}
-        SetEnv HOME={Path.Combine(root, "home")} DOTNET_ROOT={DotnetRoot} XDG_RUNTIME_DIR={Path.Combine(root, "no-runtime")}
+        SetEnv HOME={Path.Combine(root, "home")} DOTNET_ROOT={DotnetRoot}
         ForceCommand cd "$HOME" && exec "$SHELL" -c "$SSH_ORIGINAL_COMMAND"
         LogLevel ERROR
         """;

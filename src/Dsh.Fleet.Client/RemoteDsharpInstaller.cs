@@ -8,7 +8,7 @@ namespace Dsh.Fleet;
  * 远端 dsharp 自动部署(仿 VS Code Remote-SSH 的 VS Code Server):
  * 远端没有 dsharp 或部署的发布版本旧于本客户端时, 取对应平台的 Release 构建解到 `~/.dsharp/RID/`, 之后按绝对路径运行。
  * 不注册任何 PATH 命令: 客户端直接用 `~/.dsharp/RID/dsharp host --serve --stdio` 起宿主。
- * 部署完成后由新二进制执行 `host install-service`: 有 systemd 用户管理器时装成常驻服务, 否则它自己退回 nohup。
+ * 部署只提供二进制; 首次连接通过 stdio 桥按需启动独立宿主, 不安装系统服务。
  * 只支持 POSIX 远端(Linux/macOS); Windows 远端明确报不支持。
  */
 public static class RemoteDsharpInstaller
@@ -29,10 +29,10 @@ public static class RemoteDsharpInstaller
     private const int StopWaitAttempts = 50;
 
     public const string WindowsUnsupported =
-        "远端为 Windows: 暂不支持自动部署与常驻服务。请在远端手动安装 dsharp, 并在机器的“远端目录”里指向它所在的目录。";
+        "远端为 Windows: 暂不支持自动部署。请在远端手动安装 dsharp, 并在机器的“远端目录”里指向它所在的目录。";
 
-    /** 部署结果: CommandPath 为远端 dsharp 的绝对路径(可交给启动器当 hostCommand); ServiceReport 是 `host install-service` 的输出(复用时为空)。 */
-    public sealed record Result(string CommandPath, bool AlreadyPresent, string? ServiceReport = null);
+    /** 部署结果: CommandPath 为远端 dsharp 的绝对路径(可交给启动器当 hostCommand)。 */
+    public sealed record Result(string CommandPath, bool AlreadyPresent);
 
     /** 远端现状: 平台、解析出的 harness home、找到的 dsharp(优先本工具的部署目录)及其部署版本标记。 */
     public sealed record Installation(string Rid, string HarnessHome, string? CommandPath, string? Version);
@@ -61,9 +61,7 @@ public static class RemoteDsharpInstaller
         var stop = StopHostCommand(installation.CommandPath);
         var deployed = await DeployAsync(machine, settings, installation.Rid, stop, progress, archiveFactory, localProxy, cancellationToken).ConfigureAwait(false);
         await WriteIdentityAsync(machine, installation.Rid, identity, cancellationToken).ConfigureAwait(false);
-        var report = await InstallServiceAsync(machine, deployed, cancellationToken).ConfigureAwait(false);
-        progress?.Invoke(report);
-        return new Result(deployed, false, report);
+        return new Result(deployed, false);
     }
 
     /** 只探测不部署: 识别平台(Windows 抛 NotSupportedException), 解析 harness home, 找出 dsharp 与其部署版本。 */
@@ -129,7 +127,7 @@ public static class RemoteDsharpInstaller
     /**
      * 停掉由 installedPath 这个二进制跑着的宿主(所有 harness home), 并等它们退出, 让新部署在下一次连接时生效。
      * `host --serve --stdio` 只把 stdio 桥接到已有的宿主, 不停的话新二进制永远不会被加载。
-     * 只匹配该路径的 `host serve`, 不碰同一台机器上别的 dsharp; 该路径由 systemd 单元托管时先经 systemctl 停止, 免得被当成崩溃重启。
+     * 只匹配该路径的 `host serve`, 不碰同一台机器上别的 dsharp; 外部服务的停启由用户自行管理。
      * 模式里的 `[h]ost` 让 pkill/pgrep 不匹配到执行脚本的 shell 自己(它的命令行里只有字面量 "[h]ost")。
      */
     public static string StopHostCommand(string? installedPath)
@@ -137,9 +135,7 @@ public static class RemoteDsharpInstaller
         if (string.IsNullOrEmpty(installedPath))
             return "";
         var pattern = RemoteShell.Quote($"{Regex.Escape(installedPath)} [h]ost serve");
-        return RemoteShell.ResolveUnit
-            + $"if [ -f \"$u\" ] && grep -qF {RemoteShell.Quote(installedPath)} \"$u\"; then systemctl --user stop {RemoteShell.ServiceUnit} >/dev/null 2>&1 || true; fi; "
-            + $"pkill -f {pattern} >/dev/null 2>&1 || true; "
+        return $"pkill -f {pattern} >/dev/null 2>&1 || true; "
             + $"i=0; while pgrep -f {pattern} >/dev/null 2>&1 && [ $i -lt {StopWaitAttempts} ]; do sleep 0.2; i=$((i+1)); done; ";
     }
 
@@ -202,17 +198,6 @@ public static class RemoteDsharpInstaller
             machine,
             $"printf '%s' '{identity.Replace("'", "", StringComparison.Ordinal)}' > \"$HOME/.dsharp/{rid}/{VersionFileName}\"",
             cancellationToken);
-
-    /** 用新部署的二进制让宿主常驻(systemd 用户服务, 无 systemd 时它自己退回 nohup); 失败不算部署失败, 返回可读的原因。 */
-    private static async Task<string> InstallServiceAsync(MachineSpec machine, string commandPath, CancellationToken cancellationToken)
-    {
-        var command = $"{RemoteShell.Prelude(machine)}{RemoteShell.Quote(commandPath)} host install-service 2>&1";
-        var result = await SshHostLauncher.RunRemoteCaptureAsync(machine, command, cancellationToken).ConfigureAwait(false);
-        var output = result.StdOut.Trim();
-        return result.ExitCode == 0
-            ? $"host install-service: {output}"
-            : $"host install-service 失败({result.ExitCode}): {output} {result.FailureDetail}";
-    }
 
     /** 远端平台识别: 先 `uname`(POSIX), 失败再试 PowerShell / cmd(Windows 远端默认 shell 多为 cmd)。 */
     private static async Task<string> DetectRidAsync(MachineSpec machine, CancellationToken cancellationToken)
