@@ -1,5 +1,8 @@
+using System.Collections;
+using System.Text.Json;
 using Dsh.Notifications;
 using Dsh.RemoteHost;
+using Dsh.Transport;
 
 namespace Dsh.Tests;
 
@@ -87,6 +90,54 @@ public sealed class RemoteHostNotifyTests
     }
 
     [Fact(Timeout = 60000)]
+    public async Task RpcList_DuringReadCommit_ReturnsAtomicFilteredPages_AndCanCancelWaiting()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("mnl", Ct);
+        var client = await host.ConnectAsync("reader", Ct);
+        var changes = client.Notifications.NotificationChangesAsync(Ct);
+        await RemoteHostMultiClientTests.NextAsync(changes);
+        var notifications = host.Backend.Notifications!;
+        notifications.Report(NotificationKind.Info, "target", "first", id: "first");
+        notifications.Report(NotificationKind.Info, "target", "second", id: "second");
+        notifications.Report(NotificationKind.Info, "other", "outside filter", id: "other");
+        await RemoteHostMultiClientTests.NextAsync(changes, change => change.Added?.Id == "other");
+
+        using var ids = new PausedReadIds(["first", "second"], Ct);
+        var marking = Task.Run(() => notifications.MarkReadAsync(new RemoteNotifyMarkRead(ids), Ct), Ct);
+        try
+        {
+            await ids.Entered.Task.WaitAsync(Ct);
+            var paged = QueryRpcAsync(notifications, new RemoteNotifyQuery(SessionId: "target", Kinds: [NotificationKind.Info], Offset: 1, Limit: 1), Ct);
+            var unread = QueryRpcAsync(notifications, new RemoteNotifyQuery(SessionId: "target", UnreadOnly: true), Ct);
+            Assert.False(paged.IsCompleted);
+            Assert.False(unread.IsCompleted);
+            using var canceled = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            var waiting = QueryRpcAsync(notifications, new RemoteNotifyQuery(), canceled.Token);
+            await canceled.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+
+            ids.Resume();
+            Assert.Equal(2, await marking);
+            var page = await paged;
+            var item = Assert.Single(page.Items);
+            Assert.Equal(("first", true, 2, 1), (item.Id, item.IsRead, page.Total, page.UnreadCount));
+            var unreadPage = await unread;
+            Assert.Empty(unreadPage.Items);
+            Assert.Equal((0, 1), (unreadPage.Total, unreadPage.UnreadCount));
+            var committed = await RemoteHostMultiClientTests.NextAsync(changes, change => change.ReadIds is not null);
+            Assert.Equal(["first", "second"], committed.ReadIds);
+            Assert.Equal((3, 1), (committed.Page.Total, committed.Page.UnreadCount));
+            Assert.All(committed.Page.Items.Where(record => record.SessionId == "target"), record => Assert.True(record.IsRead));
+            Assert.False(Assert.Single(committed.Page.Items, record => record.Id == "other").IsRead);
+        }
+        finally
+        {
+            ids.Resume();
+            await marking;
+        }
+    }
+
+    [Fact(Timeout = 60000)]
     public async Task SessionExit_IsRecordedWithItsExitCode_AndListFiltersAndPages()
     {
         if (OperatingSystem.IsWindows())
@@ -114,5 +165,34 @@ public sealed class RemoteHostNotifyTests
         Assert.Equal(first, Assert.Single(unread.Items).SessionId);
         Assert.Equal((2, 1), (paged.Total, paged.UnreadCount));
         Assert.Equal(first, Assert.Single(paged.Items).SessionId);
+    }
+
+    private static async Task<RemoteNotifyPage> QueryRpcAsync(HostNotificationCenter notifications, RemoteNotifyQuery query, CancellationToken cancellationToken)
+    {
+        var message = new JsonRpcMessage
+        {
+            Method = NotificationsProtocol.MethodNotifyList,
+            Params = JsonSerializer.SerializeToElement(query, NotificationsProtocolJsonContext.Default.RemoteNotifyQuery)
+        };
+        var result = await HostNotifyMethods.HandleAsync(notifications, NotificationsProtocol.MethodNotifyList, message, cancellationToken);
+        return JsonSerializer.Deserialize(result!.Value, NotificationsProtocolJsonContext.Default.RemoteNotifyPage)!;
+    }
+
+    /** Pauses the real read operation after it owns the mutation gate, before it commits to NotificationHistory. */
+    private sealed class PausedReadIds(IReadOnlyList<string> ids, CancellationToken cancellationToken) : IReadOnlyList<string>, IDisposable
+    {
+        private readonly ManualResetEventSlim _resume = new();
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Count => ids.Count;
+        public string this[int index] => ids[index];
+        public IEnumerator<string> GetEnumerator()
+        {
+            Entered.TrySetResult();
+            _resume.Wait(cancellationToken);
+            return ids.GetEnumerator();
+        }
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+        public void Resume() => _resume.Set();
+        public void Dispose() => _resume.Dispose();
     }
 }

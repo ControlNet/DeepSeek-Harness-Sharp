@@ -14,7 +14,7 @@ internal static class HostNotifyMethods
             case NotificationsProtocol.MethodNotifyList:
             {
                 var query = message.Params is { } element ? JsonSerializer.Deserialize(element, NotificationsProtocolJsonContext.Default.RemoteNotifyQuery) : null;
-                return Serialize(notifications.Query(query ?? new RemoteNotifyQuery()), NotificationsProtocolJsonContext.Default.RemoteNotifyPage);
+                return Serialize(await notifications.QueryAsync(query ?? new RemoteNotifyQuery(), cancellationToken).ConfigureAwait(false), NotificationsProtocolJsonContext.Default.RemoteNotifyPage);
             }
             case NotificationsProtocol.MethodNotifyMarkRead:
             {

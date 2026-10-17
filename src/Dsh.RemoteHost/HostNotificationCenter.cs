@@ -58,14 +58,18 @@ public sealed class HostNotificationCenter : IAsyncDisposable
         }
     }
 
-    public RemoteNotifyPage Query(RemoteNotifyQuery query)
+    /** List items and counters share one committed state with appends, read marks, and push snapshots. */
+    public async Task<RemoteNotifyPage> QueryAsync(RemoteNotifyQuery query, CancellationToken cancellationToken)
     {
-        var kinds = query.Kinds is { Count: > 0 } wanted ? wanted.ToHashSet() : null;
-        var matching = _history.Query(new NotificationFilter(SessionId: query.SessionId, UnreadOnly: query.UnreadOnly))
-            .Where(record => kinds?.Contains(record.Kind) != false)
-            .ToList();
-        var size = Math.Clamp(query.Limit ?? DefaultPageSize, 1, MaxPageSize);
-        return new RemoteNotifyPage([.. matching.Skip(Math.Max(query.Offset, 0)).Take(size)], matching.Count, _history.CountUnread());
+        await _updates.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return QuerySnapshot(query);
+        }
+        finally
+        {
+            _updates.Release();
+        }
     }
 
     /** Marks notifications read and tells every client which ones changed; returns how many changed. */
@@ -135,9 +139,20 @@ public sealed class HostNotificationCenter : IAsyncDisposable
         }
     }
 
+    /** The caller holds _updates; push construction must not acquire the non-reentrant gate again. */
+    private RemoteNotifyPage QuerySnapshot(RemoteNotifyQuery query)
+    {
+        var kinds = query.Kinds is { Count: > 0 } wanted ? wanted.ToHashSet() : null;
+        var matching = _history.Query(new NotificationFilter(SessionId: query.SessionId, UnreadOnly: query.UnreadOnly))
+            .Where(record => kinds?.Contains(record.Kind) != false)
+            .ToList();
+        var size = Math.Clamp(query.Limit ?? DefaultPageSize, 1, MaxPageSize);
+        return new RemoteNotifyPage([.. matching.Skip(Math.Max(query.Offset, 0)).Take(size)], matching.Count, _history.CountUnread());
+    }
+
     private HostNotification Change(NotificationRecord? added = null, IReadOnlyList<string>? readIds = null)
         => HostNotification.Create(NotificationsProtocol.NotificationNotifyChanged,
-            new RemoteNotificationChange(Query(new RemoteNotifyQuery(Limit: SnapshotLimit)), added, readIds),
+            new RemoteNotificationChange(QuerySnapshot(new RemoteNotifyQuery(Limit: SnapshotLimit)), added, readIds),
             NotificationsProtocolJsonContext.Default.RemoteNotificationChange);
 
     /** Stops listening first, so sessions ended by the host's own shutdown do not land in the history. */
