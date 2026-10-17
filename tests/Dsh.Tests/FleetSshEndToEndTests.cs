@@ -144,9 +144,7 @@ public sealed class FleetSshEndToEndTests
         {
             var direct = server.Machine("download-proxy", harness);
             // Another authenticated SSH connection to the real sshd proxies direct-tcpip, not an echo stand-in.
-            var proxy = $"ssh -T -p {direct.Port} -i {RemoteShell.Quote(direct.KeyPath!)} "
-                + string.Join(' ', direct.SshOptions!.Select(option => $"-o {RemoteShell.Quote(option)}"))
-                + $" -o BatchMode=yes -o IdentitiesOnly=yes -W %h:%p {direct.User}@{direct.Host}";
+            var proxy = $"ssh -T -p {direct.Port} -i {RemoteShell.Quote(direct.KeyPath!)} {string.Join(' ', direct.SshOptions!.Select(option => $"-o {RemoteShell.Quote(option)}"))} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes -W %h:%p {direct.User}@{direct.Host}";
             var machine = direct with { Proxy = proxy };
             var archive = await BuildArchiveAsync(executable, Rid, server.Root, Ct);
             var serving = ServeReleaseAsync(listener, archive, transferCancellation.Token);

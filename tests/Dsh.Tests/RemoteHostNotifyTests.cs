@@ -92,7 +92,7 @@ public sealed class RemoteHostNotifyTests
     [Fact(Timeout = 60000)]
     public async Task RpcList_DuringReadCommit_ReturnsAtomicFilteredPages_AndCanCancelWaiting()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("mnl", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("mnl", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("reader", Ct);
         var changes = client.Notifications.NotificationChangesAsync(Ct);
         await RemoteHostMultiClientTests.NextAsync(changes);

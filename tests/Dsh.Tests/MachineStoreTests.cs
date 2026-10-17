@@ -74,9 +74,7 @@ public sealed class MachineStoreTests : IDisposable
         var home = new HarnessHome(_root);
         var machine = MachineSpec.Ssh("keep", "keep.internal", 22, "dev", SshAuth.Agent);
         var store = new MachineStore(home);
-        if (configured)
-            store.Save(new FleetConfig([machine], new DeploySettings { ServerProxy = "http://remote-proxy:3128" }));
-        File.AppendAllText(home.SettingsFile, """
+        File.WriteAllText(home.SettingsFile, """
 
             plugins:
               "@deepseek-ai/dsh-gui":
@@ -84,6 +82,8 @@ public sealed class MachineStoreTests : IDisposable
                 remoteAutoDeploy: false
                 remoteDownloadProxy: http://ignored-proxy:3128
             """);
+        if (configured)
+            store.Save(new FleetConfig([machine], new DeploySettings { ServerProxy = "http://remote-proxy:3128" }));
         var original = File.ReadAllText(home.SettingsFile);
         var unrelatedFile = Path.Combine(_root, "fleet", "machines.json");
         Directory.CreateDirectory(Path.GetDirectoryName(unrelatedFile)!);
