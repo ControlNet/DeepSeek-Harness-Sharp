@@ -7,9 +7,8 @@ namespace Dsh.RemoteHost;
 /** Connection-local PTY RPC adapter. The connection owns subscription pumps, not PTY lifetimes. */
 internal sealed class HostPtyMethods(
     IRemotePtyBackend backend,
-    Action<string, IAsyncEnumerable<RemotePtyOutput>> attach,
-    Action<string> detach,
-    CancellationToken lifetime)
+    Func<string, string, Task> attach,
+    Action<string> detach)
 {
     public async ValueTask<JsonElement?> HandleAsync(string name, JsonRpcMessage message, CancellationToken cancellationToken)
     {
@@ -39,8 +38,7 @@ internal sealed class HostPtyMethods(
             case PtyProtocol.MethodPtyAttach:
             {
                 var request = Require(message, PtyProtocolJsonContext.Default.RemotePtyAttachRequest, "pty attach requires ptyId and subscriptionId");
-                var output = await backend.AttachPtyAsync(request.PtyId, lifetime).ConfigureAwait(false);
-                attach(request.SubscriptionId, output);
+                await attach(request.SubscriptionId, request.PtyId).ConfigureAwait(false);
                 return True;
             }
             case PtyProtocol.MethodPtyDetach:

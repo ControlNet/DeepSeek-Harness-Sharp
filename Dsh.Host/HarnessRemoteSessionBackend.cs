@@ -130,7 +130,7 @@ internal sealed class HarnessRemoteSessionBackend(HarnessRemoteRuntime runtime, 
     }
 
     /** Install live listeners before taking history so subscribe replies cannot lose subsequent events. */
-    public async Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+    public async Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
     {
         var id = SessionId.Create(sessionId);
         var session = agents.IsAcp(sessionId)
@@ -154,45 +154,48 @@ internal sealed class HarnessRemoteSessionBackend(HarnessRemoteRuntime runtime, 
             foreach (var item in notification.Session.SnapshotEvents())
                 buffer.Writer.TryWrite(ToInfo(sessionId, item));
         });
-        var history = session?.SnapshotEvents(reset ? 0 : fromSeq) ?? ReadPersisted(id, reset ? 0 : fromSeq);
-        return LiveEventsAsync(sessionId, history, buffer, () =>
+        ValueTask Release()
         {
             unsubscribeTruncate();
-            return unsubscribe();
-        }, fromSeq, reset, cancellationToken);
+            unsubscribe();
+            buffer.Writer.TryComplete();
+            return ValueTask.CompletedTask;
+        }
+        try
+        {
+            var history = session?.SnapshotEvents(reset ? 0 : fromSeq) ?? ReadPersisted(id, reset ? 0 : fromSeq);
+            return new RemoteHostStream<RemoteEventInfo>(
+                LiveEventsAsync(sessionId, history, buffer, fromSeq, reset, cancellationToken), Release);
+        }
+        catch
+        {
+            await Release().ConfigureAwait(false);
+            throw;
+        }
     }
 
     private static async IAsyncEnumerable<RemoteEventInfo> LiveEventsAsync(
         string sessionId,
         IReadOnlyList<SessionEvent> history,
         Channel<RemoteEventInfo> buffer,
-        Func<bool> unsubscribe,
         long fromSeq,
         bool reset,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        try
+        var next = reset ? 0 : fromSeq;
+        if (reset)
+            yield return new RemoteEventInfo(sessionId, "", 0, Reset: true);
+        foreach (var sessionEvent in history)
         {
-            var next = reset ? 0 : fromSeq;
-            if (reset)
-                yield return new RemoteEventInfo(sessionId, "", 0, Reset: true);
-            foreach (var sessionEvent in history)
-            {
-                next = sessionEvent.Seq + 1;
-                yield return ToInfo(sessionId, sessionEvent);
-            }
-            await foreach (var item in buffer.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-            {
-                if (!item.Reset && item.Sequence < next)
-                    continue;
-                next = item.Reset ? 0 : item.Sequence + 1;
-                yield return item;
-            }
+            next = sessionEvent.Seq + 1;
+            yield return ToInfo(sessionId, sessionEvent);
         }
-        finally
+        await foreach (var item in buffer.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
-            unsubscribe();
-            buffer.Writer.TryComplete();
+            if (!item.Reset && item.Sequence < next)
+                continue;
+            next = item.Reset ? 0 : item.Sequence + 1;
+            yield return item;
         }
     }
 

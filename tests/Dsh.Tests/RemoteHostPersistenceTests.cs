@@ -239,8 +239,8 @@ public sealed class RemoteHostPersistenceTests
         public Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<string>>([]);
 
-        public Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
-            => Task.FromResult(AsyncEnumerable.Empty<RemoteEventInfo>());
+        public Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+            => Task.FromResult(new RemoteHostStream<RemoteEventInfo>(AsyncEnumerable.Empty<RemoteEventInfo>()));
 
         public async ValueTask DisposeAsync()
         {

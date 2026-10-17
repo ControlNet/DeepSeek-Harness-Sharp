@@ -153,25 +153,25 @@ public sealed class RemoteHostReaderInitializationTests
         public Task WritePtyAsync(string id, byte[] data, CancellationToken ct) => backend.Pty!.WritePtyAsync(id, data, ct);
         public Task ResizePtyAsync(string id, int columns, int rows, CancellationToken ct) => backend.Pty!.ResizePtyAsync(id, columns, rows, ct);
         public Task StopPtyAsync(string id, CancellationToken ct) => backend.Pty!.StopPtyAsync(id, ct);
-        public async Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string id, long from, CancellationToken ct)
+        public async Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string id, long from, CancellationToken ct)
             => await DelayAsync(await backend.Session.SubscribeAsync(id, from, ct), false, ct);
-        public async Task<IAsyncEnumerable<RemotePtyOutput>> AttachPtyAsync(string id, CancellationToken ct)
+        public async Task<RemoteHostStream<RemotePtyOutput>> AttachPtyAsync(string id, CancellationToken ct)
             => await DelayAsync(await backend.Pty!.AttachPtyAsync(id, ct), true, ct);
 
-        private async Task<IAsyncEnumerable<T>> DelayAsync<T>(IAsyncEnumerable<T> stream, bool pty, CancellationToken ct)
+        private async Task<RemoteHostStream<T>> DelayAsync<T>(RemoteHostStream<T> stream, bool pty, CancellationToken ct)
         {
             if (pty != delayPty || Interlocked.Exchange(ref _delayed, 1) != 0)
                 return stream;
             var reader = stream.GetAsyncEnumerator(ct);
             Assert.True(await reader.MoveNextAsync());
-            var observed = new ObservedStream<T>(reader, ReaderReleased);
+            var observed = new ObservedStream<T>(reader, stream, ReaderReleased);
             Ready.TrySetResult();
             await Release.Task; // Intentionally finishes after stop, like an asynchronous acquisition already in flight.
-            return observed;
+            return new RemoteHostStream<T>(observed, observed.DisposeAsync);
         }
     }
 
-    private sealed class ObservedStream<T>(IAsyncEnumerator<T> reader, TaskCompletionSource released) : IAsyncEnumerable<T>, IAsyncDisposable
+    private sealed class ObservedStream<T>(IAsyncEnumerator<T> reader, IAsyncDisposable owner, TaskCompletionSource released) : IAsyncEnumerable<T>, IAsyncDisposable
     {
         private int _disposed;
         public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
@@ -196,7 +196,14 @@ public sealed class RemoteHostReaderInitializationTests
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
-            await reader.DisposeAsync();
+            try
+            {
+                await reader.DisposeAsync();
+            }
+            finally
+            {
+                await owner.DisposeAsync();
+            }
             released.TrySetResult();
         }
     }

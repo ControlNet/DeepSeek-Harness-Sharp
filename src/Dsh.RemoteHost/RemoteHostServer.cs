@@ -180,7 +180,7 @@ public sealed class RemoteHostServer(
                 Register(AgentProtocol.Methods, (name, message, ct) => HostAgentMethods.HandleAsync(agent, name, message, ct));
             if (backend.Pty is { } pty)
             {
-                var handler = new HostPtyMethods(pty, StartPtyPump, _ptyPumps.Stop, lifetime);
+                var handler = new HostPtyMethods(pty, (subscriptionId, ptyId) => StartPtyPumpAsync(pty, subscriptionId, ptyId), _ptyPumps.Stop);
                 Register(PtyProtocol.Methods, handler.HandleAsync);
             }
             if (backend.Files is { } files)
@@ -203,9 +203,10 @@ public sealed class RemoteHostServer(
                 _domainHandlers.Add(method, handler);
         }
 
-        private void StartPtyPump(string subscriptionId, IAsyncEnumerable<RemotePtyOutput> output)
-            => _ptyPumps.Start(subscriptionId, token => PumpAsync(output, PtyProtocol.NotificationPtyOutput,
-                item => new RemotePtyFrame(subscriptionId, item), PtyProtocolJsonContext.Default.RemotePtyFrame, token));
+        private Task StartPtyPumpAsync(IRemotePtyBackend backend, string subscriptionId, string ptyId)
+            => _ptyPumps.StartAsync(subscriptionId, token => backend.AttachPtyAsync(ptyId, token),
+                (output, token) => PumpAsync(output, PtyProtocol.NotificationPtyOutput,
+                    item => new RemotePtyFrame(subscriptionId, item), PtyProtocolJsonContext.Default.RemotePtyFrame, token));
 
         private async Task<HostHelloResponse> HelloAsync(JsonRpcMessage message)
         {
@@ -265,8 +266,10 @@ public sealed class RemoteHostServer(
                 case HostProtocol.MethodSessionSubscribe:
                 {
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteSubscribeRequest, "subscribe requires sessionId");
-                    var events = await backend.Session.SubscribeAsync(request.SessionId, request.FromSeq, lifetime).ConfigureAwait(false);
-                    _eventPumps.Start(request.SubscriptionId, token => PumpAsync(events, HostProtocol.NotificationEvent, item => new RemoteEventFrame(request.SubscriptionId, item), HostProtocolJsonContext.Default.RemoteEventFrame, token));
+                    await _eventPumps.StartAsync(request.SubscriptionId,
+                        token => backend.Session.SubscribeAsync(request.SessionId, request.FromSeq, token),
+                        (events, token) => PumpAsync(events, HostProtocol.NotificationEvent,
+                            item => new RemoteEventFrame(request.SubscriptionId, item), HostProtocolJsonContext.Default.RemoteEventFrame, token)).ConfigureAwait(false);
                     return True;
                 }
                 case HostProtocol.MethodSessionUnsubscribe:
@@ -378,34 +381,71 @@ public sealed class RemoteHostServer(
     private sealed class KeyedPumps(CancellationToken lifetime)
     {
         private readonly Dictionary<string, CancellationTokenSource> _pumps = new(StringComparer.Ordinal);
+        private bool _stopped;
 
-        public void Start(string key, Func<CancellationToken, Task> pump)
+        /** Register before acquisition: detach owns cancellation even while the backend is awaiting its reader. */
+        public async Task StartAsync<T>(string key,
+            Func<CancellationToken, Task<RemoteHostStream<T>>> initialize,
+            Func<IAsyncEnumerable<T>, CancellationToken, Task> pump)
         {
             CancellationTokenSource source;
             lock (_pumps)
             {
+                if (_stopped)
+                    throw new OperationCanceledException(lifetime);
                 if (_pumps.Remove(key, out var existing))
                     existing.Cancel();
                 source = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
                 _pumps[key] = source;
             }
-            _ = RunAsync(key, source, pump);
-        }
-
-        private async Task RunAsync(string key, CancellationTokenSource source, Func<CancellationToken, Task> pump)
-        {
+            RemoteHostStream<T>? stream = null;
+            var handedOff = false;
             try
             {
-                await pump(source.Token).ConfigureAwait(false);
+                source.Token.ThrowIfCancellationRequested();
+                stream = await initialize(source.Token).ConfigureAwait(false);
+                source.Token.ThrowIfCancellationRequested();
+                handedOff = true;
+                _ = RunAsync(key, source, stream, pump);
             }
             finally
             {
-                lock (_pumps)
+                if (!handedOff)
                 {
-                    if (_pumps.TryGetValue(key, out var current) && ReferenceEquals(current, source))
-                        _pumps.Remove(key);
-                    source.Dispose();
+                    try
+                    {
+                        if (stream is not null)
+                            await stream.DisposeAsync().ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        Complete(key, source);
+                    }
                 }
+            }
+        }
+
+        private async Task RunAsync<T>(string key, CancellationTokenSource source, RemoteHostStream<T> stream,
+            Func<IAsyncEnumerable<T>, CancellationToken, Task> pump)
+        {
+            try
+            {
+                await using (stream.ConfigureAwait(false))
+                    await pump(stream, source.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                Complete(key, source);
+            }
+        }
+
+        private void Complete(string key, CancellationTokenSource source)
+        {
+            lock (_pumps)
+            {
+                if (_pumps.TryGetValue(key, out var current) && ReferenceEquals(current, source))
+                    _pumps.Remove(key);
+                source.Dispose();
             }
         }
 
@@ -420,6 +460,7 @@ public sealed class RemoteHostServer(
         {
             lock (_pumps)
             {
+                _stopped = true;
                 var sources = _pumps.Values.ToArray();
                 _pumps.Clear();
                 foreach (var source in sources)

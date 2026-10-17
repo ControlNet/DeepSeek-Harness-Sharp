@@ -17,6 +17,6 @@ internal sealed class HarnessRemotePtyBackend(HostPtySessions sessions) : IRemot
     public Task StopPtyAsync(string ptyId, CancellationToken cancellationToken)
         => sessions.StopAsync(ptyId, cancellationToken);
 
-    public Task<IAsyncEnumerable<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken)
+    public Task<RemoteHostStream<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken)
         => sessions.AttachAsync(ptyId, cancellationToken);
 }

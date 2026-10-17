@@ -366,18 +366,18 @@ public sealed class RemoteHostCapabilityTests
             return Task.CompletedTask;
         }
 
-        public Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+        public Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
         {
             var channel = _events.TryGetValue(sessionId, out var existing)
                 ? existing
                 : _events[sessionId] = Channel.CreateUnbounded<RemoteEventInfo>();
             Subscribed.TrySetResult();
-            return Task.FromResult(channel.Reader.ReadAllAsync(cancellationToken));
+            return Task.FromResult(new RemoteHostStream<RemoteEventInfo>(channel.Reader.ReadAllAsync(cancellationToken)));
         }
 
-        public Task<IAsyncEnumerable<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken)
+        public Task<RemoteHostStream<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken)
             => _pty.TryGetValue(ptyId, out var channel)
-                ? Task.FromResult(channel.Reader.ReadAllAsync(cancellationToken))
+                ? Task.FromResult(new RemoteHostStream<RemotePtyOutput>(channel.Reader.ReadAllAsync(cancellationToken)))
                 : throw new InvalidOperationException($"PTY session not found: {ptyId}");
 
         /** Every live host connection holds one pending-decision subscription, so this counts open host connections. */

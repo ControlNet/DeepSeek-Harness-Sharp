@@ -28,7 +28,7 @@ public interface IRemoteSessionBackend
     Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken);
     Task InterruptAsync(string sessionId, CancellationToken cancellationToken);
     Task<IReadOnlyList<string>> ListToolsAsync(string sessionId, CancellationToken cancellationToken);
-    Task<IAsyncEnumerable<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken);
+    Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken);
 }
 
 public interface IRemoteSessionEditingBackend
@@ -57,7 +57,7 @@ public interface IRemotePtyBackend
     Task WritePtyAsync(string ptyId, byte[] data, CancellationToken cancellationToken);
     Task ResizePtyAsync(string ptyId, int columns, int rows, CancellationToken cancellationToken);
     Task StopPtyAsync(string ptyId, CancellationToken cancellationToken);
-    Task<IAsyncEnumerable<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken);
+    Task<RemoteHostStream<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken);
 }
 
 public interface IRemotePluginsBackend

@@ -97,10 +97,10 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
     }
 
     /** 连接已有 PTY: 首帧是整屏快照, 已退出会话在快照后以 Eof 结束; 不存在则在订阅时失败。 */
-    public async Task<IAsyncEnumerable<RemotePtyOutput>> AttachAsync(string ptyId, CancellationToken cancellationToken)
+    public async Task<RemoteHostStream<RemotePtyOutput>> AttachAsync(string ptyId, CancellationToken cancellationToken)
     {
         var session = await PtyDaemonClient.SubscribeAsync(ptyId, daemon.SocketPath, daemon.PortFile, cancellationToken).ConfigureAwait(false);
-        return StreamAsync(ptyId, session, cancellationToken);
+        return new RemoteHostStream<RemotePtyOutput>(StreamAsync(ptyId, session, cancellationToken), session.DisposeAsync);
     }
 
     /** host 重启后对账: 登记表里的终端与外部 Agent 若仍在 daemon 里运行就复活并重新跟踪, 否则保持 Exited。 */
@@ -197,11 +197,8 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
 
     private static async IAsyncEnumerable<RemotePtyOutput> StreamAsync(string ptyId, PtyRemoteSession session, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await using (session.ConfigureAwait(false))
-        {
-            await foreach (var chunk in session.Output.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-                yield return new RemotePtyOutput(ptyId, Convert.ToBase64String(chunk), false);
-        }
+        await foreach (var chunk in session.Output.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            yield return new RemotePtyOutput(ptyId, Convert.ToBase64String(chunk), false);
         yield return new RemotePtyOutput(ptyId, "", true);
     }
 }
