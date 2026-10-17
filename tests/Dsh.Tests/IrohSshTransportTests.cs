@@ -1,0 +1,57 @@
+using Dsh.Boot;
+using Dsh.Fleet;
+
+namespace Dsh.Tests;
+
+public sealed class IrohSshTransportTests
+{
+    private static MachineSpec Machine => MachineSpec.Ssh("home", "bootstrap.invalid", 22, "dev", SshAuth.Agent) with
+    {
+        Kind = MachineKinds.Iroh,
+        EndpointId = new string('a', IrohSshTransport.EndpointIdLength),
+    };
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("127.0.0.1:22")]
+    [InlineData("host.example.org")]
+    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaag")]
+    public async Task InvalidEndpointCannotFallBackToOrdinaryTcp(string? endpoint)
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(() => SshHostLauncher.RunRemoteCaptureAsync(
+            Machine with { EndpointId = endpoint }, "true", TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData("ProxyCommand=nc localhost 22")]
+    [InlineData("proxycommand nc localhost 22")]
+    [InlineData("ProxyJump=jump")]
+    public async Task ExplicitIrohCannotBeOverriddenByAnotherSshRoute(string option)
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(() => SshHostLauncher.RunRemoteCaptureAsync(
+            Machine with { SshOptions = [option] }, "true", TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData("not-a-url")]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("https://user:secret@relay.example.org/")]
+    public void InvalidRelayDoesNotReplaceSavedMachine(string relay)
+    {
+        var root = TempTree.CreateDirectory("iroh-config");
+        try
+        {
+            var store = new MachineStore(new HarnessHome(root));
+            store.Upsert(Machine);
+
+            Assert.Throws<InvalidOperationException>(() => store.Upsert(Machine with { RelayUrls = [relay] }));
+
+            Assert.Null(Assert.Single(store.Load().Machines).RelayUrls);
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+}

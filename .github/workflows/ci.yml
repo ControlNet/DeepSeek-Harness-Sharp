@@ -60,6 +60,17 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
+      - name: 缓存固定源码构建的 iroh-ssh
+        uses: actions/cache@v4
+        with:
+          path: |
+            artifacts/iroh-ssh/*/iroh-ssh
+            artifacts/iroh-ssh/*/iroh-ssh.exe
+            artifacts/iroh-ssh/*/LICENSE.txt
+            artifacts/iroh-ssh/*/THIRD-PARTY-LICENSES.txt
+            artifacts/iroh-ssh/*/build.sha256
+          key: iroh-ssh-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-iroh-ssh.*') }}
+
       - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
         shell: bash
         run: |
@@ -102,6 +113,19 @@ jobs:
         run: >
           dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
           -p:DshNativeCompiler=${{ matrix.native-cc }}
+
+      - name: 校验测试与 CLI 构建自动携带 iroh-ssh
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE=iroh-ssh
+          if [ "$RUNNER_OS" = "Windows" ]; then FILE=iroh-ssh.exe; fi
+          for OUTPUT in tests/Dsh.Tests/bin/Debug/net10.0 DeepSeek-Harness-Sharp/bin/Debug/net10.0; do
+            "$OUTPUT/tools/$FILE" version
+            test -s "$OUTPUT/tools/iroh-ssh.LICENSE.txt"
+            test -s "$OUTPUT/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
+            test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
+          done
 
       - name: 安装 sqlite3（Windows；SQLitePCLRaw.provider.sqlite3 需要系统 sqlite3.dll，测试与 dsharp 都要）
         if: runner.os == 'Windows'
@@ -302,6 +326,17 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
+      - name: 缓存固定源码构建的 iroh-ssh
+        uses: actions/cache@v4
+        with:
+          path: |
+            artifacts/iroh-ssh/*/iroh-ssh
+            artifacts/iroh-ssh/*/iroh-ssh.exe
+            artifacts/iroh-ssh/*/LICENSE.txt
+            artifacts/iroh-ssh/*/THIRD-PARTY-LICENSES.txt
+            artifacts/iroh-ssh/*/build.sha256
+          key: iroh-ssh-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-iroh-ssh.*') }}
+
       - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
         shell: bash
         run: |
@@ -327,6 +362,20 @@ jobs:
           -p:DebugSymbols=false -p:DebugType=none
           -p:DshNativeCompiler=${{ matrix.native-cc }}
           --nologo -v m
+
+      - name: 校验 CLI 与 GUI 发布自动携带 iroh-ssh
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE=iroh-ssh
+          if [ "$RUNNER_OS" = "Windows" ]; then FILE=iroh-ssh.exe; fi
+          for PROJECT in DeepSeek-Harness-Sharp DshGuiHost; do
+            OUTPUT="$PROJECT/bin/Release/net10.0/${{ matrix.rid }}/publish"
+            "$OUTPUT/tools/$FILE" version
+            test -s "$OUTPUT/tools/iroh-ssh.LICENSE.txt"
+            test -s "$OUTPUT/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
+            test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
+          done
 
       - name: 校验发布产物含原生故障遏制库
         shell: bash
@@ -389,6 +438,17 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
+      - name: 缓存固定源码构建的 iroh-ssh
+        uses: actions/cache@v4
+        with:
+          path: |
+            artifacts/iroh-ssh/*/iroh-ssh
+            artifacts/iroh-ssh/*/iroh-ssh.exe
+            artifacts/iroh-ssh/*/LICENSE.txt
+            artifacts/iroh-ssh/*/THIRD-PARTY-LICENSES.txt
+            artifacts/iroh-ssh/*/build.sha256
+          key: iroh-ssh-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-iroh-ssh.*') }}
+
       - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
         shell: bash
         run: |
@@ -428,6 +488,14 @@ jobs:
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
           GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
           test -d "$GUI_PUB"
+          FILE=iroh-ssh
+          if [ "$RUNNER_OS" = "Windows" ]; then FILE=iroh-ssh.exe; fi
+          for OUTPUT in "$PUB" "$GUI_PUB"; do
+            "$OUTPUT/tools/$FILE" version
+            test -s "$OUTPUT/tools/iroh-ssh.LICENSE.txt"
+            test -s "$OUTPUT/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
+            test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
+          done
           cp -R "$GUI_PUB"/. "$PUB"/
           rm -f "$PUB"/dsh-gui*.pdb "$PUB"/dsh-gui*.dbg
           # 结构特征判别是否真的 AOT（JIT 发布同样会产出 apphost，光看文件存在拦不住）。

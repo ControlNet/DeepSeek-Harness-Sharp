@@ -81,6 +81,20 @@ public sealed class GuiViewsHeadlessTests
 
             Assert.Equal(["local", "build"], rows);
             Assert.True(hostBox.IsEffectivelyVisible);
+
+            viewModel.Editor!.Kind = MachineKinds.Iroh;
+            viewModel.Editor.EndpointId = new string('a', 64);
+            Dispatcher.UIThread.RunJobs();
+            var endpointBox = window.GetVisualDescendants().OfType<TextBox>().Single(box => box.Text == new string('a', 64));
+            Assert.False(hostBox.IsEffectivelyVisible);
+            Assert.True(endpointBox.IsEffectivelyVisible);
+            Assert.True(window.GetVisualDescendants().OfType<TextBox>().Single(box => box.Text == "dev").IsEffectivelyVisible);
+            Assert.True(window.GetVisualDescendants().OfType<ComboBox>().Single(box => Equals(box.SelectedItem, SshAuth.Agent)).IsEffectivelyVisible);
+            endpointBox.Text = new string('b', 64);
+            await viewModel.SaveCommand.ExecuteAsync(null);
+            Assert.False(viewModel.StatusIsError, viewModel.Status);
+            var converted = Assert.Single(store.Load().Machines);
+            Assert.Equal((MachineKinds.Iroh, "build.internal", new string('b', 64)), (converted.Kind, converted.Host, converted.EndpointId));
             window.Close();
         }
         finally

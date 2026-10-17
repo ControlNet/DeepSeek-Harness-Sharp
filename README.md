@@ -244,6 +244,63 @@ network:
     bypass: [example.com, "*.example.org"]
 ```
 
+### 通过 iroh 接入没有公网 SSH 地址的机器
+
+普通 SSH 保持不变；选择 SSH-over-iroh 后，客户端通过稳定的 Endpoint ID 寻址，能直连时直连，否则使用可达的 relay。
+完整发行包自带固定版本的 `iroh-ssh`，无需另装 iroh 或手写 `ProxyCommand`；请保留安装目录中的 `tools/` 及许可文件，系统 OpenSSH 的 `ssh`、`scp` 仍需可用。
+WebBridge 使用运行它的那台机器上的组件，浏览器设备无需安装 iroh；浏览器到 WebBridge 的网络可达性仍需单独解决。
+
+**已有一次可达的 SSH 连接：**
+
+```bash
+dsharp machine add home --host 192.168.1.20 --user dev --auth key --key ~/.ssh/id_ed25519
+dsharp machine enable-iroh home
+dsharp machine test home
+```
+
+GUI 中添加或选择普通 SSH 机器，然后点击「通过现有 SSH 启用 Iroh」。
+客户端单独部署接收端，通过真实 iroh SSH 命令验证认证与身份后才保存转换后的机器配置，不替换正在运行的 Host。
+失败或取消保留原 SSH 配置；本次新启动的接收端会回滚，已有运行中的接收端只复用、不擅自重配。
+如果 SSH 本身已经断开而无法确认回滚，错误会明确要求在目标端运行 `dsharp remote disable`，不把清理失败当作成功。
+
+**客户端完全无法 SSH 到达目标：**
+
+先通过本机操作、云控制台或其他已有方式，把包含此功能的完整发行包放到目标机器并运行：
+
+```bash
+dsharp remote enable                         # 默认连接目标本机 127.0.0.1:22 的 sshd
+dsharp remote info                           # 显示 endpointId、运行状态和后台服务说明
+dsharp remote disable                        # 停止接入，保留身份、原有 sshd 和 Host 会话
+```
+
+自定义 sshd 端口使用 `dsharp remote enable --ssh-port 2222`。
+未检测到本机 SSH 服务时会给出对应平台的安装或启用指引，不自动提权、改防火墙或安装另一套 SSH 服务。
+在客户端选择「新增 Iroh 机器」，填写目标端显示的 Endpoint ID、SSH 用户和认证信息；命令行等价入口为：
+
+```bash
+dsharp machine add home --endpoint-id <endpoint-id> --user dev --auth key --key ~/.ssh/id_ed25519
+dsharp machine test home
+```
+
+Endpoint ID 不是登录密码；密码、密钥和 ssh-agent 认证及 SSH 主机密钥校验继续生效。
+SSH-over-iroh 使用独立的主机密钥别名，不借用普通 TCP SSH 的已建立连接；接收端离线或认证失败时不静默退回原 IP。
+私钥保存在目标 harness home 的 `iroh-receiver/identity/` 中，备份和恢复时保留整对身份文件；删除它们会改变 Endpoint ID。
+停止后重新启用会复用原身份。
+
+可在目标端 `remote enable`、客户端 `machine add` 或 `machine enable-iroh` 上重复传入 `--relay-url https://relay.example.net/`，GUI 中每行填写一个 relay URL。
+机器配置对应 `kind: iroh`、`endpointId` 与 `relayUrls`；未指定时使用上游默认 relay。
+双方需要可用的出站网络，无法直连时必须能访问所选 relay；公共 relay 没有本产品的可用性保证，带宽和服务限制以[上游说明](https://docs.iroh.computer/concepts/relays)为准。
+
+| 发行平台 | 从已有 SSH 自动启用目标 | 目标端后台运行机制 |
+|---|---|---|
+| Linux x64 | 支持 | 优先 systemd 用户服务；无用户管理器时为 detached 进程，重启后需重新启用 |
+| macOS arm64 | 支持 | 有图形登录会话时为登录启动的 LaunchAgent；否则为 detached 进程 |
+| Windows x64 | 不扩大现有 Windows 远端自动部署范围；在目标本地启用 | 当前用户登录启动的计划任务，不静默提权 |
+
+Linux systemd 用户服务跨退出登录或开机运行需要管理员按系统策略启用该用户的 linger，命令输出会说明当前机制。
+完整发行包以实际提供的 RID 资产为准；从源码构建会获取固定源码版本的 iroh-ssh，跨架构构建还需要相应编译器与目标工具链。
+
+
 ## 发布形态
 
 - 默认 Release:JIT + 裁剪 + 自包含。
@@ -263,6 +320,15 @@ network:
 ## 各版本新增功能
 
 0.1.1 起的发布说明未单独张贴,这里按版本折叠列出新增能力(0.1.0 的完整发布说明见[讨论区](https://github.com/deepseek-ai/deepseek-harness/discussions/8952))。
+
+<details>
+<summary><b>未发布</b> — SSH-over-iroh</summary>
+
+- 多机连接新增 Endpoint ID 接入、客户端内置 iroh-ssh、已有 SSH 自动启用与目标端本地启用两种入口，沿用原有 SSH 认证和 Fleet 会话生命周期。
+- 使用方法与平台差异见「通过 iroh 接入没有公网 SSH 地址的机器」。
+
+</details>
+
 
 <details>
 <summary><b>0.1.1</b> — SSH 远程工作区、macOS 支持、TUI 增强</summary>

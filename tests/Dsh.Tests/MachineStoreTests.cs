@@ -21,6 +21,13 @@ public sealed class MachineStoreTests : IDisposable
             MachineSpec.Ssh("build", "build-box.internal", 22, "builder", SshAuth.Password) with { Proxy = "nc -x 127.0.0.1:1080 %h %p", RemotePath = "~/work", Password = "null" },
             MachineSpec.Ssh("gpu", "gpu-box.internal", 2222, "dev", SshAuth.Key) with { KeyPath = "C:/keys/id_ed25519", HarnessHome = "~/.dsh-gpu", SshOptions = ["UserKnownHostsFile=/tmp/kh"] },
             MachineSpec.Local("/srv/second-home", "second"),
+            MachineSpec.Ssh("home", "", 22, "dev", SshAuth.Key) with
+            {
+                Kind = MachineKinds.Iroh,
+                EndpointId = new string('a', IrohSshTransport.EndpointIdLength),
+                RelayUrls = ["https://relay.example.org/"],
+                KeyPath = "/keys/home",
+            },
         ];
         store.Save(new FleetConfig(machines, new DeploySettings { AutoDeploy = false, Via = DownloadVia.Client, ReleaseVersion = "v0.2.0" }));
 
@@ -30,9 +37,11 @@ public sealed class MachineStoreTests : IDisposable
         Assert.Equal(machines[1] with { SshOptions = null }, reloaded.Machines[1] with { SshOptions = null });
         Assert.Equal(["UserKnownHostsFile=/tmp/kh"], reloaded.Machines[1].SshOptions);
         Assert.Equal(machines[2], reloaded.Machines[2]);
+        Assert.Equal(machines[3] with { RelayUrls = null }, reloaded.Machines[3] with { RelayUrls = null });
+        Assert.Equal(machines[3].RelayUrls, reloaded.Machines[3].RelayUrls);
         Assert.False(reloaded.Deploy.AutoDeploy);
         Assert.Equal(DownloadVia.Client, reloaded.Deploy.Via);
-        Assert.Equal([MachineSpec.LocalName, "build", "gpu", "second"], reloaded.AllMachines().Select(machine => machine.Name));
+        Assert.Equal([MachineSpec.LocalName, "build", "gpu", "second", "home"], reloaded.AllMachines().Select(machine => machine.Name));
         if (!OperatingSystem.IsWindows())
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(store.FilePath));
     }

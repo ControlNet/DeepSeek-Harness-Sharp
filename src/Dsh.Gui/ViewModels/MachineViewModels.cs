@@ -11,7 +11,7 @@ public sealed partial class MachineRowViewModel(MachineSpec spec, bool isImplici
 
     public string Name => spec.Name;
 
-    public string KindText => spec.IsLocal ? "本机" : "SSH";
+    public string KindText => spec.IsLocal ? "本机" : spec.IsIroh ? "SSH-over-iroh" : "SSH";
 
     public string Target => spec.Target;
 
@@ -82,7 +82,7 @@ public sealed class DoctorCheckRow(DoctorCheck check)
 
 /**
  * 新增或编辑一台机器的表单, 覆盖 MachineSpec 的全部字段。
- * 本机条目只用名称与 harness home; SSH 条目用主机、端口、用户、认证方式(密码/密钥/agent)、密钥路径、ProxyCommand、远端目录、远端 harness home 与额外 ssh 选项(每行一个 Key=Value)。
+ * 本机条目只用名称与 harness home; 普通 SSH 用主机, SSH-over-iroh 用 Endpoint ID, 两者共用 SSH 认证与远端设置。
  */
 public sealed partial class MachineEditorViewModel : ObservableObject
 {
@@ -90,7 +90,7 @@ public sealed partial class MachineEditorViewModel : ObservableObject
 
     public static IReadOnlyList<string> AuthModes { get; } = [SshAuth.Agent, SshAuth.Key, SshAuth.Password];
 
-    public static IReadOnlyList<string> Kinds { get; } = [MachineKinds.Ssh, MachineKinds.Local];
+    public static IReadOnlyList<string> Kinds { get; } = [MachineKinds.Ssh, MachineKinds.Iroh, MachineKinds.Local];
 
     /** 编辑已有机器时的原名称(改名保存时替换原记录); 新增时为 null。 */
     public string? OriginalName { get; init; }
@@ -101,11 +101,18 @@ public sealed partial class MachineEditorViewModel : ObservableObject
     private string _name = "";
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsSsh))]
+    [NotifyPropertyChangedFor(nameof(IsSsh), nameof(IsIroh), nameof(IsRemote))]
     private string _kind = MachineKinds.Ssh;
 
     [ObservableProperty]
     private string _host = "";
+
+    [ObservableProperty]
+    private string _endpointId = "";
+
+    /** 自定义 relay URL, 每行一个; 留空使用 iroh 默认 relay。 */
+    [ObservableProperty]
+    private string _relayUrls = "";
 
     [ObservableProperty]
     private string _port = MachineSpec.DefaultSshPort.ToString();
@@ -138,6 +145,10 @@ public sealed partial class MachineEditorViewModel : ObservableObject
 
     public bool IsSsh => Kind == MachineKinds.Ssh;
 
+    public bool IsIroh => Kind == MachineKinds.Iroh;
+
+    public bool IsRemote => IsSsh || IsIroh;
+
     public bool IsPassword => Auth == SshAuth.Password;
 
     public bool IsKey => Auth == SshAuth.Key;
@@ -148,6 +159,8 @@ public sealed partial class MachineEditorViewModel : ObservableObject
         Name = spec.Name,
         Kind = spec.Kind,
         Host = spec.Host,
+        EndpointId = spec.EndpointId ?? "",
+        RelayUrls = string.Join(Environment.NewLine, spec.RelayUrls ?? []),
         Port = spec.Port.ToString(),
         User = spec.User,
         Auth = spec.Auth,
@@ -163,16 +176,20 @@ public sealed partial class MachineEditorViewModel : ObservableObject
     public MachineSpec ToSpec()
     {
         var name = Name.Trim();
-        if (!IsSsh)
+        if (Kind == MachineKinds.Local)
             return MachineSpec.Local(Optional(HarnessHome) ?? throw new ArgumentException("本机条目需要填写 harness home（默认的本机已经隐式存在）"), name);
         if (!int.TryParse(Port.Trim(), out var port) || port is <= 0 or > MaxPort)
             throw new ArgumentException($"端口必须是 1-{MaxPort} 的整数");
         string[] options = [.. SshOptions.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0)];
+        string[] relays = [.. RelayUrls.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0)];
         return MachineSpec.Ssh(name, Host.Trim(), port, User.Trim(), Auth) with
         {
+            Kind = Kind,
+            EndpointId = IsIroh ? Optional(EndpointId) : null,
+            RelayUrls = relays.Length == 0 ? null : relays,
             KeyPath = IsKey ? Optional(KeyPath) : null,
             Password = IsPassword ? Password : null,
-            Proxy = Optional(Proxy),
+            Proxy = IsSsh ? Optional(Proxy) : null,
             RemotePath = Optional(RemotePath),
             HarnessHome = Optional(HarnessHome),
             SshOptions = options.Length == 0 ? null : options,

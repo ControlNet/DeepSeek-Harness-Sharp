@@ -16,6 +16,7 @@ internal static class FleetCli
     private const string MachineCommand = "machine";
     private const string SessionCommand = "session";
     private const string DoctorCommand = "doctor";
+    private const string RemoteCommand = "remote";
 
     /** The shell convention for a command stopped by Ctrl+C (128 + SIGINT). */
     private const int InterruptedExitCode = 130;
@@ -23,9 +24,9 @@ internal static class FleetCli
     private static readonly HashSet<string> Flags = ["--local", "--force", "--password-stdin"];
 
     private static readonly HashSet<string> ValueOptions =
-        ["--host", "--port", "--user", "--auth", "--key", "--proxy", "--remote-path", "--remote-home", "--ssh-option", "--home", "--machine"];
+        ["--host", "--port", "--user", "--auth", "--key", "--proxy", "--remote-path", "--remote-home", "--ssh-option", "--home", "--machine", "--endpoint-id", "--relay-url", "--ssh-port", "--activation"];
 
-    public static bool Handles(string[] args) => args is [MachineCommand or SessionCommand or DoctorCommand, ..];
+    public static bool Handles(string[] args) => args is [MachineCommand or SessionCommand or DoctorCommand or RemoteCommand, ..];
 
     /** resumeHarness opens a harness session of the local machine in this terminal's TUI. */
     public static async Task<int> RunAsync(HarnessHome home, string[] args, Func<HarnessHome, string, Task<int>> resumeHarness)
@@ -46,6 +47,7 @@ internal static class FleetCli
             {
                 MachineCommand => await RunMachineAsync(context),
                 SessionCommand => await RunSessionAsync(context),
+                RemoteCommand => await RunReceiverAsync(context),
                 _ => await RunDoctorAsync(context),
             };
         }
@@ -53,7 +55,7 @@ internal static class FleetCli
         {
             return InterruptedExitCode;
         }
-        catch (Exception failure) when (failure is InvalidOperationException or IOException or NotSupportedException or JsonRpcException or HttpRequestException)
+        catch (Exception failure) when (failure is InvalidOperationException or IOException or NotSupportedException or JsonRpcException or HttpRequestException or UnauthorizedAccessException or ArgumentException)
         {
             return await FailAsync(failure.Message);
         }
@@ -64,6 +66,8 @@ internal static class FleetCli
                dsharp machine add <name> --host <h> [--port N] [--user U] [--auth agent|key|password] [--key <path>] [--proxy <cmd>]
                                          [--remote-path <dir>] [--remote-home <dir>] [--ssh-option <o>]... [--password-stdin]
                dsharp machine add <name> --local --home <harness home>
+               dsharp machine add <name> --endpoint-id <id> [--relay-url <url>]... [SSH authentication options]
+               dsharp machine enable-iroh <name> [--relay-url <url>]...   (install over existing SSH, verify, then switch)
                dsharp machine remove <name>
                dsharp machine test <name>               (connect without deploying)
                dsharp machine deploy <name> [--force]   (install or upgrade dsharp on the machine)
@@ -71,6 +75,9 @@ internal static class FleetCli
                dsharp session attach <machine>/<session>   (terminal sessions; leave with Ctrl+])
                dsharp session stop <machine>/<session>
                dsharp doctor [--machine <name>]
+               dsharp remote enable [--ssh-port N] [--relay-url <url>]...   (enable this machine's receiver)
+               dsharp remote info
+               dsharp remote disable
         """;
 
     private static Task<int> RunMachineAsync(FleetCliContext context) => context.Arguments.Subcommand switch
@@ -80,7 +87,8 @@ internal static class FleetCli
         "remove" => RemoveMachineAsync(context),
         "test" => TestMachineAsync(context),
         "deploy" => DeployMachineAsync(context),
-        var other => FailAsync($"unknown machine subcommand \"{other}\" (list | add | remove | test | deploy)"),
+        "enable-iroh" => EnableIrohAsync(context),
+        var other => FailAsync($"unknown machine subcommand \"{other}\" (list | add | remove | test | deploy | enable-iroh)"),
     };
 
     private static Task<int> RunSessionAsync(FleetCliContext context) => context.Arguments.Subcommand switch
@@ -105,6 +113,8 @@ internal static class FleetCli
         var arguments = context.Arguments;
         if (arguments.Operand is not { } name)
             return await FailAsync("machine add requires a name");
+        if (arguments.Has("--local") && arguments.Value("--endpoint-id") is not null)
+            throw new InvalidOperationException("--local and --endpoint-id cannot be combined");
         var machine = arguments.Has("--local")
             ? MachineSpec.Local(arguments.Value("--home") is { } home ? Path.GetFullPath(home) : throw new InvalidOperationException("machine add --local requires --home <harness home>"), name)
             : await SshMachineAsync(name, arguments);
@@ -115,10 +125,9 @@ internal static class FleetCli
 
     private static async Task<MachineSpec> SshMachineAsync(string name, FleetArguments arguments)
     {
-        var host = arguments.Value("--host") ?? throw new InvalidOperationException("machine add requires --host (or --local --home)");
-        var port = arguments.Value("--port") is { } text
-            ? int.TryParse(text, out var parsed) ? parsed : throw new InvalidOperationException($"invalid --port \"{text}\"")
-            : MachineSpec.DefaultSshPort;
+        var endpoint = arguments.Value("--endpoint-id");
+        var host = arguments.Value("--host") ?? (endpoint is not null ? "" : throw new InvalidOperationException("machine add requires --host, --endpoint-id or --local --home"));
+        var port = Port(arguments, "--port");
         var key = arguments.Value("--key");
         var auth = arguments.Value("--auth") ?? (key is not null ? SshAuth.Key : arguments.Has("--password-stdin") ? SshAuth.Password : SshAuth.Agent);
         if (auth is not (SshAuth.Agent or SshAuth.Key or SshAuth.Password))
@@ -132,6 +141,9 @@ internal static class FleetCli
             HarnessHome = arguments.Value("--remote-home"),
             Password = password,
             SshOptions = arguments.Values("--ssh-option") is { Count: > 0 } options ? options : null,
+            Kind = endpoint is null ? MachineKinds.Ssh : MachineKinds.Iroh,
+            EndpointId = endpoint,
+            RelayUrls = arguments.Values("--relay-url") is { Count: > 0 } relays ? relays : null,
         };
     }
 
@@ -172,6 +184,49 @@ internal static class FleetCli
             ? $"{machine.Name}: {result.CommandPath} is already at {RemoteHostServer.ReleaseVersion} or newer (use --force to redeploy)"
             : $"{machine.Name}: deployed {RemoteHostServer.ReleaseVersion} to {result.CommandPath}");
         return 0;
+    }
+
+    private static async Task<int> EnableIrohAsync(FleetCliContext context)
+    {
+        var machine = context.RequireMachine(context.Arguments.Operand);
+        if (context.Arguments.Values("--relay-url") is { Count: > 0 } relays)
+            machine = machine with { RelayUrls = relays };
+        List<string> progress = [];
+        MachineStore.Validate(context.Store.Load().Machines);
+        var converted = await IrohRemoteInstaller.EnableAndSaveAsync(machine, context.Options(deploy: true, startLocalHost: false), result => context.Store.Upsert(result), progress.Add, context.Cancellation);
+        await Console.Error.WriteLineAsync(string.Join(Environment.NewLine, progress));
+        await Console.Out.WriteLineAsync($"saved {converted.Name} ({converted.Target}) after verifying SSH-over-iroh");
+        return 0;
+    }
+
+    private static async Task<int> RunReceiverAsync(FleetCliContext context)
+    {
+        var activationText = context.Arguments.Value("--activation");
+        var activation = activationText is null ? (Guid?)null : Guid.TryParseExact(activationText, "N", out var id) ? id : throw new ArgumentException("Invalid receiver activation identifier.");
+        if (context.Arguments.Subcommand == "disable")
+        {
+            var disabled = await IrohReceiver.DisableAsync(context.Home, activation, context.Cancellation);
+            await Console.Out.WriteLineAsync(disabled.Running ? "receiver unchanged; this activation does not own it" : "receiver disabled; identity retained, SSH service and Host sessions unchanged");
+            return 0;
+        }
+        var status = context.Arguments.Subcommand switch
+        {
+            "enable" => await IrohReceiver.EnableAsync(context.Home, Port(context.Arguments, "--ssh-port"), context.Arguments.Values("--relay-url"), activation, context.Cancellation),
+            "info" => await IrohReceiver.InfoAsync(context.Home, context.Cancellation),
+            _ => throw new InvalidOperationException("remote requires a subcommand (enable | info | disable)"),
+        };
+        await Console.Out.WriteLineAsync($"endpointId={status.EndpointId}");
+        await Console.Out.WriteLineAsync($"running={status.Running.ToString().ToLowerInvariant()}");
+        await Console.Out.WriteLineAsync($"service={status.ServiceDescription}");
+        return 0;
+    }
+
+    private static int Port(FleetArguments arguments, string option)
+    {
+        if (arguments.Value(option) is not { } text)
+            return MachineSpec.DefaultSshPort;
+        return int.TryParse(text, out var port) && port is > 0 and <= ushort.MaxValue
+            ? port : throw new InvalidOperationException($"{option} must be a port between 1 and {ushort.MaxValue}");
     }
 
     private static async Task<int> ListSessionsAsync(FleetCliContext context)

@@ -15,7 +15,7 @@ public sealed class FleetSettings
     public FleetDeploySettings? Deploy { get; set; }
 }
 
-/** 一台机器; kind 为 ssh 或 local, local 只用 name 与 harnessHome。 */
+/** 一台机器; kind 为 ssh、iroh 或 local, local 只用 name 与 harnessHome。 */
 public sealed class MachineSettings
 {
     [YamlMember(Alias = "name")]
@@ -59,6 +59,13 @@ public sealed class MachineSettings
     /** 额外的 ssh -o 选项(Key=Value), 排在内置选项之前。 */
     [YamlMember(Alias = "sshOptions")]
     public List<string>? SshOptions { get; set; }
+
+    [YamlMember(Alias = "endpointId")]
+    public string? EndpointId { get; set; }
+
+    /** iroh 专用 relay 地址, 留空使用上游默认列表。 */
+    [YamlMember(Alias = "relayUrls")]
+    public List<string>? RelayUrls { get; set; }
 }
 
 /** 远端自动部署偏好; 省略的字段取默认值(自动部署开启、官方发布地址、latest、下载位置 auto)。 */

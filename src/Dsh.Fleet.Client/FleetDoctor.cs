@@ -59,7 +59,7 @@ public static class FleetDoctor
         var result = await SshHostLauncher.RunRemoteCaptureAsync(machine, "true", cancellationToken).ConfigureAwait(false);
         if (result.ExitCode != RemoteDsharpInstaller.SshFailureExitCode)
             return new DoctorCheck("ssh", DoctorOutcome.Ok, $"{machine.Target} accepts the connection ({machine.Auth})");
-        var fix = machine.Auth == SshAuth.Key && machine.KeyPath is { Length: > 0 } key
+        var fix = !machine.IsIroh && machine.Auth == SshAuth.Key && machine.KeyPath is { Length: > 0 } key
             ? $"ssh-copy-id -p {machine.Port} -i {RemoteShell.Quote($"{key}.pub")} {machine.User}@{machine.Host}"
             : SshHostLauncher.CommandLine(machine, "true");
         return new DoctorCheck("ssh", DoctorOutcome.Failed, result.FailureDetail, fix);

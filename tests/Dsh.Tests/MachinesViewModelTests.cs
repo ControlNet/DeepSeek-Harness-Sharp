@@ -79,6 +79,110 @@ public sealed class MachinesViewModelTests : IDisposable
         Assert.Equal(("build", (string?)null), (Assert.Single(config.Machines).Name, config.Machines[0].KeyPath));
     }
 
+    [Theory]
+    [InlineData(SshAuth.Agent)]
+    [InlineData(SshAuth.Key)]
+    [InlineData(SshAuth.Password)]
+    public async Task IrohMachines_RoundTripAndRemainIrohWhenEdited(string auth)
+    {
+        var store = new MachineStore(new HarnessHome(_home));
+        var viewModel = new MachinesViewModel(store, new FleetOptions());
+        viewModel.Load();
+        viewModel.NewIrohCommand.Execute(null);
+        var editor = viewModel.Editor!;
+        Assert.True(editor.IsIroh);
+        Assert.True(editor.IsRemote);
+        Assert.False(editor.IsSsh);
+        Fill(editor, "mesh", auth);
+        editor.Proxy = "";
+        editor.EndpointId = new string('a', 64);
+        editor.RelayUrls = " https://relay.example.com \r\n\r\nhttps://relay2.example.com\n";
+        await viewModel.SaveCommand.ExecuteAsync(null);
+        Assert.False(viewModel.StatusIsError, viewModel.Status);
+
+        viewModel.Load("mesh");
+        Assert.Equal(editor.EndpointId, viewModel.Editor!.EndpointId);
+        Assert.Equal(MachineKinds.Iroh, viewModel.Editor.Kind);
+        viewModel.Editor.Name = "mesh-renamed";
+        await viewModel.SaveCommand.ExecuteAsync(null);
+        Assert.False(viewModel.StatusIsError, viewModel.Status);
+        var saved = Assert.Single(store.Load().Machines);
+        Assert.Equal(("mesh-renamed", MachineKinds.Iroh, "mesh.internal", new string('a', 64)), (saved.Name, saved.Kind, saved.Host, saved.EndpointId));
+        Assert.Equal(["https://relay.example.com", "https://relay2.example.com"], saved.RelayUrls);
+        Assert.Equal(["ConnectTimeout=5", "ServerAliveInterval=10"], saved.SshOptions);
+        Assert.Equal((auth, auth == SshAuth.Key ? "~/.ssh/id_test" : null, auth == SshAuth.Password ? "secret" : null), (saved.Auth, saved.KeyPath, saved.Password));
+        Assert.Equal(("/srv/work", "~/.dsh-build", (string?)null), (saved.RemotePath, saved.HarnessHome, saved.Proxy));
+    }
+
+    [Fact]
+    public async Task InvalidIrohEdit_PreservesTheSavedMachineAndDoesNotRefreshFleet()
+    {
+        var store = new MachineStore(new HarnessHome(_home));
+        var machine = MachineSpec.Ssh("box", "box.internal", 22, "dev", SshAuth.Agent) with { Kind = MachineKinds.Iroh, EndpointId = new string('b', 64) };
+        store.Upsert(machine);
+        var viewModel = new MachinesViewModel(store, new FleetOptions());
+        var changes = 0;
+        viewModel.MachinesChanged += () => changes++;
+        viewModel.Load("box");
+        viewModel.Editor!.EndpointId = "not-an-endpoint";
+        await viewModel.SaveCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.StatusIsError, viewModel.Status);
+        Assert.Equal(machine, Assert.Single(store.Load().Machines));
+        Assert.Equal(0, changes);
+        Assert.True(viewModel.Editor.IsIroh);
+        Assert.Equal("not-an-endpoint", viewModel.Editor.EndpointId);
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task FailedSshBootstrap_DoesNotPersistOrSwitchTheEditor()
+    {
+        using var port = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
+        port.Bind(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+        var machine = MachineSpec.Ssh("box", "127.0.0.1", ((System.Net.IPEndPoint)port.LocalEndPoint!).Port, "dev", SshAuth.Agent)
+            with { SshOptions = ["ConnectTimeout=1", "ConnectionAttempts=1", "BatchMode=yes"] };
+        var store = new MachineStore(new HarnessHome(_home));
+        store.Upsert(machine);
+        var original = File.ReadAllText(store.FilePath);
+        var viewModel = new MachinesViewModel(store, new FleetOptions());
+        var changes = 0;
+        viewModel.MachinesChanged += () => changes++;
+        viewModel.Load("box");
+        using var cancellation = TestContext.Current.CancellationToken.Register(() => viewModel.CancelOperationCommand.Execute(null));
+        viewModel.Editor!.User = "unsaved-user";
+        await viewModel.EnableIrohCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.StatusIsError, viewModel.Status);
+        Assert.Equal(original, File.ReadAllText(store.FilePath));
+        Assert.Equal(0, changes);
+        Assert.True(viewModel.Editor.IsSsh);
+        Assert.Equal("unsaved-user", viewModel.Editor.User);
+        Assert.False(viewModel.Busy);
+    }
+
+    [Theory(Timeout = 10000)]
+    [InlineData("local")]
+    [InlineData("box/child")]
+    [InlineData("taken")]
+    public async Task InvalidBootstrapName_CannotReachTheTargetOrChangeSavedConfiguration(string name)
+    {
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var machine = MachineSpec.Ssh("box", "127.0.0.1", ((System.Net.IPEndPoint)listener.LocalEndpoint).Port, "dev", SshAuth.Agent)
+            with { SshOptions = ["ConnectTimeout=1", "ConnectionAttempts=1", "BatchMode=yes"] };
+        var store = new MachineStore(new HarnessHome(_home));
+        store.Save(new FleetConfig([machine, MachineSpec.Ssh("taken", "other", 22, "dev", SshAuth.Agent)], new DeploySettings()));
+        var original = await File.ReadAllBytesAsync(store.FilePath, TestContext.Current.CancellationToken);
+        var viewModel = new MachinesViewModel(store, new FleetOptions());
+        viewModel.Load("box");
+        viewModel.Editor!.Name = name;
+        await viewModel.EnableIrohCommand.ExecuteAsync(null);
+        Assert.True(viewModel.StatusIsError, viewModel.Status);
+        Assert.False(listener.Pending());
+        Assert.Equal(original, await File.ReadAllBytesAsync(store.FilePath, TestContext.Current.CancellationToken));
+        Assert.True(viewModel.Editor.IsSsh);
+    }
+
     [Fact(Timeout = 60000)]
     public async Task TestConnection_ShowsHostVersionAndPlatform_AndDoctorListsTheChecks()
     {

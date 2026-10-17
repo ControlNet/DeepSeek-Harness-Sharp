@@ -83,6 +83,17 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
+      - name: 缓存固定源码构建的 iroh-ssh
+        uses: actions/cache@v4
+        with:
+          path: |
+            artifacts/iroh-ssh/*/iroh-ssh
+            artifacts/iroh-ssh/*/iroh-ssh.exe
+            artifacts/iroh-ssh/*/LICENSE.txt
+            artifacts/iroh-ssh/*/THIRD-PARTY-LICENSES.txt
+            artifacts/iroh-ssh/*/build.sha256
+          key: iroh-ssh-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-iroh-ssh.*') }}
+
       - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
         shell: bash
         run: |
@@ -217,6 +228,17 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
+      - name: 缓存固定源码构建的 iroh-ssh
+        uses: actions/cache@v4
+        with:
+          path: |
+            artifacts/iroh-ssh/*/iroh-ssh
+            artifacts/iroh-ssh/*/iroh-ssh.exe
+            artifacts/iroh-ssh/*/LICENSE.txt
+            artifacts/iroh-ssh/*/THIRD-PARTY-LICENSES.txt
+            artifacts/iroh-ssh/*/build.sha256
+          key: iroh-ssh-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-iroh-ssh.*') }}
+
       - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
         shell: bash
         run: |
@@ -270,6 +292,13 @@ jobs:
           rm -rf "$STAGE"
           mkdir -p "$STAGE/plugins"
           cp -R "$PUB/." "$STAGE/"
+          IROH="$STAGE/tools/iroh-ssh"
+          if [ "$RUNNER_OS" = "Windows" ]; then IROH="$IROH.exe"; fi
+          test -f "$IROH"
+          test -f "$STAGE/tools/iroh-ssh.LICENSE.txt"
+          test -f "$STAGE/tools/iroh-ssh.NOTICE.txt"
+          test -f "$STAGE/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
+          "$IROH" version
           NATIVES=(dsh_plugin_guard)
           if [ "$FLAVOR" = "aot" ]; then
             # 结构特征判别是否真的 AOT：JIT 发布同样会产出 apphost，光看文件存在拦不住。

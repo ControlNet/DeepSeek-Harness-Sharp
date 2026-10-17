@@ -10,6 +10,9 @@ public static class MachineKinds
 
     /** A remote host reached through `ssh -T ... dsharp host --serve --stdio`. */
     public const string Ssh = "ssh";
+
+    /** A remote SSH service reached by its persistent iroh endpoint identity. */
+    public const string Iroh = "iroh";
 }
 
 /** SSH authentication modes. */
@@ -39,7 +42,9 @@ public sealed record MachineSpec(
     string? RemotePath = null,
     string? Password = null,
     string? HarnessHome = null,
-    IReadOnlyList<string>? SshOptions = null)
+    IReadOnlyList<string>? SshOptions = null,
+    string? EndpointId = null,
+    IReadOnlyList<string>? RelayUrls = null)
 {
     public const int DefaultSshPort = 22;
 
@@ -55,7 +60,13 @@ public sealed record MachineSpec(
     [JsonIgnore]
     public bool IsLocal => Kind == MachineKinds.Local;
 
+    [JsonIgnore]
+    public bool IsIroh => Kind == MachineKinds.Iroh;
+
+    [JsonIgnore]
+    public string ConnectionHost => IsIroh ? EndpointId ?? "" : Host;
+
     /** user@host:port for SSH machines, the harness home (or "this computer") for local ones. */
     [JsonIgnore]
-    public string Target => IsLocal ? HarnessHome ?? "this computer" : $"{User}@{Host}:{Port}";
+    public string Target => IsLocal ? HarnessHome ?? "this computer" : $"{User}@{ConnectionHost}:{Port}";
 }

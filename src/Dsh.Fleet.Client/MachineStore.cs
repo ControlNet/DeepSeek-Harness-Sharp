@@ -91,7 +91,9 @@ public sealed class MachineStore(HarnessHome home)
             machine.RemotePath,
             machine.Password,
             machine.HarnessHome,
-            machine.SshOptions);
+            machine.SshOptions,
+            machine.EndpointId,
+            machine.RelayUrls);
 
     private static DeploySettings FromSettings(FleetDeploySettings? deploy)
     {
@@ -133,6 +135,8 @@ public sealed class MachineStore(HarnessHome home)
             Password = machine.Password,
             HarnessHome = machine.HarnessHome,
             SshOptions = machine.SshOptions is { Count: > 0 } options ? [.. options] : null,
+            EndpointId = machine.EndpointId,
+            RelayUrls = machine.RelayUrls is { Count: > 0 } relays ? [.. relays] : null,
         };
     }
 
@@ -151,7 +155,7 @@ public sealed class MachineStore(HarnessHome home)
         };
     }
 
-    private static void Validate(IReadOnlyList<MachineSpec> machines)
+    public static void Validate(IReadOnlyList<MachineSpec> machines)
     {
         var duplicate = machines.GroupBy(machine => machine.Name, StringComparer.Ordinal).FirstOrDefault(group => group.Count() > 1);
         if (duplicate is not null)
@@ -162,6 +166,8 @@ public sealed class MachineStore(HarnessHome home)
         var incomplete = machines.FirstOrDefault(machine => machine.Kind == MachineKinds.Ssh && string.IsNullOrWhiteSpace(machine.Host));
         if (incomplete is not null)
             throw new InvalidOperationException($"SSH machine \"{incomplete.Name}\" has no host");
+        foreach (var machine in machines)
+            IrohSshTransport.Validate(machine);
     }
 }
 

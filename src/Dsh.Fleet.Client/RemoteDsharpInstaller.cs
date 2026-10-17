@@ -66,6 +66,22 @@ public static class RemoteDsharpInstaller
         return new Result(deployed, false, report);
     }
 
+    /** Installs the receiver command separately from the running Host and never replaces its binaries or service. */
+    public static async Task<string> EnsureReceiverAsync(
+        MachineSpec machine,
+        DeploySettings settings,
+        Action<string>? progress,
+        CancellationToken cancellationToken,
+        Func<DeploySettings, string, CancellationToken, Task<string>>? archiveFactory = null,
+        OutboundProxy? localProxy = null)
+    {
+        var rid = await DetectRidAsync(machine, cancellationToken).ConfigureAwait(false);
+        if (rid.StartsWith("win-", StringComparison.Ordinal))
+            throw new NotSupportedException(WindowsUnsupported);
+        var directory = $"\"$HOME/.dsharp/iroh-receiver/{rid}/{Guid.NewGuid():N}\"";
+        return await DeployAsync(machine, settings, rid, "", progress, archiveFactory, localProxy, cancellationToken, directory).ConfigureAwait(false);
+    }
+
     /** 只探测不部署: 识别平台(Windows 抛 NotSupportedException), 解析 harness home, 找出 dsharp 与其部署版本。 */
     public static async Task<Installation> InspectAsync(MachineSpec machine, CancellationToken cancellationToken)
     {
@@ -105,14 +121,14 @@ public static class RemoteDsharpInstaller
      * 远端直接下载并解压的脚本: 用远端自带代理(curl/wget 认 http_proxy/https_proxy 环境)或 ServerProxy; 无 curl/wget 时非零退出以触发 auto 回退。
      * 下载成功后才停旧宿主(stopCommand), 再解压覆盖: 下载失败不影响正在运行的宿主, 解压时旧进程已不再使用这些文件。
      */
-    public static string BuildServerDownloadScript(DeploySettings settings, string rid, string stopCommand)
+    public static string BuildServerDownloadScript(DeploySettings settings, string rid, string stopCommand, string? directory = null)
     {
         var url = AssetUrl(settings, rid);
         var proxy = settings.ServerProxy?.Trim() ?? "";
         // 代理地址在远端解析: curl 用 -x, wget 用 use_proxy + http(S)_proxy。
         var curlProxy = proxy.Length == 0 ? "" : $"-x '{proxy}' ";
         var wgetProxy = proxy.Length == 0 ? "" : $"-e use_proxy=yes -e https_proxy='{proxy}' -e http_proxy='{proxy}' ";
-        var dir = InstallDirectory(rid);
+        var dir = directory ?? InstallDirectory(rid);
         return "set -e; "
             + $"mkdir -p {dir}; "
             + $"cd {dir}; "
@@ -164,7 +180,8 @@ public static class RemoteDsharpInstaller
         Action<string>? progress,
         Func<DeploySettings, string, CancellationToken, Task<string>>? archiveFactory,
         OutboundProxy? localProxy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? directory = null)
     {
         // server/auto: 先让远端用它自己的网络/自带代理下载; auto 失败(无下载器/无外网/404)再回退到"本地下载 + scp 上传"。
         if (settings.Via is DownloadVia.Server or DownloadVia.Auto)
@@ -172,7 +189,7 @@ public static class RemoteDsharpInstaller
             try
             {
                 progress?.Invoke($"正在让远端直接下载 {AssetName(rid)} …");
-                return await DeployFromServerAsync(machine, settings, rid, stop, cancellationToken).ConfigureAwait(false);
+                return await DeployFromServerAsync(machine, settings, rid, stop, cancellationToken, directory).ConfigureAwait(false);
             }
             catch (Exception error) when (settings.Via == DownloadVia.Auto && error is not OperationCanceledException)
             {
@@ -187,7 +204,7 @@ public static class RemoteDsharpInstaller
         try
         {
             progress?.Invoke($"正在上传并部署 dsharp({rid})到 ~/.dsharp/ …");
-            return await UploadAndDeployAsync(machine, archive, rid, stop, cancellationToken).ConfigureAwait(false);
+            return await UploadAndDeployAsync(machine, archive, rid, stop, cancellationToken, directory).ConfigureAwait(false);
         }
         finally
         {
@@ -244,7 +261,7 @@ public static class RemoteDsharpInstaller
     {
         var result = await SshHostLauncher.RunRemoteCaptureAsync(machine, command, cancellationToken).ConfigureAwait(false);
         if (result.ExitCode == SshFailureExitCode)
-            throw new IOException($"ssh {machine.User}@{machine.Host} 失败: {result.FailureDetail}");
+            throw new IOException($"ssh {machine.Target} 失败: {result.FailureDetail}");
         return result.ExitCode == 0 ? result.StdOut : null;
     }
 
@@ -280,14 +297,14 @@ public static class RemoteDsharpInstaller
         return path;
     }
 
-    private static async Task<string> UploadAndDeployAsync(MachineSpec machine, string archive, string rid, string stop, CancellationToken cancellationToken)
+    private static async Task<string> UploadAndDeployAsync(MachineSpec machine, string archive, string rid, string stop, CancellationToken cancellationToken, string? directory = null)
     {
         var token = Guid.NewGuid().ToString("N");
         var archiveName = $".dsharp-upload-{token}.tar.gz";
         await SshHostLauncher.UploadAsync(machine, archive, archiveName, cancellationToken).ConfigureAwait(false);
 
         // 远端先停旧宿主, 再解压到 ~/.dsharp/<rid>/(归档根即发布输出), 打印解压后 dsharp 的目录。tar -xf 自动识别 gzip。
-        var dir = InstallDirectory(rid);
+        var dir = directory ?? InstallDirectory(rid);
         var script =
             "set -e; "
             + $"mkdir -p {dir}; "
@@ -299,8 +316,8 @@ public static class RemoteDsharpInstaller
         return CommandIn(await SshHostLauncher.RunRemoteAsync(machine, script, cancellationToken).ConfigureAwait(false));
     }
 
-    private static async Task<string> DeployFromServerAsync(MachineSpec machine, DeploySettings settings, string rid, string stop, CancellationToken cancellationToken)
-        => CommandIn(await SshHostLauncher.RunRemoteAsync(machine, BuildServerDownloadScript(settings, rid, stop), cancellationToken).ConfigureAwait(false));
+    private static async Task<string> DeployFromServerAsync(MachineSpec machine, DeploySettings settings, string rid, string stop, CancellationToken cancellationToken, string? directory = null)
+        => CommandIn(await SshHostLauncher.RunRemoteAsync(machine, BuildServerDownloadScript(settings, rid, stop, directory), cancellationToken).ConfigureAwait(false));
 
     private static string CommandIn(string printedDirectory)
     {

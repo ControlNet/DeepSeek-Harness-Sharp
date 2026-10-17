@@ -61,7 +61,7 @@ public static class SshHostLauncher
             catch (Exception error)
             {
                 Kill(process);
-                throw new IOException($"ssh {workspace.User}@{workspace.Host} 失败（认证方式 {workspace.Auth}）: {Describe(stderr)}", error);
+                throw new IOException($"ssh {workspace.Target} 失败（认证方式 {workspace.Auth}）: {Describe(stderr)}", error);
             }
         }
         finally
@@ -138,7 +138,7 @@ public static class SshHostLauncher
         var result = await RunRemoteCaptureAsync(workspace, command, cancellationToken).ConfigureAwait(false);
         return result.ExitCode == 0
             ? result.StdOut
-            : throw new IOException($"{workspace.User}@{workspace.Host} 远端命令失败: {result.FailureDetail}");
+            : throw new IOException($"{workspace.Target} 远端命令失败: {result.FailureDetail}");
     }
 
     /** 在远端执行一条命令, 原样返回退出码与 stdout/stderr(不抛异常), 供需要区分“ssh 失败”与“命令失败”的调用方使用。 */
@@ -160,14 +160,12 @@ public static class SshHostLauncher
     /** A command line a person can paste into a POSIX shell to run remoteCommand on the machine with the same port, key, proxy and options. */
     public static string CommandLine(MachineSpec workspace, string remoteCommand)
     {
+        Collection<string> arguments = [];
+        AddCommonOptions(arguments, workspace);
         var line = new StringBuilder($"ssh -p {workspace.Port}");
-        foreach (var option in workspace.SshOptions ?? [])
-            line.Append($" -o {Quote(option)}");
-        if (workspace.Auth == SshAuth.Key && workspace.KeyPath is { Length: > 0 } key)
-            line.Append($" -i {Quote(key)}");
-        if (workspace.Proxy is { Length: > 0 } proxy)
-            line.Append($" -o {Quote($"ProxyCommand={proxy}")}");
-        line.Append($" {workspace.User}@{workspace.Host} {Quote(remoteCommand)}");
+        foreach (var argument in arguments)
+            line.Append($" {Quote(argument)}");
+        line.Append($" {Quote($"{workspace.User}@{workspace.ConnectionHost}")} {Quote(remoteCommand)}");
         return line.ToString();
     }
 
@@ -176,12 +174,12 @@ public static class SshHostLauncher
     {
         var startInfo = BuildScpStartInfo(workspace, out var askPass);
         startInfo.ArgumentList.Add(localPath);
-        startInfo.ArgumentList.Add($"{workspace.User}@{workspace.Host}:{remotePath}");
+        startInfo.ArgumentList.Add($"{workspace.User}@{workspace.ConnectionHost}:{remotePath}");
         try
         {
             var result = await CaptureAsync(startInfo, cancellationToken).ConfigureAwait(false);
             if (result.ExitCode != 0)
-                throw new IOException($"{workspace.User}@{workspace.Host} scp 上传失败: {result.FailureDetail}");
+                throw new IOException($"{workspace.Target} scp 上传失败: {result.FailureDetail}");
         }
         finally
         {
@@ -192,8 +190,8 @@ public static class SshHostLauncher
 
     private static async Task<RemoteCommandResult> CaptureAsync(ProcessStartInfo startInfo, CancellationToken cancellationToken)
     {
-        var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start process");
-        using (process)
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start process");
+        try
         {
             // 命令式调用(远端执行/scp)不需要 stdin: 必须显式关闭, 否则 Win32-OpenSSH 会一直等 stdin EOF, 表现为卡死。
             process.StandardInput.Close();
@@ -201,6 +199,12 @@ public static class SshHostLauncher
             var error = process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
             return new RemoteCommandResult(process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+            throw;
         }
     }
 
@@ -236,7 +240,7 @@ public static class SshHostLauncher
         arguments.Add(workspace.Port.ToString());
         AddCommonOptions(arguments, workspace);
         askPass = ApplyAskPass(startInfo, workspace);
-        arguments.Add($"{workspace.User}@{workspace.Host}");
+        arguments.Add($"{workspace.User}@{workspace.ConnectionHost}");
         return startInfo;
     }
 
@@ -261,6 +265,17 @@ public static class SshHostLauncher
 
     private static void AddCommonOptions(Collection<string> arguments, MachineSpec workspace)
     {
+        IrohSshTransport.Validate(workspace);
+        if (workspace.IsIroh)
+        {
+            // OpenSSH can reuse a TCP master before it considers ProxyCommand.
+            arguments.Add("-o");
+            arguments.Add("ControlPath=none");
+            arguments.Add("-o");
+            arguments.Add($"ProxyCommand={IrohSshTransport.ProxyCommand(workspace)}");
+            arguments.Add("-o");
+            arguments.Add($"HostKeyAlias=iroh-{workspace.EndpointId!.ToLowerInvariant()}");
+        }
         foreach (var option in workspace.SshOptions ?? [])
         {
             arguments.Add("-o");

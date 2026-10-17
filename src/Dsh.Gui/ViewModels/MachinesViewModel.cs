@@ -81,6 +81,9 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     private void NewSsh() => StartNew(MachineKinds.Ssh);
 
     [RelayCommand]
+    private void NewIroh() => StartNew(MachineKinds.Iroh);
+
+    [RelayCommand]
     private void NewLocal() => StartNew(MachineKinds.Local);
 
     [RelayCommand]
@@ -148,6 +151,24 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
             : $"{spec.Name}: 已部署 {RemoteHostServer.ReleaseVersion} 到 {result.CommandPath}");
     });
 
+    /** 经当前普通 SSH 配置启用目标端 iroh, 实测隧道可用后才保存转换后的清单。 */
+    [RelayCommand]
+    private Task EnableIrohAsync()
+    {
+        var originalName = Editor?.OriginalName;
+        var installOptions = options with { Deploy = Deploy?.ToSettings() ?? store.Load().Deploy };
+        return RunOperationAsync(async (spec, cancellationToken) =>
+        {
+            if (spec.Kind != MachineKinds.Ssh)
+                throw new InvalidOperationException("请先选择或填写一台可通过普通 SSH 连接的机器");
+            MachineStore.Validate(PlanChange(spec, originalName).Machines);
+            var converted = await IrohRemoteInstaller.EnableAndSaveAsync(spec, installOptions, converted => Persist(converted, originalName), Log, cancellationToken);
+            Load(converted.Name);
+            Report($"已启用 {converted.Name} 的 SSH-over-iroh（{converted.EndpointId}）");
+            MachinesChanged?.Invoke();
+        });
+    }
+
     [RelayCommand]
     private Task RunDoctorAsync() => RunOperationAsync(async (spec, cancellationToken) =>
     {
@@ -168,7 +189,9 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     }
 
     /** 改名时替换原记录且保持位置; 新名称不能与另一台机器重名。 */
-    private void Persist(MachineSpec spec, string? originalName)
+    private void Persist(MachineSpec spec, string? originalName) => store.Save(PlanChange(spec, originalName));
+
+    private FleetConfig PlanChange(MachineSpec spec, string? originalName)
     {
         var config = store.Load();
         if (spec.Name != originalName && config.Machines.Any(machine => machine.Name == spec.Name))
@@ -177,10 +200,10 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
         List<MachineSpec> machines = [.. config.Machines.Select(machine => machine.Name == originalName ? spec : machine)];
         if (!replaced)
             machines.Add(spec);
-        store.Save(config with { Machines = machines });
+        return config with { Machines = machines };
     }
 
-    /** 测试连接、部署、诊断: 作用于表单(没有表单时是选中的隐式本机), 可经 CancelOperation 取消。 */
+    /** 测试连接、部署、iroh 引导与诊断作用于表单, 没有表单时作用于选中的隐式本机, 可经 CancelOperation 取消。 */
     private Task RunOperationAsync(Func<MachineSpec, CancellationToken, Task> operation) => RunAsync(async () =>
     {
         var spec = Editor?.ToSpec() ?? Selected?.Spec ?? throw new InvalidOperationException("请先选择或填写一台机器");
