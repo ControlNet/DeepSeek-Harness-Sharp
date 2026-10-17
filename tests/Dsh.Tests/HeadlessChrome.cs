@@ -24,7 +24,6 @@ internal sealed class HeadlessChrome : IAsyncDisposable
     /** A first start on a fresh CI runner sets up the profile and can take much longer than later ones. */
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(60);
 
-    private const int StartAttempts = 2;
     private static readonly TimeSpan DefaultWait = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(100);
 
@@ -53,22 +52,19 @@ internal sealed class HeadlessChrome : IAsyncDisposable
         var executable = ChromeCandidates.Select(AgentExecutableLocator.Resolve).FirstOrDefault(path => path is not null);
         if (executable is null)
             Assert.Skip($"Chrome is not installed on this machine (looked for {string.Join(", ", ChromeCandidates)})");
-        for (var attempt = 1; ; attempt++)
+        var chrome = Launch(executable, Path.Combine(artifacts, $"chrome-profile-{Guid.NewGuid():N}"), width, height);
+        try
         {
-            var chrome = Launch(executable, Path.Combine(artifacts, $"chrome-profile-{Guid.NewGuid():N}"), width, height);
-            try
-            {
-                var browserEndpoint = await chrome.ReadDevToolsEndpointAsync(cancellationToken);
-                await chrome.AttachToPageAsync(browserEndpoint, cancellationToken);
-                await chrome.SendAsync("Page.enable", "{}", cancellationToken);
-                await chrome.SendAsync("Page.addScriptToEvaluateOnNewDocument", $$"""{"source":"{{JsonEncodedText.Encode(ProblemRecorder)}}"}""", cancellationToken);
-                return chrome;
-            }
-            // A Chrome start on the Windows runner hung once without writing anything; Chrome is then started again with a new profile.
-            catch (TimeoutException) when (attempt < StartAttempts)
-            {
-                await chrome.DisposeAsync();
-            }
+            var browserEndpoint = await chrome.ReadDevToolsEndpointAsync(cancellationToken);
+            await chrome.AttachToPageAsync(browserEndpoint, cancellationToken);
+            await chrome.SendAsync("Page.enable", "{}", cancellationToken);
+            await chrome.SendAsync("Page.addScriptToEvaluateOnNewDocument", $$"""{"source":"{{JsonEncodedText.Encode(ProblemRecorder)}}"}""", cancellationToken);
+            return chrome;
+        }
+        catch
+        {
+            await chrome.DisposeAsync();
+            throw;
         }
     }
 
@@ -233,7 +229,8 @@ internal sealed class HeadlessChrome : IAsyncDisposable
     private async Task AttachToPageAsync(Uri browserEndpoint, CancellationToken cancellationToken)
     {
         using var http = new HttpClient();
-        var targets = JsonDocument.Parse(await http.GetStringAsync(new Uri($"http://{browserEndpoint.Authority}/json/list"), cancellationToken)).RootElement;
+        using var document = JsonDocument.Parse(await http.GetStringAsync(new Uri($"http://{browserEndpoint.Authority}/json/list"), cancellationToken));
+        var targets = document.RootElement;
         var page = targets.EnumerateArray().First(target => target.GetProperty("type").GetString() == "page");
         await _page.ConnectAsync(new Uri(page.GetProperty("webSocketDebuggerUrl").GetString()!), cancellationToken);
     }
@@ -255,7 +252,8 @@ internal sealed class HeadlessChrome : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _page.Dispose();
-        _process.Kill(entireProcessTree: true);
+        if (!_process.HasExited)
+            _process.Kill(entireProcessTree: true);
         await _process.WaitForExitAsync();
         _process.Dispose();
         TempTree.Delete(_profile);
