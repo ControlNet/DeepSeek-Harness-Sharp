@@ -16,9 +16,6 @@ namespace Dsh.Gui.ViewModels;
  */
 public sealed partial class NotificationCenterViewModel : ObservableObject, IDisposable
 {
-    /** How many history entries are read per machine when it (re)connects. */
-    public const int HistoryLimit = 200;
-
     /** Beyond this the badge shows "99+". */
     private const int BadgeLimit = 99;
 
@@ -40,12 +37,10 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
         MachineOptions.Add(_selectedMachine);
         SessionOptions.Add(_selectedSession);
         _fleet.Changed += OnFleetChanged;
-        _fleet.NotificationAdded += OnAdded;
-        _fleet.NotificationsRead += OnRead;
-        _fleet.NotificationsReloaded += OnReloaded;
+        _fleet.NotificationsChanged += OnNotificationsChanged;
+        foreach (var machine in _fleet.Client.Machines)
+            ReplaceHistory(machine);
         OnFleetChanged();
-        foreach (var machine in _fleet.Client.Machines.Where(machine => machine.State == MachineConnectionState.Connected))
-            _ = LoadAsync(machine);
     }
 
     public ObservableCollection<NotificationItemViewModel> Items { get; } = [];
@@ -101,9 +96,7 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
     public void Dispose()
     {
         _fleet.Changed -= OnFleetChanged;
-        _fleet.NotificationAdded -= OnAdded;
-        _fleet.NotificationsRead -= OnRead;
-        _fleet.NotificationsReloaded -= OnReloaded;
+        _fleet.NotificationsChanged -= OnNotificationsChanged;
     }
 
     partial void OnUnreadTotalChanged(int value)
@@ -145,7 +138,6 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
     {
         if (item is null || item.IsRead)
             return Task.CompletedTask;
-        item.IsRead = true;
         return SendMarkAsync(item.Machine, new RemoteNotifyMarkRead(Ids: [item.Id]));
     }
 
@@ -154,8 +146,6 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
     private async Task MarkAllReadAsync()
     {
         var machines = SelectedMachine.Value is { } only ? [only] : _fleet.Client.Machines.Select(machine => machine.Machine.Name).ToList();
-        foreach (var item in Items.Where(item => machines.Contains(item.Machine)))
-            item.IsRead = true;
         foreach (var machine in machines)
             await SendMarkAsync(machine, new RemoteNotifyMarkRead(All: true, SessionId: SelectedSession.Value));
     }
@@ -178,7 +168,7 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
         try
         {
             var lease = await connection.WaitConnectedAsync(CancellationToken.None);
-            await lease.Client.MarkNotificationsReadAsync(request, CancellationToken.None);
+            await lease.Client.Notifications.MarkNotificationsReadAsync(request, CancellationToken.None);
         }
         catch (Exception error) when (error is IOException or JsonRpcException or OperationCanceledException)
         {
@@ -186,42 +176,19 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
         }
     }
 
-    private async Task LoadAsync(MachineConnection machine)
+    private void ReplaceHistory(MachineConnection machine)
     {
-        try
-        {
-            var lease = await machine.WaitConnectedAsync(CancellationToken.None);
-            var page = await lease.Client.ListNotificationsAsync(new RemoteNotifyQuery(Limit: HistoryLimit), CancellationToken.None);
-            _all.RemoveAll(item => item.Machine == machine.Machine.Name);
+        _all.RemoveAll(item => item.Machine == machine.Machine.Name);
+        if (machine.Notifications is { } page)
             _all.AddRange(page.Items.Select(record => Describe(new NotificationItemViewModel(machine.Machine.Name, record))));
-            RefreshAll();
-        }
-        catch (Exception error) when (error is IOException or JsonRpcException or OperationCanceledException or ObjectDisposedException)
-        {
-            // The machine dropped while loading; its next connection reloads the history.
-        }
     }
 
-    private void OnReloaded(MachineConnection machine) => _ = LoadAsync(machine);
-
-    /** A push is always a new record: a history load answered just before it may already list the record, and the desktop notification is still due. */
-    private void OnAdded(MachineConnection machine, NotificationRecord record)
+    private void OnNotificationsChanged(MachineConnection machine, RemoteNotificationChange? change)
     {
-        if (!_all.Any(item => item.Machine == machine.Machine.Name && item.Id == record.Id))
-        {
-            _all.Add(Describe(new NotificationItemViewModel(machine.Machine.Name, record)));
-            RefreshAll();
-        }
-        if (DesktopKinds.Contains(record.Kind) && IsForeground?.Invoke() != true)
+        ReplaceHistory(machine);
+        RefreshAll();
+        if (change?.Added is { } record && DesktopKinds.Contains(record.Kind) && IsForeground?.Invoke() != true)
             DesktopNotify?.Invoke($"{machine.Machine.Name} · {record.Title}", record.Body ?? SessionPresentation.NotificationKindLabel(record.Kind));
-    }
-
-    private void OnRead(MachineConnection machine, IReadOnlyList<string> ids)
-    {
-        var read = ids.ToHashSet(StringComparer.Ordinal);
-        foreach (var item in _all.Where(item => item.Machine == machine.Machine.Name && read.Contains(item.Id)))
-            item.IsRead = true;
-        RefreshUnread();
     }
 
     private void OnFleetChanged()

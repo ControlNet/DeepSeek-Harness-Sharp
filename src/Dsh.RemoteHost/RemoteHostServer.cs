@@ -430,7 +430,7 @@ public sealed class RemoteHostServer(
         {
             try
             {
-                await using (stream.ConfigureAwait(false))
+                await using (((IAsyncDisposable)stream).ConfigureAwait(false))
                     await pump(stream, source.Token).ConfigureAwait(false);
             }
             finally

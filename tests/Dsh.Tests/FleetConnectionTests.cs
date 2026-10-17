@@ -27,6 +27,26 @@ public sealed class FleetConnectionTests
         MaxBackoff = TimeSpan.FromSeconds(1),
     };
 
+    [Fact(Timeout = 60000)]
+    public async Task Connected_Exposes_Preexisting_Sessions_Pending_And_Notifications()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("fss", TestContext.Current.CancellationToken);
+        var creator = await host.ConnectAsync("creator", Ct);
+        var session = await creator.CreateSessionAsync(host.Root, RemoteHostMultiClientTests.Selection, RemoteHostMultiClientTests.Spec, Ct);
+        var approval = RemoteHostMultiClientTests.RaiseApprovalAsync(host, RemoteHostMultiClientTests.Agent(host, session.Id), "bash");
+        var added = await RemoteHostMultiClientTests.NextAsync(creator.Notifications.NotificationChangesAsync(Ct), change => change.Added?.SessionId == session.Id);
+        await using var connection = new MachineConnection(MachineSpec.Local(host.Root), TestOptions);
+        connection.Start();
+        await connection.WaitConnectedAsync(Ct);
+        Assert.Equal(HostSessionStatuses.WaitingForUser, Assert.Single(connection.Sessions, item => item.SessionId == session.Id).Status);
+        var pending = Assert.Single(connection.Pending.Approvals);
+        Assert.Equal(added.Added!.Id, pending.RequestId);
+        Assert.Equal(1, connection.UnreadNotifications);
+        Assert.Equal(added.Page.Items, connection.Notifications!.Items);
+        Assert.True(await creator.RespondApprovalAsync(pending.RequestId, false, cancellationToken: Ct));
+        Assert.Equal(ApprovalOutcome.Rejected, await approval.WaitAsync(Arrival, Ct));
+    }
+
     [Fact(Timeout = 90000)]
     public async Task TwoMachines_AggregateSessionsAndPending_AndRecoverAfterHostRestart()
     {

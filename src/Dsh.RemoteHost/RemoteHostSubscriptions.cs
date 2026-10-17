@@ -50,7 +50,7 @@ public sealed class RemoteHostSubscriptions(Func<CancellationToken, Task<HostLea
             {
                 if (prepare is not null)
                     await prepare(lease.Client, linked.Token).ConfigureAwait(false);
-                await lease.Client.AttachPtyAsync(ptyId, input, output, linked.Token).ConfigureAwait(false);
+                await lease.Client.Pty.AttachPtyAsync(ptyId, input, output, linked.Token).ConfigureAwait(false);
                 return;
             }
             catch (Exception error) when (!owner.IsCancellationRequested && error is OperationCanceledException or IOException or ObjectDisposedException)

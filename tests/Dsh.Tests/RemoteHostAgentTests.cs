@@ -59,7 +59,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         await using var host = await HarnessHostFixture.CreateAsync("mat", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("terminal", Ct);
         var changes = client.HostSessionChangesAsync(Ct);
-        var added = client.NotificationChangesAsync(Ct);
+        var added = client.Notifications.NotificationChangesAsync(Ct);
         var script = new RemoteAgentCommand("/bin/sh", ["-c", """printf 'Proceed? [y/N] '; read answer; echo "working on $answer"; sleep 3; exit 3"""]);
 
         var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(
@@ -238,10 +238,10 @@ public sealed class RemoteHostAgentTests : IDisposable
             Assert.Equal(expected, stored.Read().Select(item => DshJson.Serialize(item)));
         }
 
-        var resumed = await client.ResumeAgentAsync(sessionId, Ct);
+        var resumed = await client.Agent.ResumeAgentAsync(sessionId, Ct);
         Assert.Equal(sessionId, resumed.SessionId);
         Assert.Equal(expected, (await TurnEventsAsync(client, sessionId)).Select(item => DshJson.Serialize(item)));
-        await client.StopAgentAsync(sessionId, Ct);
+        await client.Agent.StopAgentAsync(sessionId, Ct);
     }
 
     private static void RequireOpenCode()

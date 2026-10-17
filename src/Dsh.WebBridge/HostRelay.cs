@@ -4,7 +4,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Dsh.Fleet;
-using Dsh.Notifications;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 
@@ -34,9 +33,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
         machine.StateChanged += Changed;
         machine.SessionsChanged += Changed;
         machine.PendingChanged += Changed;
-        machine.NotificationsReloaded += Changed;
-        machine.NotificationAdded += NotificationAdded;
-        machine.NotificationsRead += NotificationsRead;
+        machine.NotificationsChanged += NotificationsChanged;
         Changed(machine);
         var view = PublishViewsAsync();
         try
@@ -68,9 +65,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
             machine.StateChanged -= Changed;
             machine.SessionsChanged -= Changed;
             machine.PendingChanged -= Changed;
-            machine.NotificationsReloaded -= Changed;
-            machine.NotificationAdded -= NotificationAdded;
-            machine.NotificationsRead -= NotificationsRead;
+            machine.NotificationsChanged -= NotificationsChanged;
             await _lifetime.CancelAsync().ConfigureAwait(false);
             try { await view.ConfigureAwait(false); }
             catch (Exception error) when (IsConnectionEnd(error)) { }
@@ -100,28 +95,15 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
     }
 
     private void Changed(MachineConnection _) => _changed.Writer.TryWrite(0);
-    private void NotificationAdded(MachineConnection connection, NotificationRecord _) => Changed(connection);
-    private void NotificationsRead(MachineConnection connection, IReadOnlyList<string> _) => Changed(connection);
+    private void NotificationsChanged(MachineConnection connection, RemoteNotificationChange? _) => Changed(connection);
 
     private async Task PublishViewsAsync()
     {
         await foreach (var _ in _changed.Reader.ReadAllAsync(_lifetime.Token).ConfigureAwait(false))
         {
-            RemoteNotifyPage? notifications = null;
-            HostHelloResponse? hello = null;
-            if (machine.State == MachineConnectionState.Connected)
-            {
-                try
-                {
-                    var lease = ConnectedLease();
-                    hello = lease.Client.Hello;
-                    if (lease.Client.Supports(NotificationsProtocol.Capability))
-                        notifications = await lease.Client.ListNotificationsAsync(new RemoteNotifyQuery(Limit: 50), _lifetime.Token).ConfigureAwait(false);
-                }
-                catch (Exception error) when (error is IOException or JsonRpcException or ObjectDisposedException) { }
-            }
-            var view = new WebMachineView(machine.State.ToString(), machine.Detail is { } detail ? redact(detail) : null, hello, machine.Info, machine.Sessions, machine.Pending, notifications);
-            await NotifyAsync("bridge.view", view, WebBridgeJsonContext.Default.WebMachineView, _lifetime.Token).ConfigureAwait(false);
+            var view = new WebMachineView(machine.State.ToString(), machine.Detail is { } detail ? redact(detail) : null,
+                machine.Hello, machine.Info, machine.Sessions, machine.Pending, machine.Notifications);
+            await NotifyAsync(BridgeProtocol.NotificationView, view, WebBridgeJsonContext.Default.WebMachineView, _lifetime.Token).ConfigureAwait(false);
         }
     }
 
@@ -186,7 +168,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
                     terminal.Size = size;
                 // Geometry is retained for prepare while offline; user input and other operations are never queued for reconnection.
                 if (machine.State == MachineConnectionState.Connected)
-                    await ConnectedLease().Client.ResizePtyAsync(ptyId, size.Columns, size.Rows, _lifetime.Token).ConfigureAwait(false);
+                    await ConnectedLease().Client.Pty.ResizePtyAsync(ptyId, size.Columns, size.Rows, _lifetime.Token).ConfigureAwait(false);
                 return True;
             }
         }
@@ -235,7 +217,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
 
     private static async Task AbortUploadAsync(string uploadId, HostLease lease)
     {
-        try { await lease.Client.AbortUploadAsync(uploadId, lease.Lifetime).ConfigureAwait(false); }
+        try { await lease.Client.Files.AbortUploadAsync(uploadId, lease.Lifetime).ConfigureAwait(false); }
         catch (Exception error) when (IsConnectionEnd(error) || error is JsonRpcException) { }
     }
 
@@ -276,7 +258,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
         catch (Exception error) when (IsConnectionEnd(error) || error is JsonRpcException)
         {
             if (!cancellationToken.IsCancellationRequested)
-                await StreamErrorAsync("session", viewId, error).ConfigureAwait(false);
+                await StreamErrorAsync(BridgeProtocol.SessionStream, viewId, error).ConfigureAwait(false);
         }
     }
 
@@ -289,7 +271,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
             {
                 var size = terminal.Size;
                 if (size is { } geometry)
-                    await client.ResizePtyAsync(terminal.PtyId, geometry.Columns, geometry.Rows, token).ConfigureAwait(false);
+                    await client.Pty.ResizePtyAsync(terminal.PtyId, geometry.Columns, geometry.Rows, token).ConfigureAwait(false);
                 terminal.SnapshotNext = true;
             }).ConfigureAwait(false);
             await NotifyAsync(PtyProtocol.NotificationPtyOutput, new WebTerminalOutput(terminal.PtyId, "", true, false, terminal.ViewId), WebBridgeJsonContext.Default.WebTerminalOutput, terminal.Token).ConfigureAwait(false);
@@ -297,7 +279,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
         catch (Exception error) when (IsConnectionEnd(error) || error is JsonRpcException)
         {
             if (!terminal.Token.IsCancellationRequested)
-                await StreamErrorAsync("terminal", terminal.ViewId, error).ConfigureAwait(false);
+                await StreamErrorAsync(BridgeProtocol.TerminalStream, terminal.ViewId, error).ConfigureAwait(false);
         }
         finally
         {
@@ -308,7 +290,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
 
     private async Task StreamErrorAsync(string kind, string id, Exception error)
     {
-        try { await NotifyAsync("bridge.stream.error", new WebStreamError(kind, id, redact(error.Message)), WebBridgeJsonContext.Default.WebStreamError, _lifetime.Token).ConfigureAwait(false); }
+        try { await NotifyAsync(BridgeProtocol.NotificationStreamError, new WebStreamError(kind, id, redact(error.Message)), WebBridgeJsonContext.Default.WebStreamError, _lifetime.Token).ConfigureAwait(false); }
         catch (Exception ended) when (IsConnectionEnd(ended)) { }
     }
 

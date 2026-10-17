@@ -75,7 +75,7 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         registry.Register(new RemoteHostSession(
             started.Id, kind, agentKind, workingDirectory, request.Title ?? started.Command, HostSessionStatuses.Running, now, now, 0, null));
-        await WatcherAsync(started.Id, cancellationToken).ConfigureAwait(false);
+        await WatcherAsync(started.Id, _lifetime.Token).ConfigureAwait(false);
         return started.Id;
     }
 

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Dsh.Boot;
 using Dsh.Core;
+using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.RemoteHost;
 using Dsh.Runtime;

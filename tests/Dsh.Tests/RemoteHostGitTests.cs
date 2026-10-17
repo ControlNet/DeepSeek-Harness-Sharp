@@ -48,11 +48,11 @@ public sealed class RemoteHostGitTests : IDisposable
         _repo.Git("mv", "old.txt", path);
         _repo.Write(path, "alpha\nbeta\ngamma\ndelta\nadded\n");
         _repo.Write("logo.bin", "\0changed");
-        await using var host = await HarnessHostFixture.CreateAsync("mgt", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("mgt", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("git", Ct);
         await HarnessHostFixture.OpenProjectAsync(client, _repo.Sandbox, Ct);
 
-        var remote = await client.GitDiffAsync(new RemoteGitDiffRequest(_repo.Root, GitDiffTarget.Uncommitted), Ct);
+        var remote = await client.Git.GitDiffAsync(new RemoteGitDiffRequest(_repo.Root, GitDiffTarget.Uncommitted), Ct);
         var summary = await new GitInspector(_repo.Root).DiffSummaryAsync(GitDiffTarget.Uncommitted, cancellationToken: Ct);
         var lines = await ChatWindow.LoadGitLinesAsync(_repo.Root, Ct);
 

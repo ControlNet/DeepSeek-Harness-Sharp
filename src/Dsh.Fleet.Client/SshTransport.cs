@@ -1,6 +1,7 @@
 ﻿using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Text;
+using Dsh.Transport;
 
 namespace Dsh.Fleet;
 
@@ -75,7 +76,7 @@ public sealed class SshTransport(MachineSpec machine) : IRemoteMachineTransport
     }
 
     /** 在远端执行一条命令, 原样返回退出码与 stdout/stderr(不抛异常), 供需要区分“ssh 失败”与“命令失败”的调用方使用。 */
-    public async Task<RemoteCommandResult> CaptureAsync(string command, CancellationToken cancellationToken)
+    public async Task<RemoteProcessResult> CaptureAsync(string command, CancellationToken cancellationToken)
     {
         RequirePassword(machine);
         var startInfo = BuildSshStartInfo(machine, out var askPass);
@@ -128,7 +129,7 @@ public sealed class SshTransport(MachineSpec machine) : IRemoteMachineTransport
         }
     }
 
-    internal static async Task<RemoteCommandResult> CaptureProcessAsync(ProcessStartInfo startInfo, CancellationToken cancellationToken)
+    internal static async Task<RemoteProcessResult> CaptureProcessAsync(ProcessStartInfo startInfo, CancellationToken cancellationToken)
     {
         var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start process");
         using (process)
@@ -147,7 +148,7 @@ public sealed class SshTransport(MachineSpec machine) : IRemoteMachineTransport
                     process.Kill(entireProcessTree: true);
                 throw;
             }
-            return new RemoteCommandResult(process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
+            return new RemoteProcessResult(process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
         }
     }
 
@@ -260,7 +261,7 @@ public sealed class SshTransport(MachineSpec machine) : IRemoteMachineTransport
         }
 
         var path = Path.Combine(Path.GetTempPath(), $"dsh-askpass-{Guid.NewGuid():N}.sh");
-        File.WriteAllText(path, $"#!/bin/sh\nprintf '%s\\n' {Quote(password)}\n", new UTF8Encoding(false));
+        OwnerOnlyFiles.Write(path, $"#!/bin/sh\nprintf '%s\\n' {Quote(password)}\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
     }

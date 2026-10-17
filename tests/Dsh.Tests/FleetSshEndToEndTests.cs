@@ -135,7 +135,7 @@ public sealed class FleetSshEndToEndTests
         if (!File.Exists("/usr/bin/curl") && !File.Exists("/usr/bin/wget"))
             Assert.Skip("remote-download coverage needs curl or wget on the loopback SSH server");
         var guard = RealHomeGuard.Capture();
-        await using var server = await TestSshServer.StartAsync(Ct);
+        await using var server = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
         var harness = TempTree.CreateSocketDirectory("fd");
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();

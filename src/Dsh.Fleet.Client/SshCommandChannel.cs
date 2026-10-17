@@ -6,7 +6,7 @@ namespace Dsh.Fleet;
 /** Internal process lease for the host handshake; never exposed as a second raw web/relay API. */
 internal sealed class SshCommandChannel : IDisposable
 {
-    private readonly string? _askPass;
+    private string? _askPass;
     private readonly Func<string> _errorOutput;
     private int _disposed;
 
@@ -22,6 +22,12 @@ internal sealed class SshCommandChannel : IDisposable
     public Stream Stream { get; }
     public string ErrorOutput => _errorOutput();
 
+    public void AuthenticationCompleted()
+    {
+        if (Interlocked.Exchange(ref _askPass, null) is { } path)
+            SshTransport.TryDelete(path);
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -33,8 +39,7 @@ internal sealed class SshCommandChannel : IDisposable
         finally
         {
             SshTransport.Kill(Process);
-            if (_askPass is not null)
-                SshTransport.TryDelete(_askPass);
+            AuthenticationCompleted();
         }
     }
 }

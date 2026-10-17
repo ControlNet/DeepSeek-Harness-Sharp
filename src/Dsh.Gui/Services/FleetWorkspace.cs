@@ -2,7 +2,7 @@ using Avalonia.Threading;
 using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.Runtime;
-using Dsh.Notifications;
+using Dsh.RemoteHost;
 
 namespace Dsh.Gui.Services;
 
@@ -34,11 +34,7 @@ public sealed class FleetWorkspace : IAsyncDisposable
     /** Raised on the UI thread after any machine's state, sessions or pending requests changed, and after a reload. */
     public event Action? Changed;
 
-    public event Action<MachineConnection, NotificationRecord>? NotificationAdded;
-
-    public event Action<MachineConnection, IReadOnlyList<string>>? NotificationsRead;
-
-    public event Action<MachineConnection>? NotificationsReloaded;
+    public event Action<MachineConnection, RemoteNotificationChange?>? NotificationsChanged;
 
     /**
      * This computer's harness home first (it is also the home the GUI itself runs on), then every machine of its store.
@@ -100,9 +96,7 @@ public sealed class FleetWorkspace : IAsyncDisposable
         client.Changed += OnFleetChanged;
         foreach (var machine in client.Machines)
         {
-            machine.NotificationAdded += OnNotificationAdded;
-            machine.NotificationsRead += OnNotificationsRead;
-            machine.NotificationsReloaded += OnNotificationsReloaded;
+            machine.NotificationsChanged += OnNotificationsChanged;
         }
         return client;
     }
@@ -112,20 +106,12 @@ public sealed class FleetWorkspace : IAsyncDisposable
         client.Changed -= OnFleetChanged;
         foreach (var machine in client.Machines)
         {
-            machine.NotificationAdded -= OnNotificationAdded;
-            machine.NotificationsRead -= OnNotificationsRead;
-            machine.NotificationsReloaded -= OnNotificationsReloaded;
+            machine.NotificationsChanged -= OnNotificationsChanged;
         }
     }
 
     private void OnFleetChanged() => _changes.Enqueue(true);
 
-    private void OnNotificationAdded(MachineConnection machine, NotificationRecord record)
-        => Dispatcher.UIThread.Post(() => NotificationAdded?.Invoke(machine, record));
-
-    private void OnNotificationsRead(MachineConnection machine, IReadOnlyList<string> ids)
-        => Dispatcher.UIThread.Post(() => NotificationsRead?.Invoke(machine, ids));
-
-    private void OnNotificationsReloaded(MachineConnection machine)
-        => Dispatcher.UIThread.Post(() => NotificationsReloaded?.Invoke(machine));
+    private void OnNotificationsChanged(MachineConnection machine, RemoteNotificationChange? change)
+        => Dispatcher.UIThread.Post(() => NotificationsChanged?.Invoke(machine, change));
 }

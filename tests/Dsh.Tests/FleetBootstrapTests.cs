@@ -1,0 +1,79 @@
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
+using Dsh.Fleet;
+using Dsh.RemoteHost;
+using Dsh.Transport;
+
+namespace Dsh.Tests;
+
+public sealed class FleetBootstrapTests
+{
+    [Fact(Timeout = 30000)]
+    public async Task SilentPeerBeforeInitialSnapshots_SettlesOfflineAfterHeartbeatTimeout()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("The isolated fault endpoint uses a Unix socket.");
+            return;
+        }
+        var root = TempTree.CreateSocketDirectory("fb");
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        using var token = LocalEndpointToken.Issue(RemoteHostEndpoint.EndpointFile(root));
+        using var listener = OwnerOnlyFiles.ListenUnixSocket(RemoteHostEndpoint.SocketPath(root), 1);
+        var ping = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var serving = ServeMetadataThenGoSilentAsync(listener, token, root, ping, lifetime.Token);
+        try
+        {
+            await using var connection = new MachineConnection(MachineSpec.Local(root), new FleetOptions
+            {
+                AutoReconnect = false,
+                HeartbeatInterval = TimeSpan.FromMilliseconds(50),
+                HeartbeatTimeout = TimeSpan.FromMilliseconds(250),
+            });
+            connection.Start();
+            await connection.WaitSettledAsync(lifetime.Token).WaitAsync(TimeSpan.FromSeconds(10), lifetime.Token);
+            Assert.True(ping.Task.IsCompletedSuccessfully);
+            Assert.Equal(MachineConnectionState.Offline, connection.State);
+            Assert.NotNull(connection.Info);
+        }
+        finally
+        {
+            await lifetime.CancelAsync();
+            await serving;
+            TempTree.Delete(root);
+        }
+    }
+
+    /** A real authenticated RPC connection with valid metadata deliberately withholds every initial projection and ping reply. */
+    private static async Task ServeMetadataThenGoSilentAsync(Socket listener, LocalEndpointToken token, string root,
+        TaskCompletionSource ping, CancellationToken cancellationToken)
+    {
+        using var socket = await listener.AcceptAsync(cancellationToken);
+        await using var stream = new NetworkStream(socket, ownsSocket: false);
+        var preamble = new byte[LocalEndpointToken.ValueLength];
+        await stream.ReadExactlyAsync(preamble, cancellationToken);
+        Assert.True(token.Matches(Encoding.UTF8.GetString(preamble)));
+        await using var peer = new JsonRpcPeer(stream);
+        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        peer.Closed += _ => closed.TrySetResult();
+        peer.RequestHandler = async (message, requestCancellation) =>
+        {
+            string[] capabilities = [HostProtocol.PendingBroadcastCapability, HostProtocol.SessionRegistryCapability];
+            if (message.Method == HostProtocol.MethodHello)
+                return JsonSerializer.SerializeToElement(new HostHelloResponse(true, HostProtocol.Version, RemoteHostServer.ReleaseVersion, null, capabilities), HostProtocolJsonContext.Default.HostHelloResponse);
+            if (message.Method == HostProtocol.MethodInfo)
+                return JsonSerializer.SerializeToElement(new HostInfo(HostProtocol.Version, RemoteHostServer.ReleaseVersion, "linux", root, capabilities), HostProtocolJsonContext.Default.HostInfo);
+            if (message.Method == HostProtocol.MethodPing)
+            {
+                ping.TrySetResult();
+                await Task.Delay(Timeout.Infinite, requestCancellation);
+                return null;
+            }
+            throw new JsonRpcException(JsonRpcPeer.MethodNotFound, "The fault endpoint only provides metadata.");
+        };
+        peer.Start();
+        try { await closed.Task.WaitAsync(cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+    }
+}

@@ -156,7 +156,7 @@ public sealed class FilesViewModelTests : IDisposable
         await using var host = await HarnessHostFixture.CreateAsync("fvp", Ct);
         var client = await host.ConnectAsync("files-view", Ct);
         var outside = Path.GetPathRoot(host.Environment.App.Home.Root)!;
-        var viewModel = new FilesViewModel(client, outside);
+        var viewModel = new FilesViewModel(client.Files, outside, RemotePaths.StyleFor((await client.InfoAsync(TestContext.Current.CancellationToken)).Platform));
 
         Assert.False(await viewModel.LoadAsync());
         Assert.True(viewModel.StatusIsError);

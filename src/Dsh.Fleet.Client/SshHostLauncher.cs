@@ -37,6 +37,7 @@ public static class SshHostLauncher
         try
         {
             var client = await RemoteHostClient.ConnectAsync(channel.Stream, token: null, clientName, cancellationToken).ConfigureAwait(false);
+            channel.AuthenticationCompleted();
             return new Connection(client, channel);
         }
         catch (Exception error)

@@ -16,13 +16,13 @@ public sealed partial class HostPageViewModel : ObservableObject, IDisposable
 {
     private readonly FleetWorkspace _fleet;
     private readonly string _capability;
-    private readonly Func<IRemoteHost, string, string, Task<OperationViewModel>> _build;
+    private readonly Func<IRemoteHost, string, string, RemotePathStyle, Task<OperationViewModel>> _build;
     private CancellationTokenSource? _run;
     private MachineConnection? _connection;
 
-    /** build receives the link's client, the machine name and the path, and returns the loaded content. */
+    /** build receives the connected client, machine, path and the connection's already-known path style. */
     public HostPageViewModel(
-        FleetWorkspace fleet, string title, string capability, string machine, string path, Func<IRemoteHost, string, string, Task<OperationViewModel>> build)
+        FleetWorkspace fleet, string title, string capability, string machine, string path, Func<IRemoteHost, string, string, RemotePathStyle, Task<OperationViewModel>> build)
     {
         (_fleet, _capability, _build, Title) = (fleet, capability, build, title);
         _machine = machine;
@@ -100,7 +100,8 @@ public sealed partial class HostPageViewModel : ObservableObject, IDisposable
         var lease = await connection.WaitConnectedAsync(cancellationToken);
         if (lease.Client.Supports(_capability))
         {
-            var content = await _build(lease.Client, machine, path);
+            var style = RemotePaths.StyleFor(connection.Info!.Platform);
+            var content = await _build(lease.Client, machine, path, style);
             cancellationToken.ThrowIfCancellationRequested();
             (Content, Status) = (content, null);
         }

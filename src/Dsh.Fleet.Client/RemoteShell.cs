@@ -33,7 +33,7 @@ public static class RemoteShell
         return $"'{value.Replace("'", "'\\''", StringComparison.Ordinal)}'";
     }
 
-    internal static Task<RemoteCommandResult> RunLocalAsync(string script, CancellationToken cancellationToken)
+    internal static Task<RemoteProcessResult> RunLocalAsync(string script, CancellationToken cancellationToken)
         => SshTransport.CaptureProcessAsync(new ProcessStartInfo("/bin/sh", ["-c", script])
         {
             RedirectStandardInput = true,

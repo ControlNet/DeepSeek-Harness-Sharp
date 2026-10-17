@@ -153,7 +153,7 @@ public sealed class GuiWorkspaceTests
                 // Marking one read here reaches the host (and every other client).
                 var betaItem = notifications.Items.First(item => item is { Machine: "beta", IsUnread: true });
                 await notifications.MarkReadCommand.ExecuteAsync(betaItem);
-                var betaPage = await carol.Notifications.ListNotificationsAsync(new RemoteNotifyQuery(Limit: NotificationCenterViewModel.HistoryLimit), ct);
+                var betaPage = await carol.Notifications.ListNotificationsAsync(cancellationToken: ct);
                 Assert.True(betaPage.Items.Single(record => record.Id == betaItem.Id).IsRead);
 
                 // The first answer wins: bob answers, the request leaves this client's list, and answering it here is refused.

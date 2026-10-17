@@ -64,6 +64,29 @@ public sealed class RemoteHostNotifyTests
     }
 
     [Fact(Timeout = 60000)]
+    public async Task ConcurrentReadAndAppend_PublishSnapshotsInCommitOrder()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("mnx", TestContext.Current.CancellationToken);
+        var client = await host.ConnectAsync("reader", Ct);
+        var changes = client.Notifications.NotificationChangesAsync(Ct);
+        await RemoteHostMultiClientTests.NextAsync(changes);
+        host.Backend.Notifications!.Report(NotificationKind.Info, null, "first", id: "first");
+        await RemoteHostMultiClientTests.NextAsync(changes, change => change.Added?.Id == "first");
+        var marking = client.Notifications.MarkNotificationsReadAsync(new RemoteNotifyMarkRead(["first"]), Ct);
+        host.Backend.Notifications.Report(NotificationKind.Info, null, "second", id: "second");
+        Assert.Equal(1, await marking);
+        var first = await RemoteHostMultiClientTests.NextAsync(changes);
+        var last = await RemoteHostMultiClientTests.NextAsync(changes);
+        Assert.Equal(first.Added is null ? 0 : 2, first.Page.UnreadCount);
+        Assert.Equal(1, last.Page.UnreadCount);
+        Assert.True(Assert.Single(last.Page.Items, item => item.Id == "first").IsRead);
+        Assert.False(Assert.Single(last.Page.Items, item => item.Id == "second").IsRead);
+        var stored = await client.Notifications.ListNotificationsAsync(cancellationToken: Ct);
+        Assert.Equal(stored.Items, last.Page.Items);
+        Assert.Equal(stored.UnreadCount, last.Page.UnreadCount);
+    }
+
+    [Fact(Timeout = 60000)]
     public async Task SessionExit_IsRecordedWithItsExitCode_AndListFiltersAndPages()
     {
         if (OperatingSystem.IsWindows())

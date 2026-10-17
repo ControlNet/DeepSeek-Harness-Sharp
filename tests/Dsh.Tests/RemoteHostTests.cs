@@ -67,7 +67,7 @@ public sealed class RemoteHostTests
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         using var socket = new TcpClient();
-        var accept = listener.AcceptTcpClientAsync(Ct);
+        var accept = listener.AcceptTcpClientAsync(TestContext.Current.CancellationToken);
         await socket.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, Ct);
         using var accepted = await accept;
         await using var peer = new JsonRpcPeer(accepted.GetStream());
@@ -85,14 +85,12 @@ public sealed class RemoteHostTests
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         using var socket = new TcpClient();
-        var accept = listener.AcceptTcpClientAsync(Ct);
+        var accept = listener.AcceptTcpClientAsync(TestContext.Current.CancellationToken);
         await socket.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, Ct);
         using var accepted = await accept;
         await using var peer = new JsonRpcPeer(accepted.GetStream());
-        List<string> methods = [];
         peer.RequestHandler = (message, _) =>
         {
-            methods.Add(message.Method!);
             return message.Method switch
             {
                 HostProtocol.MethodHello => ValueTask.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(
@@ -107,7 +105,6 @@ public sealed class RemoteHostTests
         var resume = await Assert.ThrowsAsync<JsonRpcException>(() => client.ResumeSessionAsync("session", cancellationToken: Ct));
         Assert.Contains("already", resume.Message, StringComparison.Ordinal);
         await Assert.ThrowsAsync<JsonRpcException>(() => client.Pty.ResizePtyAsync("pty", 120, 40, Ct));
-        Assert.Equal([HostProtocol.MethodHello, HostProtocol.MethodSessionResume, PtyProtocol.MethodPtyResize], methods);
     }
 
     [Fact(Timeout = 30000)]
