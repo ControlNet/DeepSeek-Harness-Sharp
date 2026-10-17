@@ -121,7 +121,7 @@
     <ProjectReference Include="..\..\Dsh.Host\Dsh.Host.csproj" />
     <ProjectReference Include="..\..\DeepSeek-Harness-Sharp\DeepSeek-Harness-Sharp.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Dsh.Gui\Dsh.Gui.csproj" />
-    <ProjectReference Include="..\..\src\Dsh.Plugins.Generator\Dsh.Plugins.Generator.csproj" />
+    <ProjectReference Update="..\..\src\Dsh.Plugins.Generator\Dsh.Plugins.Generator.csproj" ReferenceOutputAssembly="true" />
   </ItemGroup>
 
   <!-- Keep the child executable's complete runtime closure separate from the test host's shared-framework dependencies. -->

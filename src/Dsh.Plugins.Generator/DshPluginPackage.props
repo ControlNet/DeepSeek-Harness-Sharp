@@ -1,15 +1,13 @@
 <Project>
 
   <!-- 插件项目接入点:引入生成器,产出本程序集的 DshPluginManifest(托管 dll 形态的入口)。 -->
+  <!-- 生成器随项目引用完成还原和构建，仅作为编译期分析器使用。 -->
   <ItemGroup>
-    <Analyzer Include="$(MSBuildThisFileDirectory)bin\$(Configuration)\netstandard2.0\Dsh.Plugins.Generator.dll" />
+    <ProjectReference Include="$(MSBuildThisFileDirectory)Dsh.Plugins.Generator.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false"
+                      PrivateAssets="all"
+                      GlobalPropertiesToRemove="RuntimeIdentifier;PublishAot;PublishTrimmed;SelfContained" />
   </ItemGroup>
 
-  <Target Name="BuildDshPluginGenerator" BeforeTargets="CoreCompile">
-    <MSBuild Projects="$(MSBuildThisFileDirectory)Dsh.Plugins.Generator.csproj"
-             Targets="Build"
-             Properties="Configuration=$(Configuration)"
-             RemoveProperties="RuntimeIdentifier;PublishAot;SelfContained" />
-  </Target>
 
 </Project>
