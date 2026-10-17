@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Dsh.Core;
+using Dsh.Llm;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 
