@@ -5,6 +5,11 @@ using System.Text.Json;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 using Dsh.WebBridge;
+using Dsh.Core;
+using Dsh.Fleet;
+using Dsh.GitInspect;
+using Dsh.Llm;
+using Dsh.Notifications;
 
 namespace Dsh.Tests;
 
@@ -365,10 +370,10 @@ public sealed class WebBridgeTests
         await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "login", cancellationToken);
         using (var protocol = JsonDocument.Parse(await chrome.EvaluateAsync("""
             (async () => {
-              const { SessionStatus, SessionKind, Capability, AgentMode } = await import('/protocol.js');
-              if (![SessionStatus, SessionKind, Capability, AgentMode].every(Object.isFrozen))
+              const protocol = await import('/protocol.js');
+              if (!Object.values(protocol).every(Object.isFrozen))
                 throw new Error('protocol definitions must be immutable');
-              return JSON.stringify({ SessionStatus, SessionKind, Capability, AgentMode });
+              return JSON.stringify(protocol);
             })()
             """, cancellationToken)))
         {
@@ -387,7 +392,48 @@ public sealed class WebBridgeTests
                 Assert.Equal(wireValue, capabilities.GetProperty(name).GetString());
             Assert.Equal(RemoteAgentModes.Terminal, values.GetProperty("AgentMode").GetProperty("Terminal").GetString());
             Assert.Equal(RemoteAgentModes.Acp, values.GetProperty("AgentMode").GetProperty("Acp").GetString());
+            Assert.Equal(HostProtocol.MethodSessionMessage, values.GetProperty("HostProtocol").GetProperty(nameof(HostProtocol.MethodSessionMessage)).GetString());
+            Assert.Equal(AgentProtocol.MethodAgentStart, values.GetProperty("AgentProtocol").GetProperty(nameof(AgentProtocol.MethodAgentStart)).GetString());
+            Assert.Equal(PtyProtocol.NotificationPtyOutput, values.GetProperty("PtyProtocol").GetProperty(nameof(PtyProtocol.NotificationPtyOutput)).GetString());
+            Assert.Equal(FilesProtocol.MethodFsDownload, values.GetProperty("FilesProtocol").GetProperty(nameof(FilesProtocol.MethodFsDownload)).GetString());
+            Assert.Equal(GitProtocol.MethodGitDiff, values.GetProperty("GitProtocol").GetProperty(nameof(GitProtocol.MethodGitDiff)).GetString());
+            Assert.Equal(NotificationsProtocol.MethodNotifyMarkRead, values.GetProperty("NotificationsProtocol").GetProperty(nameof(NotificationsProtocol.MethodNotifyMarkRead)).GetString());
+            Assert.Equal(BridgeProtocol.NotificationView, values.GetProperty("BridgeProtocol").GetProperty(nameof(BridgeProtocol.NotificationView)).GetString());
+            Assert.Equal(BridgeProtocol.NotificationStreamError, values.GetProperty("BridgeProtocol").GetProperty(nameof(BridgeProtocol.NotificationStreamError)).GetString());
+            Assert.Equal(PendingKinds.Approval, values.GetProperty("PendingKind").GetProperty(nameof(PendingKinds.Approval)).GetString());
+            Assert.Equal(PendingKinds.Question, values.GetProperty("PendingKind").GetProperty(nameof(PendingKinds.Question)).GetString());
+            foreach (var state in Enum.GetValues<MachineConnectionState>())
+                Assert.Equal(state.ToString(), values.GetProperty("MachineConnectionState").GetProperty(state.ToString()).GetString());
+            foreach (var kind in Enum.GetValues<NotificationKind>())
+                Assert.Equal(kind.ToString(), values.GetProperty("NotificationKind").GetProperty(kind.ToString()).GetString());
+            foreach (var view in Enum.GetValues<NotificationView>())
+                Assert.Equal(view.ToString(), values.GetProperty("NotificationView").GetProperty(view.ToString()).GetString());
+            Assert.Equal(nameof(GitDiffSource.Staged), values.GetProperty("GitDiffSource").GetProperty(nameof(GitDiffSource.Staged)).GetString());
+            Assert.Equal(SessionEventTypes.UserMessage, values.GetProperty("SessionEventType").GetProperty(nameof(SessionEventTypes.UserMessage)).GetString());
+            Assert.Equal(StreamChunkTypes.TextDelta, values.GetProperty("StreamChunkType").GetProperty(nameof(StreamChunkTypes.TextDelta)).GetString());
+            Assert.Equal(ContentBlockTypes.Text, values.GetProperty("ContentBlockType").GetProperty(nameof(ContentBlockTypes.Text)).GetString());
+            Assert.Equal(SessionEventSources.AcpPlan, values.GetProperty("SessionEventSource").GetProperty(nameof(SessionEventSources.AcpPlan)).GetString());
+            Assert.Equal(JsonRpcPeer.MethodNotFound, values.GetProperty("JsonRpc").GetProperty(nameof(JsonRpcPeer.MethodNotFound)).GetInt32());
         }
+        Assert.Equal("true", await chrome.EvaluateAsync("""
+            (async () => {
+              const { Transcript } = await import('/views/transcript.js');
+              const { machineChip } = await import('/views/common.js');
+              const { SessionEventType: Event, StreamChunkType: Chunk, ContentBlockType: Block,
+                MachineConnectionState: State, TurnEndKind } = await import('/protocol.js');
+              const transcript = new Transcript();
+              transcript.apply({ type: Event.UserMessage, seq: 1, data: { content: [{ type: Block.Text, text: 'protocol-user' }] } });
+              transcript.apply({ type: Event.AssistantChunk, seq: 2, data: { turn: 1, step: 1, chunk: { type: Chunk.TextDelta, text: 'protocol-reply' } } });
+              transcript.apply({ type: Event.AssistantMessage, seq: 3, data: { turn: 1, step: 1, message: { content: [{ type: Block.Text, text: 'protocol-final' }] } } });
+              transcript.apply({ type: Event.ToolCall, seq: 4, data: { callId: 'call', name: 'read' } });
+              transcript.apply({ type: Event.ToolResult, seq: 5, data: { message: { block: { toolCallId: 'call', content: [{ type: Block.Text, text: 'protocol-output' }] } } } });
+              transcript.apply({ type: Event.TurnEnd, seq: 6, data: { reason: { kind: TurnEndKind.Completed } } });
+              const text = transcript.element.textContent;
+              const deploying = machineChip({ connected: false, state: 'connecting', bridgeStatus: { State: State.Deploying } });
+              return String(text.includes('protocol-user') && text.includes('protocol-final') && text.includes('protocol-output')
+                && !text.includes('protocol-reply') && !transcript.element.querySelector('.turn-end') && deploying.textContent === 'Deploying');
+            })()
+            """, cancellationToken));
 
         await chrome.NavigateAsync(new Uri($"{fixture.Access.Url("/")}#token={fixture.Token}"), cancellationToken);
         await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "connected", cancellationToken);

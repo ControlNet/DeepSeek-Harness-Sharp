@@ -15,9 +15,6 @@ namespace Dsh.Host;
  */
 internal sealed class AcpTranscript
 {
-    /** Source plugin name on the system messages that carry an agent's plan. */
-    private const string PlanSource = "acp-plan";
-
     private readonly Lock _gate = new();
     public Session Session { get; }
     private readonly StringBuilder _text = new();
@@ -64,7 +61,7 @@ internal sealed class AcpTranscript
                     AppendToolResult(update);
                     break;
                 case AcpMethods.UpdatePlan:
-                    Append(new SystemMessagePayload(_turn, _step, MessageFactory.CreateSystemMessage([new TextBlock(PlanText(update.Update))], new PluginMessageSource(PlanSource))), new SurfaceOp.Append());
+                    Append(new SystemMessagePayload(_turn, _step, MessageFactory.CreateSystemMessage([new TextBlock(PlanText(update.Update))], new PluginMessageSource(SessionEventSources.AcpPlan))), new SurfaceOp.Append());
                     break;
             }
         }

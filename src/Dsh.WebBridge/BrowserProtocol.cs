@@ -1,5 +1,12 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using Dsh.Core;
+using Dsh.Fleet;
+using Dsh.Llm;
+using Dsh.Notifications;
+using Dsh.GitInspect;
+using Dsh.Transport;
 using Dsh.RemoteHost;
 
 namespace Dsh.WebBridge;
@@ -34,6 +41,99 @@ internal static class BrowserProtocol
             [nameof(RemoteAgentModes.Terminal)] = RemoteAgentModes.Terminal,
             [nameof(RemoteAgentModes.Acp)] = RemoteAgentModes.Acp,
         });
+        Export(script, "HostProtocol", new Dictionary<string, string>
+        {
+            [nameof(HostProtocol.MethodInfo)] = HostProtocol.MethodInfo,
+            [nameof(HostProtocol.MethodSessionSubscribe)] = HostProtocol.MethodSessionSubscribe,
+            [nameof(HostProtocol.MethodSessionUnsubscribe)] = HostProtocol.MethodSessionUnsubscribe,
+            [nameof(HostProtocol.MethodSessionMessage)] = HostProtocol.MethodSessionMessage,
+            [nameof(HostProtocol.MethodSessionInterrupt)] = HostProtocol.MethodSessionInterrupt,
+            [nameof(HostProtocol.MethodApprovalRespond)] = HostProtocol.MethodApprovalRespond,
+            [nameof(HostProtocol.MethodQuestionRespond)] = HostProtocol.MethodQuestionRespond,
+            [nameof(HostProtocol.NotificationEvent)] = HostProtocol.NotificationEvent,
+        });
+        Export(script, "AgentProtocol", new Dictionary<string, string>
+        {
+            [nameof(AgentProtocol.MethodAgentCatalog)] = AgentProtocol.MethodAgentCatalog,
+            [nameof(AgentProtocol.MethodAgentStart)] = AgentProtocol.MethodAgentStart,
+            [nameof(AgentProtocol.MethodAgentStop)] = AgentProtocol.MethodAgentStop,
+            [nameof(AgentProtocol.MethodAgentResume)] = AgentProtocol.MethodAgentResume,
+            [nameof(AgentProtocol.MethodAgentPrompt)] = AgentProtocol.MethodAgentPrompt,
+            [nameof(AgentProtocol.MethodAgentCancel)] = AgentProtocol.MethodAgentCancel,
+        });
+        Export(script, "PtyProtocol", new Dictionary<string, string>
+        {
+            [nameof(PtyProtocol.MethodPtyAttach)] = PtyProtocol.MethodPtyAttach,
+            [nameof(PtyProtocol.MethodPtyDetach)] = PtyProtocol.MethodPtyDetach,
+            [nameof(PtyProtocol.MethodPtyWrite)] = PtyProtocol.MethodPtyWrite,
+            [nameof(PtyProtocol.MethodPtyResize)] = PtyProtocol.MethodPtyResize,
+            [nameof(PtyProtocol.MethodPtyStop)] = PtyProtocol.MethodPtyStop,
+            [nameof(PtyProtocol.NotificationPtyOutput)] = PtyProtocol.NotificationPtyOutput,
+        });
+        Export(script, "FilesProtocol", new Dictionary<string, string>
+        {
+            [nameof(FilesProtocol.MethodFileList)] = FilesProtocol.MethodFileList,
+            [nameof(FilesProtocol.MethodFileRead)] = FilesProtocol.MethodFileRead,
+            [nameof(FilesProtocol.MethodFsStat)] = FilesProtocol.MethodFsStat,
+            [nameof(FilesProtocol.MethodFsDownload)] = FilesProtocol.MethodFsDownload,
+        });
+        Export(script, "GitProtocol", new Dictionary<string, string>
+        {
+            [nameof(GitProtocol.MethodGitStatus)] = GitProtocol.MethodGitStatus,
+            [nameof(GitProtocol.MethodGitDiff)] = GitProtocol.MethodGitDiff,
+        });
+        Export(script, "NotificationsProtocol", new Dictionary<string, string>
+        {
+            [nameof(NotificationsProtocol.MethodNotifyMarkRead)] = NotificationsProtocol.MethodNotifyMarkRead,
+        });
+        Export(script, "BridgeProtocol", new Dictionary<string, string>
+        {
+            [nameof(BridgeProtocol.NotificationView)] = BridgeProtocol.NotificationView,
+            [nameof(BridgeProtocol.NotificationStreamError)] = BridgeProtocol.NotificationStreamError,
+            [nameof(BridgeProtocol.SessionStream)] = BridgeProtocol.SessionStream,
+            [nameof(BridgeProtocol.TerminalStream)] = BridgeProtocol.TerminalStream,
+        });
+        Export(script, "PendingKind", new Dictionary<string, string>
+        {
+            [nameof(PendingKinds.Approval)] = PendingKinds.Approval,
+            [nameof(PendingKinds.Question)] = PendingKinds.Question,
+        });
+        ExportEnum(script, "MachineConnectionState", WebBridgeJsonContext.Default.MachineConnectionState);
+        ExportEnum(script, "NotificationKind", WebBridgeJsonContext.Default.NotificationKind);
+        ExportEnum(script, "NotificationView", WebBridgeJsonContext.Default.NotificationView);
+        ExportEnum(script, "GitDiffSource", WebBridgeJsonContext.Default.GitDiffSource);
+        Export(script, "SessionEventType", new Dictionary<string, string>
+        {
+            [nameof(SessionEventTypes.UserMessage)] = SessionEventTypes.UserMessage,
+            [nameof(SessionEventTypes.AssistantChunk)] = SessionEventTypes.AssistantChunk,
+            [nameof(SessionEventTypes.AssistantMessage)] = SessionEventTypes.AssistantMessage,
+            [nameof(SessionEventTypes.ToolCall)] = SessionEventTypes.ToolCall,
+            [nameof(SessionEventTypes.ToolResult)] = SessionEventTypes.ToolResult,
+            [nameof(SessionEventTypes.SystemMessage)] = SessionEventTypes.SystemMessage,
+            [nameof(SessionEventTypes.TurnEnd)] = SessionEventTypes.TurnEnd,
+        });
+        Export(script, "StreamChunkType", new Dictionary<string, string>
+        {
+            [nameof(StreamChunkTypes.TextDelta)] = StreamChunkTypes.TextDelta,
+            [nameof(StreamChunkTypes.ReasoningDelta)] = StreamChunkTypes.ReasoningDelta,
+        });
+        Export(script, "SessionEventSource", new Dictionary<string, string>
+        {
+            [nameof(SessionEventSources.AcpPlan)] = SessionEventSources.AcpPlan,
+        });
+        Export(script, "ContentBlockType", new Dictionary<string, string>
+        {
+            [nameof(ContentBlockTypes.Text)] = ContentBlockTypes.Text,
+            [nameof(ContentBlockTypes.Image)] = ContentBlockTypes.Image,
+            [nameof(ContentBlockTypes.ToolResult)] = ContentBlockTypes.ToolResult,
+        });
+        Export(script, "TurnEndKind", new Dictionary<string, string>
+        {
+            [nameof(TurnEndReason.Completed)] = new TurnEndReason.Completed().Kind,
+        });
+        script.Append("export const JsonRpc = Object.freeze(")
+            .Append(JsonSerializer.Serialize(new BrowserRpcProtocol(new JsonRpcMessage().Version, JsonRpcPeer.MethodNotFound), WebBridgeJsonContext.Default.BrowserRpcProtocol))
+            .Append(");\n");
         return new StaticAsset(Encoding.UTF8.GetBytes(script.ToString()), "text/javascript; charset=utf-8");
     }
 
@@ -43,4 +143,10 @@ internal static class BrowserProtocol
         script.Append(JsonSerializer.Serialize(values, WebBridgeJsonContext.Default.IReadOnlyDictionaryStringString));
         script.Append(");\n");
     }
+
+    private static void ExportEnum<T>(StringBuilder script, string name, JsonTypeInfo<T> metadata) where T : struct, Enum
+        => Export(script, name, Enum.GetValues<T>().ToDictionary(value => value.ToString(),
+            value => JsonSerializer.SerializeToElement(value, metadata).GetString()!, StringComparer.Ordinal));
 }
+
+internal sealed record BrowserRpcProtocol(string Version, int MethodNotFound);

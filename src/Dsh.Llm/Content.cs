@@ -3,6 +3,14 @@ using System.Text.Json.Serialization;
 
 namespace Dsh.Llm;
 
+/** Discriminators shared by serialization and non-.NET renderers. */
+public static class ContentBlockTypes
+{
+    public const string Text = "text";
+    public const string Image = "image";
+    public const string ToolResult = "tool-result";
+}
+
 [JsonConverter(typeof(ContentBlockJsonConverter))]
 public abstract record ContentBlock
 {
@@ -11,7 +19,7 @@ public abstract record ContentBlock
 
 public sealed record TextBlock(string Text) : ContentBlock
 {
-    public override string Type => "text";
+    public override string Type => ContentBlockTypes.Text;
 }
 
 public sealed record ReasoningBlock(string Text) : ContentBlock
@@ -21,7 +29,7 @@ public sealed record ReasoningBlock(string Text) : ContentBlock
 
 public sealed record ImageBlock(ImageAttachmentRef Attachment) : ContentBlock
 {
-    public override string Type => "image";
+    public override string Type => ContentBlockTypes.Image;
 }
 
 public sealed record ToolCallBlock(ToolCallId Id, string Name, string Arguments) : ContentBlock
@@ -31,7 +39,7 @@ public sealed record ToolCallBlock(ToolCallId Id, string Name, string Arguments)
 
 public sealed record ToolResultBlock(ToolCallId ToolCallId, IReadOnlyList<ContentBlock> Content, bool? IsError = null) : ContentBlock
 {
-    public override string Type => "tool-result";
+    public override string Type => ContentBlockTypes.ToolResult;
 }
 
 public sealed record UnknownContentBlock(string RawType, JsonElement Raw) : ContentBlock
@@ -56,15 +64,15 @@ public sealed class ContentBlockJsonConverter : JsonConverter<ContentBlock>
         var type = root.GetProperty("type").GetString() ?? throw new JsonException("content block missing \"type\"");
         return type switch
         {
-            "text" => new TextBlock(root.GetProperty("text").GetString() ?? ""),
+            ContentBlockTypes.Text => new TextBlock(root.GetProperty("text").GetString() ?? ""),
             "reasoning" => new ReasoningBlock(root.GetProperty("text").GetString() ?? ""),
-            "image" => new ImageBlock(DshJson.Deserialize<ImageAttachmentRef>(root.GetProperty("attachment"))
+            ContentBlockTypes.Image => new ImageBlock(DshJson.Deserialize<ImageAttachmentRef>(root.GetProperty("attachment"))
                 ?? throw new JsonException("image block missing attachment")),
             "tool-call" => new ToolCallBlock(
                 ToolCallId.Create(root.GetProperty("id").GetString() ?? throw new JsonException("tool-call missing id")),
                 root.GetProperty("name").GetString() ?? "",
                 root.GetProperty("arguments").GetString() ?? ""),
-            "tool-result" => new ToolResultBlock(
+            ContentBlockTypes.ToolResult => new ToolResultBlock(
                 ToolCallId.Create(root.GetProperty("toolCallId").GetString() ?? throw new JsonException("tool-result missing toolCallId")),
                 DshJson.Deserialize<IReadOnlyList<ContentBlock>>(root.GetProperty("content")) ?? [],
                 root.TryGetProperty("isError", out var isError) ? isError.GetBoolean() : null),

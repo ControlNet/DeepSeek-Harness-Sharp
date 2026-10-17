@@ -3,7 +3,7 @@
 // authoritative server streams; no event log, sequence filter or resolved-request memory lives here.
 import { HostRpc, bridgeUrl } from './rpc.js';
 import { base64ToBytes, textToBase64 } from './dom.js';
-import { SessionStatus, SessionKind } from '/protocol.js';
+import { SessionStatus, SessionKind, PendingKind, MachineConnectionState, HostProtocol, PtyProtocol, NotificationsProtocol, BridgeProtocol } from '/protocol.js';
 
 const MACHINE_POLL_MS = 5000;
 
@@ -57,8 +57,8 @@ export class Hub extends EventTarget {
   sessions() { return [...this.links.values()].flatMap((link) => [...link.sessions.values()].map((session) => ({ machine: link.name, session }))); }
   pending() {
     return [...this.links.values()].flatMap((link) => [
-      ...[...link.approvals.values()].map((request) => ({ machine: link.name, kind: 'approval', request })),
-      ...[...link.questions.values()].map((request) => ({ machine: link.name, kind: 'question', request })),
+      ...[...link.approvals.values()].map((request) => ({ machine: link.name, kind: PendingKind.Approval, request })),
+      ...[...link.questions.values()].map((request) => ({ machine: link.name, kind: PendingKind.Question, request })),
     ]);
   }
   notifications() {
@@ -98,8 +98,8 @@ export class MachineLink {
     try {
       const rpc = await HostRpc.connect(bridgeUrl(this.name));
       this.#rpc = rpc;
-      rpc.on('bridge.view', (view) => {
-        this.state = view.State === 'Connected' ? 'connected' : view.State === 'Offline' ? 'waiting' : 'connecting';
+      rpc.on(BridgeProtocol.NotificationView, (view) => {
+        this.state = view.State === MachineConnectionState.Connected ? 'connected' : view.State === MachineConnectionState.Offline ? 'waiting' : 'connecting';
         this.error = view.Detail ?? '';
         this.info = view.Info;
         this.hello = view.Hello ?? this.hello;
@@ -112,14 +112,14 @@ export class MachineLink {
         }
         this.#hub.changed();
       });
-      rpc.on('host.event', ({ ViewId, EventJson, Reset }) => {
+      rpc.on(HostProtocol.NotificationEvent, ({ ViewId, EventJson, Reset }) => {
         const listener = this.#subscriptions.get(ViewId)?.listener;
         if (Reset)
           listener?.reset?.();
         else
           listener?.event(JSON.parse(EventJson));
       });
-      rpc.on('host.pty.output', ({ ViewId, Base64, Eof, Snapshot }) => {
+      rpc.on(PtyProtocol.NotificationPtyOutput, ({ ViewId, Base64, Eof, Snapshot }) => {
         const listener = this.#terminals.get(ViewId)?.listener;
         if (listener === undefined)
           return;
@@ -129,8 +129,8 @@ export class MachineLink {
         if (Eof)
           listener.eof();
       });
-      rpc.on('bridge.stream.error', ({ Kind, ViewId, Message }) => {
-        (Kind === 'session' ? this.#subscriptions : this.#terminals).get(ViewId)?.listener.error(Message);
+      rpc.on(BridgeProtocol.NotificationStreamError, ({ Kind, ViewId, Message }) => {
+        (Kind === BridgeProtocol.SessionStream ? this.#subscriptions : this.#terminals).get(ViewId)?.listener.error(Message);
       });
       rpc.onClose((event) => {
         if (this.#rpc !== rpc)
@@ -167,14 +167,14 @@ export class MachineLink {
     this.#followSession(viewId, view);
     return () => {
       this.#subscriptions.delete(viewId);
-      this.request('host.session.unsubscribe', { SessionId: sessionId, ViewId: viewId }).catch(() => {});
+      this.request(HostProtocol.MethodSessionUnsubscribe, { SessionId: sessionId, ViewId: viewId }).catch(() => {});
     };
   }
 
   #followSession(viewId, view) {
     if (this.#rpc === null)
       return;
-    this.request('host.session.subscribe', { SessionId: view.sessionId, ViewId: viewId, FromSeq: 0 })
+    this.request(HostProtocol.MethodSessionSubscribe, { SessionId: view.sessionId, ViewId: viewId, FromSeq: 0 })
       .catch((error) => this.#subscriptions.get(viewId)?.listener.error(describe(error)));
   }
 
@@ -185,7 +185,7 @@ export class MachineLink {
     this.#showTerminal(viewId, view);
     return () => {
       this.#terminals.delete(viewId);
-      this.request('host.pty.detach', { PtyId: ptyId, ViewId: viewId }).catch(() => {});
+      this.request(PtyProtocol.MethodPtyDetach, { PtyId: ptyId, ViewId: viewId }).catch(() => {});
     };
   }
 
@@ -193,16 +193,16 @@ export class MachineLink {
     if (this.#rpc === null)
       return;
     const size = view.listener.size?.();
-    this.request('host.pty.attach', { PtyId: view.ptyId, ViewId: viewId, Columns: size?.columns, Rows: size?.rows })
+    this.request(PtyProtocol.MethodPtyAttach, { PtyId: view.ptyId, ViewId: viewId, Columns: size?.columns, Rows: size?.rows })
       .catch((error) => this.#terminals.get(viewId)?.listener.error(describe(error)));
   }
 
-  writeTerminal(ptyId, text) { return this.request('host.pty.write', { PtyId: ptyId, Base64: textToBase64(text) }); }
+  writeTerminal(ptyId, text) { return this.request(PtyProtocol.MethodPtyWrite, { PtyId: ptyId, Base64: textToBase64(text) }); }
   resizeTerminal(ptyId, columns, rows) {
     const viewId = [...this.#terminals].find(([, view]) => view.ptyId === ptyId)?.[0];
-    return this.request('host.pty.resize', { PtyId: ptyId, ViewId: viewId, Columns: columns, Rows: rows });
+    return this.request(PtyProtocol.MethodPtyResize, { PtyId: ptyId, ViewId: viewId, Columns: columns, Rows: rows });
   }
-  markRead(ids) { return this.request('host.notify.markRead', ids === undefined ? { All: true } : { Ids: ids }); }
+  markRead(ids) { return this.request(NotificationsProtocol.MethodNotifyMarkRead, ids === undefined ? { All: true } : { Ids: ids }); }
 }
 
 export function describe(error) {

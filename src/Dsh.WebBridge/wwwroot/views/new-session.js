@@ -1,7 +1,7 @@
 // New session: machine, agent (host.agent.catalog), mode, project path, optional worktree and initial prompt; started with host.agent.start.
 import { h, mount, toast } from '../dom.js';
 import { describe } from '../hub.js';
-import { Capability, AgentMode } from '/protocol.js';
+import { Capability, AgentMode, AgentProtocol } from '/protocol.js';
 import { sessionRoute, emptyState } from './common.js';
 
 
@@ -58,7 +58,7 @@ export function newSessionView(container, hub, route) {
     mount(projects, ...[...new Set([...machineLink.sessions.values()].map((session) => session.ProjectPath).filter(Boolean))].map((path) => h('option', { value: path })));
     try {
       if (!catalogs.has(machineLink.name))
-        catalogs.set(machineLink.name, await machineLink.request('host.agent.catalog'));
+        catalogs.set(machineLink.name, await machineLink.request(AgentProtocol.MethodAgentCatalog));
       entries = catalogs.get(machineLink.name);
     } catch (error) {
       entries = [];
@@ -93,7 +93,7 @@ export function newSessionView(container, hub, route) {
     };
     submit.disabled = true;
     try {
-      const session = await machineLink.request('host.agent.start', request);
+      const session = await machineLink.request(AgentProtocol.MethodAgentStart, request);
       location.hash = `#${sessionRoute(machineLink.name, session.SessionId)}`;
     } catch (error) {
       toast(`Could not start: ${describe(error)}`, 'error');

@@ -2,14 +2,15 @@
 import { h, mount, ago, when, toast } from '../dom.js';
 import { describe } from '../hub.js';
 import { sessionRoute, emptyState } from './common.js';
+import { NotificationKind, NotificationView } from '/protocol.js';
 
 const KIND_LABELS = {
-  WaitingForInput: 'Waiting for input',
-  ApprovalRequest: 'Approval',
-  Question: 'Question',
-  SessionExited: 'Exited',
-  Error: 'Error',
-  Info: 'Info',
+  [NotificationKind.WaitingForInput]: 'Waiting for input',
+  [NotificationKind.ApprovalRequest]: 'Approval',
+  [NotificationKind.Question]: 'Question',
+  [NotificationKind.SessionExited]: 'Exited',
+  [NotificationKind.Error]: 'Error',
+  [NotificationKind.Info]: 'Info',
 };
 
 let unreadOnly = false;
@@ -55,7 +56,7 @@ function notificationRow(hub, { machine, record }) {
 
 /** Where clicking leads: the session, the pending decisions, or the dashboard. */
 function target(machine, record) {
-  if (record.Target?.View === 'PendingRequest')
+  if (record.Target?.View === NotificationView.PendingRequest)
     return '#/pending';
   if (record.SessionId)
     return `#${sessionRoute(machine, record.SessionId)}`;

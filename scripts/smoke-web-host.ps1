@@ -56,6 +56,20 @@ try {
     $unauthenticated = $client.GetAsync("$origin/api/session", $deadline.Token).GetAwaiter().GetResult()
     if ([int]$unauthenticated.StatusCode -ne 401) { throw 'Anonymous session endpoint did not refuse access' }
     $unauthenticated.Dispose()
+    $protocolResponse = $client.GetAsync("$origin/protocol.js", $deadline.Token).GetAwaiter().GetResult()
+    try {
+        if ([int]$protocolResponse.StatusCode -ne 200 -or $protocolResponse.Content.Headers.ContentType.MediaType -ne 'text/javascript') { throw 'Published public protocol resource is missing' }
+        $protocolScript = $protocolResponse.Content.ReadAsStringAsync($deadline.Token).GetAwaiter().GetResult()
+        if ($protocolScript.Contains($token)) { throw 'Published protocol resource contains credentials' }
+        $protocol = @{}
+        foreach ($line in $protocolScript.Split("`n", [StringSplitOptions]::RemoveEmptyEntries)) {
+            if ($line -notmatch '^export const (?<name>[A-Za-z]+) = Object\.freeze\((?<json>.+)\);$') { throw 'Published protocol module has an invalid export' }
+            $protocol[$Matches.name] = $Matches.json | ConvertFrom-Json -AsHashtable
+        }
+        foreach ($name in @('SessionStatus', 'SessionKind', 'Capability', 'AgentMode', 'HostProtocol', 'AgentProtocol', 'PtyProtocol', 'FilesProtocol', 'GitProtocol', 'NotificationsProtocol', 'BridgeProtocol', 'PendingKind', 'MachineConnectionState', 'NotificationKind', 'NotificationView', 'GitDiffSource', 'SessionEventType', 'StreamChunkType', 'ContentBlockType', 'SessionEventSource', 'TurnEndKind', 'JsonRpc')) {
+            if (-not $protocol.ContainsKey($name) -or $protocol[$name].Count -eq 0) { throw "Published protocol metadata missing: $name" }
+        }
+    } finally { $protocolResponse.Dispose() }
     $foreign = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Post, "$origin/api/login")
     $foreign.Headers.Add('Origin', 'http://foreign.invalid')
     $foreign.Content = [Net.Http.StringContent]::new("token=$token", [Text.Encoding]::UTF8, 'application/x-www-form-urlencoded')
@@ -78,7 +92,7 @@ try {
     $socket.Options.Cookies = $cookies
     $socket.Options.SetRequestHeader('Origin', $origin)
     $socket.ConnectAsync([Uri]"ws://127.0.0.1:$port/ws", $deadline.Token).GetAwaiter().GetResult()
-    $request = [Text.Encoding]::UTF8.GetBytes('{"jsonrpc":"2.0","id":1,"method":"host.info"}')
+    $request = [Text.Encoding]::UTF8.GetBytes((@{ jsonrpc = $protocol.JsonRpc.Version; id = 1; method = $protocol.HostProtocol.MethodInfo } | ConvertTo-Json -Compress))
     $sent = $false
     do {
         $message = [IO.MemoryStream]::new()
@@ -91,7 +105,7 @@ try {
             } while (-not $received.EndOfMessage)
             $reply = [Text.Encoding]::UTF8.GetString($message.ToArray()) | ConvertFrom-Json
         } finally { $message.Dispose() }
-        if (-not $sent -and $reply.method -eq 'bridge.view' -and $reply.params.State -eq 'Connected') {
+        if (-not $sent -and $reply.method -eq $protocol.BridgeProtocol.NotificationView -and $reply.params.State -eq $protocol.MachineConnectionState.Connected) {
             $socket.SendAsync([ArraySegment[byte]]::new($request), [Net.WebSockets.WebSocketMessageType]::Text, $true, $deadline.Token).GetAwaiter().GetResult()
             $sent = $true
         }
