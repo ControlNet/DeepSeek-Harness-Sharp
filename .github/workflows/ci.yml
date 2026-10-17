@@ -86,9 +86,15 @@ jobs:
           netstat -g
           sudo tcpdump -n -l -i pktap,all 'udp port 5353' > artifacts/iroh-diagnostics/packets.txt 2>&1 &
           capture=$!
-          artifacts/iroh-ssh/osx-arm64/iroh-ssh server --persist --key-dir "$PWD/artifacts/iroh-diagnostics/identity" --ready-file "$PWD/artifacts/iroh-diagnostics/ready" --ssh-port 9 --relay-url http://127.0.0.1:9 > artifacts/iroh-diagnostics/server.txt 2>&1 &
+          ssh-keygen -q -t ed25519 -N '' -C iro-multicast-probe -f artifacts/iroh-diagnostics/host_key
+          printf 'Port 22222\nListenAddress 127.0.0.1\nHostKey %s/artifacts/iroh-diagnostics/host_key\nPidFile %s/artifacts/iroh-diagnostics/sshd.pid\nAuthorizedKeysFile /dev/null\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\n' "$PWD" "$PWD" > artifacts/iroh-diagnostics/sshd.conf
+          /usr/sbin/sshd -D -e -f "$PWD/artifacts/iroh-diagnostics/sshd.conf" > artifacts/iroh-diagnostics/sshd.txt 2>&1 &
+          sshd=$!
+          sleep 1
+          ssh-keyscan -T 5 -p 22222 127.0.0.1
+          artifacts/iroh-ssh/osx-arm64/iroh-ssh server --persist --key-dir "$PWD/artifacts/iroh-diagnostics/identity" --ready-file "$PWD/artifacts/iroh-diagnostics/ready" --ssh-port 22222 --relay-url http://127.0.0.1:9 > artifacts/iroh-diagnostics/server.txt 2>&1 &
           receiver=$!
-          trap 'kill "$receiver" 2>/dev/null || true; sudo kill "$capture" 2>/dev/null || true' EXIT
+          trap 'kill "$receiver" "$sshd" 2>/dev/null || true; sudo kill "$capture" 2>/dev/null || true' EXIT
           sleep 12
           if [ -f artifacts/iroh-diagnostics/ready ]; then
             echo 'native discovery acknowledgement is present'
