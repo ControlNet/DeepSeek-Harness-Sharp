@@ -40,10 +40,10 @@ class SelectionTests(unittest.TestCase):
     def test_empty_diff_runs_nothing(self):
         self.assert_selection([])
 
-    def test_test_only_keeps_all_three_regressions(self):
+    def test_test_changes_keep_regressions_and_shared_raw_fixture_coverage(self):
         self.assert_selection(
-            ["tests/Dsh.Tests/SessionTests.cs", "tests/Dsh.Tests/Fixtures/prompt.md"],
-            suites=ALL_SUITES[:-1],
+            ["tests/Dsh.Tests/PtyTuiHarness.cs", "tests/Dsh.Tests/Fixtures/prompt.md"],
+            suites=ALL_SUITES,
         )
 
     def test_build_metadata_is_always_conservative(self):
@@ -69,12 +69,12 @@ class SelectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_selection([path], suites=ALL_SUITES, jit=True, aot=True)
 
-    def test_raw_script_only_runs_raw_suite(self):
-        self.assert_selection(["scripts/check-tui-raw-mode.py"], suites=["raw"])
+    def test_raw_component_only_runs_raw_suite(self):
+        self.assert_selection(["tests/Dsh.Tests/TuiRawModeEndToEndTests.cs"], suites=["raw"])
 
     def test_mixed_paths_take_the_union(self):
         self.assert_selection(
-            ["docs/ci.md", "tests/Dsh.Tests/RawTests.cs", "scripts/check-tui-raw-mode.py",
+            ["docs/ci.md", "tests/Dsh.Tests/RawTests.cs", "tests/Dsh.Tests/TuiRawModeEndToEndTests.cs",
              ".github/workflows/release.yml"],
             suites=ALL_SUITES, validate=True,
         )
@@ -108,7 +108,7 @@ class SelectionTests(unittest.TestCase):
         for path in ("unexpected/path", "src/Deleted.cs", "tests/Dsh.Tests/DeletedTests.cs"):
             with self.subTest(path=path):
                 if path == "tests/Dsh.Tests/DeletedTests.cs":
-                    self.assert_selection([path], suites=ALL_SUITES[:-1])
+                    self.assert_selection([path], suites=ALL_SUITES)
                 else:
                     self.assert_selection([path], suites=ALL_SUITES, jit=True, aot=True)
 

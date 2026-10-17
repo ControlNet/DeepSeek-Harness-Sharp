@@ -40,10 +40,10 @@ def classify_changes(paths, event, aot=False, full=False):
             jit = True
         elif is_documentation(path) or path in LIGHT_WORKFLOWS:
             continue
-        elif path.startswith("tests/Dsh.Tests/"):
-            suites.update(SUITES[:-1])
-        elif path == "scripts/check-tui-raw-mode.py":
+        elif path == "tests/Dsh.Tests/TuiRawModeEndToEndTests.cs":
             suites.add("raw")
+        elif path.startswith("tests/Dsh.Tests/"):
+            suites.update(SUITES)
         else:
             suites.update(SUITES)
             jit = True
