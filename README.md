@@ -325,7 +325,7 @@ Linux systemd 用户服务跨退出登录或开机运行需要管理员按系统
 
 ### 可选：由用户管理 systemd 服务
 
-Host 按需启动时是独立后台进程，关闭 GUI 或 SSH 桥接不会结束其会话；产品不安装系统服务，也不修改 systemd 或 linger。
+Host 按需启动时是独立后台进程，关闭 GUI 或 SSH 桥接不会结束其会话；产品不为 Host 安装 systemd 服务或修改 linger。
 需要开机启动或由服务管理器监管时，可自行保存以下内容到 `~/.config/systemd/user/dsharp-host.service`，把 `ExecStart` 改为实际二进制的绝对路径：
 
 ```ini
