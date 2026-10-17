@@ -59,7 +59,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         await using var host = await HarnessHostFixture.CreateAsync("mat", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("terminal", Ct);
         var changes = client.HostSessionChangesAsync(Ct);
-        var added = client.NotificationsAddedAsync(Ct);
+        var added = client.NotificationChangesAsync(Ct);
         var script = new RemoteAgentCommand("/bin/sh", ["-c", """printf 'Proceed? [y/N] '; read answer; echo "working on $answer"; sleep 3; exit 3"""]);
 
         var session = await client.StartAgentAsync(new RemoteAgentStartRequest(
@@ -74,9 +74,9 @@ public sealed class RemoteHostAgentTests : IDisposable
         Assert.Empty((await client.ListNotificationsAsync(new RemoteNotifyQuery(SessionId: session.SessionId), Ct)).Items);
         await terminal.SendAsync("y\r");
         await terminal.WaitForAsync("working on y", TimeSpan.FromSeconds(10));
-        var running = await RemoteHostMultiClientTests.NextAsync(changes, item => item.SessionId == session.SessionId && item.Status == HostSessionStatuses.Running);
-        var exited = await RemoteHostMultiClientTests.NextAsync(changes, item => item.SessionId == session.SessionId && item.Status == HostSessionStatuses.Exited);
-        var exitNotice = await RemoteHostMultiClientTests.NextAsync(added, item => item.SessionId == session.SessionId && item.Kind == NotificationKind.SessionExited);
+        var running = (await RemoteHostMultiClientTests.NextAsync(changes, item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Running)).Session!;
+        var exited = (await RemoteHostMultiClientTests.NextAsync(changes, item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Exited)).Session!;
+        var exitNotice = (await RemoteHostMultiClientTests.NextAsync(added, item => item.Added?.SessionId == session.SessionId && item.Added.Kind == NotificationKind.SessionExited)).Added!;
 
         Assert.Equal((HostSessionKinds.External, AgentKinds.Terminal, _workspace), (session.Kind, session.AgentKind, session.ProjectPath));
         Assert.Equal("unknown agent", atPrompt.Title);
@@ -127,7 +127,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         var running = Assert.Single(await client.ListHostSessionsAsync(Ct), item => item.SessionId == session.SessionId);
         Assert.Equal((HostSessionStatuses.Running, 0), (running.Status, running.PendingCount));
         await client.StopAgentAsync(session.SessionId, Ct);
-        var exited = await RemoteHostMultiClientTests.NextAsync(changes, item => item.SessionId == session.SessionId && item.Status == HostSessionStatuses.Exited);
+        var exited = (await RemoteHostMultiClientTests.NextAsync(changes, item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Exited)).Session!;
 
         Assert.Equal((HostSessionKinds.External, agentKind), (session.Kind, session.AgentKind));
         Assert.Equal(_workspace, running.ProjectPath);
@@ -144,7 +144,7 @@ public sealed class RemoteHostAgentTests : IDisposable
 
         var session = await client.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp, Title: "opencode acp"), Ct);
         await client.StopAgentAsync(session.SessionId, Ct);
-        var stopped = await RemoteHostMultiClientTests.NextAsync(changes, item => item.SessionId == session.SessionId && item.Status == HostSessionStatuses.Exited);
+        var stopped = (await RemoteHostMultiClientTests.NextAsync(changes, item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Exited)).Session!;
         var resumed = await client.ResumeAgentAsync(session.SessionId, Ct);
         await host.RestartHostAsync(Ct);
         var after = await host.ConnectAsync("after", Ct);
@@ -170,7 +170,7 @@ public sealed class RemoteHostAgentTests : IDisposable
 
         await client.PromptAgentAsync(session.SessionId, "Reply with exactly the word pong and nothing else. Do not use any tools.", Ct);
         var events = await TurnEventsAsync(client, session.SessionId);
-        var idle = await RemoteHostMultiClientTests.NextAsync(client.HostSessionChangesAsync(Ct), item => item.SessionId == session.SessionId && item.Status == HostSessionStatuses.Idle);
+        var idle = (await RemoteHostMultiClientTests.NextAsync(client.HostSessionChangesAsync(Ct), item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Idle)).Session!;
 
         Assert.IsType<TurnStartPayload>(events[0].Data);
         Assert.IsType<UserMessagePayload>(events[1].Data);
