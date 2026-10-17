@@ -48,14 +48,14 @@ internal static class RealHostProcesses
         var template = HarnessHome.Default().Root;
         Assert.True(File.Exists(Path.Combine(template, "settings.yaml")),
             "The real TUI model smoke requires settings.yaml in the normal DSH_HOME template.");
-        File.Copy(Path.Combine(template, "settings.yaml"), Path.Combine(root, "settings.yaml"), overwrite: true);
         var profiles = Path.Combine(template, "profiles");
         if (Directory.Exists(profiles))
             CopyDirectory(profiles, Path.Combine(root, "profiles"));
         var home = new HarnessHome(root);
-        var settings = HarnessSettings.Load(home);
+        var settings = HarnessSettings.Load(new HarnessHome(template));
         settings.Storage = new StorageSettings { Root = root, ToolResults = settings.Storage?.ToolResults };
         settings.Save(home);
+        settings.SavePlugins(home);
     }
 
     private static void CopyDirectory(string source, string destination)

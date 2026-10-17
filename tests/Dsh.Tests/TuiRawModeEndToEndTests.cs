@@ -98,11 +98,11 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
         private bool _exitSent;
         private VtScreen _screen = new(140, 40);
         private int _mode;
+        private bool _hasRenderedFrame;
 
         public void WaitForRawInput()
         {
-            WaitFor(() => _screen.IsAlternateScreen && _mode == 0
-                    && terminal.Snapshot().Contains("\u001b[?2026l", StringComparison.Ordinal),
+            WaitFor(() => _screen.IsAlternateScreen && _mode == 0 && _hasRenderedFrame,
                 TimeSpan.FromSeconds(90), "The built real CLI did not render its input after taking ownership of the terminal.");
             Assert.Equal(7, ModeBits(File.ReadAllText(Path.Combine(terminal.Home, "termios-before"))));
             Assert.True(_rawSeen, "The real CLI never entered raw mode.");
@@ -182,6 +182,9 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
         private void Observe()
         {
             TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+            // Certify completion before copying the production VT state. Checking the live transcript
+            // afterwards could validate an older, half-painted first frame as the empty-input baseline.
+            _hasRenderedFrame = terminal.Snapshot().Contains("\u001b[?2026l", StringComparison.Ordinal);
             _screen = terminal.ReadTerminalScreen();
             var ttyPath = Path.Combine(terminal.Home, "terminal");
             if (!File.Exists(ttyPath))
