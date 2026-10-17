@@ -126,21 +126,6 @@ jobs:
             test -s "$OUTPUT/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
             test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
           done
-
-      - name: 安装 sqlite3（Windows；SQLitePCLRaw.provider.sqlite3 需要系统 sqlite3.dll，测试与 dsharp 都要）
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install sqlite --no-progress -y
-          $dll = Get-ChildItem 'C:\ProgramData\chocolatey\lib\sqlite' -Recurse -Filter 'sqlite3.dll' |
-            Select-Object -First 1
-          if (-not $dll) { throw '未找到 sqlite3.dll' }
-          foreach ($target in @('tests/Dsh.Tests/bin/Debug/net10.0', 'DeepSeek-Harness-Sharp/bin/Debug/net10.0')) {
-            New-Item -ItemType Directory -Force $target | Out-Null
-            Copy-Item $dll.FullName $target -Force
-            Write-Host "copied $($dll.FullName) to $target"
-          }
-
       - name: 启动当前产物的独立 PTY daemon
         shell: bash
         run: |

@@ -19,7 +19,7 @@ public sealed class RemoteHostReaderInitializationTests
     public async Task StopDuringInitializationReleasesRealReaderAndPreservesAnotherView(bool pty)
     {
         DelayedBackend? delayed = null;
-        await using var host = await HarnessHostFixture.CreateAsync("reader-init", TestContext.Current.CancellationToken,
+        await using var host = await HarnessHostFixture.CreateAsync("ri", TestContext.Current.CancellationToken,
             backend => delayed = new DelayedBackend(backend, pty));
         var client = await host.ConnectAsync("owner", Ct);
         string resource;
@@ -109,7 +109,7 @@ public sealed class RemoteHostReaderInitializationTests
     [InlineData(true)]
     public async Task UnknownResourceFailsTheInitializingRpc(bool pty)
     {
-        await using var host = await HarnessHostFixture.CreateAsync("missing-reader", TestContext.Current.CancellationToken);
+        await using var host = await HarnessHostFixture.CreateAsync("rm", TestContext.Current.CancellationToken);
         await using var transport = await RemoteHostListener.ConnectAsync(host.Root, Ct);
         await using var peer = new JsonRpcPeer(transport);
         peer.Start();
@@ -124,7 +124,7 @@ public sealed class RemoteHostReaderInitializationTests
     public async Task PipelinedStopDoesNotReviveReadersAndAllowsReaderIdReuse(bool pty)
     {
         DelayedBackend? tracked = null;
-        await using var host = await HarnessHostFixture.CreateAsync("reader-order", TestContext.Current.CancellationToken,
+        await using var host = await HarnessHostFixture.CreateAsync("ro", TestContext.Current.CancellationToken,
             backend => tracked = new DelayedBackend(backend, pty) { DelayInitialization = false });
         var client = await host.ConnectAsync("owner", Ct);
         string resource;
@@ -221,7 +221,7 @@ public sealed class RemoteHostReaderInitializationTests
     [InlineData(true)]
     public async Task InvalidReaderRequestFailsOnlyItsRpc(bool pty)
     {
-        await using var host = await HarnessHostFixture.CreateAsync("invalid-reader", TestContext.Current.CancellationToken);
+        await using var host = await HarnessHostFixture.CreateAsync("rv", TestContext.Current.CancellationToken);
         await using var transport = await RemoteHostListener.ConnectAsync(host.Root, Ct);
         await using var peer = new JsonRpcPeer(transport);
         peer.Start();
