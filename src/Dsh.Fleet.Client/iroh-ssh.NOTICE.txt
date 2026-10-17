@@ -7,8 +7,10 @@ Local modification: optional server --ready-file synchronizes initial discovery 
 Either a current direct address is discovered by a temporary non-announcing mDNS observer, or a relay-only
 signed record is acknowledged by the existing N0 PKARR service after relay registration.
 The original background publishers remain responsible for subsequent address changes.
+The macOS executable embeds its bundle identity, Local Network usage description, and Bonjour service declaration.
+This declares its purpose; it neither grants permission nor elevates the receiver.
 Patch: iroh-ssh.READINESS.patch, bundled next to this notice.
-Patch SHA256: cb3296f1833176ad012b9a427f1ad5ef1119adc2bcb830889404ca77cf80270f
+Patch SHA256: e383bd31cfe47d8ac57bb732ee53f31f24f6d94e8ec48d5a41cd59d26ed4f58c
 License: MIT, reproduced in iroh-ssh.LICENSE.txt next to this notice.
 Locked Rust dependency package versions, license expressions, and their bundled license files are reproduced in iroh-ssh.THIRD-PARTY-LICENSES.txt.
 Each package entry includes a version-specific source download URL so recipients can obtain its corresponding source, including the MPL-2.0-covered attohttpc crate.

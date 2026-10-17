@@ -76,44 +76,15 @@ jobs:
             bash scripts/fetch-iroh-ssh.sh "${{ matrix.rid }}"
           fi
 
-      - name: 取证 macOS 原生 mDNS 就绪（临时）
+      - name: 校验 macOS 原生可执行文件的本地网络用途声明
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts/iroh-diagnostics
-          ifconfig
-          netstat -g
-          sudo tcpdump -n -l -i pktap,all 'udp port 5353' > artifacts/iroh-diagnostics/packets.txt 2>&1 &
-          capture=$!
-          ssh-keygen -q -t ed25519 -N '' -C iro-multicast-probe -f artifacts/iroh-diagnostics/host_key
-          printf 'Port 22222\nListenAddress 127.0.0.1\nHostKey %s/artifacts/iroh-diagnostics/host_key\nPidFile %s/artifacts/iroh-diagnostics/sshd.pid\nAuthorizedKeysFile /dev/null\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\n' "$PWD" "$PWD" > artifacts/iroh-diagnostics/sshd.conf
-          /usr/sbin/sshd -D -e -f "$PWD/artifacts/iroh-diagnostics/sshd.conf" > artifacts/iroh-diagnostics/sshd.txt 2>&1 &
-          sshd=$!
-          sleep 1
-          ssh-keyscan -T 5 -p 22222 127.0.0.1
-          artifacts/iroh-ssh/osx-arm64/iroh-ssh server --persist --key-dir "$PWD/artifacts/iroh-diagnostics/identity" --ready-file "$PWD/artifacts/iroh-diagnostics/ready" --ssh-port 22222 --relay-url http://127.0.0.1:9 > artifacts/iroh-diagnostics/server.txt 2>&1 &
-          receiver=$!
-          trap 'kill "$receiver" "$sshd" 2>/dev/null || true; sudo kill "$capture" 2>/dev/null || true' EXIT
-          sleep 12
-          if [ -f artifacts/iroh-diagnostics/ready ]; then
-            echo 'native discovery acknowledgement is present'
-          else
-            echo 'native discovery acknowledgement is absent'
-          fi
-          cat artifacts/iroh-diagnostics/server.txt
-          route -n get 224.0.0.251
-          sudo artifacts/iroh-ssh/osx-arm64/iroh-ssh server --persist --key-dir "$PWD/artifacts/iroh-diagnostics/authorized-identity" --ready-file "$PWD/artifacts/iroh-diagnostics/authorized-ready" --ssh-port 22222 --relay-url http://127.0.0.1:9 > artifacts/iroh-diagnostics/authorized-server.txt 2>&1 &
-          authorized=$!
-          trap 'kill "$receiver" "$sshd" 2>/dev/null || true; sudo kill "$capture" "$authorized" 2>/dev/null || true' EXIT
-          sleep 12
-          if [ -f artifacts/iroh-diagnostics/authorized-ready ]; then
-            echo 'OS-authorized discovery acknowledgement is present'
-          else
-            echo 'OS-authorized discovery acknowledgement is absent'
-          fi
-          cat artifacts/iroh-diagnostics/authorized-server.txt
-          cat artifacts/iroh-diagnostics/packets.txt
+          otool -X -P artifacts/iroh-ssh/osx-arm64/iroh-ssh > artifacts/iroh-ssh.Info.plist
+          plutil -lint artifacts/iroh-ssh.Info.plist
+          plutil -extract NSLocalNetworkUsageDescription raw artifacts/iroh-ssh.Info.plist
+          plutil -extract NSBonjourServices.0 raw artifacts/iroh-ssh.Info.plist
 
       - name: 打包原生组件（保留 Unix 执行权限）
         shell: pwsh
@@ -242,6 +213,11 @@ jobs:
             test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
             cmp scripts/iroh-ssh-readiness.patch "$OUTPUT/tools/iroh-ssh.READINESS.patch"
           done
+      - name: macOS 非管理员 headless SSH 局域网接收端验收
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash scripts/test-iroh-macos-lan.sh
+
       - name: 启动当前产物的独立 PTY daemon
         shell: bash
         run: |
@@ -301,10 +277,11 @@ jobs:
             -trait- "Category=OnlyGpu"
             -trait- "Category=LlmSmoke"
             -trait- "Category=RenderBench")
-          # macOS 保持串行；八轮 raw 回归沿原探针的独立阶段执行，不重复计入主 quick。
+          # macOS 保持串行；八轮 raw 回归和真实 headless SSH LAN 用例沿独立阶段执行，不重复计入主 quick。
           # 主 quick 的 600s 看门狗、各测试原预算及整个 job 的 25 分钟限制均不变。
           if [ "$RUNNER_OS" = "macOS" ]; then
-            ARGS+=(-parallel none -class- Dsh.Tests.TuiRawModeEndToEndTests)
+            ARGS+=(-parallel none -class- Dsh.Tests.TuiRawModeEndToEndTests
+              -method- Dsh.Tests.IrohReceiverEndToEndTests.TargetCli_Lan_Readiness_And_Restart_Work_Without_A_Relay)
             echo "运行: ${ARGS[*]}"
             "${ARGS[@]}" &
             TESTPID=$!

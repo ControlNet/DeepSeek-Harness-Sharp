@@ -319,6 +319,11 @@ SSH-over-iroh 使用独立的主机密钥别名，不借用普通 TCP SSH 的已
 | Windows x64 | 不扩大现有 Windows 远端自动部署范围；在目标本地启用 | 当前用户登录启动的计划任务，不静默提权 |
 
 Linux systemd 用户服务跨退出登录或开机运行需要管理员按系统策略启用该用户的 linger，命令输出会说明当前机制。
+macOS 15 及以后，LaunchAgent 的局域网发现和直连需要用户在「系统设置 → 隐私与安全性 → 本地网络」允许 `dsharp Iroh`（`iroh-ssh`）；用途声明已嵌入接收端，但不会代替用户授权。
+从 Terminal 或 SSH 启动的命令行及其子进程由 macOS 自动允许本地网络访问；从这两种上下文启用且没有图形登录会话时，detached 接收端沿用命令行上下文。
+这些规则不影响已有的 SSH 认证与 host-key 校验；未授权 LAN 且配置的 relay 不可达时，启用会失败并保留原 Endpoint ID，不会提权、替换 relay 或退回旧 IP。
+详见 Apple [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)。
+
 完整发行包以实际提供的 RID 资产为准；从源码构建需要 Git，并获取固定源码、应用随包附带的发现就绪补丁；Windows 构建使用 PowerShell 7，跨架构构建还需要相应编译器与目标工具链。
 
 ### 可选：由用户管理 systemd 服务
@@ -419,6 +424,7 @@ CI 在真实三份发布产物上检查非 Web 的 `.deps.json`、`runtimeconfig
 
 - 多机连接新增 Endpoint ID 接入、客户端内置 iroh-ssh、已有 SSH 自动启用与目标端本地启用两种入口，沿用原有 SSH 认证和 Fleet 会话生命周期。
 - 接收端启动会同步地址发现就绪再验证 SSH 隧道，发布包附带上游修改补丁及来源说明。
+- macOS 接收端嵌入本地网络用途声明，局域网接入遵循用户授权，不静默提权。
 - 使用方法与平台差异见「通过 iroh 接入没有公网 SSH 地址的机器」。
 
 </details>

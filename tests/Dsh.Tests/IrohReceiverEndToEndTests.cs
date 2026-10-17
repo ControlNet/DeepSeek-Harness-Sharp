@@ -5,13 +5,15 @@ namespace Dsh.Tests;
 
 public sealed class IrohReceiverEndToEndTests
 {
-    [Theory(Timeout = 180000)]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task TargetCli_Readiness_And_Restart_Work_Without_A_Direct_Host_Address(bool directOnly)
+    [Fact(Timeout = 180000)]
+    public Task TargetCli_Readiness_And_Restart_Work_Without_A_Direct_Host_Address() => ExerciseReceiverLifecycleAsync(false, TestContext.Current.CancellationToken);
+
+    [Fact(Timeout = 180000)]
+    public Task TargetCli_Lan_Readiness_And_Restart_Work_Without_A_Relay() => ExerciseReceiverLifecycleAsync(true, TestContext.Current.CancellationToken);
+
+    private static async Task ExerciseReceiverLifecycleAsync(bool directOnly, CancellationToken ct)
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
-        var ct = TestContext.Current.CancellationToken;
         await using var server = await TestSshServer.StartAsync(ct);
         var root = TempTree.CreateSocketDirectory("ie");
         // A dead custom relay must still permit discovery and transport through the LAN.
@@ -48,13 +50,6 @@ public sealed class IrohReceiverEndToEndTests
             Assert.True(restarted.Running);
             Assert.Equal(first.EndpointId, restarted.EndpointId);
             Assert.Equal("receiver-restarted", await new SshTransport(tunneled).RunAsync("printf '%s' receiver-restarted", ct));
-        }
-        catch
-        {
-            var log = Path.Combine(IrohReceiver.ReceiverRoot(new HarnessHome(root)), "receiver.log");
-            if (File.Exists(log))
-                TestContext.Current.TestOutputHelper?.WriteLine(await File.ReadAllTextAsync(log, CancellationToken.None));
-            throw;
         }
         finally
         {

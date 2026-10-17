@@ -248,7 +248,10 @@ public static partial class IrohReceiver
         }
         catch (OperationCanceledException error) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new IOException($"Receiver did not become reachable within {ReadinessTimeout.TotalSeconds} seconds. Inspect {service.Description}; check relay access and sshd. The receiver was stopped; its identity is retained.", error);
+            var localNetwork = OperatingSystem.IsMacOS()
+                ? " LAN discovery and direct connections require Local Network access for dsharp Iroh (iroh-ssh) in System Settings > Privacy & Security > Local Network."
+                : "";
+            throw new IOException($"Receiver did not become reachable within {ReadinessTimeout.TotalSeconds} seconds. Inspect {service.Description}; check relay access and sshd.{localNetwork} The receiver was stopped; its identity is retained.", error);
         }
     }
 

@@ -13,7 +13,7 @@
  
 --- a/src/api.rs
 +++ b/src/api.rs
-@@ -113,6 +113,20 @@
+@@ -113,6 +113,13 @@
  }
  
  pub async fn server_mode(server_args: ServerArgs, service: bool) -> anyhow::Result<()> {
@@ -24,17 +24,10 @@
 +            Err(error) => return Err(error.into()),
 +        }
 +    }
-+    #[cfg(target_os = "macos")]
-+    {
-+        use tracing_subscriber::{filter::filter_fn, prelude::*};
-+        let layer = tracing_subscriber::fmt::layer().with_ansi(false)
-+            .with_filter(filter_fn(|metadata| metadata.target().starts_with("hick") || metadata.target().starts_with("iroh_mdns")));
-+        tracing_subscriber::registry().with(layer).try_init()?;
-+    }
      let mut iroh_ssh_builder = IrohSsh::builder()
          .accept_incoming(true)
          .accept_port(server_args.ssh_port)
-@@ -123,6 +137,9 @@
+@@ -123,6 +130,9 @@
          iroh_ssh_builder = iroh_ssh_builder.dot_ssh_integration(true, service);
      }
      let iroh_ssh = iroh_ssh_builder.build().await?;
@@ -56,7 +49,7 @@
                      key_dir,
 --- a/src/ssh.rs
 +++ b/src/ssh.rs
-@@ -206,6 +206,74 @@
+@@ -206,6 +206,68 @@
          Ok(ssh_process)
      }
  
@@ -70,8 +63,6 @@
 +        use tokio_stream::StreamExt;
 +
 +        let endpoint = &self.inner.as_ref().expect("inner not set").endpoint;
-+        #[cfg(target_os = "macos")]
-+        eprintln!("discovery diagnostics: initial {:?}", endpoint.addr());
 +        let direct = async {
 +            let options = iroh_mdns_peer_lookup::Options::new().announce(false).build();
 +            let observer = iroh_mdns_peer_lookup::lookup(options).await?
@@ -80,8 +71,6 @@
 +                .ok_or_else(|| anyhow::anyhow!("mDNS lookup is unavailable"))?;
 +            tokio::pin!(results);
 +            while let Some(result) = results.next().await {
-+                #[cfg(target_os = "macos")]
-+                eprintln!("discovery diagnostics: item {result:?}; current {:?}", endpoint.addr());
 +                if let Ok(item) = result {
 +                    let current = endpoint.addr();
 +                    if item.ip_addrs().any(|addr| current.ip_addrs().any(|ours| ours == addr)) {
@@ -89,8 +78,6 @@
 +                    }
 +                }
 +            }
-+            #[cfg(target_os = "macos")]
-+            eprintln!("discovery diagnostics: mDNS exhausted; current {:?}", endpoint.addr());
 +            bail!("No current direct address was discovered for the receiver")
 +        };
 +        let relay = async {
@@ -131,3 +118,35 @@
      pub async fn connect_pubkey(&self, endpoint_id: EndpointId) -> anyhow::Result<()> {
          let inner = self.inner.as_ref().expect("inner not set");
          let conn = inner
+--- /dev/null
++++ b/build.rs
+@@ -0,0 +1,10 @@
++fn main() {
++    println!("cargo:rerun-if-changed=iroh-ssh.Info.plist");
++    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
++        let plist = concat!(env!("CARGO_MANIFEST_DIR"), "/iroh-ssh.Info.plist");
++        for argument in ["-sectcreate", "__TEXT", "__info_plist", plist] {
++            println!("cargo:rustc-link-arg=-Xlinker");
++            println!("cargo:rustc-link-arg={argument}");
++        }
++    }
++}
+--- /dev/null
++++ b/iroh-ssh.Info.plist
+@@ -0,0 +1,16 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++    <key>CFBundleIdentifier</key>
++    <string>io.github.forestbat.dsharp.iroh-ssh</string>
++    <key>CFBundleName</key>
++    <string>dsharp Iroh</string>
++    <key>NSLocalNetworkUsageDescription</key>
++    <string>Discover and connect to your SSH machines over Iroh on the local network.</string>
++    <key>NSBonjourServices</key>
++    <array>
++        <string>_irohv1._udp</string>
++    </array>
++</dict>
++</plist>
