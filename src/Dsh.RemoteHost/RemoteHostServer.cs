@@ -72,6 +72,7 @@ public sealed class RemoteHostServer(
         using var pumps = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var connection = new Connection(this, peer, $"c{Interlocked.Increment(ref _connectionSequence)}", pumps.Token);
         peer.RequestHandler = connection.HandleAsync;
+        peer.RequestPreparation = connection.PrepareRequest;
         var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         peer.Closed += _ => closed.TrySetResult();
         try
@@ -114,7 +115,8 @@ public sealed class RemoteHostServer(
     private sealed class Connection(RemoteHostServer server, JsonRpcPeer peer, string id, CancellationToken lifetime)
     {
         private delegate ValueTask<JsonElement?> DomainHandler(string name, JsonRpcMessage message, CancellationToken cancellationToken);
-        private readonly Dictionary<string, DomainHandler> _domainHandlers = new(StringComparer.Ordinal);
+        private delegate ValueTask<JsonElement?>? DomainPreparation(string name, JsonRpcMessage message);
+        private readonly Dictionary<string, (DomainHandler Handle, DomainPreparation? Prepare)> _domainHandlers = new(StringComparer.Ordinal);
 
         private readonly KeyedPumps _eventPumps = new(lifetime);
         private readonly KeyedPumps _ptyPumps = new(lifetime);
@@ -152,6 +154,37 @@ public sealed class RemoteHostServer(
             }
         }
 
+        /** Ownership changes run in frame order, before concurrent backend work can overtake a preceding subscribe. */
+        public ValueTask<JsonElement?>? PrepareRequest(JsonRpcMessage message, CancellationToken cancellationToken)
+        {
+            if (!_authenticated || server._backend is not { } backend)
+                return null;
+            switch (message.Method)
+            {
+                case HostProtocol.MethodSessionSubscribe:
+                {
+                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSubscribeRequest, "subscribe requires sessionId");
+                    return StartedAsync(_eventPumps.StartAsync(request.SubscriptionId,
+                        token => backend.Session.SubscribeAsync(request.SessionId, request.FromSeq, token),
+                        (events, token) => PumpAsync(events, HostProtocol.NotificationEvent,
+                            item => new RemoteEventFrame(request.SubscriptionId, item), HostProtocolJsonContext.Default.RemoteEventFrame, token)));
+                }
+                case HostProtocol.MethodSessionUnsubscribe:
+                    _eventPumps.Stop(Require(message, HostProtocolJsonContext.Default.RemoteSubscriptionRef, "unsubscribe requires subscriptionId").SubscriptionId);
+                    return ValueTask.FromResult<JsonElement?>(True);
+                default:
+                    return _domainHandlers.TryGetValue(message.Method ?? "", out var domain)
+                        ? domain.Prepare?.Invoke(message.Method!, message)
+                        : null;
+            }
+        }
+
+        private static async ValueTask<JsonElement?> StartedAsync(Task initialize)
+        {
+            await initialize.ConfigureAwait(false);
+            return True;
+        }
+
         public async ValueTask<JsonElement?> HandleAsync(JsonRpcMessage message, CancellationToken cancellationToken)
         {
             var name = message.Method ?? "";
@@ -168,7 +201,7 @@ public sealed class RemoteHostServer(
             }
             var backend = server._backend ?? throw MethodNotFound(name);
             if (_domainHandlers.TryGetValue(name, out var handler))
-                return await handler(name, message, cancellationToken).ConfigureAwait(false);
+                return await handler.Handle(name, message, cancellationToken).ConfigureAwait(false);
             return await HandleBackendAsync(backend, name, message, cancellationToken).ConfigureAwait(false);
         }
 
@@ -181,7 +214,7 @@ public sealed class RemoteHostServer(
             if (backend.Pty is { } pty)
             {
                 var handler = new HostPtyMethods(pty, (subscriptionId, ptyId) => StartPtyPumpAsync(pty, subscriptionId, ptyId), _ptyPumps.Stop);
-                Register(PtyProtocol.Methods, handler.HandleAsync);
+                Register(PtyProtocol.Methods, handler.HandleAsync, handler.Prepare);
             }
             if (backend.Files is { } files)
                 Register(FilesProtocol.Methods, (name, message, ct) => HostFileMethods.HandleAsync(files, Uploads, name, message, ct));
@@ -197,10 +230,10 @@ public sealed class RemoteHostServer(
                 Register(ModelsProtocol.Methods, (name, message, ct) => HostModelsMethods.HandleAsync(models, name, message, ct));
         }
 
-        private void Register(IReadOnlyList<string> methods, DomainHandler handler)
+        private void Register(IReadOnlyList<string> methods, DomainHandler handler, DomainPreparation? prepare = null)
         {
             foreach (var method in methods)
-                _domainHandlers.Add(method, handler);
+                _domainHandlers.Add(method, (handler, prepare));
         }
 
         private Task StartPtyPumpAsync(IRemotePtyBackend backend, string subscriptionId, string ptyId)
@@ -263,18 +296,6 @@ public sealed class RemoteHostServer(
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "snapshot requires sessionId");
                     return Serialize(await backend.Session.GetSessionSnapshotAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionSnapshot);
                 }
-                case HostProtocol.MethodSessionSubscribe:
-                {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSubscribeRequest, "subscribe requires sessionId");
-                    await _eventPumps.StartAsync(request.SubscriptionId,
-                        token => backend.Session.SubscribeAsync(request.SessionId, request.FromSeq, token),
-                        (events, token) => PumpAsync(events, HostProtocol.NotificationEvent,
-                            item => new RemoteEventFrame(request.SubscriptionId, item), HostProtocolJsonContext.Default.RemoteEventFrame, token)).ConfigureAwait(false);
-                    return True;
-                }
-                case HostProtocol.MethodSessionUnsubscribe:
-                    _eventPumps.Stop(Require(message, HostProtocolJsonContext.Default.RemoteSubscriptionRef, "unsubscribe requires subscriptionId").SubscriptionId);
-                    return True;
                 case HostProtocol.MethodSessionMessage:
                 {
                     var request = Require(message, HostProtocolJsonContext.Default.RemoteMessageRequest, "message requires sessionId and text");
@@ -398,6 +419,8 @@ public sealed class RemoteHostServer(
                 source = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
                 _pumps[key] = source;
             }
+            // Registration is synchronous; backend acquisition must not occupy the frame reader.
+            await Task.Yield();
             RemoteHostStream<T>? stream = null;
             var handedOff = false;
             try
