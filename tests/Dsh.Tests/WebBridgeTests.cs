@@ -366,8 +366,9 @@ public sealed class WebBridgeTests
         var artifacts = HeadlessChrome.ArtifactDirectory("web-bridge");
         await using var chrome = await HeadlessChrome.StartAsync(artifacts, cancellationToken);
 
-        await chrome.NavigateAsync(fixture.Access.Url("/"), cancellationToken);
-        await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "login", cancellationToken);
+        await chrome.NavigateAsync(new Uri($"{fixture.Access.Url("/")}#token={fixture.Token}"), cancellationToken);
+        await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "connected", cancellationToken);
+        await chrome.WaitUntilAsync("document.querySelector('section.machine .host-version')?.textContent", $"dsharp {RemoteHostServer.ReleaseVersion}", cancellationToken);
         using (var protocol = JsonDocument.Parse(await chrome.EvaluateAsync("""
             (async () => {
               const protocol = await import('/protocol.js');
@@ -434,10 +435,6 @@ public sealed class WebBridgeTests
                 && !text.includes('protocol-reply') && !transcript.element.querySelector('.turn-end') && deploying.textContent === 'Deploying');
             })()
             """, cancellationToken));
-
-        await chrome.NavigateAsync(new Uri($"{fixture.Access.Url("/")}#token={fixture.Token}"), cancellationToken);
-        await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "connected", cancellationToken);
-        await chrome.WaitUntilAsync("document.querySelector('section.machine .host-version')?.textContent", $"dsharp {RemoteHostServer.ReleaseVersion}", cancellationToken);
 
         Assert.DoesNotContain(fixture.Token, await chrome.EvaluateAsync("location.href", cancellationToken), StringComparison.Ordinal);
         Assert.Equal("none", await chrome.EvaluateAsync("getComputedStyle(document.getElementById('login')).display", cancellationToken));
