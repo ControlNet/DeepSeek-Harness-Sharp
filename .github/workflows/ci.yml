@@ -102,6 +102,17 @@ jobs:
             echo 'native discovery acknowledgement is absent'
           fi
           cat artifacts/iroh-diagnostics/server.txt
+          route -n get 224.0.0.251
+          sudo artifacts/iroh-ssh/osx-arm64/iroh-ssh server --persist --key-dir "$PWD/artifacts/iroh-diagnostics/authorized-identity" --ready-file "$PWD/artifacts/iroh-diagnostics/authorized-ready" --ssh-port 22222 --relay-url http://127.0.0.1:9 > artifacts/iroh-diagnostics/authorized-server.txt 2>&1 &
+          authorized=$!
+          trap 'kill "$receiver" "$sshd" 2>/dev/null || true; sudo kill "$capture" "$authorized" 2>/dev/null || true' EXIT
+          sleep 12
+          if [ -f artifacts/iroh-diagnostics/authorized-ready ]; then
+            echo 'OS-authorized discovery acknowledgement is present'
+          else
+            echo 'OS-authorized discovery acknowledgement is absent'
+          fi
+          cat artifacts/iroh-diagnostics/authorized-server.txt
           cat artifacts/iroh-diagnostics/packets.txt
 
       - name: 打包原生组件（保留 Unix 执行权限）
