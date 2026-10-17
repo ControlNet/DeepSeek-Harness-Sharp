@@ -44,15 +44,13 @@ public sealed record AgentLaunchSyntax(
 /**
  * How to run one kind of agent.
  * Interactive is the full-screen TUI run inside a PTY; Acp is the structured stdio channel when the agent has one.
- * ScreenRules classify the PTY screen tail for notifications and status only; they never decide that a task is finished.
  */
 public sealed record AgentAdapter(
     string Kind,
     string DisplayName,
     AgentCommand? Interactive,
     AgentCommand? Acp,
-    AgentLaunchSyntax Syntax,
-    AgentScreenRules ScreenRules)
+    AgentLaunchSyntax Syntax)
 {
     /** Interactive launch, optionally submitting an initial prompt; null when the agent has no interactive mode. */
     public AgentCommand? InteractiveCommand(string? initialPrompt = null)

@@ -110,6 +110,9 @@ public sealed record RemotePtyOutput(string PtyId, string Base64, bool Eof);
 /** 全部未决的审批与问答(host.pending.list), 也是新连接补发的内容。 */
 public sealed record RemotePendingList(IReadOnlyList<RemoteApprovalRequest> Approvals, IReadOnlyList<RemoteQuestionRequest> Questions);
 
+/** 完整权威待决投影; Resolution 仅携带本次结局的审计信息。 */
+public sealed record RemotePendingChange(RemotePendingList Pending, RemotePendingResolved? Resolution = null);
+
 /** 未决请求的结局: Kind 见 PendingKinds, Resolution 见 PendingResolutions; 由 host 取消时 ResolvedBy 为 "host"、ResolvedByConnection 为空。 */
 public sealed record RemotePendingResolved(
     string RequestId,

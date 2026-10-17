@@ -1,18 +1,17 @@
 using System.Threading.Channels;
-using Dsh.AgentAdapters;
 using Dsh.Notifications;
 
 namespace Dsh.RemoteHost;
 
 /**
  * The machine's notification history (host.notify.*): the host is its only writer, every client reads it and shares one read state.
- * Sources: approvals and questions entering the pending queue, sessions exiting (with their exit code), and whatever the host reports
- * through Report (terminal agents waiting for input or approval, agent errors).
+ * Sources: approvals and questions entering the pending queue, sessions exiting (with their exit code), and explicit
+ * structured events through Report (such as agent errors).
  * Appends go through one queue, so producers that run under other locks only hand the record off.
  */
 public sealed class HostNotificationCenter : IAsyncDisposable
 {
-    public const string FileName = "notifications.jsonl";
+    public const string FileName = "notifications.json";
 
     private const int DefaultPageSize = 50;
     private const int MaxPageSize = 500;
@@ -93,15 +92,6 @@ public sealed class HostNotificationCenter : IAsyncDisposable
             body,
             DateTimeOffset.UtcNow,
             target ?? new NotificationTarget(NotificationView.Session)));
-
-    /** A terminal-mode agent's screen turned to an input prompt or an approval dialog; busy and unknown screens are not reported. */
-    public void ReportScreen(string sessionId, AgentScreenState state)
-    {
-        if (state == AgentScreenState.WaitingForApproval)
-            Report(NotificationKind.ApprovalRequest, sessionId, $"{Label(sessionId)} needs approval", "the agent shows an approval prompt in its terminal");
-        else if (state == AgentScreenState.WaitingForInput)
-            Report(NotificationKind.WaitingForInput, sessionId, $"{Label(sessionId)} is waiting for input");
-    }
 
     /** A display name for a session in notification titles. */
     public string Label(string sessionId)

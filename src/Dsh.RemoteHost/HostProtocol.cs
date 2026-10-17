@@ -86,10 +86,8 @@ public static class HostProtocol
 
     /** 服务端 -> 客户端 推送。 */
     public const string NotificationEvent = "host.event";
-    public const string NotificationApproval = "host.approval";
-    public const string NotificationQuestion = "host.question";
+    public const string NotificationPendingChanged = "host.pending.changed";
     public const string NotificationPtyOutput = "host.pty.output";
-    public const string NotificationPendingResolved = "host.pending.resolved";
     public const string NotificationSessionsChanged = "host.sessions.changed";
     public const string NotificationNotifyAdded = "host.notify.added";
     public const string NotificationNotifyChanged = "host.notify.changed";
@@ -98,7 +96,7 @@ public static class HostProtocol
 /** 能力标记: 客户端据此判断对端是否支持某项新增功能, 旧宿主不发 capabilities 即视为都不支持。 */
 public static class HostCapabilities
 {
-    /** 审批/问答广播到所有连接, 先答者生效, host.pending.resolved 推送, host.pending.list 查询, 新连接先补发未决请求。 */
+    /** 完整待决投影广播到所有连接, 先答者生效, host.pending.changed 携带可选结局审计, host.pending.list 查询。 */
     public const string PendingBroadcast = "pending.broadcast";
 
     /** 统一会话登记表: host.sessions.list 与 host.sessions.changed。 */
@@ -202,6 +200,7 @@ public sealed record HostInfo(int ProtocolVersion, string HostVersion, string Pl
 [JsonSerializable(typeof(RemotePtyResize))]
 [JsonSerializable(typeof(RemotePendingList))]
 [JsonSerializable(typeof(RemotePendingResolved))]
+[JsonSerializable(typeof(RemotePendingChange))]
 [JsonSerializable(typeof(RemoteHostSession))]
 [JsonSerializable(typeof(IReadOnlyList<RemoteHostSession>))]
 [JsonSerializable(typeof(IReadOnlyList<RemoteApprovalRequest>))]

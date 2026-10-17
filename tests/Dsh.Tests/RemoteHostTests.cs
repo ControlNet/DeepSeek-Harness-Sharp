@@ -80,18 +80,16 @@ public sealed class RemoteHostTests
         await using var client = await RemoteHostClient.ConnectAsync(socket.GetStream(), cancellationToken: cancellationToken);
         var approval = new RemoteApprovalRequest("approval", "session", "bash", null, "allow?");
         var question = new RemoteQuestionRequest("question", "session", []);
-        await peer.NotifyAsync(HostProtocol.NotificationApproval,
-            JsonSerializer.SerializeToElement(approval, HostProtocolJsonContext.Default.RemoteApprovalRequest), cancellationToken);
-        await peer.NotifyAsync(HostProtocol.NotificationQuestion,
-            JsonSerializer.SerializeToElement(question, HostProtocolJsonContext.Default.RemoteQuestionRequest), cancellationToken);
-        // The ping reply follows both notifications on the same TCP stream, so both have arrived before enumeration begins.
+        var pending = new RemotePendingChange(new RemotePendingList([approval], [question]));
+        await peer.NotifyAsync(HostProtocol.NotificationPendingChanged,
+            JsonSerializer.SerializeToElement(pending, HostProtocolJsonContext.Default.RemotePendingChange), cancellationToken);
+        // The ping reply follows the notification on the same TCP stream, so it arrived before enumeration begins.
         await client.PingAsync(cancellationToken);
-        await using var approvals = client.ApprovalsAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
-        Assert.True(await approvals.MoveNextAsync());
-        Assert.Equal(approval, approvals.Current);
-        await using var questions = client.QuestionsAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
-        Assert.True(await questions.MoveNextAsync());
-        Assert.Equal(question.RequestId, questions.Current.RequestId);
+        await using var changes = client.PendingChangesAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
+        Assert.True(await changes.MoveNextAsync());
+        Assert.Equal(approval, Assert.Single(changes.Current.Pending.Approvals));
+        Assert.Equal(question.RequestId, Assert.Single(changes.Current.Pending.Questions).RequestId);
+        Assert.Null(changes.Current.Resolution);
     }
 
     /** 一对经 TCP loopback 相连的 host server / client。 */

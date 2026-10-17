@@ -2,6 +2,8 @@
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
+using Dsh.Core;
+using Dsh.Llm;
 using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
@@ -62,7 +64,10 @@ public sealed class RemoteHostCapabilityTests
         await backend.Subscribed.Task.WaitAsync(Ct);
         await client.SendMessageAsync(created.Id, "hi", [], Ct);
         var item = await received.Task.WaitAsync(Ct);
-        Assert.Equal("user:hi", item.EventJson);
+        var message = DshJson.Deserialize<SessionEvent>(item.EventJson)!;
+        Assert.Equal(0L, item.Sequence);
+        Assert.Equal(item.Sequence, message.Seq);
+        Assert.Equal("hi", Assert.IsType<TextBlock>(Assert.Single(Assert.IsType<UserMessagePayload>(message.Data).Message.Content)).Text);
         await subscription.CancelAsync();
         try
         {
@@ -82,8 +87,11 @@ public sealed class RemoteHostCapabilityTests
         using var subscription = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var pump = Task.Run(async () =>
         {
-            await foreach (var request in fixture.Client.ApprovalsAsync(subscription.Token))
-                received.TrySetResult(request);
+            await foreach (var change in fixture.Client.PendingChangesAsync(subscription.Token))
+            {
+                foreach (var request in change.Pending.Approvals)
+                    received.TrySetResult(request);
+            }
         }, Ct);
 
         var decision = backend.Pending.AskApprovalAsync(new RemoteApprovalRequest("req-1", "session-1", "bash", null, "allow?"));
@@ -131,8 +139,11 @@ public sealed class RemoteHostCapabilityTests
         using var subscription = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var pump = Task.Run(async () =>
         {
-            await foreach (var request in fixture.Client.QuestionsAsync(subscription.Token))
-                received.TrySetResult(request);
+            await foreach (var change in fixture.Client.PendingChangesAsync(subscription.Token))
+            {
+                foreach (var request in change.Pending.Questions)
+                    received.TrySetResult(request);
+            }
         }, Ct);
 
         var answer = backend.Pending.AskQuestionAsync(new RemoteQuestionRequest("q-1", "session-1",
@@ -163,6 +174,7 @@ public sealed class RemoteHostCapabilityTests
         private readonly string _directory;
         private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
         private readonly Dictionary<string, Channel<RemoteEventInfo>> _events = [];
+        private readonly Dictionary<string, long> _sequences = [];
         private readonly Dictionary<string, Channel<RemotePtyOutput>> _pty = [];
 
         private FakeBackend(string directory, HostPendingDecisions pending, HostSessionRegistry sessions, HostNotificationCenter notifications)
@@ -249,7 +261,17 @@ public sealed class RemoteHostCapabilityTests
 
         public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken)
         {
-            _events[sessionId].Writer.TryWrite(new RemoteEventInfo(sessionId, $"user:{text}"));
+            var seq = _sequences.GetValueOrDefault(sessionId);
+            _sequences[sessionId] = seq + 1;
+            var item = new SessionEvent
+            {
+                Type = SessionEventTypes.UserMessage,
+                Seq = seq,
+                Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Data = new UserMessagePayload(MessageFactory.CreateUserText(text)),
+                SurfaceOp = new SurfaceOp.Append(),
+            };
+            _events[sessionId].Writer.TryWrite(new RemoteEventInfo(sessionId, DshJson.Serialize(item), seq));
             return Task.CompletedTask;
         }
 

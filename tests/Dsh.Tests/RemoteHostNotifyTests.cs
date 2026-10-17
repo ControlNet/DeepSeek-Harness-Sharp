@@ -17,7 +17,7 @@ public sealed class RemoteHostNotifyTests
         var session = await alice.CreateSessionAsync(host.Environment.App.Home.Root, RemoteHostMultiClientTests.Selection, RemoteHostMultiClientTests.Spec, Ct);
 
         var decision = RemoteHostMultiClientTests.RaiseApprovalAsync(host, RemoteHostMultiClientTests.Agent(host, session.Id), "bash");
-        var request = await RemoteHostMultiClientTests.NextAsync(alice.ApprovalsAsync(Ct));
+        var request = Assert.Single((await RemoteHostMultiClientTests.NextAsync(alice.PendingChangesAsync(Ct), change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
         var added = await RemoteHostMultiClientTests.NextAsync(alice.NotificationsAddedAsync(Ct));
         var seenByBob = await RemoteHostMultiClientTests.NextAsync(bob.NotificationsAddedAsync(Ct));
         Assert.True(await alice.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct));

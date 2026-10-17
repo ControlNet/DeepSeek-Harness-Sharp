@@ -163,11 +163,16 @@ public sealed class GuiHostChatIntegrationTests
             var waiting = RemoteHostMultiClientTests.RaiseApprovalAsync(host, agent, "bash");
             var dialog = await GuiTestEnvironment.PumpAsync(shown.Task.WaitAsync(TimeSpan.FromSeconds(20), Ct));
             Assert.True(dialog.IsApproval);
-            var request = Assert.Single((await observer.ListPendingAsync(Ct)).Approvals, item => item.SessionId == viewModel.CurrentSessionId.Value);
+            var pending = await RemoteHostMultiClientTests.NextAsync(observer.PendingChangesAsync(Ct), change => change.Pending.Approvals.Any(item => item.SessionId == viewModel.CurrentSessionId.Value));
+            var request = Assert.Single(pending.Pending.Approvals, item => item.SessionId == viewModel.CurrentSessionId.Value);
             Assert.True(await observer.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct));
             Assert.Equal(ApprovalOutcome.Cancelled, await GuiTestEnvironment.PumpAsync(closed.Task.WaitAsync(TimeSpan.FromSeconds(20), Ct)));
             Assert.Equal(ApprovalOutcome.AllowedOnce, await waiting.WaitAsync(TimeSpan.FromSeconds(20), Ct));
             Assert.False(await observer.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct));
+            var change = await RemoteHostMultiClientTests.NextAsync(observer.PendingChangesAsync(Ct), item => item.Resolution?.RequestId == request.RequestId);
+            Assert.Empty(change.Pending.Approvals);
+            Assert.Empty(change.Pending.Questions);
+            Assert.Equal(("answering-client", PendingResolutions.Allowed), (change.Resolution!.ResolvedBy, change.Resolution.Resolution));
         });
     }
 

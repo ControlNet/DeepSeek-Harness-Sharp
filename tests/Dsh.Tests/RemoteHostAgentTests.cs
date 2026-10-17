@@ -51,7 +51,7 @@ public sealed class RemoteHostAgentTests : IDisposable
     }
 
     [Fact(Timeout = 90000)]
-    public async Task UnknownTerminalAgent_WaitsForInput_RunsAfterInput_AndReportsItsExitCode()
+    public async Task UnknownTerminalAgent_PromptTextDoesNotInferWaiting_AndReportsItsExitCode()
     {
         if (OperatingSystem.IsWindows())
             Assert.Skip("uses a POSIX shell script as the agent");
@@ -62,11 +62,15 @@ public sealed class RemoteHostAgentTests : IDisposable
         var script = new RemoteAgentCommand("/bin/sh", ["-c", """printf 'Proceed? [y/N] '; read answer; echo "working on $answer"; sleep 3; exit 3"""]);
 
         var session = await client.StartAgentAsync(new RemoteAgentStartRequest(
-            AgentKinds.Terminal, _workspace, Command: script, Title: "unknown agent", ScreenRules: new RemoteScreenRules(Idle: [@"\[y/N\]\s*$"])), Ct);
-        var waiting = await RemoteHostMultiClientTests.NextAsync(changes, item => item.SessionId == session.SessionId && item.Status == HostSessionStatuses.WaitingForUser);
-        var asked = await RemoteHostMultiClientTests.NextAsync(added, item => item.SessionId == session.SessionId);
+            AgentKinds.Terminal, _workspace, Command: script, Title: "unknown agent"), Ct);
         await Assert.ThrowsAsync<JsonRpcException>(() => client.PromptAgentAsync(session.SessionId, "y", Ct));
         await using var terminal = RemoteHostPtyTests.TerminalCapture.Attach(client, session.SessionId);
+        await terminal.WaitForAsync("Proceed? [y/N]", TimeSpan.FromSeconds(10));
+        var atPrompt = Assert.Single(await client.ListHostSessionsAsync(Ct), item => item.SessionId == session.SessionId);
+        Assert.Equal((HostSessionStatuses.Running, 0), (atPrompt.Status, atPrompt.PendingCount));
+        Assert.Empty((await client.ListPendingAsync(Ct)).Approvals);
+        Assert.Empty((await client.ListPendingAsync(Ct)).Questions);
+        Assert.Empty((await client.ListNotificationsAsync(new RemoteNotifyQuery(SessionId: session.SessionId), Ct)).Items);
         await terminal.SendAsync("y\r");
         await terminal.WaitForAsync("working on y", TimeSpan.FromSeconds(10));
         var running = await RemoteHostMultiClientTests.NextAsync(changes, item => item.SessionId == session.SessionId && item.Status == HostSessionStatuses.Running);
@@ -74,8 +78,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         var exitNotice = await RemoteHostMultiClientTests.NextAsync(added, item => item.SessionId == session.SessionId && item.Kind == NotificationKind.SessionExited);
 
         Assert.Equal((HostSessionKinds.External, AgentKinds.Terminal, _workspace), (session.Kind, session.AgentKind, session.ProjectPath));
-        Assert.Equal("unknown agent", waiting.Title);
-        Assert.Equal((NotificationKind.WaitingForInput, "unknown agent is waiting for input"), (asked.Kind, asked.Title));
+        Assert.Equal("unknown agent", atPrompt.Title);
         Assert.Null(running.ExitCode);
         Assert.Equal(3, exited.ExitCode);
         Assert.Equal("exit code 3", exitNotice.Body);
@@ -118,12 +121,15 @@ public sealed class RemoteHostAgentTests : IDisposable
         var changes = client.HostSessionChangesAsync(Ct);
 
         var session = await client.StartAgentAsync(new RemoteAgentStartRequest(agentKind, _workspace, Columns: 120, Rows: 40), Ct);
-        var waiting = await RemoteHostMultiClientTests.NextAsync(changes, item => item.SessionId == session.SessionId && item.Status == HostSessionStatuses.WaitingForUser, FirstScreen);
+        await using var terminal = RemoteHostPtyTests.TerminalCapture.Attach(client, session.SessionId);
+        await terminal.WaitForAsync(agentKind == AgentKinds.Codex ? "Codex" : "Claude", FirstScreen);
+        var running = Assert.Single(await client.ListHostSessionsAsync(Ct), item => item.SessionId == session.SessionId);
+        Assert.Equal((HostSessionStatuses.Running, 0), (running.Status, running.PendingCount));
         await client.StopAgentAsync(session.SessionId, Ct);
         var exited = await RemoteHostMultiClientTests.NextAsync(changes, item => item.SessionId == session.SessionId && item.Status == HostSessionStatuses.Exited);
 
         Assert.Equal((HostSessionKinds.External, agentKind), (session.Kind, session.AgentKind));
-        Assert.Equal(_workspace, waiting.ProjectPath);
+        Assert.Equal(_workspace, running.ProjectPath);
         Assert.Equal(HostSessionStatuses.Exited, exited.Status);
     }
 
@@ -188,8 +194,8 @@ public sealed class RemoteHostAgentTests : IDisposable
         var session = await alice.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp, Environment: askForShell), Ct);
 
         await alice.PromptAgentAsync(session.SessionId, "Run exactly this shell command once: echo dsh-acp-probe > acp-probe.txt", Ct);
-        var request = await RemoteHostMultiClientTests.NextAsync(alice.ApprovalsAsync(Ct), within: Turn);
-        var seenByBob = await RemoteHostMultiClientTests.NextAsync(bob.ApprovalsAsync(Ct));
+        var request = Assert.Single((await RemoteHostMultiClientTests.NextAsync(alice.PendingChangesAsync(Ct), change => change.Pending.Approvals.Count > 0, Turn)).Pending.Approvals);
+        var seenByBob = Assert.Single((await RemoteHostMultiClientTests.NextAsync(bob.PendingChangesAsync(Ct), change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
         var allowed = await alice.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct);
         var late = await bob.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct);
         var events = await TurnEventsAsync(bob, session.SessionId);

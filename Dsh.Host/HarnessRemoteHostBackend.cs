@@ -43,7 +43,6 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
         _agents = agents;
         _decisions = new HarnessDecisionBridge(app.Ctx, Pending);
         _tracker = new HarnessSessionTracker(app.Ctx, Sessions, Pending);
-        ptys.ScreenStateChanged += Notifications.ReportScreen;
     }
 
     /** 读回会话登记表并与 PTY daemon 对账; ptyDaemon 为空时用与 `dsharp tui list` 相同的默认 daemon。 */
@@ -537,7 +536,6 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
      */
     public async ValueTask DisposeAsync()
     {
-        _ptys.ScreenStateChanged -= Notifications.ReportScreen;
         await Notifications.DisposeAsync().ConfigureAwait(false);
         _decisions.Dispose();
         Pending.Dispose();
