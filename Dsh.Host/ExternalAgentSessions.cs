@@ -32,7 +32,7 @@ internal sealed partial class AgentLaunchJsonContext : JsonSerializerContext;
 
 /**
  * External agent sessions owned by the host (host.agent.* for everything but harness sessions).
- * Terminal mode runs the agent's TUI in the PTY daemon (external session, survives host restarts) and classifies its screen;
+ * Terminal mode runs the agent's TUI in the PTY daemon (external session, survives host restarts).
  * ACP mode runs the agent's ACP entry as a child process (acp session, exits with the host and can be resumed).
  * Only sessions started here are known; nothing is scanned or adopted.
  */

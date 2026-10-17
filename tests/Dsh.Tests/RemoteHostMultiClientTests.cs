@@ -192,7 +192,7 @@ public sealed class RemoteHostMultiClientTests
             var path = Path.Combine(root, "sessions.json");
             using var pending = new HostPendingDecisions();
             Task<RemoteApprovalResponse?> decision;
-            await using (var registry = await HostSessionRegistry.OpenAsync(path, pending, Ct))
+            await using (var registry = await HostSessionRegistry.OpenAsync(path, pending, TestContext.Current.CancellationToken))
             {
                 registry.Register(new RemoteHostSession("agent", HostSessionKinds.Acp, "custom", root, "original",
                     HostSessionStatuses.Idle, 10, 20, 0, null));

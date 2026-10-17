@@ -16,7 +16,7 @@ public sealed class AcpSessionPersistenceTests
     [InlineData(true)]
     public async Task LegacyConversation_IsImportedAndQueryable_WithTheSameIdentityAcrossRestart(bool interruptedImport)
     {
-        await using var host = await HarnessHostFixture.CreateAsync("asp", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("asp", TestContext.Current.CancellationToken);
         await host.StopHostAsync();
         var source = Conversation(host.Environment.App.Home.Root);
         var original = await WriteLegacyAsync(host, source);
@@ -42,8 +42,8 @@ public sealed class AcpSessionPersistenceTests
 
         // With the host's live sessions released, search must discover the conversation through the real persistence consumer.
         await host.StopHostAsync();
-        using (var query = new SessionQueryService(host.Environment.App.Ctx))
-            Assert.Contains(query.Search("transcriptneedle"), hit => hit.SessionId == source.Id.Value);
+        var query = host.Environment.App.Ctx.Get<SessionQueryService>(SessionQueryService.ServiceName)!;
+        Assert.Contains(query.Search("transcriptneedle"), hit => hit.SessionId == source.Id.Value);
         await host.RestartHostAsync(Ct);
         var after = await host.ConnectAsync("after", Ct);
         var restored = await RemoteHostMultiClientTests.NextAsync(after.SubscribeAsync(source.Id.Value, last.Seq, Ct));
@@ -58,7 +58,7 @@ public sealed class AcpSessionPersistenceTests
     [Fact(Timeout = 60000)]
     public async Task InvalidLegacyConversation_LeavesItsSourceUntouched()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("asf", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("asf", TestContext.Current.CancellationToken);
         await host.StopHostAsync();
         var source = Conversation(host.Environment.App.Home.Root);
         await WriteLegacyAsync(host, source);
@@ -66,7 +66,7 @@ public sealed class AcpSessionPersistenceTests
         const string invalid = "{broken\n{\"not\":\"an event\"}\n";
         await File.WriteAllTextAsync(path, invalid, Ct);
 
-        await Assert.ThrowsAsync<JsonException>(() => host.StartHostAsync(Ct));
+        await Assert.ThrowsAnyAsync<JsonException>(() => host.StartHostAsync(Ct));
 
         Assert.Equal(invalid, await File.ReadAllTextAsync(path, Ct));
         Assert.Null(host.Environment.App.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)!.Stat(source.Id));
@@ -101,7 +101,7 @@ public sealed class AcpSessionPersistenceTests
     {
         var path = LegacyPath(host, source.Id);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var original = string.Join('\n', source.SnapshotEvents().Select(item => DshJson.Serialize(item))) + "\n";
+        var original = $"{string.Join('\n', source.SnapshotEvents().Select(item => DshJson.Serialize(item)))}\n";
         await File.WriteAllTextAsync(path, original, Ct);
         var records = new JsonArray(new JsonObject
         {

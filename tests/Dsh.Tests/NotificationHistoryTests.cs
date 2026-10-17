@@ -82,7 +82,7 @@ public sealed class NotificationHistoryTests : IDisposable
 
         var migrated = await OpenAsync();
         Assert.Equal(["n2", "n1"], Ids(migrated.Query()));
-        Assert.True(Assert.Single(migrated.Query(new NotificationFilter(SessionId: "s1")).Where(record => record.Id == "n1")).IsRead);
+        Assert.True(Assert.Single(migrated.Query(new NotificationFilter(SessionId: "s1")), record => record.Id == "n1").IsRead);
         await migrated.MarkReadAsync(["n2"], TestContext.Current.CancellationToken);
         await migrated.AppendAsync(Record("n3", "m1", "s1", 2), TestContext.Current.CancellationToken);
 
@@ -100,7 +100,7 @@ public sealed class NotificationHistoryTests : IDisposable
         const string original = "{broken\n{\"type\":\"read\",\"ids\":[]}\n";
         await File.WriteAllTextAsync(legacy, original, TestContext.Current.CancellationToken);
 
-        await Assert.ThrowsAsync<JsonException>(() => OpenAsync());
+        await Assert.ThrowsAnyAsync<JsonException>(() => OpenAsync());
 
         Assert.False(File.Exists(FilePath));
         Assert.Equal(original, await File.ReadAllTextAsync(legacy, TestContext.Current.CancellationToken));

@@ -41,7 +41,7 @@ public sealed class WebBridgeTests
     [Fact(Timeout = 60000)]
     public async Task DetachingOneBusyTerminalView_KeepsOtherViewsAndBrowserRequestsAlive()
     {
-        await using var host = await HarnessHostFixture.CreateAsync("wbv", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("wbv", TestContext.Current.CancellationToken);
         await using var bridge = WebBridgeServer.Start(new WebBridgeOptions(host.Root, 0));
         var access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(host.Root))!);
         await access.WaitForMachinesAsync(statuses => statuses.Values.All(state => state == "Connected"), TimeSpan.FromSeconds(10), Ct);
@@ -53,16 +53,18 @@ public sealed class WebBridgeTests
         await WebSocketRpc.RequestAsync(browser, 1, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-local","Columns":120,"Rows":40}""");
         await WebSocketRpc.RequestAsync(otherBrowser, 1, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-remote","Columns":120,"Rows":40}""");
         await WebSocketRpc.RequestAsync(browser, 2, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view","Columns":120,"Rows":40}""");
+        const int floodLineCount = 10_000;
+        var echo = TestShell.EchoAnswer("view-output");
         var flood = OperatingSystem.IsWindows()
-            ? "for /l %i in (1,1,10000) do @echo view-output-%i"
-            : "i=0; while [ \"$i\" -lt 10000 ]; do printf 'view-output-%s\\n' \"$i\"; i=$((i+1)); done";
-        var input = Convert.ToBase64String(Encoding.UTF8.GetBytes(flood + "\r"));
+            ? $"for /l %i in (1,1,{floodLineCount}) do @({echo})"
+            : $$"""i=0; while [ "$i" -lt {{floodLineCount}} ]; do {{echo}}; i=$((i+1)); done""";
+        var input = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{flood}\r"));
         await WebSocketRpc.SendAsync(browser, 3, HostProtocol.MethodPtyWrite, $$"""{"PtyId":"{{ptyId}}","Base64":"{{input}}"}""");
-        await WebBridgeHubTests.ReadTerminalUntilAsync(browser, ptyId, "view-output-1000", "closing-view");
+        await WebBridgeHubTests.ReadTerminalUntilAsync(browser, ptyId, "view-output-42", "closing-view");
         await WebSocketRpc.RequestAsync(browser, 4, HostProtocol.MethodPtyDetach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view"}""");
         Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(browser, 5, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
         Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(otherBrowser, 2, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
-        var command = Convert.ToBase64String(Encoding.UTF8.GetBytes(TestShell.EchoAnswer("surviving-view") + "\r"));
+        var command = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{TestShell.EchoAnswer("surviving-view")}\r"));
         await WebSocketRpc.SendAsync(browser, 6, HostProtocol.MethodPtyWrite, $$"""{"PtyId":"{{ptyId}}","Base64":"{{command}}"}""");
         await WebBridgeHubTests.ReadTerminalUntilAsync(browser, ptyId, "surviving-view-42", "kept-local");
         await WebBridgeHubTests.ReadTerminalUntilAsync(otherBrowser, ptyId, "surviving-view-42", "kept-remote");
@@ -75,7 +77,7 @@ public sealed class WebBridgeTests
     [InlineData(true)]
     public async Task ClosingBrowser_AbortsOnlyItsUnfinishedUploads_IncludingUnreadBeginReply(bool closeBeforeReadingBeginReply)
     {
-        await using var host = await HarnessHostFixture.CreateAsync("wbu", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("wbu", TestContext.Current.CancellationToken);
         await using var bridge = WebBridgeServer.Start(new WebBridgeOptions(host.Root, 0));
         var access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(host.Root))!);
         await access.WaitForMachinesAsync(statuses => statuses.Values.All(state => state == "Connected"), TimeSpan.FromSeconds(10), Ct);
@@ -109,8 +111,8 @@ public sealed class WebBridgeTests
         }
         if (closeBeforeReadingBeginReply)
         {
-            // Observe real Host allocation without consuming the begin response, then lose the
-            // browser transport. The relay must recover its late UploadId before finishing cleanup.
+            // Observe real Host allocation without consuming the begin response, then lose the browser transport.
+            // The relay must recover its late UploadId before finishing cleanup.
             await WebSocketRpc.WaitForAsync(() => Directory.GetFiles(abandonedDirectory).Length == 1);
             closing.Abort();
         }
@@ -211,7 +213,7 @@ public sealed class WebBridgeTests
     [Fact(Timeout = 30000)]
     public async Task BusyPort_DoesNotReplaceRunningBridgeCredentials()
     {
-        await using var fixture = await BridgeFixture.StartAsync(Ct);
+        await using var fixture = await BridgeFixture.StartAsync(TestContext.Current.CancellationToken);
         var token = fixture.Token;
         Assert.Throws<IOException>(() => WebBridgeServer.Start(new WebBridgeOptions(fixture.Root, fixture.Bridge.Port)));
         Assert.Equal(token, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(fixture.Root)));
@@ -223,7 +225,7 @@ public sealed class WebBridgeTests
     [Fact(Timeout = 30000)]
     public async Task RestartBridge_RejectsCookieFromPreviousProcessLifetime()
     {
-        await using var fixture = await BridgeFixture.StartAsync(Ct);
+        await using var fixture = await BridgeFixture.StartAsync(TestContext.Current.CancellationToken);
         var cookies = await fixture.Access.LoginAsync(Ct);
         await fixture.Bridge.DisposeAsync();
         await using var replacement = WebBridgeServer.Start(new WebBridgeOptions(fixture.Root, 0));

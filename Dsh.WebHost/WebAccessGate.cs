@@ -13,7 +13,7 @@ internal static class WebAccessGate
             || (host.StartsWith($"{name}:", StringComparison.OrdinalIgnoreCase)
                 && ushort.TryParse(host.AsSpan(name.Length + 1), NumberStyles.None, CultureInfo.InvariantCulture, out _)));
 
-    public static bool IsSameOrigin(string? origin, string host)
-        => origin is not null && (origin.Equals($"http://{host}", StringComparison.OrdinalIgnoreCase)
+    public static bool IsSameOrigin(string? origin, string? host)
+        => host is not null && origin is not null && (origin.Equals($"http://{host}", StringComparison.OrdinalIgnoreCase)
             || origin.Equals($"https://{host}", StringComparison.OrdinalIgnoreCase));
 }

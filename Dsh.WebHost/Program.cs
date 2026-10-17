@@ -2,8 +2,8 @@ using Dsh.Boot;
 using Dsh.Host;
 using Dsh.WebBridge;
 
-// A detached local Host uses the current executable. Reuse the normal host command rather than
-// guessing another executable's name or introducing a second daemon launcher.
+// A detached local Host uses the current executable.
+// Reuse the normal host command rather than guessing another executable's name or introducing a second daemon launcher.
 if (args.Contains("host"))
     return await HarnessEntrypoint.RunAsync(args);
 if (args.Contains("--help") || args.Contains("-h"))
