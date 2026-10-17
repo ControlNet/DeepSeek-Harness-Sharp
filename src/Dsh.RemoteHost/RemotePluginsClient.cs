@@ -3,7 +3,7 @@ using static Dsh.RemoteHost.HostRpc;
 namespace Dsh.RemoteHost;
 
 /** Client implementation of the optional Plugins domain. */
-public sealed class RemotePluginsClient
+public sealed class RemotePluginsClient : IRemotePlugins
 {
     private readonly RemoteHostClient _host;
 

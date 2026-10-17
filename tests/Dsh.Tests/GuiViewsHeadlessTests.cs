@@ -7,6 +7,7 @@ using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
+using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
 
@@ -23,7 +24,8 @@ public sealed class GuiViewsHeadlessTests
         var root = Directory.CreateDirectory(Path.Combine(host.Environment.App.Home.Root, "project")).FullName;
         var file = Path.Combine(root, "Program.cs");
         await File.WriteAllTextAsync(file, "class Program\n{\n}\n", TestContext.Current.CancellationToken);
-        var viewModel = new FilesViewModel(await host.ConnectAsync("files-view", TestContext.Current.CancellationToken), root);
+        var client = await host.ConnectAsync("files-view", TestContext.Current.CancellationToken);
+        var viewModel = new FilesViewModel(client.Files, root, RemotePaths.StyleFor((await client.InfoAsync(TestContext.Current.CancellationToken)).Platform));
         Assert.True(await viewModel.LoadAsync(), viewModel.Status);
         var window = Show(new FilesView { DataContext = viewModel });
 
@@ -50,7 +52,7 @@ public sealed class GuiViewsHeadlessTests
         await using var host = await HarnessHostFixture.CreateAsync("gvg", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("git-view", TestContext.Current.CancellationToken);
         await HarnessHostFixture.OpenProjectAsync(client, repo.Sandbox, TestContext.Current.CancellationToken);
-        var viewModel = new GitViewModel(client, repo.Root);
+        var viewModel = new GitViewModel(client.Git, client.Files, repo.Root, RemotePaths.StyleFor((await client.InfoAsync(TestContext.Current.CancellationToken)).Platform));
         Assert.True(await viewModel.RefreshAsync(), viewModel.Status);
         var window = Show(new GitView { DataContext = viewModel });
 

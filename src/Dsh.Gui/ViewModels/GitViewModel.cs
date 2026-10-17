@@ -9,12 +9,12 @@ using Dsh.RemoteHost;
 namespace Dsh.Gui.ViewModels;
 
 /**
- * 一台机器上某个项目的只读 git 视图, 全部经 IRemoteHost 的 host.git.* 完成(未跟踪文件经 host.fs 读内容)。
- * 用法: new GitViewModel(host, projectPath) 后 await RefreshAsync(); 选中文件或提交即在 DiffCards 里给出 diff。
+ * 一台机器上某个项目的只读 git 视图, 经 IRemoteGit 的 host.git.* 完成(未跟踪文件经 IRemoteFiles 读内容)。
+ * 用法: new GitViewModel(git, files, projectPath, style) 后 await RefreshAsync(); 选中文件或提交即在 DiffCards 里给出 diff。
  * 只做查看与 worktree 管理, 不做 stage/commit/push 等写操作。
  * 新建 worktree 后与 worktree 行上的"新建会话"都经 NewSessionRequested 交给集成方去走新建会话流程。
  */
-public sealed partial class GitViewModel(IRemoteHost host, string projectPath) : OperationViewModel
+public sealed partial class GitViewModel(IRemoteGit git, IRemoteFiles files, string projectPath, RemotePathStyle style) : OperationViewModel
 {
     public const int LogCount = 50;
 
@@ -23,7 +23,7 @@ public sealed partial class GitViewModel(IRemoteHost host, string projectPath) :
 
     private const int ShortShaLength = 7;
 
-    private RemotePathStyle _style = RemotePathStyle.Posix;
+    private readonly RemotePathStyle _style = style;
     private string? _repositoryRoot;
     private int _diffVersion;
 
@@ -71,13 +71,11 @@ public sealed partial class GitViewModel(IRemoteHost host, string projectPath) :
     [RelayCommand]
     public Task<bool> RefreshAsync() => RunAsync(async () =>
     {
-        var info = host.InfoAsync();
-        var status = host.GitStatusAsync(projectPath);
-        var worktrees = host.ListWorktreesAsync(projectPath);
-        var commits = host.GitLogAsync(new RemoteGitLogRequest(projectPath, LogCount));
-        var project = host.StatAsync(projectPath);
-        await Task.WhenAll(info, status, worktrees, commits, project);
-        _style = RemotePaths.StyleFor((await info).Platform);
+        var status = git.GitStatusAsync(projectPath);
+        var worktrees = git.ListWorktreesAsync(projectPath);
+        var commits = git.GitLogAsync(new RemoteGitLogRequest(projectPath, LogCount));
+        var project = files.StatAsync(projectPath);
+        await Task.WhenAll(status, worktrees, commits, project);
         ApplyWorktrees(await worktrees, (await project).Path);
         ApplyStatus(await status);
         Replace(Commits, await commits);
@@ -118,9 +116,9 @@ public sealed partial class GitViewModel(IRemoteHost host, string projectPath) :
             throw new ArgumentException("请输入 worktree 路径");
         var branch = NewWorktreeBranch.Trim();
         var request = new RemoteGitWorktreeAdd(projectPath, RemotePaths.Resolve(RepositoryRoot, input, _style), branch.Length == 0 ? null : branch);
-        var added = await host.AddWorktreeAsync(request);
+        var added = await git.AddWorktreeAsync(request);
         (NewWorktreePath, NewWorktreeBranch) = ("", "");
-        Replace(Worktrees, await host.ListWorktreesAsync(projectPath));
+        Replace(Worktrees, await git.ListWorktreesAsync(projectPath));
         Report($"已新建 worktree {added.Path}");
         Ask($"已新建 worktree {added.Path}（{added.Branch ?? "分离 HEAD"}）。要在这里新建会话吗？", "新建会话", () => RequestSession(added));
     });
@@ -138,8 +136,8 @@ public sealed partial class GitViewModel(IRemoteHost host, string projectPath) :
         var consequence = force ? "其中未提交的修改会一并丢弃" : "有未提交修改时 git 会拒绝移除";
         Ask($"移除 worktree {worktree.Path}？{consequence}。", "移除", () => RunAsync(async () =>
         {
-            await host.RemoveWorktreeAsync(new RemoteGitWorktreeRemove(projectPath, worktree.Path, force));
-            Replace(Worktrees, await host.ListWorktreesAsync(projectPath));
+            await git.RemoveWorktreeAsync(new RemoteGitWorktreeRemove(projectPath, worktree.Path, force));
+            Replace(Worktrees, await git.ListWorktreesAsync(projectPath));
         }, $"已移除 worktree {worktree.Path}"));
         return Task.CompletedTask;
     }
@@ -186,7 +184,7 @@ public sealed partial class GitViewModel(IRemoteHost host, string projectPath) :
 
     private async Task ShowDiffAsync(int version, string title, RemoteGitDiffRequest request)
     {
-        var diff = await host.GitDiffAsync(request);
+        var diff = await git.GitDiffAsync(request);
         if (version != _diffVersion)
             return;
         var notices = new List<string>();
@@ -216,9 +214,9 @@ public sealed partial class GitViewModel(IRemoteHost host, string projectPath) :
     private async Task ShowUntrackedAsync(GitChangeItemViewModel item, int version)
     {
         var path = AbsolutePath(item.Path);
-        var stat = await host.StatAsync(path);
+        var stat = await files.StatAsync(path);
         var text = stat is { Exists: true, IsDirectory: false } && stat.Size <= FilesViewModel.MaxEditableBytes
-            ? TextFileContent.TryDecode(await host.ReadFileAsync(path))?.Text
+            ? TextFileContent.TryDecode(await files.ReadFileAsync(path))?.Text
             : null;
         if (version != _diffVersion)
             return;

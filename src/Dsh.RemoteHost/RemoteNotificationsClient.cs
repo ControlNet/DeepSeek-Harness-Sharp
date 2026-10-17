@@ -6,13 +6,13 @@ using Dsh.Transport;
 namespace Dsh.RemoteHost;
 
 /** Client implementation of the optional Notifications domain. */
-public sealed class RemoteNotificationsClient
+public sealed class RemoteNotificationsClient : IRemoteNotifications
 {
     private readonly RemoteHostClient _host;
 
     internal RemoteNotificationsClient(RemoteHostClient host) => _host = host;
 
-    private readonly Channel<RemoteNotificationChange> _notificationChanges = RemoteHostClient.ObservationChannel<RemoteNotificationChange>();
+    private readonly Channel<RemoteNotificationChange> _notificationChanges = Channel.CreateUnbounded<RemoteNotificationChange>(new UnboundedChannelOptions { SingleReader = true });
 
     public Task<RemoteNotifyPage> ListNotificationsAsync(RemoteNotifyQuery? query = null, CancellationToken cancellationToken = default)
         => _host.SendAsync(NotificationsProtocol.MethodNotifyList, Serialize(query ?? new RemoteNotifyQuery(), NotificationsProtocolJsonContext.Default.RemoteNotifyQuery), NotificationsProtocolJsonContext.Default.RemoteNotifyPage, cancellationToken);

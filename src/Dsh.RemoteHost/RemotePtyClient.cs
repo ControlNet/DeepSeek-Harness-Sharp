@@ -7,7 +7,7 @@ using Dsh.Transport;
 namespace Dsh.RemoteHost;
 
 /** Client implementation of the optional Pty domain. */
-public sealed class RemotePtyClient
+public sealed class RemotePtyClient : IRemotePty
 {
     private readonly RemoteHostClient _host;
 

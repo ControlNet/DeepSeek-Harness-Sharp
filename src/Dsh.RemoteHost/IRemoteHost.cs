@@ -1,14 +1,21 @@
-﻿using Dsh.GitInspect;
-
-namespace Dsh.RemoteHost;
+﻿namespace Dsh.RemoteHost;
 
 /**
  * 远端工作区能力边界: 本地显示、远端执行。
- * 一次性覆盖 会话 / 事件流 / 消息 / 工具 / 审批 / 文件 / 终端(PTY), 不留后续再补的尾巴。
+ * 核心会话、事件流、消息、工具、审批和登记表由本接口提供；可选能力通过领域接口提供。
  * 本地实现直连进程内服务, 远程实现经 Dsh.Transport 代理(RemoteHostClient); 两版 GUI 都通过这些成员使用。
  */
 public interface IRemoteHost
 {
+    IRemoteAgent Agent { get; }
+    IRemotePty Pty { get; }
+    IRemoteFiles Files { get; }
+    IRemoteGit Git { get; }
+    IRemoteNotifications Notifications { get; }
+    IRemoteSessionEditing SessionEditing { get; }
+    IRemotePlugins Plugins { get; }
+    IRemoteModels Models { get; }
+
     Task<HostInfo> InfoAsync(CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<RemoteSessionInfo>> ListSessionsAsync(CancellationToken cancellationToken = default);
@@ -18,26 +25,6 @@ public interface IRemoteHost
     Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, RemoteModelSelection? selection = null, RemoteProviderSpec? provider = null, CancellationToken cancellationToken = default);
 
     Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken = default);
-
-    Task<RemoteCommandResult> ExecuteSessionCommandAsync(string sessionId, string line, CancellationToken cancellationToken = default);
-
-    Task<IReadOnlyList<RemoteCommandDescriptor>> ListSessionCommandsAsync(string sessionId, CancellationToken cancellationToken = default);
-
-    Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken = default);
-
-    Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken = default);
-
-    Task SetSessionApprovalPolicyAsync(string sessionId, string policy, CancellationToken cancellationToken = default);
-
-    Task<IReadOnlyList<RemoteSubagentInfo>> ListSubagentsAsync(string rootSessionId, CancellationToken cancellationToken = default);
-
-    Task<IReadOnlyList<RemotePluginInfo>> ListPluginsAsync(CancellationToken cancellationToken = default);
-
-    Task<string> SetPluginPermissionAsync(string package, string permission, bool allowed, CancellationToken cancellationToken = default);
-
-    Task<IReadOnlyList<string>> ListReasoningEffortsAsync(string provider, string model, CancellationToken cancellationToken = default);
-
-    Task<IReadOnlyList<string>> ListProviderModelsAsync(string provider, CancellationToken cancellationToken = default);
 
     IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken = default);
 
@@ -64,85 +51,4 @@ public interface IRemoteHost
     /** Starts with the complete registry snapshot, then per-session deltas. */
     IAsyncEnumerable<RemoteSessionChange> HostSessionChangesAsync(CancellationToken cancellationToken = default);
 
-    Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken = default);
-
-    /** 列出远端某目录的子项(供“选择远端目录”浏览); Path 支持 `~` 前缀。 */
-    Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken = default);
-
-    Task WriteFileAsync(string path, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default);
-
-    Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken = default);
-
-    /** attach 后先收到整屏快照, 再收到实时输出; 多个客户端可同时 attach 同一个 PTY, 断开不影响 PTY。 */
-    Task AttachPtyAsync(string ptyId, Stream input, Stream output, CancellationToken cancellationToken = default);
-
-    /** 调整远端 PTY 的尺寸，完成时 Host 已确认新几何。 */
-    Task ResizePtyAsync(string ptyId, int columns, int rows, CancellationToken cancellationToken = default);
-
-    /** 终止远端某个 PTY。 */
-    Task StopPtyAsync(string ptyId, CancellationToken cancellationToken = default);
-
-    /** Agent kinds this host can start (needs agent.sessions). */
-    Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken = default);
-
-    /** Starts any kind of session (harness, terminal-mode or ACP-mode agent) and returns its registry record. */
-    Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken = default);
-
-    /** One user turn for an ACP or harness session; events arrive through SubscribeAsync. */
-    Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken = default);
-
-    Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken = default);
-
-    Task StopAgentAsync(string sessionId, CancellationToken cancellationToken = default);
-
-    /** Restarts an exited agent session; terminal-mode agents come back under a new session id. */
-    Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken = default);
-
-    /** host.git.*: ProjectPath is any directory inside the repository (needs git.inspect). */
-    Task<GitStatus> GitStatusAsync(string projectPath, CancellationToken cancellationToken = default);
-
-    Task<GitDiff> GitDiffAsync(RemoteGitDiffRequest request, CancellationToken cancellationToken = default);
-
-    Task<IReadOnlyList<GitCommitSummary>> GitLogAsync(RemoteGitLogRequest request, CancellationToken cancellationToken = default);
-
-    Task<IReadOnlyList<GitWorktree>> ListWorktreesAsync(string projectPath, CancellationToken cancellationToken = default);
-
-    Task<GitWorktree> AddWorktreeAsync(RemoteGitWorktreeAdd request, CancellationToken cancellationToken = default);
-
-    Task RemoveWorktreeAsync(RemoteGitWorktreeRemove request, CancellationToken cancellationToken = default);
-
-    /** host.fs.* (needs fs.transfer); a missing path stats as Exists = false. */
-    Task<RemoteFileStat> StatAsync(string path, CancellationToken cancellationToken = default);
-
-    Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default);
-
-    Task RenameAsync(string from, string to, bool overwrite = false, CancellationToken cancellationToken = default);
-
-    Task DeleteAsync(string path, bool recursive = false, CancellationToken cancellationToken = default);
-
-    Task<RemoteUploadRef> BeginUploadAsync(string path, bool overwrite = true, CancellationToken cancellationToken = default);
-
-    /** Returns the number of bytes the host has received so far. */
-    Task<long> UploadChunkAsync(string uploadId, long offset, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default);
-
-    Task<RemoteFileStat> CommitUploadAsync(string uploadId, long? size = null, CancellationToken cancellationToken = default);
-
-    Task AbortUploadAsync(string uploadId, CancellationToken cancellationToken = default);
-
-    Task<RemoteFileChunk> DownloadChunkAsync(string path, long offset, int? length = null, CancellationToken cancellationToken = default);
-
-    /** Streams Source to Path chunk by chunk and replaces Path atomically at the end; an error aborts the upload. */
-    Task<RemoteFileStat> UploadFileAsync(string path, Stream source, bool overwrite = true, CancellationToken cancellationToken = default);
-
-    /** Copies Path into Destination chunk by chunk; returns the number of bytes copied. */
-    Task<long> DownloadFileAsync(string path, Stream destination, CancellationToken cancellationToken = default);
-
-    /** host.notify.* (needs notify.history). */
-    Task<RemoteNotifyPage> ListNotificationsAsync(RemoteNotifyQuery? query = null, CancellationToken cancellationToken = default);
-
-    /** Returns how many notifications became read. */
-    Task<int> MarkNotificationsReadAsync(RemoteNotifyMarkRead request, CancellationToken cancellationToken = default);
-
-    /** Authoritative notification pages; Added and ReadIds describe the triggering change only. */
-    IAsyncEnumerable<RemoteNotificationChange> NotificationChangesAsync(CancellationToken cancellationToken = default);
 }

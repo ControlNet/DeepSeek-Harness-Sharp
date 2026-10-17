@@ -4,7 +4,7 @@ using Dsh.GitInspect;
 namespace Dsh.RemoteHost;
 
 /** Client implementation of the optional Git domain. */
-public sealed class RemoteGitClient
+public sealed class RemoteGitClient : IRemoteGit
 {
     private readonly RemoteHostClient _host;
 

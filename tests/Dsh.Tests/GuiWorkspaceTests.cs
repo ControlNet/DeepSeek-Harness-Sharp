@@ -146,14 +146,14 @@ public sealed class GuiWorkspaceTests
                 // Another client of alpha marks everything read: this client's marks and counts follow.
                 var alphaUnread = workspace.Fleet.Find("alpha")!.UnreadNotifications;
                 Assert.True(alphaUnread > 0);
-                await bob.MarkNotificationsReadAsync(new RemoteNotifyMarkRead(All: true), ct);
+                await bob.Notifications.MarkNotificationsReadAsync(new RemoteNotifyMarkRead(All: true), ct);
                 await UntilAsync(() => workspace.Fleet.Find("alpha")!.UnreadNotifications == 0
                     && notifications.Items.Where(item => item.Machine == "alpha").All(item => item.IsRead), "read marks from another client");
 
                 // Marking one read here reaches the host (and every other client).
                 var betaItem = notifications.Items.First(item => item is { Machine: "beta", IsUnread: true });
                 await notifications.MarkReadCommand.ExecuteAsync(betaItem);
-                var betaPage = await carol.ListNotificationsAsync(new RemoteNotifyQuery(Limit: NotificationCenterViewModel.HistoryLimit), ct);
+                var betaPage = await carol.Notifications.ListNotificationsAsync(new RemoteNotifyQuery(Limit: NotificationCenterViewModel.HistoryLimit), ct);
                 Assert.True(betaPage.Items.Single(record => record.Id == betaItem.Id).IsRead);
 
                 // The first answer wins: bob answers, the request leaves this client's list, and answering it here is refused.

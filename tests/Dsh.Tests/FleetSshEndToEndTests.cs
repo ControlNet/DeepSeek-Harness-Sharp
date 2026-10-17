@@ -65,7 +65,7 @@ public sealed class FleetSshEndToEndTests
             var lease = await connection.WaitConnectedAsync(Ct);
             var hostIdentity = LocalEndpointToken.Read(RemoteHostEndpoint.EndpointFile(harness));
             Assert.NotNull(hostIdentity);
-            var shell = await lease.Client.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", [], harness, Title: "e2e-shell"), Ct);
+            var shell = await lease.Client.Pty.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", [], harness, Title: "e2e-shell"), Ct);
             await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session.SessionId == shell));
             await using (var before = RemoteHostPtyTests.TerminalCapture.Attach(lease.Client, shell))
             {

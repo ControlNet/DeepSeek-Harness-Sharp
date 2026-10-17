@@ -47,7 +47,7 @@ public sealed class RemotePtyConnection : ITerminalConnection, IAsyncDisposable
     public static async Task<RemotePtyConnection> StartAsync(MachineConnection machine, RemotePtyStartRequest request, CancellationToken cancellationToken)
     {
         var lease = await machine.WaitConnectedAsync(cancellationToken);
-        var ptyId = await lease.Client.StartPtyAsync(request, cancellationToken);
+        var ptyId = await lease.Client.Pty.StartPtyAsync(request, cancellationToken);
         return new RemotePtyConnection(machine, ptyId, ownsPty: true);
     }
 
@@ -88,7 +88,7 @@ public sealed class RemotePtyConnection : ITerminalConnection, IAsyncDisposable
             TerminalSize size;
             lock (_sizeGate)
                 size = _size;
-            await client.ResizePtyAsync(_ptyId, size.Columns, size.Rows, cancellationToken);
+            await client.Pty.ResizePtyAsync(_ptyId, size.Columns, size.Rows, cancellationToken);
         }
         finally
         {
@@ -111,7 +111,7 @@ public sealed class RemotePtyConnection : ITerminalConnection, IAsyncDisposable
         try
         {
             var lease = await _machine.WaitConnectedAsync(timeout.Token);
-            await lease.Client.StopPtyAsync(_ptyId, timeout.Token);
+            await lease.Client.Pty.StopPtyAsync(_ptyId, timeout.Token);
         }
         catch (Exception error) when (error is IOException or JsonRpcException or OperationCanceledException or ObjectDisposedException)
         {

@@ -90,7 +90,7 @@ public sealed class GuiHostChatIntegrationTests
         Assert.True(await observer.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct));
         Assert.Equal(ApprovalOutcome.AllowedOnce, await waiting.WaitAsync(TimeSpan.FromSeconds(20), Ct));
         Assert.Contains(await observer.ListHostSessionsAsync(Ct), session => session.SessionId == id && session.Status != HostSessionStatuses.Exited);
-        await observer.StopAgentAsync(id, Ct);
+        await observer.Agent.StopAgentAsync(id, Ct);
         Assert.Contains(await observer.ListHostSessionsAsync(Ct), session => session.SessionId == id && session.Status == HostSessionStatuses.Exited);
     }
 

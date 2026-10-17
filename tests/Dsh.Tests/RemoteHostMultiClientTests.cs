@@ -166,7 +166,7 @@ public sealed class RemoteHostMultiClientTests
         await using var host = await HarnessHostFixture.CreateAsync("mhr", TestContext.Current.CancellationToken);
         var before = await host.ConnectAsync("before", Ct);
         var harness = await before.CreateSessionAsync(host.Environment.App.Home.Root, Selection, Spec, Ct);
-        var ptyId = await before.StartPtyAsync(new RemotePtyStartRequest(Shell.FileName, Shell.Arguments, Title: "build shell"), Ct);
+        var ptyId = await before.Pty.StartPtyAsync(new RemotePtyStartRequest(Shell.FileName, Shell.Arguments, Title: "build shell"), Ct);
 
         await host.RestartHostAsync(Ct);
 
@@ -185,7 +185,7 @@ public sealed class RemoteHostMultiClientTests
         Assert.Null(initial.Session);
         await after.ResumeSessionAsync(harness.Id, Selection, Spec, Ct);
         Assert.Equal(HostSessionStatuses.Idle, (await NextAsync(changes, change => change.Session?.SessionId == harness.Id)).Session!.Status);
-        await after.StopPtyAsync(ptyId, Ct);
+        await after.Pty.StopPtyAsync(ptyId, Ct);
         Assert.Equal(HostSessionStatuses.Exited, (await NextAsync(changes, change => change.Session?.SessionId == ptyId && change.Session.Status == HostSessionStatuses.Exited)).Session!.Status);
     }
 

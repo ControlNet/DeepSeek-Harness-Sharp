@@ -1,6 +1,7 @@
 using Dsh.GitInspect;
 using Dsh.Gui.ViewModels;
 using Dsh.Interaction;
+using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
 
@@ -26,7 +27,7 @@ public sealed class GitViewModelTests : IDisposable
         await using var host = await HarnessHostFixture.CreateAsync("gvs", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("git-view", Ct);
         await HarnessHostFixture.OpenProjectAsync(client, _repo.Sandbox, Ct);
-        var viewModel = new GitViewModel(client, _repo.Root);
+        var viewModel = new GitViewModel(client.Git, client.Files, _repo.Root, RemotePaths.StyleFor((await client.InfoAsync(Ct)).Platform));
 
         Assert.True(await viewModel.RefreshAsync(), viewModel.Status);
         var groups = viewModel.Groups.ToDictionary(group => group.Section, group => group.Items.Select(item => (item.Code, item.Path)).ToList());
@@ -56,7 +57,7 @@ public sealed class GitViewModelTests : IDisposable
         await using var host = await HarnessHostFixture.CreateAsync("gvw", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("git-view", Ct);
         await HarnessHostFixture.OpenProjectAsync(client, _repo.Sandbox, Ct);
-        var viewModel = new GitViewModel(client, _repo.Root);
+        var viewModel = new GitViewModel(client.Git, client.Files, _repo.Root, RemotePaths.StyleFor((await client.InfoAsync(Ct)).Platform));
         Assert.True(await viewModel.RefreshAsync(), viewModel.Status);
         var requested = new List<GitWorktree>();
         viewModel.NewSessionRequested += requested.Add;

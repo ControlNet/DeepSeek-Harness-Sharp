@@ -14,8 +14,8 @@ public sealed class RemoteHostNotifyTests
         await using var host = await HarnessHostFixture.CreateAsync("mna", TestContext.Current.CancellationToken);
         var alice = await host.ConnectAsync("alice", Ct);
         var bob = await host.ConnectAsync("bob", Ct);
-        var aliceChanges = alice.NotificationChangesAsync(Ct);
-        var bobChanges = bob.NotificationChangesAsync(Ct);
+        var aliceChanges = alice.Notifications.NotificationChangesAsync(Ct);
+        var bobChanges = bob.Notifications.NotificationChangesAsync(Ct);
         var aliceInitial = await RemoteHostMultiClientTests.NextAsync(aliceChanges);
         var bobInitial = await RemoteHostMultiClientTests.NextAsync(bobChanges);
         Assert.Empty(aliceInitial.Page.Items);
@@ -43,20 +43,20 @@ public sealed class RemoteHostNotifyTests
         Assert.Equal(added, seenByBob);
         Assert.Equal((request.RequestId, session.Id, NotificationKind.ApprovalRequest), (added.Id, added.SessionId, added.Kind));
         Assert.Equal(new NotificationTarget(NotificationView.PendingRequest, request.RequestId), added.Target);
-        Assert.Equal(1, await alice.MarkNotificationsReadAsync(new RemoteNotifyMarkRead([added.Id]), Ct));
+        Assert.Equal(1, await alice.Notifications.MarkNotificationsReadAsync(new RemoteNotifyMarkRead([added.Id]), Ct));
         var changed = await RemoteHostMultiClientTests.NextAsync(bobChanges, change => change.ReadIds?.Contains(added.Id) == true);
         Assert.Equal([added.Id], changed.ReadIds);
         Assert.Equal(0, changed.Page.UnreadCount);
         Assert.True(Assert.Single(changed.Page.Items).IsRead);
-        Assert.True(Assert.Single((await bob.ListNotificationsAsync(cancellationToken: Ct)).Items).IsRead);
+        Assert.True(Assert.Single((await bob.Notifications.ListNotificationsAsync(cancellationToken: Ct)).Items).IsRead);
 
         await host.RestartHostAsync(Ct);
 
         var after = await host.ConnectAsync("after", Ct);
-        var page = await after.ListNotificationsAsync(cancellationToken: Ct);
+        var page = await after.Notifications.ListNotificationsAsync(cancellationToken: Ct);
         var kept = Assert.Single(page.Items);
         Assert.Equal((added.Id, true, 0), (kept.Id, kept.IsRead, page.UnreadCount));
-        var restored = await RemoteHostMultiClientTests.NextAsync(after.NotificationChangesAsync(Ct));
+        var restored = await RemoteHostMultiClientTests.NextAsync(after.Notifications.NotificationChangesAsync(Ct));
         Assert.Equal(page.Items, restored.Page.Items);
         Assert.Equal((page.Total, page.UnreadCount), (restored.Page.Total, restored.Page.UnreadCount));
         Assert.Null(restored.Added);
@@ -70,22 +70,22 @@ public sealed class RemoteHostNotifyTests
             Assert.Skip("uses a POSIX shell");
         await using var host = await HarnessHostFixture.CreateAsync("mne", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("solo", Ct);
-        var changes = client.NotificationChangesAsync(Ct);
+        var changes = client.Notifications.NotificationChangesAsync(Ct);
         Assert.Empty((await RemoteHostMultiClientTests.NextAsync(changes)).Page.Items);
 
-        var first = await client.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", ["-c", "sleep 1; exit 3"], Title: "short job"), Ct);
+        var first = await client.Pty.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", ["-c", "sleep 1; exit 3"], Title: "short job"), Ct);
         var exitedChange = await RemoteHostMultiClientTests.NextAsync(changes, change => change.Added?.SessionId == first);
         var exited = Assert.IsType<NotificationRecord>(exitedChange.Added);
         Assert.Equal(exited, Assert.Single(exitedChange.Page.Items));
         Assert.Equal((1, 1), (exitedChange.Page.Total, exitedChange.Page.UnreadCount));
-        var second = await client.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", ["-c", "sleep 1; exit 4"], Title: "second job"), Ct);
+        var second = await client.Pty.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", ["-c", "sleep 1; exit 4"], Title: "second job"), Ct);
         var secondChange = await RemoteHostMultiClientTests.NextAsync(changes, change => change.Added?.SessionId == second);
         Assert.Equal((2, 2), (secondChange.Page.Total, secondChange.Page.UnreadCount));
         Assert.Contains(secondChange.Page.Items, record => record.SessionId == second);
-        Assert.Equal(1, await client.MarkNotificationsReadAsync(new RemoteNotifyMarkRead(All: true, SessionId: second), Ct));
+        Assert.Equal(1, await client.Notifications.MarkNotificationsReadAsync(new RemoteNotifyMarkRead(All: true, SessionId: second), Ct));
 
-        var unread = await client.ListNotificationsAsync(new RemoteNotifyQuery(UnreadOnly: true), Ct);
-        var paged = await client.ListNotificationsAsync(new RemoteNotifyQuery(Kinds: [NotificationKind.SessionExited], Offset: 1, Limit: 1), Ct);
+        var unread = await client.Notifications.ListNotificationsAsync(new RemoteNotifyQuery(UnreadOnly: true), Ct);
+        var paged = await client.Notifications.ListNotificationsAsync(new RemoteNotifyQuery(Kinds: [NotificationKind.SessionExited], Offset: 1, Limit: 1), Ct);
 
         Assert.Equal((NotificationKind.SessionExited, "short job exited", "exit code 3"), (exited.Kind, exited.Title, exited.Body));
         Assert.Equal(first, Assert.Single(unread.Items).SessionId);

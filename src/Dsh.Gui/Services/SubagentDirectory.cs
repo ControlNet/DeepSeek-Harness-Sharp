@@ -11,7 +11,7 @@ public sealed class SubagentDirectory(HostChatSession chat)
 
     public async Task<IReadOnlyList<RemoteSubagentInfo>> DescendantsAsync(SessionId root)
     {
-        var entries = await (await chat.ClientAsync()).ListSubagentsAsync(root.Value);
+        var entries = await (await chat.ClientAsync()).SessionEditing.ListSubagentsAsync(root.Value);
         // Keep the existing tree presentation: creation-ordered siblings, depth-first preorder.
         var byParent = entries.Where(entry => entry.Parent is not null)
             .GroupBy(entry => entry.Parent!, StringComparer.Ordinal)

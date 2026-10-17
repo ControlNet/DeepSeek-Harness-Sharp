@@ -49,7 +49,7 @@ public sealed class WebBridgeTests
         using var browser = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
         using var otherBrowser = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
         var creator = await host.ConnectAsync("terminal-owner", Ct);
-        var ptyId = await creator.StartPtyAsync(new RemotePtyStartRequest(TestShell.FileName, TestShell.Arguments, Cwd: host.Environment.App.Home.Root), Ct);
+        var ptyId = await creator.Pty.StartPtyAsync(new RemotePtyStartRequest(TestShell.FileName, TestShell.Arguments, Cwd: host.Environment.App.Home.Root), Ct);
         await WebSocketRpc.RequestAsync(browser, 1, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-local","Columns":120,"Rows":40}""");
         await WebSocketRpc.RequestAsync(otherBrowser, 1, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-remote","Columns":120,"Rows":40}""");
         await WebSocketRpc.RequestAsync(browser, 2, PtyProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view","Columns":120,"Rows":40}""");

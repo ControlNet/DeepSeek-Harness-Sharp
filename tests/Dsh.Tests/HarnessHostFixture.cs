@@ -70,7 +70,7 @@ internal sealed class HarnessHostFixture : IAsyncDisposable
     public static async Task OpenProjectAsync(RemoteHostClient client, string project, CancellationToken cancellationToken)
     {
         var (fileName, arguments) = RemoteHostMultiClientTests.Shell;
-        await client.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments, Cwd: project), cancellationToken);
+        await client.Pty.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments, Cwd: project), cancellationToken);
     }
 
     /** 模拟 host 进程重启: 停监听、释放后端, 应用按同一个 home 重新组合后再起 host; PTY daemon 保持运行。 */

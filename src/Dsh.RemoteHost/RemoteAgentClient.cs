@@ -4,7 +4,7 @@ using static Dsh.RemoteHost.HostRpc;
 namespace Dsh.RemoteHost;
 
 /** Client implementation of the optional Agent domain. */
-public sealed class RemoteAgentClient
+public sealed class RemoteAgentClient : IRemoteAgent
 {
     private readonly RemoteHostClient _host;
 

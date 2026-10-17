@@ -3,7 +3,7 @@ using static Dsh.RemoteHost.HostRpc;
 namespace Dsh.RemoteHost;
 
 /** Client implementation of the optional Models domain. */
-public sealed class RemoteModelsClient
+public sealed class RemoteModelsClient : IRemoteModels
 {
     private readonly RemoteHostClient _host;
 

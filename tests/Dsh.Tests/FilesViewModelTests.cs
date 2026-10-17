@@ -173,7 +173,7 @@ public sealed class FilesViewModelTests : IDisposable
     {
         var root = Directory.CreateDirectory(Path.Combine(host.Environment.App.Home.Root, "project")).FullName;
         var client = await host.ConnectAsync("files-view", Ct);
-        var viewModel = new FilesViewModel(client, root);
+        var viewModel = new FilesViewModel(client.Files, root, RemotePaths.StyleFor((await client.InfoAsync(Ct)).Platform));
         Assert.True(await viewModel.LoadAsync(), viewModel.Status);
         return (viewModel, root);
     }

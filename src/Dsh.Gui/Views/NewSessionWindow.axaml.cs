@@ -17,6 +17,6 @@ public sealed partial class NewSessionWindow : Window
         form.BrowseRequested += BrowseAsync;
     }
 
-    private async Task<string?> BrowseAsync(IRemoteHost host, string? initial)
-        => await new RemoteFolderPickerWindow(host, initial).ShowDialog<string?>(this);
+    private async Task<string?> BrowseAsync(IRemoteFiles files, string? initial)
+        => await new RemoteFolderPickerWindow(files, initial).ShowDialog<string?>(this);
 }

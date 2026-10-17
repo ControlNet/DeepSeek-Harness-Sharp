@@ -2,7 +2,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
-using Dsh.GitInspect;
 using Dsh.Transport;
 
 namespace Dsh.RemoteHost;
@@ -13,24 +12,23 @@ namespace Dsh.RemoteHost;
  */
 public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
 {
-    /** 只用于观察的推送流(会话变化/请求结局)没人消费时最多积压的条数, 超出丢最旧的; 审批/问答流不丢。 */
-    private const int ObservationBacklog = 1024;
-
     private readonly JsonRpcPeer _peer;
+    private readonly RemotePtyClient _pty;
+    private readonly RemoteNotificationsClient _notifications;
     private readonly ConcurrentDictionary<string, Channel<RemoteEventInfo>> _eventStreams = new(StringComparer.Ordinal);
     private readonly Channel<RemotePendingChange> _pendingChanges = Channel.CreateUnbounded<RemotePendingChange>(new UnboundedChannelOptions { SingleReader = true });
     private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly Channel<RemoteSessionChange> _sessionChanges = ObservationChannel<RemoteSessionChange>();
+    private readonly Channel<RemoteSessionChange> _sessionChanges = Channel.CreateUnbounded<RemoteSessionChange>(new UnboundedChannelOptions { SingleReader = true });
 
     /** 推送处理在握手之前挂好: host 在 hello 应答之后立即补发未决请求, 晚挂会漏掉它们。 */
     private RemoteHostClient(JsonRpcPeer peer)
     {
         _peer = peer;
         Agent = new RemoteAgentClient(this);
-        Pty = new RemotePtyClient(this);
+        _pty = new RemotePtyClient(this);
         Files = new RemoteFilesClient(this);
         Git = new RemoteGitClient(this);
-        Notifications = new RemoteNotificationsClient(this);
+        _notifications = new RemoteNotificationsClient(this);
         SessionEditing = new RemoteSessionEditingClient(this);
         Plugins = new RemotePluginsClient(this);
         Models = new RemoteModelsClient(this);
@@ -39,14 +37,14 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     }
 
     public HostHelloResponse Hello { get; private set; } = new(false, HostProtocol.Version, "", null);
-    public RemoteAgentClient Agent { get; }
-    public RemotePtyClient Pty { get; }
-    public RemoteFilesClient Files { get; }
-    public RemoteGitClient Git { get; }
-    public RemoteNotificationsClient Notifications { get; }
-    public RemoteSessionEditingClient SessionEditing { get; }
-    public RemotePluginsClient Plugins { get; }
-    public RemoteModelsClient Models { get; }
+    public IRemoteAgent Agent { get; }
+    public IRemotePty Pty => _pty;
+    public IRemoteFiles Files { get; }
+    public IRemoteGit Git { get; }
+    public IRemoteNotifications Notifications => _notifications;
+    public IRemoteSessionEditing SessionEditing { get; }
+    public IRemotePlugins Plugins { get; }
+    public IRemoteModels Models { get; }
     internal bool IsClosed => _peer.IsClosed;
 
     /** Whether the host advertises a capability from HostProtocolCatalog. */
@@ -98,9 +96,6 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
         }
     }
 
-    internal static Channel<T> ObservationChannel<T>()
-        => Channel.CreateBounded<T>(new BoundedChannelOptions(ObservationBacklog) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
-
     public Task<long> PingAsync(CancellationToken cancellationToken = default)
         => SendAsync(HostProtocol.MethodPing, null, HostProtocolJsonContext.Default.Int64, cancellationToken);
 
@@ -118,36 +113,6 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
 
     public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken = default)
         => SendAsync(HostProtocol.MethodSessionSnapshot, Serialize(new RemoteSessionRef(sessionId), HostProtocolJsonContext.Default.RemoteSessionRef), HostProtocolJsonContext.Default.RemoteSessionSnapshot, cancellationToken);
-
-    public Task<RemoteCommandResult> ExecuteSessionCommandAsync(string sessionId, string line, CancellationToken cancellationToken = default)
-        => SessionEditing.ExecuteSessionCommandAsync(sessionId, line, cancellationToken);
-
-    public Task<IReadOnlyList<RemoteCommandDescriptor>> ListSessionCommandsAsync(string sessionId, CancellationToken cancellationToken = default)
-        => SessionEditing.ListSessionCommandsAsync(sessionId, cancellationToken);
-
-    public Task RenameSessionAsync(string sessionId, string title, CancellationToken cancellationToken = default)
-        => SessionEditing.RenameSessionAsync(sessionId, title, cancellationToken);
-
-    public Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken = default)
-        => SessionEditing.DeleteSessionAsync(sessionId, cancellationToken);
-
-    public Task SetSessionApprovalPolicyAsync(string sessionId, string policy, CancellationToken cancellationToken = default)
-        => SessionEditing.SetSessionApprovalPolicyAsync(sessionId, policy, cancellationToken);
-
-    public Task<IReadOnlyList<RemoteSubagentInfo>> ListSubagentsAsync(string rootSessionId, CancellationToken cancellationToken = default)
-        => SessionEditing.ListSubagentsAsync(rootSessionId, cancellationToken);
-
-    public Task<IReadOnlyList<RemotePluginInfo>> ListPluginsAsync(CancellationToken cancellationToken = default)
-        => Plugins.ListPluginsAsync(cancellationToken);
-
-    public Task<string> SetPluginPermissionAsync(string package, string permission, bool allowed, CancellationToken cancellationToken = default)
-        => Plugins.SetPluginPermissionAsync(package, permission, allowed, cancellationToken);
-
-    public Task<IReadOnlyList<string>> ListReasoningEffortsAsync(string provider, string model, CancellationToken cancellationToken = default)
-        => Models.ListReasoningEffortsAsync(provider, model, cancellationToken);
-
-    public Task<IReadOnlyList<string>> ListProviderModelsAsync(string provider, CancellationToken cancellationToken = default)
-        => Models.ListProviderModelsAsync(provider, cancellationToken);
 
     public async IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -196,106 +161,6 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     public IAsyncEnumerable<RemoteSessionChange> HostSessionChangesAsync(CancellationToken cancellationToken = default)
         => _sessionChanges.Reader.ReadAllAsync(cancellationToken);
 
-    public Task<byte[]> ReadFileAsync(string path, CancellationToken cancellationToken = default)
-        => Files.ReadFileAsync(path, cancellationToken);
-
-    public Task WriteFileAsync(string path, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default)
-        => Files.WriteFileAsync(path, content, cancellationToken);
-
-    public Task<RemoteDirectoryListing> ListDirectoryAsync(string path, CancellationToken cancellationToken = default)
-        => Files.ListDirectoryAsync(path, cancellationToken);
-
-    public Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken cancellationToken = default)
-        => Pty.StartPtyAsync(request, cancellationToken);
-
-    public Task AttachPtyAsync(string ptyId, Stream input, Stream output, CancellationToken cancellationToken = default)
-        => Pty.AttachPtyAsync(ptyId, input, output, cancellationToken);
-
-    public Task ResizePtyAsync(string ptyId, int columns, int rows, CancellationToken cancellationToken = default)
-        => Pty.ResizePtyAsync(ptyId, columns, rows, cancellationToken);
-
-    public Task StopPtyAsync(string ptyId, CancellationToken cancellationToken = default)
-        => Pty.StopPtyAsync(ptyId, cancellationToken);
-
-    public Task<IReadOnlyList<RemoteAgentCatalogEntry>> AgentCatalogAsync(CancellationToken cancellationToken = default)
-        => Agent.AgentCatalogAsync(cancellationToken);
-
-    public Task<RemoteHostSession> StartAgentAsync(RemoteAgentStartRequest request, CancellationToken cancellationToken = default)
-        => Agent.StartAgentAsync(request, cancellationToken);
-
-    public Task PromptAgentAsync(string sessionId, string text, CancellationToken cancellationToken = default)
-        => Agent.PromptAgentAsync(sessionId, text, cancellationToken);
-
-    public Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken = default)
-        => Agent.CancelAgentAsync(sessionId, cancellationToken);
-
-    public Task StopAgentAsync(string sessionId, CancellationToken cancellationToken = default)
-        => Agent.StopAgentAsync(sessionId, cancellationToken);
-
-    public Task<RemoteHostSession> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken = default)
-        => Agent.ResumeAgentAsync(sessionId, cancellationToken);
-
-    public Task<GitStatus> GitStatusAsync(string projectPath, CancellationToken cancellationToken = default)
-        => Git.GitStatusAsync(projectPath, cancellationToken);
-
-    public Task<GitDiff> GitDiffAsync(RemoteGitDiffRequest request, CancellationToken cancellationToken = default)
-        => Git.GitDiffAsync(request, cancellationToken);
-
-    public Task<IReadOnlyList<GitCommitSummary>> GitLogAsync(RemoteGitLogRequest request, CancellationToken cancellationToken = default)
-        => Git.GitLogAsync(request, cancellationToken);
-
-    public Task<IReadOnlyList<GitWorktree>> ListWorktreesAsync(string projectPath, CancellationToken cancellationToken = default)
-        => Git.ListWorktreesAsync(projectPath, cancellationToken);
-
-    public Task<GitWorktree> AddWorktreeAsync(RemoteGitWorktreeAdd request, CancellationToken cancellationToken = default)
-        => Git.AddWorktreeAsync(request, cancellationToken);
-
-    public Task RemoveWorktreeAsync(RemoteGitWorktreeRemove request, CancellationToken cancellationToken = default)
-        => Git.RemoveWorktreeAsync(request, cancellationToken);
-
-    public Task<RemoteFileStat> StatAsync(string path, CancellationToken cancellationToken = default)
-        => Files.StatAsync(path, cancellationToken);
-
-    public Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default)
-        => Files.CreateDirectoryAsync(path, cancellationToken);
-
-    public Task RenameAsync(string from, string to, bool overwrite = false, CancellationToken cancellationToken = default)
-        => Files.RenameAsync(from, to, overwrite, cancellationToken);
-
-    public Task DeleteAsync(string path, bool recursive = false, CancellationToken cancellationToken = default)
-        => Files.DeleteAsync(path, recursive, cancellationToken);
-
-    public Task<RemoteUploadRef> BeginUploadAsync(string path, bool overwrite = true, CancellationToken cancellationToken = default)
-        => Files.BeginUploadAsync(path, overwrite, cancellationToken);
-
-    public Task<long> UploadChunkAsync(string uploadId, long offset, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default)
-        => Files.UploadChunkAsync(uploadId, offset, content, cancellationToken);
-
-    public Task<RemoteFileStat> CommitUploadAsync(string uploadId, long? size = null, CancellationToken cancellationToken = default)
-        => Files.CommitUploadAsync(uploadId, size, cancellationToken);
-
-    public Task AbortUploadAsync(string uploadId, CancellationToken cancellationToken = default)
-        => Files.AbortUploadAsync(uploadId, cancellationToken);
-
-    public Task<RemoteFileChunk> DownloadChunkAsync(string path, long offset, int? length = null, CancellationToken cancellationToken = default)
-        => Files.DownloadChunkAsync(path, offset, length, cancellationToken);
-
-    public Task<RemoteFileStat> UploadFileAsync(string path, Stream source, bool overwrite = true, CancellationToken cancellationToken = default)
-        => Files.UploadFileAsync(path, source, overwrite, cancellationToken);
-
-    public Task<long> DownloadFileAsync(string path, Stream destination, CancellationToken cancellationToken = default)
-        => Files.DownloadFileAsync(path, destination, cancellationToken);
-
-    public Task<RemoteNotifyPage> ListNotificationsAsync(RemoteNotifyQuery? query = null, CancellationToken cancellationToken = default)
-        => Notifications.ListNotificationsAsync(query, cancellationToken);
-
-    public Task<int> MarkNotificationsReadAsync(RemoteNotifyMarkRead request, CancellationToken cancellationToken = default)
-        => Notifications.MarkNotificationsReadAsync(request, cancellationToken);
-
-    public IAsyncEnumerable<RemoteNotificationChange> NotificationChangesAsync(CancellationToken cancellationToken = default)
-        => Notifications.NotificationChangesAsync(cancellationToken);
-
-
     private async Task StopStreamAsync(string method, string subscriptionId)
     {
         if (_peer.IsClosed)
@@ -311,8 +176,8 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
 
     private void OnNotification(JsonRpcMessage message)
     {
-        Pty.OnNotification(message);
-        Notifications.OnNotification(message);
+        _pty.OnNotification(message);
+        _notifications.OnNotification(message);
         switch (message.Method)
         {
             case HostProtocol.NotificationEvent when message.Params is { } eventParameters:
@@ -332,8 +197,8 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     private void OnClosed(Exception? error)
     {
         var failure = error ?? new IOException("host connection closed");
-        Pty.OnClosed(failure);
-        Notifications.OnClosed(failure);
+        _pty.OnClosed(failure);
+        _notifications.OnClosed(failure);
         foreach (var stream in _eventStreams.Values)
             stream.Writer.TryComplete(failure);
         _pendingChanges.Writer.TryComplete(failure);

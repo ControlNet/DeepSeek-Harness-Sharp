@@ -25,10 +25,10 @@ public sealed class RemoteHostGitTests : IDisposable
         var client = await host.ConnectAsync("git", Ct);
         await HarnessHostFixture.OpenProjectAsync(client, _repo.Sandbox, Ct);
 
-        var status = await client.GitStatusAsync(_repo.Root, Ct);
-        var diff = await client.GitDiffAsync(new RemoteGitDiffRequest(_repo.Root, GitDiffTarget.WorkingTree), Ct);
-        var commitDiff = await client.GitDiffAsync(new RemoteGitDiffRequest(_repo.Root, GitDiffTarget.OfCommit(first)), Ct);
-        var log = await client.GitLogAsync(new RemoteGitLogRequest(_repo.Root, MaxCount: 1), Ct);
+        var status = await client.Git.GitStatusAsync(_repo.Root, Ct);
+        var diff = await client.Git.GitDiffAsync(new RemoteGitDiffRequest(_repo.Root, GitDiffTarget.WorkingTree), Ct);
+        var commitDiff = await client.Git.GitDiffAsync(new RemoteGitDiffRequest(_repo.Root, GitDiffTarget.OfCommit(first)), Ct);
+        var log = await client.Git.GitLogAsync(new RemoteGitLogRequest(_repo.Root, MaxCount: 1), Ct);
 
         Assert.True(client.Supports(GitProtocol.Capability));
         Assert.Equal("main", status.Branch.Head);
@@ -72,10 +72,10 @@ public sealed class RemoteHostGitTests : IDisposable
         await HarnessHostFixture.OpenProjectAsync(client, _repo.Sandbox, Ct);
         var path = Path.Combine(_repo.Sandbox, "feature-wt");
 
-        var added = await client.AddWorktreeAsync(new RemoteGitWorktreeAdd(_repo.Root, path, NewBranch: "feature"), Ct);
-        var listed = await client.ListWorktreesAsync(_repo.Root, Ct);
-        await client.RemoveWorktreeAsync(new RemoteGitWorktreeRemove(_repo.Root, path), Ct);
-        var after = await client.ListWorktreesAsync(_repo.Root, Ct);
+        var added = await client.Git.AddWorktreeAsync(new RemoteGitWorktreeAdd(_repo.Root, path, NewBranch: "feature"), Ct);
+        var listed = await client.Git.ListWorktreesAsync(_repo.Root, Ct);
+        await client.Git.RemoveWorktreeAsync(new RemoteGitWorktreeRemove(_repo.Root, path), Ct);
+        var after = await client.Git.ListWorktreesAsync(_repo.Root, Ct);
 
         Assert.Equal((path, "feature"), (added.Path, added.Branch));
         Assert.Equal([true, false], listed.Select(worktree => worktree.IsMain));
@@ -91,8 +91,8 @@ public sealed class RemoteHostGitTests : IDisposable
         await using var host = await HarnessHostFixture.CreateAsync("mgr", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("git", Ct);
 
-        var error = await Assert.ThrowsAsync<JsonRpcException>(() => client.GitStatusAsync("/etc", Ct));
-        await Assert.ThrowsAsync<JsonRpcException>(() => client.AddWorktreeAsync(new RemoteGitWorktreeAdd(_repo.Root, "/etc/dsh-worktree"), Ct));
+        var error = await Assert.ThrowsAsync<JsonRpcException>(() => client.Git.GitStatusAsync("/etc", Ct));
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Git.AddWorktreeAsync(new RemoteGitWorktreeAdd(_repo.Root, "/etc/dsh-worktree"), Ct));
 
         Assert.Contains("outside", error.Message, StringComparison.Ordinal);
     }

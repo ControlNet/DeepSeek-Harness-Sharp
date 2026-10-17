@@ -24,7 +24,7 @@ public enum FileEditorMode
  * 打开时先 stat 再读内容, 记下(大小, 修改时间)作为基线; 保存前再 stat 一次, 与基线不同说明远端在打开后被改过, 先挂起确认再覆盖。
  * 保存走分块上传, host 写同目录临时文件后原子替换; 上传返回的新 stat 成为下一次保存的基线。
  */
-public sealed partial class FileEditorViewModel(IRemoteHost host, string path, RemotePathStyle style, long maxEditableBytes) : OperationViewModel
+public sealed partial class FileEditorViewModel(IRemoteFiles files, string path, RemotePathStyle style, long maxEditableBytes) : OperationViewModel
 {
     private TextFileContent? _content;
     private RemoteFileStat? _baseline;
@@ -88,7 +88,7 @@ public sealed partial class FileEditorViewModel(IRemoteHost host, string path, R
 
     private async Task LoadContentAsync()
     {
-        var stat = await host.StatAsync(path);
+        var stat = await files.StatAsync(path);
         if (!stat.Exists || stat.IsDirectory)
             throw new FileNotFoundException($"远端文件不存在或不是文件: {path}", path);
         _baseline = stat;
@@ -99,7 +99,7 @@ public sealed partial class FileEditorViewModel(IRemoteHost host, string path, R
         }
 
         using var buffer = new MemoryStream();
-        await host.DownloadFileAsync(path, buffer);
+        await files.DownloadFileAsync(path, buffer);
         _content = TextFileContent.TryDecode(buffer.GetBuffer().AsSpan(0, (int)buffer.Length));
         if (_content is null)
         {
@@ -116,7 +116,7 @@ public sealed partial class FileEditorViewModel(IRemoteHost host, string path, R
     {
         if (_baseline is not { } baseline)
             return;
-        var current = await host.StatAsync(path);
+        var current = await files.StatAsync(path);
         if (current.Exists && current.Size == baseline.Size && current.ModifiedAt == baseline.ModifiedAt)
         {
             await WriteAsync();
@@ -131,7 +131,7 @@ public sealed partial class FileEditorViewModel(IRemoteHost host, string path, R
     private async Task WriteAsync()
     {
         var bytes = (_content ?? throw new InvalidOperationException("file is not open as text")).Encode(Text);
-        _baseline = await host.UploadFileAsync(path, new MemoryStream(bytes));
+        _baseline = await files.UploadFileAsync(path, new MemoryStream(bytes));
         IsDirty = false;
         Report($"已保存 {FileName}（{FileSizeText.Format(_baseline.Size)}）");
         Saved?.Invoke();

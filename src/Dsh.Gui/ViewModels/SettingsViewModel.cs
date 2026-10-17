@@ -40,7 +40,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly Func<string, Task<string>> _run;
     private readonly GuiSettings _gui;
     private readonly SettingsFacade _facade;
-    private readonly Func<Task<IRemoteHost>> _host;
+    private readonly Func<Task<IRemoteModels>> _models;
+    private readonly Func<Task<IRemotePlugins>> _plugins;
 
     public SettingsViewModel(
         Context ctx,
@@ -49,7 +50,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         Func<string, Task<string>> run,
         GuiSettings gui,
         SettingsFacade facade,
-        Func<Task<IRemoteHost>> host)
+        Func<Task<IRemoteModels>> models,
+        Func<Task<IRemotePlugins>> plugins)
     {
         _ctx = ctx;
         _home = home;
@@ -57,7 +59,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         _run = run;
         _gui = gui;
         _facade = facade;
-        _host = host;
+        _models = models;
+        _plugins = plugins;
         Account = new AccountPanelViewModel(_ctx.Get<IAccountService>(IAccountService.ServiceName, false));
         foreach (var section in Sections)
             section.SelectCommand = new RelayCommand<SettingsNavItemViewModel>(SelectSection);
@@ -458,7 +461,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         IsWorking = true;
         try
         {
-            var models = await (await _host()).ListProviderModelsAsync(provider);
+            var models = await (await _models()).ListProviderModelsAsync(provider);
             Status = models.Count > 0
                 ? $"Provider {provider} 可用: {models.Count} 个模型（{string.Join(", ", models.Take(3))}…）"
                 : $"Provider {provider} 未返回模型，检查 baseUrl/apiKey 与适配器是否加载";
@@ -567,7 +570,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         try
         {
-            Status = await (await _host()).SetPluginPermissionAsync(package, permission.ToString(), allowed);
+            Status = await (await _plugins()).SetPluginPermissionAsync(package, permission.ToString(), allowed);
         }
         catch (Exception error)
         {
@@ -739,7 +742,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             return;
         try
         {
-            var efforts = await (await _host()).ListReasoningEffortsAsync(selection.Provider, selection.Model);
+            var efforts = await (await _models()).ListReasoningEffortsAsync(selection.Provider, selection.Model);
             if (selection != _model().Selection)
                 return;
             ReasoningEfforts.Clear();
@@ -758,7 +761,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         try
         {
-            var plugins = await (await _host()).ListPluginsAsync();
+            var plugins = await (await _plugins()).ListPluginsAsync();
             Plugins.Clear();
             foreach (var plugin in plugins.OrderBy(item => item.Package, StringComparer.Ordinal))
                 Plugins.Add(new PluginRowViewModel(plugin.Package, plugin.Description, plugin.Enabled,

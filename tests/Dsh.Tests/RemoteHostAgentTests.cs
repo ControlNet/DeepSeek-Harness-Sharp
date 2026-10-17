@@ -39,7 +39,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         await using var host = await HarnessHostFixture.CreateAsync("mac", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("catalog", Ct);
 
-        var catalog = await client.AgentCatalogAsync(Ct);
+        var catalog = await client.Agent.AgentCatalogAsync(Ct);
 
         Assert.True(client.Supports(AgentProtocol.Capability));
         Assert.Equal(
@@ -62,16 +62,16 @@ public sealed class RemoteHostAgentTests : IDisposable
         var added = client.NotificationChangesAsync(Ct);
         var script = new RemoteAgentCommand("/bin/sh", ["-c", """printf 'Proceed? [y/N] '; read answer; echo "working on $answer"; sleep 3; exit 3"""]);
 
-        var session = await client.StartAgentAsync(new RemoteAgentStartRequest(
+        var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(
             AgentKinds.Terminal, _workspace, Command: script, Title: "unknown agent"), Ct);
-        await Assert.ThrowsAsync<JsonRpcException>(() => client.PromptAgentAsync(session.SessionId, "y", Ct));
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Agent.PromptAgentAsync(session.SessionId, "y", Ct));
         await using var terminal = RemoteHostPtyTests.TerminalCapture.Attach(client, session.SessionId);
         await terminal.WaitForAsync("Proceed? [y/N]", TimeSpan.FromSeconds(10));
         var atPrompt = Assert.Single(await client.ListHostSessionsAsync(Ct), item => item.SessionId == session.SessionId);
         Assert.Equal((HostSessionStatuses.Running, 0), (atPrompt.Status, atPrompt.PendingCount));
         Assert.Empty((await client.ListPendingAsync(Ct)).Approvals);
         Assert.Empty((await client.ListPendingAsync(Ct)).Questions);
-        Assert.Empty((await client.ListNotificationsAsync(new RemoteNotifyQuery(SessionId: session.SessionId), Ct)).Items);
+        Assert.Empty((await client.Notifications.ListNotificationsAsync(new RemoteNotifyQuery(SessionId: session.SessionId), Ct)).Items);
         await terminal.SendAsync("y\r");
         await terminal.WaitForAsync("working on y", TimeSpan.FromSeconds(10));
         var running = (await RemoteHostMultiClientTests.NextAsync(changes, item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Running)).Session!;
@@ -97,9 +97,9 @@ public sealed class RemoteHostAgentTests : IDisposable
         var request = new RemoteAgentStartRequest(HostAgentKinds.Dsharp, repo.Root, Worktree: worktree,
             Selection: RemoteHostMultiClientTests.Selection, Provider: RemoteHostMultiClientTests.Spec);
 
-        var first = await client.StartAgentAsync(request, Ct);
-        var second = await client.StartAgentAsync(request, Ct);
-        var worktrees = await client.ListWorktreesAsync(repo.Root, Ct);
+        var first = await client.Agent.StartAgentAsync(request, Ct);
+        var second = await client.Agent.StartAgentAsync(request, Ct);
+        var worktrees = await client.Git.ListWorktreesAsync(repo.Root, Ct);
 
         var expected = Path.Combine(repo.Sandbox, "harness-wt");
         Assert.Equal((HostSessionKinds.Harness, HostAgentKinds.Dsharp, expected), (first.Kind, first.AgentKind, first.ProjectPath));
@@ -117,16 +117,16 @@ public sealed class RemoteHostAgentTests : IDisposable
             Assert.Skip("the PTY agents run on POSIX hosts in these tests");
         await using var host = await HarnessHostFixture.CreateAsync("mab", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("builtin", Ct);
-        if (!(await client.AgentCatalogAsync(Ct)).Single(entry => entry.AgentKind == agentKind).SupportsTerminal)
+        if (!(await client.Agent.AgentCatalogAsync(Ct)).Single(entry => entry.AgentKind == agentKind).SupportsTerminal)
             Assert.Skip($"{agentKind} is not installed on this machine");
         var changes = client.HostSessionChangesAsync(Ct);
 
-        var session = await client.StartAgentAsync(new RemoteAgentStartRequest(agentKind, _workspace, Columns: 120, Rows: 40), Ct);
+        var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(agentKind, _workspace, Columns: 120, Rows: 40), Ct);
         await using var terminal = RemoteHostPtyTests.TerminalCapture.Attach(client, session.SessionId);
         await terminal.WaitForAsync(agentKind == AgentKinds.Codex ? "Codex" : "Claude", FirstScreen);
         var running = Assert.Single(await client.ListHostSessionsAsync(Ct), item => item.SessionId == session.SessionId);
         Assert.Equal((HostSessionStatuses.Running, 0), (running.Status, running.PendingCount));
-        await client.StopAgentAsync(session.SessionId, Ct);
+        await client.Agent.StopAgentAsync(session.SessionId, Ct);
         var exited = (await RemoteHostMultiClientTests.NextAsync(changes, item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Exited)).Session!;
 
         Assert.Equal((HostSessionKinds.External, agentKind), (session.Kind, session.AgentKind));
@@ -142,15 +142,15 @@ public sealed class RemoteHostAgentTests : IDisposable
         var client = await host.ConnectAsync("acp", Ct);
         var changes = client.HostSessionChangesAsync(Ct);
 
-        var session = await client.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp, Title: "opencode acp"), Ct);
-        await client.StopAgentAsync(session.SessionId, Ct);
+        var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp, Title: "opencode acp"), Ct);
+        await client.Agent.StopAgentAsync(session.SessionId, Ct);
         var stopped = (await RemoteHostMultiClientTests.NextAsync(changes, item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Exited)).Session!;
-        var resumed = await client.ResumeAgentAsync(session.SessionId, Ct);
+        var resumed = await client.Agent.ResumeAgentAsync(session.SessionId, Ct);
         await host.RestartHostAsync(Ct);
         var after = await host.ConnectAsync("after", Ct);
         var restored = Assert.Single(await after.ListHostSessionsAsync(Ct), item => item.SessionId == session.SessionId);
-        var reopened = await after.ResumeAgentAsync(session.SessionId, Ct);
-        await after.StopAgentAsync(session.SessionId, Ct);
+        var reopened = await after.Agent.ResumeAgentAsync(session.SessionId, Ct);
+        await after.Agent.StopAgentAsync(session.SessionId, Ct);
 
         Assert.Equal((HostSessionKinds.Acp, AgentKinds.OpenCode, HostSessionStatuses.Idle), (session.Kind, session.AgentKind, session.Status));
         Assert.Equal(HostSessionStatuses.Exited, stopped.Status);
@@ -166,9 +166,9 @@ public sealed class RemoteHostAgentTests : IDisposable
         RequireOpenCode();
         await using var host = await HarnessHostFixture.CreateAsync("map", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("acp", Ct);
-        var session = await client.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp), Ct);
+        var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp), Ct);
 
-        await client.PromptAgentAsync(session.SessionId, "Reply with exactly the word pong and nothing else. Do not use any tools.", Ct);
+        await client.Agent.PromptAgentAsync(session.SessionId, "Reply with exactly the word pong and nothing else. Do not use any tools.", Ct);
         var events = await TurnEventsAsync(client, session.SessionId);
         var idle = (await RemoteHostMultiClientTests.NextAsync(client.HostSessionChangesAsync(Ct), item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Idle)).Session!;
 
@@ -193,9 +193,9 @@ public sealed class RemoteHostAgentTests : IDisposable
         var bob = await host.ConnectAsync("bob", Ct);
         // Inline OpenCode config for the agent process only: shell commands ask for permission instead of running.
         var askForShell = new Dictionary<string, string> { ["OPENCODE_CONFIG_CONTENT"] = """{"permission":{"bash":"ask","edit":"ask"}}""" };
-        var session = await alice.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp, Environment: askForShell), Ct);
+        var session = await alice.Agent.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp, Environment: askForShell), Ct);
 
-        await alice.PromptAgentAsync(session.SessionId, "Run exactly this shell command once: echo dsh-acp-probe > acp-probe.txt", Ct);
+        await alice.Agent.PromptAgentAsync(session.SessionId, "Run exactly this shell command once: echo dsh-acp-probe > acp-probe.txt", Ct);
         var request = Assert.Single((await RemoteHostMultiClientTests.NextAsync(alice.PendingChangesAsync(Ct), change => change.Pending.Approvals.Count > 0, Turn)).Pending.Approvals);
         var seenByBob = Assert.Single((await RemoteHostMultiClientTests.NextAsync(bob.PendingChangesAsync(Ct), change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
         var allowed = await alice.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct);

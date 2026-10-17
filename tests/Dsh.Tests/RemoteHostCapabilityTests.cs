@@ -47,10 +47,10 @@ public sealed class RemoteHostCapabilityTests
 
         var work = Path.Combine(backend.Root, "work");
         Directory.CreateDirectory(Path.Combine(work, "sub"));
-        await client.WriteFileAsync(Path.Combine(work, "a.txt"), "hello"u8.ToArray(), Ct);
-        Assert.Equal("hello"u8.ToArray(), await client.ReadFileAsync(Path.Combine(work, "a.txt"), Ct));
+        await client.Files.WriteFileAsync(Path.Combine(work, "a.txt"), "hello"u8.ToArray(), Ct);
+        Assert.Equal("hello"u8.ToArray(), await client.Files.ReadFileAsync(Path.Combine(work, "a.txt"), Ct));
 
-        var listing = await client.ListDirectoryAsync(work, Ct);
+        var listing = await client.Files.ListDirectoryAsync(work, Ct);
         Assert.Equal(work, listing.Path);
         Assert.Equal(backend.Root, listing.Parent);
         Assert.Contains(listing.Entries, entry => entry is { Name: "sub", IsDirectory: true });
@@ -115,13 +115,13 @@ public sealed class RemoteHostCapabilityTests
     {
         await using var backend = await FakeBackend.CreateAsync(Ct);
         await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
-        var ptyId = await fixture.Client.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", []), Ct);
+        var ptyId = await fixture.Client.Pty.StartPtyAsync(new RemotePtyStartRequest("/bin/sh", []), Ct);
 
         var pipe = new System.IO.Pipelines.Pipe();
         var input = pipe.Reader.AsStream();
         var output = new MemoryStream();
         using var attachCts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        var attach = fixture.Client.AttachPtyAsync(ptyId, input, output, attachCts.Token);
+        var attach = fixture.Client.Pty.AttachPtyAsync(ptyId, input, output, attachCts.Token);
 
         await pipe.Writer.WriteAsync("ping"u8.ToArray(), Ct);
         await pipe.Writer.FlushAsync(Ct);
@@ -188,27 +188,27 @@ public sealed class RemoteHostCapabilityTests
         if (includeOptional)
         {
             Assert.Contains(FilesProtocol.Capability, info.Capabilities!);
-            await client.WriteFileAsync(file, "domain"u8.ToArray(), Ct);
-            Assert.Equal("domain"u8.ToArray(), await client.ReadFileAsync(file, Ct));
-            await client.RenameSessionAsync(created.Id, "domain title", Ct);
+            await client.Files.WriteFileAsync(file, "domain"u8.ToArray(), Ct);
+            Assert.Equal("domain"u8.ToArray(), await client.Files.ReadFileAsync(file, Ct));
+            await client.SessionEditing.RenameSessionAsync(created.Id, "domain title", Ct);
             Assert.Contains(await client.ListSessionsAsync(Ct), session => session.Id == created.Id && session.Title == "domain title");
         }
         else
         {
             Assert.Equal(2, info.Capabilities!.Count);
-            var denied = await Assert.ThrowsAsync<JsonRpcException>(() => client.WriteFileAsync(file, "denied"u8.ToArray(), Ct));
+            var denied = await Assert.ThrowsAsync<JsonRpcException>(() => client.Files.WriteFileAsync(file, "denied"u8.ToArray(), Ct));
             Assert.Equal(JsonRpcPeer.MethodNotFound, denied.Code);
             Assert.False(File.Exists(file));
-            var editDenied = await Assert.ThrowsAsync<JsonRpcException>(() => client.RenameSessionAsync(created.Id, "denied", Ct));
+            var editDenied = await Assert.ThrowsAsync<JsonRpcException>(() => client.SessionEditing.RenameSessionAsync(created.Id, "denied", Ct));
             Assert.Equal(JsonRpcPeer.MethodNotFound, editDenied.Code);
             Func<Task>[] otherDomains =
             [
-                () => client.AgentCatalogAsync(Ct),
-                () => client.StartPtyAsync(new RemotePtyStartRequest("unused", []), Ct),
-                () => client.GitStatusAsync(info.HomeRoot, Ct),
-                () => client.ListNotificationsAsync(cancellationToken: Ct),
-                () => client.ListPluginsAsync(Ct),
-                () => client.ListProviderModelsAsync("unused", Ct),
+                () => client.Agent.AgentCatalogAsync(Ct),
+                () => client.Pty.StartPtyAsync(new RemotePtyStartRequest("unused", []), Ct),
+                () => client.Git.GitStatusAsync(info.HomeRoot, Ct),
+                () => client.Notifications.ListNotificationsAsync(cancellationToken: Ct),
+                () => client.Plugins.ListPluginsAsync(Ct),
+                () => client.Models.ListProviderModelsAsync("unused", Ct),
             ];
             foreach (var operation in otherDomains)
             {

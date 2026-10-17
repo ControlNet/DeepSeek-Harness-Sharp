@@ -106,7 +106,7 @@ public sealed class RemoteHostTests
 
         var resume = await Assert.ThrowsAsync<JsonRpcException>(() => client.ResumeSessionAsync("session", cancellationToken: Ct));
         Assert.Contains("already", resume.Message, StringComparison.Ordinal);
-        await Assert.ThrowsAsync<JsonRpcException>(() => client.ResizePtyAsync("pty", 120, 40, Ct));
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Pty.ResizePtyAsync("pty", 120, 40, Ct));
         Assert.Equal([HostProtocol.MethodHello, HostProtocol.MethodSessionResume, PtyProtocol.MethodPtyResize], methods);
     }
 
