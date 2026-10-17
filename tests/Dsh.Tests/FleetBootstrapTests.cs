@@ -30,7 +30,7 @@ public sealed class FleetBootstrapTests
             await using var connection = new MachineConnection(MachineSpec.Local(root), new FleetOptions
             {
                 AutoReconnect = reconnect,
-                MinBackoff = TimeSpan.FromSeconds(30),
+                InitialBackoff = TimeSpan.FromSeconds(30),
                 MaxBackoff = TimeSpan.FromSeconds(30),
                 HeartbeatInterval = TimeSpan.FromMilliseconds(50),
                 HeartbeatTimeout = TimeSpan.FromMilliseconds(250),
