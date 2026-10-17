@@ -17,6 +17,18 @@
     <TrimmerRootAssembly Include="System.Text.Json" />
   </ItemGroup>
 
+  <!-- JIT/trim/NativeAOT 共用同一 RID 原生依赖;不能把仅在 CI 测试目录补拷系统 sqlite3 当作可部署产物。 -->
+  <Target Name="ValidateSessionQueryNativeLibrary" AfterTargets="Publish"
+          Condition="'$(RuntimeIdentifier)' != '' and '$(PublishDir)' != ''">
+    <PropertyGroup>
+      <_SessionQueryNativeLibrary Condition="$(RuntimeIdentifier.StartsWith('win'))">e_sqlite3.dll</_SessionQueryNativeLibrary>
+      <_SessionQueryNativeLibrary Condition="$(RuntimeIdentifier.StartsWith('linux'))">libe_sqlite3.so</_SessionQueryNativeLibrary>
+      <_SessionQueryNativeLibrary Condition="$(RuntimeIdentifier.StartsWith('osx'))">libe_sqlite3.dylib</_SessionQueryNativeLibrary>
+    </PropertyGroup>
+    <Error Condition="'$(_SessionQueryNativeLibrary)' != '' and !Exists('$(PublishDir)$(_SessionQueryNativeLibrary)')"
+           Text="发布缺少 SessionQuery 的 $(RuntimeIdentifier) 原生 SQLite FTS5 库: $(PublishDir)$(_SessionQueryNativeLibrary)" />
+  </Target>
+
   <Target Name="CopyPluginAndSurfaceAssemblies" AfterTargets="Build">
     <MSBuild Projects="$(MSBuildThisFileDirectory)..\src\Dsh.Core\Dsh.Core.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.AgentInstructions\Dsh.AgentInstructions.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Persistence\Dsh.Persistence.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Mcp\Dsh.Mcp.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Tools\Dsh.Tools.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Interaction\Dsh.Interaction.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Skills\Dsh.Skills.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Goal\Dsh.Goal.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Schedule\Dsh.Schedule.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Compaction\Dsh.Compaction.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Jobs\Dsh.Jobs.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Subagent\Dsh.Subagent.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.PlanMode\Dsh.PlanMode.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Web\Dsh.Web.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Workflow\Dsh.Workflow.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.PtyTerminal\Dsh.PtyTerminal.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Interaction.AskUser\Dsh.Interaction.AskUser.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Llm\Dsh.Llm.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Llm.DeepSeek\Dsh.Llm.DeepSeek.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Llm.OpenAi\Dsh.Llm.OpenAi.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Llm.Anthropic\Dsh.Llm.Anthropic.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Tui\Dsh.Tui.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Acp\Dsh.Acp.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.A2A\Dsh.A2A.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Lsp\Dsh.Lsp.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Sdk\Dsh.Sdk.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Pty\Dsh.Pty.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.Checkpoints\Dsh.Checkpoints.csproj;$(MSBuildThisFileDirectory)..\src\Dsh.IdeHistory\Dsh.IdeHistory.csproj" Targets="Build" Properties="Configuration=$(Configuration)" RemoveProperties="RuntimeIdentifier;PublishAot;SelfContained" />
     <ItemGroup>

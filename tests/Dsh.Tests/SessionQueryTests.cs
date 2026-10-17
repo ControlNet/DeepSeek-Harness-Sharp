@@ -16,6 +16,7 @@ public sealed class SessionQueryTests
         var session = CreateSession("s1", "hello world", "the quick brown fox");
 
         using var index = new SessionQueryIndex();
+        Assert.True(index.UsesFullText);
         index.IndexSession(session);
 
         var hits = index.Search("quick");
@@ -29,6 +30,7 @@ public sealed class SessionQueryTests
     {
         var session = CreateSession("s2", "hello world", "the quick -brown \"fox\" OR wolf");
         using var index = new SessionQueryIndex();
+        Assert.True(index.UsesFullText);
         index.IndexSession(session);
 
         var hits = index.Search("-brown \"fox\"");

@@ -10,7 +10,7 @@ public sealed class FtsSessionTextSearch : ISessionTextSearch
 
     static FtsSessionTextSearch()
     {
-        SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_sqlite3());
+        SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_e_sqlite3());
     }
 
     public FtsSessionTextSearch(string databasePath)
