@@ -11,7 +11,8 @@ ACCOUNT=dshirohci
 ACCOUNT_UID=1001
 SSH_PORT=22223
 OWNED_USER=0
-SSHD_PID=
+SSHD_LABEL="org.dsharp.tests.iroh-lan.$$"
+OWNED_DAEMON=0
 DIRECTORY_ACCESS="$ACCOUNT allow list,search,add_subdirectory,add_file,delete_child"
 [ -z "$(dscl . -search /Users RecordName "$ACCOUNT")" ] || { echo 'The acceptance account already exists.' >&2; exit 1; }
 [ -z "$(dscl . -search /Users UniqueID "$ACCOUNT_UID")" ] || { echo 'The acceptance UID is already allocated.' >&2; exit 1; }
@@ -19,7 +20,7 @@ mkdir -p "$WORK_DIR/home" "$ROOT_DIR/.daemon-tests" "$ROOT_DIR/artifacts020/test
 cleanup() {
     local code=$?
     if [ "$code" -ne 0 ] && [ -f "$WORK_DIR/sshd.log" ]; then cat "$WORK_DIR/sshd.log"; fi
-    if [ -n "$SSHD_PID" ]; then sudo kill "$SSHD_PID" 2>/dev/null || true; fi
+    if [ "$OWNED_DAEMON" -eq 1 ]; then sudo launchctl bootout "system/$SSHD_LABEL" 2>/dev/null || true; fi
     if [ "$OWNED_USER" -eq 1 ]; then
         sudo pkill -u "$ACCOUNT_UID" 2>/dev/null || true
         chmod -a "$DIRECTORY_ACCESS" "$ROOT_DIR/.daemon-tests" "$ROOT_DIR/artifacts020/test-homes" 2>/dev/null || true
@@ -56,11 +57,33 @@ KbdInteractiveAuthentication no
 UsePAM no
 SetEnv DOTNET_ROOT=${DOTNET_ROOT:?setup-dotnet must provide DOTNET_ROOT}
 EOF
-sudo /usr/sbin/sshd -D -e -f "$WORK_DIR/sshd.conf" > "$WORK_DIR/sshd.log" 2>&1 &
-SSHD_PID=$!
+# A launchd daemon supplies the real system SSH context documented by TN3179.
+python3 - "$WORK_DIR" "$SSHD_LABEL" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+with (root / "sshd.plist").open("wb") as stream:
+    plistlib.dump({
+        "Label": sys.argv[2],
+        "ProgramArguments": ["/usr/sbin/sshd", "-D", "-e", "-f", str(root / "sshd.conf")],
+        "RunAtLoad": True,
+        "StandardOutPath": str(root / "sshd.log"),
+        "StandardErrorPath": str(root / "sshd.log"),
+    }, stream)
+PY
+sudo chown root:wheel "$WORK_DIR/sshd.plist"
+sudo chmod 644 "$WORK_DIR/sshd.plist"
+if sudo launchctl print "system/$SSHD_LABEL" >/dev/null 2>&1; then
+    echo 'The acceptance SSH daemon already exists.' >&2
+    exit 1
+fi
+OWNED_DAEMON=1
+sudo launchctl bootstrap system "$WORK_DIR/sshd.plist"
 for attempt in {1..20}; do
     if ssh-keyscan -T 1 -p "$SSH_PORT" 127.0.0.1 >/dev/null 2>&1; then break; fi
-    kill -0 "$SSHD_PID"
+    sudo launchctl print "system/$SSHD_LABEL" >/dev/null
     sleep 0.1
 done
 printf -v command 'test "$(id -u)" -ne 0 && ! launchctl print "gui/$(id -u)" >/dev/null 2>&1 && cd %q && exec %q -noColor -failSkips -method Dsh.Tests.IrohReceiverEndToEndTests.TargetCli_Lan_Readiness_And_Restart_Work_Without_A_Relay' \
