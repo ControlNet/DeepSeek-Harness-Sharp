@@ -169,7 +169,7 @@ public sealed class RemoteHostCapabilityTests
     public async Task RealHarnessCoreWorksWithOrWithoutOptionalDomains(bool includeOptional)
     {
         using var environment = await GuiTestEnvironment.CreateAsync();
-        await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, Ct);
+        await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, TestContext.Current.CancellationToken);
         IRemoteHostBackend composed = includeOptional ? backend : new CoreOnlyBackend(backend);
         await using var fixture = await HostFixture.CreateAsync(composed, Ct);
         var client = fixture.Client;
