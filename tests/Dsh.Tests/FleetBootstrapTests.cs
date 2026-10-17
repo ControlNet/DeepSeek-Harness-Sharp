@@ -30,16 +30,20 @@ public sealed class FleetBootstrapTests
             await using var connection = new MachineConnection(MachineSpec.Local(root), new FleetOptions
             {
                 AutoReconnect = reconnect,
-                InitialBackoff = TimeSpan.FromSeconds(30),
-                MaxBackoff = TimeSpan.FromSeconds(30),
+                InitialBackoff = TimeSpan.FromSeconds(1),
+                MaxBackoff = TimeSpan.FromSeconds(1),
                 HeartbeatInterval = TimeSpan.FromMilliseconds(50),
                 HeartbeatTimeout = TimeSpan.FromMilliseconds(250),
             });
             connection.Start();
             await connection.WaitSettledAsync(lifetime.Token).WaitAsync(TimeSpan.FromSeconds(10), lifetime.Token);
             Assert.True(ping.Task.IsCompletedSuccessfully);
-            Assert.Equal(reconnect ? MachineConnectionState.Reconnecting : MachineConnectionState.Offline, connection.State);
+            Assert.Equal(MachineConnectionState.Offline, connection.State);
             Assert.NotNull(connection.Info);
+            if (reconnect)
+            {
+                using var retry = await listener.AcceptAsync(lifetime.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(10), lifetime.Token);
+            }
         }
         finally
         {

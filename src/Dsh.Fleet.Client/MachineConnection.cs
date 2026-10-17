@@ -136,11 +136,12 @@ public sealed class MachineConnection : IAsyncDisposable
                 failures++;
             else
             {
-                (failures, everConnected) = (0, true);
+                failures = 0;
                 await ServeAsync(link, cancellationToken).ConfigureAwait(false);
+                everConnected |= State == MachineConnectionState.Connected;
             }
 
-            SetState(_options.AutoReconnect ? MachineConnectionState.Reconnecting : MachineConnectionState.Offline, Detail);
+            SetState(_options.AutoReconnect && everConnected ? MachineConnectionState.Reconnecting : MachineConnectionState.Offline, Detail);
             _settled.TrySetResult();
             if (!_options.AutoReconnect || !await DelayAsync(_options.Backoff(failures), cancellationToken).ConfigureAwait(false))
                 break;
