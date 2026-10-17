@@ -6,6 +6,8 @@ SCRIPT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/fetch-iroh-ssh.sh"
 ROOT_DIR="$(cd -- "$(dirname -- "$SCRIPT")/.." && pwd)"
 REVISION=82e99719f8b4e44c69622140f4acb25e5ae54184
 SOURCE_SHA256=cfcafde6b789b076bd6e4c28abbc9a92476db122efa5d644bdded35380d6a8ac
+PATCH_SHA256=a6f373997ca554e3730d6691a2cf86a4a224c02f995a9760222075a9678eade8
+PATCH="$ROOT_DIR/scripts/iroh-ssh-readiness.patch"
 TOOLCHAIN=1.93.0
 LOCKED=0
 if [ "${1:-}" = --under-lock ]; then LOCKED=1; shift; fi
@@ -47,14 +49,15 @@ sha256() {
     fi
 }
 
-if [ -f "$OUTPUT" ] && [ -f "$STAMP" ] && [ -f "$WORK_DIR/LICENSE.txt" ] && [ -f "$WORK_DIR/THIRD-PARTY-LICENSES.txt" ]; then
-    EXPECTED="v2 $REVISION $TOOLCHAIN $TARGET $(sha256 "$OUTPUT") $(sha256 "$WORK_DIR/LICENSE.txt") $(sha256 "$WORK_DIR/THIRD-PARTY-LICENSES.txt")"
+[ "$(sha256 "$PATCH")" = "$PATCH_SHA256" ] || { echo 'iroh-ssh readiness patch SHA256 mismatch.' >&2; exit 1; }
+if [ -f "$OUTPUT" ] && [ -f "$STAMP" ] && [ -f "$WORK_DIR/LICENSE.txt" ] && [ -f "$WORK_DIR/THIRD-PARTY-LICENSES.txt" ] && [ -f "$WORK_DIR/READINESS.patch" ] && [ "$(sha256 "$WORK_DIR/READINESS.patch")" = "$PATCH_SHA256" ]; then
+    EXPECTED="v3 $REVISION $PATCH_SHA256 $TOOLCHAIN $TARGET $(sha256 "$OUTPUT") $(sha256 "$WORK_DIR/LICENSE.txt") $(sha256 "$WORK_DIR/THIRD-PARTY-LICENSES.txt")"
     if [ "$(cat "$STAMP")" = "$EXPECTED" ]; then
         case "$RID" in win-*) ;; *) chmod 755 "$OUTPUT" ;; esac
         exit 0
     fi
 fi
-for COMMAND in curl tar rustup cargo jq; do
+for COMMAND in curl tar rustup cargo jq git; do
     command -v "$COMMAND" >/dev/null 2>&1 || { echo "Building bundled iroh-ssh requires $COMMAND." >&2; exit 1; }
 done
 STAGE_DIR="$(mktemp -d "$WORK_DIR/.stage.XXXXXXXX")"
@@ -114,6 +117,7 @@ tar -xzf "$ARCHIVE" -C "$STAGE_DIR"
 SOURCE_DIR="$WORK_DIR/iroh-ssh-$REVISION"
 rm -rf -- "$SOURCE_DIR"
 mv "$STAGE_DIR/iroh-ssh-$REVISION" "$SOURCE_DIR"
+git -C "$ROOT_DIR" apply --directory="artifacts/iroh-ssh/$RID/iroh-ssh-$REVISION" "$PATCH"
 cargo "+$TOOLCHAIN" --config "$CARGO_CONFIG_FILE" build --locked --release --target "$TARGET" --manifest-path "$SOURCE_DIR/Cargo.toml" --target-dir "$WORK_DIR/target"
 cp "$WORK_DIR/target/$TARGET/release/$FILE" "$STAGE_DIR/$FILE"
 python3 - "$STAGE_DIR/$FILE" "$RID" <<'PY'
@@ -132,11 +136,13 @@ if not valid:
 PY
 chmod 755 "$STAGE_DIR/$FILE"
 cp "$SOURCE_DIR/LICENSE" "$STAGE_DIR/LICENSE.txt"
+cp "$PATCH" "$STAGE_DIR/READINESS.patch"
 cargo "+$TOOLCHAIN" metadata --locked --filter-platform "$TARGET" --format-version 1 --manifest-path "$SOURCE_DIR/Cargo.toml" > "$STAGE_DIR/dependencies.json"
 jq -r '.packages[] | [.name, .version, (.license // "unspecified"), .manifest_path, (.source // "local")] | @tsv' "$STAGE_DIR/dependencies.json" > "$STAGE_DIR/dependencies.tsv"
 {
     printf 'Corresponding source for each version-locked Rust crate is available at the download URL below.\n'
     printf 'For MPL-2.0 components, including attohttpc, these links provide the corresponding source covered by that license.\n'
+    printf 'iroh-ssh modifications: see bundled iroh-ssh.READINESS.patch (SHA256 %s).\n' "$PATCH_SHA256"
     while IFS=$'\t' read -r NAME VERSION LICENSE MANIFEST SOURCE; do
         printf '\n=== %s %s (%s) ===\n' "$NAME" "$VERSION" "$LICENSE"
         if [ "$NAME" = iroh-ssh ] && [ "$SOURCE" = local ]; then
@@ -155,6 +161,6 @@ jq -r '.packages[] | [.name, .version, (.license // "unspecified"), .manifest_pa
         done < <(find "$PACKAGE_DIR" -maxdepth 2 -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) -print0)
     done < "$STAGE_DIR/dependencies.tsv"
 } > "$STAGE_DIR/THIRD-PARTY-LICENSES.txt"
-printf 'v2 %s %s %s %s %s %s\n' "$REVISION" "$TOOLCHAIN" "$TARGET" "$(sha256 "$STAGE_DIR/$FILE")" "$(sha256 "$STAGE_DIR/LICENSE.txt")" "$(sha256 "$STAGE_DIR/THIRD-PARTY-LICENSES.txt")" > "$STAGE_DIR/build.sha256"
-for GENERATED in "$FILE" LICENSE.txt THIRD-PARTY-LICENSES.txt; do mv -f "$STAGE_DIR/$GENERATED" "$WORK_DIR/$GENERATED"; done
+printf 'v3 %s %s %s %s %s %s %s\n' "$REVISION" "$PATCH_SHA256" "$TOOLCHAIN" "$TARGET" "$(sha256 "$STAGE_DIR/$FILE")" "$(sha256 "$STAGE_DIR/LICENSE.txt")" "$(sha256 "$STAGE_DIR/THIRD-PARTY-LICENSES.txt")" > "$STAGE_DIR/build.sha256"
+for GENERATED in "$FILE" LICENSE.txt THIRD-PARTY-LICENSES.txt READINESS.patch; do mv -f "$STAGE_DIR/$GENERATED" "$WORK_DIR/$GENERATED"; done
 mv -f "$STAGE_DIR/build.sha256" "$STAMP"

@@ -28,8 +28,75 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  iroh-component:
+    name: 准备原生 iroh-ssh（${{ matrix.rid }}）
+    if: ${{ github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+
+      - name: 缓存固定源码构建的 iroh-ssh
+        id: iroh-cache
+        uses: actions/cache@v4
+        with:
+          path: artifacts/iroh-ssh-component.tar
+          key: iroh-ssh-tar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-iroh-ssh.*', 'scripts/iroh-ssh-readiness.patch') }}
+
+      - name: 解包已缓存的原生组件
+        if: steps.iroh-cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/iroh-ssh | Out-Null
+          $tar = if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe' } else { 'tar' }
+          & $tar -xf artifacts/iroh-ssh-component.tar -C artifacts/iroh-ssh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # 冷缓存源码编译只执行一次；测试和发布仍通过原获取脚本校验修订、工具链及文件哈希。
+      # 不把冷编译计入测试 job 的 25 分钟，所有测试阶段、三轮回归及各自预算保持不变。
+      - name: 构建固定源码的原生组件
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -NoProfile -File scripts/fetch-iroh-ssh.ps1 -Rid "${{ matrix.rid }}"
+          else
+            bash scripts/fetch-iroh-ssh.sh "${{ matrix.rid }}"
+          fi
+
+      - name: 打包原生组件（保留 Unix 执行权限）
+        shell: pwsh
+        run: |
+          $rid = '${{ matrix.rid }}'
+          $files = @(Get-ChildItem -LiteralPath "artifacts/iroh-ssh/$rid" -File |
+            Where-Object { $_.Name -notin @('source.tar.gz', '.acquire.lock') } |
+            ForEach-Object { "$rid/$($_.Name)" })
+          $tar = if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe' } else { 'tar' }
+          & $tar -cf artifacts/iroh-ssh-component.tar -C artifacts/iroh-ssh @files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iroh-ssh-${{ matrix.os }}
+          path: artifacts/iroh-ssh-component.tar
+          if-no-files-found: error
+          retention-days: 7
+
   test:
     name: 测试（${{ matrix.os }}）
+    needs: iroh-component
     # PR 被关闭但没合并时不必再跑。
     if: ${{ github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true }}
     runs-on: ${{ matrix.os }}
@@ -42,11 +109,14 @@ jobs:
         # Windows 主构建用发布所用的 MSVC(cl), 再用 clang-cl 重建并重跑原生遏制回归。
         include:
           - os: windows-latest
+            rid: win-x64
             native-cc: cl
             native-cc-alt: clang-cl
           - os: ubuntu-latest
+            rid: linux-x64
             native-cc: clang
           - os: macos-latest
+            rid: osx-arm64
             native-cc: clang
     steps:
       - uses: actions/checkout@v4
@@ -60,16 +130,19 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
-      - name: 缓存固定源码构建的 iroh-ssh
-        uses: actions/cache@v4
+      - name: 获取本轮构建的原生 iroh-ssh
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            artifacts/iroh-ssh/*/iroh-ssh
-            artifacts/iroh-ssh/*/iroh-ssh.exe
-            artifacts/iroh-ssh/*/LICENSE.txt
-            artifacts/iroh-ssh/*/THIRD-PARTY-LICENSES.txt
-            artifacts/iroh-ssh/*/build.sha256
-          key: iroh-ssh-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-iroh-ssh.*') }}
+          name: iroh-ssh-${{ matrix.os }}
+          path: artifacts
+
+      - name: 解包本轮原生组件（不使用消费者缓存）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/iroh-ssh | Out-Null
+          $tar = if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe' } else { 'tar' }
+          & $tar -xf artifacts/iroh-ssh-component.tar -C artifacts/iroh-ssh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
         shell: bash
@@ -118,6 +191,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 消费者只解包本轮 artifact；若获取脚本重新编译则不能通过。
+          test ! -d "artifacts/iroh-ssh/${{ matrix.rid }}/target"
+          test ! -f "artifacts/iroh-ssh/${{ matrix.rid }}/source.tar.gz"
           FILE=iroh-ssh
           if [ "$RUNNER_OS" = "Windows" ]; then FILE=iroh-ssh.exe; fi
           for OUTPUT in tests/Dsh.Tests/bin/Debug/net10.0 DeepSeek-Harness-Sharp/bin/Debug/net10.0; do
@@ -125,6 +201,7 @@ jobs:
             test -s "$OUTPUT/tools/iroh-ssh.LICENSE.txt"
             test -s "$OUTPUT/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
             test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
+            cmp scripts/iroh-ssh-readiness.patch "$OUTPUT/tools/iroh-ssh.READINESS.patch"
           done
       - name: 启动当前产物的独立 PTY daemon
         shell: bash
@@ -285,6 +362,7 @@ jobs:
 
   build:
     name: 发布校验（${{ matrix.os }}，JIT）
+    needs: iroh-component
     if: ${{ github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -311,16 +389,19 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
-      - name: 缓存固定源码构建的 iroh-ssh
-        uses: actions/cache@v4
+      - name: 获取本轮构建的原生 iroh-ssh
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            artifacts/iroh-ssh/*/iroh-ssh
-            artifacts/iroh-ssh/*/iroh-ssh.exe
-            artifacts/iroh-ssh/*/LICENSE.txt
-            artifacts/iroh-ssh/*/THIRD-PARTY-LICENSES.txt
-            artifacts/iroh-ssh/*/build.sha256
-          key: iroh-ssh-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-iroh-ssh.*') }}
+          name: iroh-ssh-${{ matrix.os }}
+          path: artifacts
+
+      - name: 解包本轮原生组件（不使用消费者缓存）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/iroh-ssh | Out-Null
+          $tar = if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe' } else { 'tar' }
+          & $tar -xf artifacts/iroh-ssh-component.tar -C artifacts/iroh-ssh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
         shell: bash
@@ -360,6 +441,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test ! -d "artifacts/iroh-ssh/${{ matrix.rid }}/target"
+          test ! -f "artifacts/iroh-ssh/${{ matrix.rid }}/source.tar.gz"
           FILE=iroh-ssh
           if [ "$RUNNER_OS" = "Windows" ]; then FILE=iroh-ssh.exe; fi
           for PROJECT in DeepSeek-Harness-Sharp DshGuiHost Dsh.WebHost; do
@@ -368,6 +451,7 @@ jobs:
             test -s "$OUTPUT/tools/iroh-ssh.LICENSE.txt"
             test -s "$OUTPUT/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
             test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
+            cmp scripts/iroh-ssh-readiness.patch "$OUTPUT/tools/iroh-ssh.READINESS.patch"
           done
 
       - name: 三发布产物隔离、体积和真实 WebHost 冒烟
@@ -412,6 +496,7 @@ jobs:
 
   aot:
     name: AOT 构建（${{ matrix.rid }}）
+    needs: iroh-component
     # 独立流水线：PR 的 open|sync|reopen 与被 merge 时（在 merge 提交上）跑，或手动 dispatch 且 aot=true。
     # 直接 push 到 master 不跑（本仓库 push 居多）。
     # 不依赖 test：AOT 是独立校验，test 未过也不应阻止 AOT 构建或手动触发。
@@ -439,16 +524,19 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
-      - name: 缓存固定源码构建的 iroh-ssh
-        uses: actions/cache@v4
+      - name: 获取本轮构建的原生 iroh-ssh
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            artifacts/iroh-ssh/*/iroh-ssh
-            artifacts/iroh-ssh/*/iroh-ssh.exe
-            artifacts/iroh-ssh/*/LICENSE.txt
-            artifacts/iroh-ssh/*/THIRD-PARTY-LICENSES.txt
-            artifacts/iroh-ssh/*/build.sha256
-          key: iroh-ssh-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-iroh-ssh.*') }}
+          name: iroh-ssh-${{ matrix.os }}
+          path: artifacts
+
+      - name: 解包本轮原生组件（不使用消费者缓存）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/iroh-ssh | Out-Null
+          $tar = if ($IsWindows) { Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe' } else { 'tar' }
+          & $tar -xf artifacts/iroh-ssh-component.tar -C artifacts/iroh-ssh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 准备本地 NuGet feed（packages/，DryIoc.dll）
         shell: bash
@@ -490,6 +578,8 @@ jobs:
             -c Release -r "$RID" -p:PublishAot=true \
             -p:DebugSymbols=false -p:DebugType=none "${NATIVE_ARGS[@]}" \
             --nologo -v m
+          test ! -d "artifacts/iroh-ssh/$RID/target"
+          test ! -f "artifacts/iroh-ssh/$RID/source.tar.gz"
           WEB_PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"
           bash scripts/assert-aot-output.sh "$WEB_PUB" dsharp-web
           pwsh -NoProfile -File scripts/smoke-web-host.ps1 \
@@ -506,6 +596,7 @@ jobs:
             test -s "$OUTPUT/tools/iroh-ssh.LICENSE.txt"
             test -s "$OUTPUT/tools/iroh-ssh.THIRD-PARTY-LICENSES.txt"
             test -s "$OUTPUT/tools/iroh-ssh.NOTICE.txt"
+            cmp scripts/iroh-ssh-readiness.patch "$OUTPUT/tools/iroh-ssh.READINESS.patch"
           done
           cp -R "$GUI_PUB"/. "$PUB"/
           rm -f "$PUB"/dsh-gui*.pdb "$PUB"/dsh-gui*.dbg

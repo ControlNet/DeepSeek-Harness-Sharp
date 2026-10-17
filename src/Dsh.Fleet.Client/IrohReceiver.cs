@@ -16,6 +16,7 @@ public static partial class IrohReceiver
 {
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ReadinessTimeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan ReadinessPollInterval = TimeSpan.FromMilliseconds(250);
     private const UnixFileMode PrivateDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
     private const UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 
@@ -89,11 +90,13 @@ public static partial class IrohReceiver
 
     internal static string ReceiverRoot(HarnessHome home) => Path.Combine(Path.GetFullPath(home.Root), "iroh-receiver");
 
+    internal static string ReadinessPath(string root) => Path.Combine(root, "ready");
+
     internal static string ServiceName(string root)
         => $"dsharp-iroh-{Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(root))))[..16]}";
 
     internal static string[] ServerArguments(string root, int sshPort, IReadOnlyList<string> relayUrls)
-        => ["server", "--persist", "--key-dir", Path.Combine(root, "identity"), "--ssh-port", sshPort.ToString(System.Globalization.CultureInfo.InvariantCulture), .. relayUrls.SelectMany(url => new[] { "--relay-url", url })];
+        => ["server", "--persist", "--key-dir", Path.Combine(root, "identity"), "--ready-file", ReadinessPath(root), "--ssh-port", sshPort.ToString(System.Globalization.CultureInfo.InvariantCulture), .. relayUrls.SelectMany(url => new[] { "--relay-url", url })];
 
 
     private static FileStream AcquireOperation(string root)
@@ -221,14 +224,20 @@ public static partial class IrohReceiver
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(ReadinessTimeout);
-        var endpoint = "";
+        var readyPath = ReadinessPath(root);
         try
         {
-            while (string.IsNullOrEmpty(endpoint) || !await service.IsRunningAsync(timeout.Token).ConfigureAwait(false))
-            {
-                await Task.Delay(250, timeout.Token).ConfigureAwait(false);
-                endpoint = await ReadEndpointAsync(root, timeout.Token).ConfigureAwait(false);
-            }
+            // The native acknowledgement follows discovery publication, not merely key creation.
+            while (!File.Exists(readyPath) || !await service.IsRunningAsync(timeout.Token).ConfigureAwait(false))
+                await Task.Delay(ReadinessPollInterval, timeout.Token).ConfigureAwait(false);
+            using var readyFile = new FileStream(readyPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 4096, FileOptions.Asynchronous);
+            using var readyReader = new StreamReader(readyFile);
+            var readyEndpoint = await readyReader.ReadLineAsync(timeout.Token).ConfigureAwait(false);
+            var readyPid = await readyReader.ReadLineAsync(timeout.Token).ConfigureAwait(false);
+            var extraLine = await readyReader.ReadLineAsync(timeout.Token).ConfigureAwait(false);
+            var endpoint = await ReadEndpointAsync(root, timeout.Token).ConfigureAwait(false);
+            if (readyEndpoint != endpoint || !int.TryParse(readyPid, out var pid) || pid <= 0 || extraLine is not null)
+                throw new IOException($"The receiver's discovery acknowledgement does not match its persistent identity. Inspect {service.Description}.");
             if (!OperatingSystem.IsWindows())
                 foreach (var path in Directory.EnumerateFiles(Path.Combine(root, "identity")))
                     File.SetUnixFileMode(path, PrivateFileMode);

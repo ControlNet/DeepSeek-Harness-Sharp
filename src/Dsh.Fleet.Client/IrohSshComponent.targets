@@ -14,6 +14,7 @@
     <_IrohComponent Include="$(_IrohDirectory)LICENSE.txt" RelativePath="tools/iroh-ssh.LICENSE.txt" />
     <_IrohComponent Include="$(_IrohDirectory)THIRD-PARTY-LICENSES.txt" RelativePath="tools/iroh-ssh.THIRD-PARTY-LICENSES.txt" />
     <_IrohComponent Include="$(MSBuildThisFileDirectory)iroh-ssh.NOTICE.txt" RelativePath="tools/iroh-ssh.NOTICE.txt" />
+    <_IrohComponent Include="$(_IrohDirectory)READINESS.patch" RelativePath="tools/iroh-ssh.READINESS.patch" />
   </ItemGroup>
 
   <Target Name="AcquireIrohSshComponent" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">

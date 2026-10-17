@@ -312,7 +312,8 @@ SSH-over-iroh 使用独立的主机密钥别名，不借用普通 TCP SSH 的已
 可在目标端 `remote enable`、客户端 `machine add` 或 `machine enable-iroh` 上重复传入 `--relay-url https://relay.example.net/`，GUI 中每行填写一个 relay URL。
 机器配置对应 `kind: iroh`、`endpointId` 与 `relayUrls`；未指定时使用上游默认 relay。
 双方需要可用的出站网络，无法直连时必须能访问所选 relay；公共 relay 没有本产品的可用性保证，带宽和服务限制以[上游说明](https://docs.iroh.computer/concepts/relays)为准。
-Relay 也参与设备发现，“可直连”不等于可以禁用全部 relay；仅依赖局域网 mDNS 的发现会受平台和网络条件限制。
+设备发现与 relay 传输不是同一配置：自定义 relay 不会替换上游 N0 发现服务；不使用公共发现时，需要局域网 mDNS 实际可用，其可用性受平台权限和网络条件限制。
+首次启用会等待可用的地址公告并实际验证 SSH 隧道，成功后才报告启用完成。
 
 | 发行平台 | 从已有 SSH 自动启用目标 | 目标端后台运行机制 |
 |---|---|---|
@@ -321,7 +322,7 @@ Relay 也参与设备发现，“可直连”不等于可以禁用全部 relay�
 | Windows x64 | 不扩大现有 Windows 远端自动部署范围；在目标本地启用 | 当前用户登录启动的计划任务，不静默提权 |
 
 Linux systemd 用户服务跨退出登录或开机运行需要管理员按系统策略启用该用户的 linger，命令输出会说明当前机制。
-完整发行包以实际提供的 RID 资产为准；从源码构建会获取固定源码版本的 iroh-ssh，Windows 构建使用 PowerShell 7，跨架构构建还需要相应编译器与目标工具链。
+完整发行包以实际提供的 RID 资产为准；从源码构建需要 Git，并获取固定源码、应用随包附带的发现就绪补丁；Windows 构建使用 PowerShell 7，跨架构构建还需要相应编译器与目标工具链。
 
 ### 可选：由用户管理 systemd 服务
 
@@ -420,6 +421,7 @@ CI 在真实三份发布产物上检查非 Web 的 `.deps.json`、`runtimeconfig
 <summary><b>未发布</b> — SSH-over-iroh</summary>
 
 - 多机连接新增 Endpoint ID 接入、客户端内置 iroh-ssh、已有 SSH 自动启用与目标端本地启用两种入口，沿用原有 SSH 认证和 Fleet 会话生命周期。
+- 接收端启动会同步地址发现就绪再验证 SSH 隧道，发布包附带上游修改补丁及来源说明。
 - 使用方法与平台差异见「通过 iroh 接入没有公网 SSH 地址的机器」。
 
 </details>

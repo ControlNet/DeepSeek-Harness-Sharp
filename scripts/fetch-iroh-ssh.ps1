@@ -10,6 +10,9 @@ $ErrorActionPreference = 'Stop'
 $RootDir = Split-Path -Parent $PSScriptRoot
 $Revision = '82e99719f8b4e44c69622140f4acb25e5ae54184'
 $SourceSha256 = 'cfcafde6b789b076bd6e4c28abbc9a92476db122efa5d644bdded35380d6a8ac'
+$PatchSha256 = 'a6f373997ca554e3730d6691a2cf86a4a224c02f995a9760222075a9678eade8'
+$Patch = Join-Path $PSScriptRoot 'iroh-ssh-readiness.patch'
+if ((Get-FileHash -LiteralPath $Patch -Algorithm SHA256).Hash.ToLowerInvariant() -ne $PatchSha256) { throw 'iroh-ssh readiness patch SHA256 mismatch.' }
 $Toolchain = '1.93.0'
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or -not $Rid.StartsWith('win-')) {
     throw "Cannot build $Rid with the Windows helper; use fetch-iroh-ssh.sh on a matching Linux/macOS build host with the target compiler and sysroot."
@@ -21,6 +24,7 @@ $Output = Join-Path $WorkDir $File
 $Stamp = Join-Path $WorkDir 'build.sha256'
 $License = Join-Path $WorkDir 'LICENSE.txt'
 $ThirdParty = Join-Path $WorkDir 'THIRD-PARTY-LICENSES.txt'
+$BundledPatch = Join-Path $WorkDir 'READINESS.patch'
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 $Sha = [System.Security.Cryptography.SHA256]::Create()
 try { $LockHash = [BitConverter]::ToString($Sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($WorkDir.ToUpperInvariant()))).Replace('-', '') }
@@ -31,16 +35,16 @@ $StageDir = $null
 try {
     try { [void]$Mutex.WaitOne(); $Acquired = $true }
     catch [System.Threading.AbandonedMutexException] { $Acquired = $true }
-    if ((Test-Path -LiteralPath $Output) -and (Test-Path -LiteralPath $Stamp) -and (Test-Path -LiteralPath $License) -and (Test-Path -LiteralPath $ThirdParty)) {
+    if ((Test-Path -LiteralPath $Output) -and (Test-Path -LiteralPath $Stamp) -and (Test-Path -LiteralPath $License) -and (Test-Path -LiteralPath $ThirdParty) -and (Test-Path -LiteralPath $BundledPatch) -and (Get-FileHash -LiteralPath $BundledPatch -Algorithm SHA256).Hash.ToLowerInvariant() -eq $PatchSha256) {
         $Hash = (Get-FileHash -LiteralPath $Output -Algorithm SHA256).Hash.ToLowerInvariant()
         $LicenseHash = (Get-FileHash -LiteralPath $License -Algorithm SHA256).Hash.ToLowerInvariant()
         $ThirdPartyHash = (Get-FileHash -LiteralPath $ThirdParty -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ((Get-Content -LiteralPath $Stamp -Raw).Trim() -eq "v2 $Revision $Toolchain $Target $Hash $LicenseHash $ThirdPartyHash") { return }
+        if ((Get-Content -LiteralPath $Stamp -Raw).Trim() -eq "v3 $Revision $PatchSha256 $Toolchain $Target $Hash $LicenseHash $ThirdPartyHash") { return }
     }
     # Windows tar handles drive-letter archives even when Git Bash supplied the parent PATH.
     $Tar = Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe'
     if (-not (Test-Path -LiteralPath $Tar)) { throw 'Building bundled iroh-ssh requires the Windows system tar.exe.' }
-    foreach ($Command in @('rustup', 'cargo')) {
+    foreach ($Command in @('rustup', 'cargo', 'git')) {
         if (-not (Get-Command $Command -ErrorAction SilentlyContinue)) { throw "Building bundled iroh-ssh requires $Command." }
     }
     $StageDir = Join-Path $WorkDir ".stage-$([Guid]::NewGuid().ToString('N'))"
@@ -113,6 +117,8 @@ try {
     $SourceDir = Join-Path $WorkDir "iroh-ssh-$Revision"
     if (Test-Path -LiteralPath $SourceDir) { Remove-Item -LiteralPath $SourceDir -Recurse -Force }
     Move-Item -LiteralPath (Join-Path $StageDir "iroh-ssh-$Revision") -Destination $SourceDir
+    & git -C $RootDir apply "--directory=artifacts/iroh-ssh/$Rid/iroh-ssh-$Revision" $Patch
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to apply the pinned iroh-ssh readiness patch.' }
     & cargo "+$Toolchain" --config $CargoConfigFile build --locked --release --target $Target --manifest-path (Join-Path $SourceDir 'Cargo.toml') --target-dir (Join-Path $WorkDir 'target')
     if ($LASTEXITCODE -ne 0) { throw 'Failed to build the pinned iroh-ssh source.' }
     $StageOutput = Join-Path $StageDir $File
@@ -130,11 +136,13 @@ try {
         if ($Pe.ReadUInt16() -ne $ExpectedMachine) { throw "The compiled component architecture does not match $Rid." }
     } finally { $Pe.Dispose() }
     Copy-Item -LiteralPath (Join-Path $SourceDir 'LICENSE') -Destination $StageLicense
+    Copy-Item -LiteralPath $Patch -Destination (Join-Path $StageDir 'READINESS.patch')
     $Metadata = & cargo "+$Toolchain" metadata --locked --filter-platform $Target --format-version 1 --manifest-path (Join-Path $SourceDir 'Cargo.toml')
     if ($LASTEXITCODE -ne 0) { throw 'Failed to read the locked dependency license metadata.' }
     $Notices = [System.Text.StringBuilder]::new()
     [void]$Notices.AppendLine('Corresponding source for each version-locked Rust crate is available at the download URL below.')
     [void]$Notices.AppendLine('For MPL-2.0 components, including attohttpc, these links provide the corresponding source covered by that license.')
+    [void]$Notices.AppendLine("iroh-ssh modifications: see bundled iroh-ssh.READINESS.patch (SHA256 $PatchSha256).")
     foreach ($Package in ($Metadata | ConvertFrom-Json).packages) {
         [void]$Notices.AppendLine("`n=== $($Package.name) $($Package.version) ($($Package.license)) ===")
         if ($Package.name -eq 'iroh-ssh' -and -not $Package.source) {
@@ -153,8 +161,8 @@ try {
     $LicenseHash = (Get-FileHash -LiteralPath $StageLicense -Algorithm SHA256).Hash.ToLowerInvariant()
     $ThirdPartyHash = (Get-FileHash -LiteralPath $StageThirdParty -Algorithm SHA256).Hash.ToLowerInvariant()
     $StageStamp = Join-Path $StageDir 'build.sha256'
-    Set-Content -LiteralPath $StageStamp -Value "v2 $Revision $Toolchain $Target $Hash $LicenseHash $ThirdPartyHash" -Encoding ascii
-    foreach ($Generated in @($File, 'LICENSE.txt', 'THIRD-PARTY-LICENSES.txt')) {
+    Set-Content -LiteralPath $StageStamp -Value "v3 $Revision $PatchSha256 $Toolchain $Target $Hash $LicenseHash $ThirdPartyHash" -Encoding ascii
+    foreach ($Generated in @($File, 'LICENSE.txt', 'THIRD-PARTY-LICENSES.txt', 'READINESS.patch')) {
         Move-Item -LiteralPath (Join-Path $StageDir $Generated) -Destination (Join-Path $WorkDir $Generated) -Force
     }
     Move-Item -LiteralPath $StageStamp -Destination $Stamp -Force

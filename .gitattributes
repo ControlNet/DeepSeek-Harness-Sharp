@@ -1,5 +1,6 @@
 # shell 脚本必须以 LF 检出: 否则 curl | bash 或克隆到 Windows 后无法执行。
 *.sh text eol=lf
+*.patch text eol=lf
 
 # Vendored front-end libraries are kept byte-for-byte as published (no line-ending conversion).
 src/Dsh.WebBridge/wwwroot/vendor/** -text linguist-vendored

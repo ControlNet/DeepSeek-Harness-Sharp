@@ -142,6 +142,7 @@ public static partial class IrohReceiver
                     break;
             }
             File.Delete(ModePath);
+            File.Delete(ReadinessPath(root));
         }
 
         private static async Task<bool> HasUserManagerAsync(CancellationToken cancellationToken)
