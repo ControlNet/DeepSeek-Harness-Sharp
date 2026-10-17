@@ -150,6 +150,24 @@ public sealed class FilesViewModelTests : IDisposable
         Assert.Equal([(FileEditorMode.TooLarge, true, ""), (FileEditorMode.Binary, true, "")], modes);
     }
 
+    [Fact(Timeout = 60000)]
+    public async Task PathsOutsideHostRoots_AreRejectedByTheHost_NotTheFileView()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("fvp", Ct);
+        var client = await host.ConnectAsync("files-view", Ct);
+        var outside = Path.GetPathRoot(host.Environment.App.Home.Root)!;
+        var viewModel = new FilesViewModel(client, outside);
+
+        Assert.False(await viewModel.LoadAsync());
+        Assert.True(viewModel.StatusIsError);
+        Assert.Contains("outside", viewModel.Status, StringComparison.Ordinal);
+        Assert.Empty(viewModel.Roots);
+        Assert.Null(await viewModel.DownloadAsync(Path.Combine(outside, "dsh-forbidden-probe"), Path.Combine(_local, "copy.bin")));
+        Assert.Contains("outside", viewModel.Status, StringComparison.Ordinal);
+        Assert.Empty(viewModel.Transfers);
+        Assert.Empty(Directory.GetFileSystemEntries(_local));
+    }
+
     /** 文件放在 host 的 harness home 下(属于 host 的允许根)。 */
     private static async Task<(FilesViewModel ViewModel, string Root)> OpenAsync(HarnessHostFixture host)
     {

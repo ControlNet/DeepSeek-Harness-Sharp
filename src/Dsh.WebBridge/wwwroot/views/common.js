@@ -1,6 +1,6 @@
 // Pieces shared by several views: routes, session labels, status chips and keyed list updates.
 import { h, baseName } from '../dom.js';
-import { SessionStatus } from '../hub.js';
+import { SessionStatus } from '/protocol.js';
 
 export function sessionRoute(machine, sessionId) {
   return `/m/${encodeURIComponent(machine)}/s/${encodeURIComponent(sessionId)}`;

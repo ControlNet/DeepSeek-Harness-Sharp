@@ -1,6 +1,7 @@
 // Light file browsing and git inspection of one machine: list directories, preview text files read-only, download, git status and per-file diffs.
 import { h, mount, link, toast, base64ToBytes, bytesToText, baseName, ago, when } from '../dom.js';
-import { Capability, describe } from '../hub.js';
+import { describe } from '../hub.js';
+import { Capability } from '/protocol.js';
 import { filesRoute, gitRoute, emptyState } from './common.js';
 
 /** Larger files are offered for download only. */

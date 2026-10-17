@@ -1,6 +1,7 @@
 // One session: its header and actions, its pending decisions, and either the message transcript with a composer or the terminal.
 import { h, mount, link, ago, when, toast } from '../dom.js';
-import { Capability, SessionKind, SessionStatus, describe, isTerminalSession } from '../hub.js';
+import { describe, isTerminalSession } from '../hub.js';
+import { Capability, SessionKind, SessionStatus } from '/protocol.js';
 import { sessionRoute, sessionTitle, statusChip, machineChip, filesRoute, gitRoute, emptyState } from './common.js';
 import { syncPendingCards } from './pending.js';
 import { Transcript } from './transcript.js';

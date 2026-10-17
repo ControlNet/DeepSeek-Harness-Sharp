@@ -3,15 +3,10 @@
 // authoritative server streams; no event log, sequence filter or resolved-request memory lives here.
 import { HostRpc, bridgeUrl } from './rpc.js';
 import { base64ToBytes, textToBase64 } from './dom.js';
+import { SessionStatus, SessionKind } from '/protocol.js';
 
 const MACHINE_POLL_MS = 5000;
 
-export const Capability = {
-  PendingBroadcast: 'pending.broadcast', SessionRegistry: 'sessions.registry', PtyResize: 'pty.resize',
-  AgentSessions: 'agent.sessions', GitInspect: 'git.inspect', FsTransfer: 'fs.transfer', NotifyHistory: 'notify.history',
-};
-export const SessionStatus = { Running: 'Running', WaitingForUser: 'WaitingForUser', Idle: 'Idle', Exited: 'Exited' };
-export const SessionKind = { Harness: 'harness', External: 'external', Acp: 'acp', Terminal: 'terminal' };
 export function isTerminalSession(session) { return session.Kind === SessionKind.Terminal || session.Kind === SessionKind.External; }
 export function needsAttention(session) { return session.Status === SessionStatus.WaitingForUser || session.PendingCount > 0; }
 

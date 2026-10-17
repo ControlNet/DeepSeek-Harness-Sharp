@@ -207,6 +207,18 @@ public sealed class WebBridgeTests
 
         using var script = await client.GetAsync(fixture.Access.Url("/rpc.js"), cancellationToken);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
+
+        using var protocol = await client.GetAsync(fixture.Access.Url("/protocol.js"), cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, protocol.StatusCode);
+        Assert.Equal("text/javascript", protocol.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("nosniff", Assert.Single(protocol.Headers.GetValues("X-Content-Type-Options")));
+        Assert.Contains("script-src 'self'", Assert.Single(protocol.Headers.GetValues("Content-Security-Policy")), StringComparison.Ordinal);
+        Assert.DoesNotContain(fixture.Token, await protocol.Content.ReadAsStringAsync(cancellationToken), StringComparison.Ordinal);
+        Assert.False(protocol.Headers.Contains("Access-Control-Allow-Origin"));
+        using var forbiddenProtocol = new HttpRequestMessage(HttpMethod.Get, fixture.Access.Url("/protocol.js"));
+        forbiddenProtocol.Headers.Host = "evil.example";
+        using var rejectedProtocol = await client.SendAsync(forbiddenProtocol, cancellationToken);
+        Assert.Equal(HttpStatusCode.Forbidden, rejectedProtocol.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(fixture.Access.Url("/missing.js"), cancellationToken)).StatusCode);
     }
 
@@ -348,6 +360,34 @@ public sealed class WebBridgeTests
         await using var fixture = await BridgeFixture.StartAsync(cancellationToken);
         var artifacts = HeadlessChrome.ArtifactDirectory("web-bridge");
         await using var chrome = await HeadlessChrome.StartAsync(artifacts, cancellationToken);
+
+        await chrome.NavigateAsync(fixture.Access.Url("/"), cancellationToken);
+        await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "login", cancellationToken);
+        using (var protocol = JsonDocument.Parse(await chrome.EvaluateAsync("""
+            (async () => {
+              const { SessionStatus, SessionKind, Capability, AgentMode } = await import('/protocol.js');
+              if (![SessionStatus, SessionKind, Capability, AgentMode].every(Object.isFrozen))
+                throw new Error('protocol definitions must be immutable');
+              return JSON.stringify({ SessionStatus, SessionKind, Capability, AgentMode });
+            })()
+            """, cancellationToken)))
+        {
+            var values = protocol.RootElement;
+            Assert.Equal(HostSessionStatuses.Running, values.GetProperty("SessionStatus").GetProperty("Running").GetString());
+            Assert.Equal(HostSessionStatuses.WaitingForUser, values.GetProperty("SessionStatus").GetProperty("WaitingForUser").GetString());
+            Assert.Equal(HostSessionStatuses.Idle, values.GetProperty("SessionStatus").GetProperty("Idle").GetString());
+            Assert.Equal(HostSessionStatuses.Exited, values.GetProperty("SessionStatus").GetProperty("Exited").GetString());
+            Assert.Equal(HostSessionKinds.Harness, values.GetProperty("SessionKind").GetProperty("Harness").GetString());
+            Assert.Equal(HostSessionKinds.External, values.GetProperty("SessionKind").GetProperty("External").GetString());
+            Assert.Equal(HostSessionKinds.Acp, values.GetProperty("SessionKind").GetProperty("Acp").GetString());
+            Assert.Equal(HostSessionKinds.Terminal, values.GetProperty("SessionKind").GetProperty("Terminal").GetString());
+            var capabilities = values.GetProperty("Capability");
+            Assert.Equal(HostProtocolCatalog.KnownCapabilities.Count, capabilities.EnumerateObject().Count());
+            foreach (var (name, wireValue) in HostProtocolCatalog.KnownCapabilities)
+                Assert.Equal(wireValue, capabilities.GetProperty(name).GetString());
+            Assert.Equal(RemoteAgentModes.Terminal, values.GetProperty("AgentMode").GetProperty("Terminal").GetString());
+            Assert.Equal(RemoteAgentModes.Acp, values.GetProperty("AgentMode").GetProperty("Acp").GetString());
+        }
 
         await chrome.NavigateAsync(new Uri($"{fixture.Access.Url("/")}#token={fixture.Token}"), cancellationToken);
         await chrome.WaitUntilAsync("document.getElementById('status').dataset.state", "connected", cancellationToken);

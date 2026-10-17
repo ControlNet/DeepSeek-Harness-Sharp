@@ -1,10 +1,9 @@
 // New session: machine, agent (host.agent.catalog), mode, project path, optional worktree and initial prompt; started with host.agent.start.
 import { h, mount, toast } from '../dom.js';
-import { Capability, describe } from '../hub.js';
+import { describe } from '../hub.js';
+import { Capability, AgentMode } from '/protocol.js';
 import { sessionRoute, emptyState } from './common.js';
 
-const MODE_TERMINAL = 'terminal';
-const MODE_ACP = 'acp';
 
 /** Catalogs are read once per machine and page. */
 const catalogs = new Map();
@@ -72,8 +71,8 @@ export function newSessionView(container, hub, route) {
 
   function showAgentFields() {
     const entry = entries.find((item) => item.AgentKind === agent.value);
-    const modes = entry === undefined ? [] : [entry.SupportsTerminal ? MODE_TERMINAL : null, entry.SupportsAcp ? MODE_ACP : null].filter(Boolean);
-    mount(mode, modes.map((value) => h('option', { value }, value === MODE_ACP ? 'ACP (structured)' : 'Terminal')));
+    const modes = entry === undefined ? [] : [entry.SupportsTerminal ? AgentMode.Terminal : null, entry.SupportsAcp ? AgentMode.Acp : null].filter(Boolean);
+    mount(mode, modes.map((value) => h('option', { value }, value === AgentMode.Acp ? 'ACP (structured)' : 'Terminal')));
     modeRow.hidden = modes.length < 2;
     commandRow.hidden = !entry?.RequiresCommand;
     command.required = Boolean(entry?.RequiresCommand);

@@ -39,6 +39,8 @@ internal static class StaticAssets
     /** Returns null when no embedded file has this path; "/" serves index.html. */
     public static async Task<StaticAsset?> LoadAsync(string path, CancellationToken cancellationToken)
     {
+        if (path == BrowserProtocol.Path)
+            return BrowserProtocol.Asset;
         var relative = path == "/" ? IndexFile : path[1..];
         if (!ResourceNames.TryGetValue(relative, out var resource))
             return null;
