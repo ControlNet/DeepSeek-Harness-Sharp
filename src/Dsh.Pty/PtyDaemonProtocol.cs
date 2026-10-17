@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dsh.Transport;
 
 namespace Dsh.Pty;
@@ -192,5 +193,10 @@ public sealed class PtyDaemonResponse
 
 internal static class PtyDaemonJson
 {
-    public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
+    public static readonly JsonSerializerOptions Options = PtyDaemonJsonContext.Default.Options;
 }
+
+[JsonSourceGenerationOptions(JsonSerializerDefaults.Web)]
+[JsonSerializable(typeof(PtyDaemonRequest))]
+[JsonSerializable(typeof(PtyDaemonResponse))]
+internal partial class PtyDaemonJsonContext : JsonSerializerContext;

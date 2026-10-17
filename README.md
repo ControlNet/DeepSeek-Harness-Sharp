@@ -236,9 +236,10 @@ dsharp host serve                                     # 手动前台运行 Host;
 - 会话订阅和 PTY attach 在异步获取后端读者之前就登记独立 reader ID；初始化期间退订或分离也会释放迟到取得的事件监听/daemon 订阅，不影响同一会话的其它视图，也不终止会话本身。未知会话或 PTY 的初始化错误直接返回该 RPC，不提前确认成功。
 - ACP 对话使用与 harness 相同的会话持久化、查询和事件订阅，Host 重启或恢复 agent 时保留原会话 ID、回合与工具事件。
   已停止对话的历史按需读取，查看历史不会启动外部 agent；继续对话时才重新启动进程。
-  启动命令、参数与环境随 Host 登记以仅属主可读写的权限保存，不进入客户端的会话快照或状态推送。
+  启动命令、参数与环境随 Host 登记以仅属主可读写的权限保存，公开会话登记和状态推送不包含这些字段。
 - 通知与已读标记只保存为 `host/notifications.json` 原子快照，跨 Host 重启保留；不维护单独的追加日志、压缩、保留期或 JSONL 导入引擎。
 - 浏览器：先单独安装 `dsharp-web`（见下方发布形态），再运行 `dsharp web` 或 `dsharp-web`；`dsharp host web` 也是同一进程转发入口，TUI/GUI 不加载 WebBridge 或 ASP.NET。独立 WebHost 内的真实 WebBridge 插件拥有 Fleet 连接、协议桥和监听生命周期，只监听 `127.0.0.1:8780`；`dsharp web --print-token`（或 `dsharp-web --print-token`）打印登录链接，其它设备先 `ssh -N -L 8780:127.0.0.1:8780 user@host` 转发再访问。
+  独立安装的 WebHost 可按需启动同一可执行文件内的 Host 与 PTY daemon，无需另装 TUI 可执行文件。
 - 手机触摸或触控笔点按终端会取得输入焦点，不阻止正常滚动手势；首屏快照解析完成后才解除忙碌标记，使用终端键栏发送 `Ctrl+C` 后仍可继续输入。文字、回车和键栏按键按各自终端的输入顺序提交，切换页面不会把已排队的输入发送到新会话；发送失败会显示错误且不自动重放。
 - `@deepseek-ai/dsh-fleet` 提供机器客户端服务并拥有客户端连接的生命周期，禁用时断开客户端而不终止 Host 会话；可复用连接与部署实现位于 `Dsh.Fleet.Client`，GUI、WebBridge 和 CLI 共用它。
 - SSH 的认证（agent/key/password、askpass）、ProxyCommand、进程管道及上传由 `SshTransport` 独占；部署策略通过 `IRemoteMachineTransport` 决定版本复用、远端下载或本地上传，doctor 也只消费该传输边界。Host 协议握手不再公开未握手的 raw Web/隧道入口；杀掉 SSH 桥接仍不结束常驻 Host 和原 PTY。
