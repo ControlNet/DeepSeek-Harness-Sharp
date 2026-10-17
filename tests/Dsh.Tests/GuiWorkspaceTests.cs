@@ -322,15 +322,15 @@ public sealed class GuiWorkspaceTests
     }
 
     /** The test page is a plain TextBlock: it stands in for a module's page and only checks the navigation contract. */
-    [Fact(Timeout = 60000)]
+    [Fact]
     public async Task WorkspacePages_ShowNothingUntilRegistered_ThenOpenWithTheWorkspaceContext()
     {
-        var ct = TestContext.Current.CancellationToken;
-        await using var alpha = await HarnessHostFixture.CreateAsync("gxa", ct);
-        await using var beta = await HarnessHostFixture.CreateAsync("gxb", ct);
+        using var gui = await GuiTestEnvironment.CreateAsync();
         await HeadlessGui.RunAsync(async () =>
         {
-            var workspace = Open(alpha, beta);
+            var fleet = new FleetWorkspace(new MachineStore(gui.App.Home), Options, () => new FleetClient([], Options));
+            var workspace = new WorkspaceViewModel(fleet,
+                () => new HarnessModelChoice(RemoteHostMultiClientTests.Selection, RemoteHostMultiClientTests.Spec), (_, _, _) => { });
             var destinations = new List<WorkspaceDestination>();
             workspace.NavigationRequested += destinations.Add;
             try

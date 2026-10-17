@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dsh.AgentAdapters;
 using Dsh.Core;
 using Dsh.Llm;
@@ -84,6 +85,73 @@ public sealed class RemoteHostAgentTests : IDisposable
         Assert.Equal("exit code 3", exitNotice.Body);
     }
 
+    [Fact(Timeout = 90000)]
+    public async Task CustomTerminalAgent_SurvivesHostRestart_WithoutExposingItsLaunchSecrets()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("uses a POSIX shell script as the agent");
+        await using var host = await HarnessHostFixture.CreateAsync("mas", TestContext.Current.CancellationToken);
+        var request = new RemoteAgentStartRequest(AgentKinds.Terminal, _workspace, Title: "private agent",
+            Command: new RemoteAgentCommand("/bin/sh",
+                ["-c", """pwd > agent-cwd.txt; printf 'environment=%s argv=%s\n' "$PRIVATE_AGENT_TOKEN" "$1"; read answer; printf 'received=%s\n' "$answer"; exit 7""", "agent", "private-argument-42"]),
+            Environment: new Dictionary<string, string> { ["PRIVATE_AGENT_TOKEN"] = "private-environment-42" });
+        RemoteHostSession session;
+        await using (var transport = await RemoteHostListener.ConnectAsync(host.Root, Ct))
+        await using (var peer = new JsonRpcPeer(transport))
+        {
+            var pushed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            peer.NotificationReceived += message =>
+            {
+                if (message.Method == HostProtocol.NotificationSessionsChanged && message.Params is { } parameters
+                    && parameters.GetRawText().Contains("private agent", StringComparison.Ordinal))
+                    pushed.TrySetResult(parameters.GetRawText());
+            };
+            peer.Start();
+            var started = (await peer.RequestAsync(AgentProtocol.MethodAgentStart,
+                JsonSerializer.SerializeToElement(request, AgentProtocolJsonContext.Default.RemoteAgentStartRequest), Ct))!.Value;
+            session = JsonSerializer.Deserialize(started, AgentProtocolJsonContext.Default.RemoteHostSession)!;
+            var listed = (await peer.RequestAsync(HostProtocol.MethodSessionsList, cancellationToken: Ct))!.Value;
+            foreach (var json in new[] { started.GetRawText(), listed.GetRawText(), await pushed.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct) })
+            {
+                Assert.DoesNotContain("private-argument-42", json);
+                Assert.DoesNotContain("private-environment-42", json);
+                Assert.DoesNotContain("PRIVATE_AGENT_TOKEN", json);
+            }
+        }
+        var client = await host.ConnectAsync("terminal-before", Ct);
+        await using (var terminal = RemoteHostPtyTests.TerminalCapture.Attach(client, session.SessionId))
+        {
+            await terminal.WaitForAsync("environment=private-environment-42 argv=private-argument-42", TimeSpan.FromSeconds(10));
+            Assert.Equal(_workspace, (await File.ReadAllTextAsync(Path.Combine(_workspace, "agent-cwd.txt"), Ct)).Trim());
+        }
+        await host.RestartHostAsync(Ct);
+        var after = await host.ConnectAsync("terminal-after", Ct);
+        var restored = Assert.Single(await after.ListHostSessionsAsync(Ct), item => item.SessionId == session.SessionId);
+        Assert.Equal((HostSessionStatuses.Running, "private agent", _workspace), (restored.Status, restored.Title, restored.ProjectPath));
+        var changes = after.HostSessionChangesAsync(Ct);
+        await using var reattached = RemoteHostPtyTests.TerminalCapture.Attach(after, session.SessionId);
+        await reattached.SendAsync("reconnected\r");
+        await reattached.WaitForAsync("received=reconnected", TimeSpan.FromSeconds(10));
+        var exited = (await RemoteHostMultiClientTests.NextAsync(changes,
+            item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Exited)).Session!;
+        Assert.Equal(7, exited.ExitCode);
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task FailedAcpHandshake_DoesNotCreateASessionOrHistory()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("uses a POSIX process that exits before the ACP handshake");
+        await using var host = await HarnessHostFixture.CreateAsync("maf", TestContext.Current.CancellationToken);
+        var client = await host.ConnectAsync("failed-acp", Ct);
+        var original = await client.ListSessionsAsync(Ct);
+        await Assert.ThrowsAsync<JsonRpcException>(() => client.Agent.StartAgentAsync(
+            new RemoteAgentStartRequest(AgentKinds.Acp, _workspace,
+                Command: new RemoteAgentCommand("/bin/sh", ["-c", "exit 9"])), Ct));
+        Assert.Empty(await client.ListHostSessionsAsync(Ct));
+        Assert.Equal(original, await client.ListSessionsAsync(Ct));
+    }
+
     [Fact(Timeout = 60000)]
     public async Task HarnessSession_StartsThroughAgentStart_InANewOrAnExistingWorktree()
     {
@@ -142,12 +210,17 @@ public sealed class RemoteHostAgentTests : IDisposable
         var changes = client.HostSessionChangesAsync(Ct);
 
         var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp, Title: "opencode acp"), Ct);
+        await client.SessionEditing.RenameSessionAsync(session.SessionId, "renamed acp", Ct);
         await client.Agent.StopAgentAsync(session.SessionId, Ct);
         var stopped = (await RemoteHostMultiClientTests.NextAsync(changes, item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Exited)).Session!;
         var resumed = await client.Agent.ResumeAgentAsync(session.SessionId, Ct);
+        var resumedSnapshot = await client.GetSessionSnapshotAsync(session.SessionId, Ct);
         await host.RestartHostAsync(Ct);
         var after = await host.ConnectAsync("after", Ct);
         var restored = Assert.Single(await after.ListHostSessionsAsync(Ct), item => item.SessionId == session.SessionId);
+        var coldSnapshot = await after.GetSessionSnapshotAsync(session.SessionId, Ct);
+        Assert.Equal(resumedSnapshot.HeaderJson, coldSnapshot.HeaderJson);
+        Assert.Equal(resumedSnapshot.Events, coldSnapshot.Events);
         var reopened = await after.Agent.ResumeAgentAsync(session.SessionId, Ct);
         await after.Agent.StopAgentAsync(session.SessionId, Ct);
 
@@ -155,7 +228,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         Assert.Equal(HostSessionStatuses.Exited, stopped.Status);
         Assert.Equal((session.SessionId, HostSessionStatuses.Idle), (resumed.SessionId, resumed.Status));
         Assert.Equal(HostSessionStatuses.Exited, restored.Status);
-        Assert.Equal((session.SessionId, HostSessionStatuses.Idle, "opencode acp"), (reopened.SessionId, reopened.Status, reopened.Title));
+        Assert.Equal((session.SessionId, HostSessionStatuses.Idle, "renamed acp"), (reopened.SessionId, reopened.Status, reopened.Title));
     }
 
     [Fact(Timeout = 600000)]
@@ -270,9 +343,7 @@ public sealed class RemoteHostAgentTests : IDisposable
             Assert.Equal(snapshot.Header, stored.Header);
             history = stored.Read();
         }
-        // Recovery marks the history/live boundary without rewriting or discarding the original events.
-        Assert.Equal(expected, history.Take(events.Count).Select(item => DshJson.Serialize(item)));
-        Assert.IsType<SessionEndSeedPayload>(Assert.Single(history.Skip(events.Count)).Data);
+        Assert.Equal(expected, history.Select(item => DshJson.Serialize(item)));
         Assert.Equal(Enumerable.Range(0, history.Count).Select(seq => (long)seq), history.Select(item => item.Seq));
         var recovered = history.Select(item => DshJson.Serialize(item)).ToArray();
         Assert.Equal(recovered, (await ReadEventsAsync(client, sessionId, item => item.Seq == history[^1].Seq)).Select(item => DshJson.Serialize(item)));
@@ -280,10 +351,12 @@ public sealed class RemoteHostAgentTests : IDisposable
 
         var resumed = await client.Agent.ResumeAgentAsync(sessionId, Ct);
         Assert.Equal((sessionId, HostSessionStatuses.Idle), (resumed.SessionId, resumed.Status));
-        Assert.Equal(recovered, (await ReadEventsAsync(client, sessionId, item => item.Seq == history[^1].Seq)).Select(item => DshJson.Serialize(item)));
+        var resumedSnapshot = await client.GetSessionSnapshotAsync(sessionId, Ct);
+        Assert.Equal(recovered, resumedSnapshot.Events.Take(history.Count).Select(item => item.EventJson));
+        var resumedHistory = resumedSnapshot.Events.Select(item => item.EventJson).ToArray();
         var marker = $"acpresumed{Guid.NewGuid():N}";
         await client.Agent.PromptAgentAsync(sessionId, $"Reply with exactly {marker} and nothing else. Do not use any tools.", Ct);
-        var continued = await ReadEventsAsync(client, sessionId, item => item.Data is TurnEndPayload, history.Count);
+        var continued = await ReadEventsAsync(client, sessionId, item => item.Data is TurnEndPayload, resumedHistory.Length);
         Assert.IsType<TurnStartPayload>(continued[0].Data);
         Assert.IsType<UserMessagePayload>(continued[1].Data);
         Assert.Contains(continued, item => item.Data is AssistantMessagePayload assistant
@@ -294,7 +367,7 @@ public sealed class RemoteHostAgentTests : IDisposable
         using (var stored = reopened.Open(id, SessionAccess.Read))
         {
             Assert.Equal(snapshot.Header, stored.Header);
-            Assert.Equal(recovered.Concat(continued.Select(item => DshJson.Serialize(item))), stored.Read().Select(item => DshJson.Serialize(item)));
+            Assert.Equal(resumedHistory.Concat(continued.Select(item => DshJson.Serialize(item))), stored.Read().Select(item => DshJson.Serialize(item)));
         }
         AssertSearchable(host, sessionId, queryText, events);
         AssertSearchable(host, sessionId, marker, continued, SessionEventTypes.AssistantMessage);

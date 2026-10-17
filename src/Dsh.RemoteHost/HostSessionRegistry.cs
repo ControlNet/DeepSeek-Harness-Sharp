@@ -17,6 +17,7 @@ public sealed class HostSessionRegistry : IAsyncDisposable
     private readonly HostPendingDecisions _pending;
     private readonly string _storePath;
     private readonly Channel<bool> _saveRequests = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
+    private readonly SemaphoreSlim _saveGate = new(1, 1);
     private readonly Task _saver;
 
     private HostSessionRegistry(string storePath, HostPendingDecisions pending, IEnumerable<HostSessionRegistration> records)
@@ -51,18 +52,27 @@ public sealed class HostSessionRegistry : IAsyncDisposable
             return _entries.TryGetValue(sessionId, out var record) ? Project(record) : null;
     }
 
+    /** Private launch facts never enter RemoteHostSession or session-change notifications. */
+    public HostAgentLaunch? AgentLaunch(string sessionId)
+    {
+        lock (_gate)
+            return _entries.TryGetValue(sessionId, out var record) ? record.AgentLaunch : null;
+    }
+
     /** Re-registration preserves the original creation time and identity fields from the new registration. */
-    public void Register(RemoteHostSession record)
+    public void Register(RemoteHostSession record, HostAgentLaunch? agentLaunch = null)
     {
         lock (_gate)
         {
             var registration = HostSessionRegistration.From(record);
             if (_entries.TryGetValue(record.SessionId, out var existing))
             {
-                registration = registration with { CreatedAt = existing.CreatedAt };
+                registration = registration with { CreatedAt = existing.CreatedAt, AgentLaunch = agentLaunch ?? existing.AgentLaunch };
                 if (registration == existing)
                     return;
             }
+            else
+                registration = registration with { AgentLaunch = agentLaunch };
             _entries[record.SessionId] = registration;
             Publish(registration, existing?.Status);
             _saveRequests.Writer.TryWrite(true);
@@ -110,7 +120,8 @@ public sealed class HostSessionRegistry : IAsyncDisposable
         _pending.CountChanged -= OnPendingChanged;
         _saveRequests.Writer.TryComplete();
         await _saver.ConfigureAwait(false);
-        await SaveAsync().ConfigureAwait(false);
+        await FlushAsync().ConfigureAwait(false);
+        _saveGate.Dispose();
     }
 
     private void OnPendingChanged(string sessionId)
@@ -162,22 +173,31 @@ public sealed class HostSessionRegistry : IAsyncDisposable
     private async Task SaveLoopAsync()
     {
         await foreach (var _ in _saveRequests.Reader.ReadAllAsync().ConfigureAwait(false))
-            await SaveAsync().ConfigureAwait(false);
+            await FlushAsync().ConfigureAwait(false);
     }
 
-    private async Task SaveAsync()
+    /** Persist all registration and launch facts together, including credentials, with private creation permissions. */
+    public async Task FlushAsync()
     {
-        IReadOnlyList<HostSessionRegistration> records;
-        lock (_gate)
-            records = [.. _entries.Values];
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(records, HostSessionRegistryJsonContext.Default.IReadOnlyListHostSessionRegistration);
-        OwnerOnlyFiles.EnsureDirectory(Path.GetDirectoryName(_storePath)!);
-        var temporary = $"{_storePath}.tmp";
-        await File.WriteAllBytesAsync(temporary, bytes).ConfigureAwait(false);
-        if (File.Exists(_storePath))
-            File.Replace(temporary, _storePath, null);
-        else
-            File.Move(temporary, _storePath);
+        await _saveGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            IReadOnlyList<HostSessionRegistration> records;
+            lock (_gate)
+                records = [.. _entries.Values];
+            var json = JsonSerializer.Serialize(records, HostSessionRegistryJsonContext.Default.IReadOnlyListHostSessionRegistration);
+            OwnerOnlyFiles.EnsureDirectory(Path.GetDirectoryName(_storePath)!);
+            var temporary = $"{_storePath}.tmp";
+            OwnerOnlyFiles.Write(temporary, json);
+            if (File.Exists(_storePath))
+                File.Replace(temporary, _storePath, null);
+            else
+                File.Move(temporary, _storePath);
+        }
+        finally
+        {
+            _saveGate.Release();
+        }
     }
 
     private static async Task<IReadOnlyList<HostSessionRegistration>> LoadAsync(string storePath, CancellationToken cancellationToken)
@@ -190,10 +210,15 @@ public sealed class HostSessionRegistry : IAsyncDisposable
     }
 }
 
+/** Only facts needed to restart an agent; identity, mode, directory and title belong to its registration. */
+public sealed record HostAgentLaunch(
+    string Executable, IReadOnlyList<string> Arguments,
+    IReadOnlyDictionary<string, string>? Environment = null, string? AcpSessionId = null);
+
 /** Persisted facts only: no pending count, waiting projection, or client deletion marker. */
 internal sealed record HostSessionRegistration(
     string SessionId, string Kind, string? AgentKind, string? ProjectPath, string? Title,
-    string Status, long CreatedAt, long LastActivityAt, int? ExitCode)
+    string Status, long CreatedAt, long LastActivityAt, int? ExitCode, HostAgentLaunch? AgentLaunch = null)
 {
     public static HostSessionRegistration From(RemoteHostSession record)
         => new(record.SessionId, record.Kind, record.AgentKind, record.ProjectPath, record.Title,

@@ -21,6 +21,8 @@ internal sealed class HarnessRemoteRuntime(HarnessApp app, HostSessionRegistry s
     internal AgentRegistry Registry => app.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)
         ?? throw new InvalidOperationException("AgentRegistry 未注册");
     internal ISessionPersistence? Persistence => app.Ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName, strict: false);
+    internal SessionStore Store => app.Ctx.Get<SessionStore>(SessionStore.ServiceName)
+        ?? throw new InvalidOperationException("SessionStore 未注册");
 
     internal IAgent Require(string sessionId)
         => Registry.Get(SessionId.Create(sessionId)) ?? throw new InvalidOperationException($"unknown session: {sessionId}");

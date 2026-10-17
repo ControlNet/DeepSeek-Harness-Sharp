@@ -16,7 +16,7 @@ irm https://raw.githubusercontent.com/forestbat/DeepSeek-Harness-Sharp/master/sc
 
 安装后新开终端,在任意目录运行 `dsharp` 即可启动 TUI。可用环境变量覆盖: `DSHARP_VERSION`(版本号或 latest)、`DSHARP_HOME`(安装目录)、`DSHARP_BASE_URL`(镜像基址)、`DSHARP_PROXY`(下载代理)。Release 资产命名为 `dsharp-<rid>.tar.gz`(Linux/macOS)与 `dsharp-win-<arch>.zip`(Windows)。
 
-发布包包含会话全文检索所需的 SQLite FTS5 原生库；安装或移动程序时保留完整发布目录，无需另行安装系统 SQLite。
+SQLite 是可选的系统依赖,发布包不捆绑或自动下载 SQLite 原生库。Linux 使用系统 `libsqlite3.so.0`(例如发行版的 `libsqlite3-0`/`sqlite-libs` 运行库),macOS 使用系统 `/usr/lib/libsqlite3.dylib`,Windows 使用系统 `winsqlite3.dll`。只有该系统库支持 FTS5 时才启用会话全文索引;不同系统版本的能力可能不同,尤其不能假定 Windows 自带 SQLite 支持 FTS5。没有系统 SQLite、缺少所需入口或未编入 FTS5 时,会话搜索自动使用进程内、不区分大小写的文本匹配(多词 AND),`/session-query` 和 `session_search` 仍可查询历史与活会话,不会阻断正常会话、ACP 或 TUI 启动。全文分词匹配与本地子串匹配的结果可能不同;会话文件仍是数据来源,切换后端不迁移或丢弃会话。
 
 ## 运行
 
@@ -234,9 +234,12 @@ dsharp host serve                                     # 手动前台运行 Host;
 - Host 严格使用线协议版本 2；版本不一致时握手拒绝，不再兼容旧宿主的缺失方法、resize 空操作或按错误文本恢复会话。核心包括会话执行与事件、登记表和唯一待决队列；Agent、PTY、文件、Git、通知、会话编辑、模型目录和插件管理按领域组合。握手与 `host.info` 只声明该 Host 实际提供的能力，未提供的领域调用明确返回 method-not-found，不返回伪造的空列表或成功。客户端按能力显示可用操作；协议目录列出的已知能力不表示每个 Host 都支持。
 - C# 集成端的 `IRemoteHost` 只暴露核心会话和领域入口；文件/Git 等操作分别通过 `IRemoteFiles`、`IRemoteGit` 等领域接口调用，不再提供核心客户端上的平铺转发方法。会话登记与通知投影按序可靠排队，初始快照和后续更新不会因观察队列达到固定条数而被丢弃。
 - 会话订阅和 PTY attach 在异步获取后端读者之前就登记独立 reader ID；初始化期间退订或分离也会释放迟到取得的事件监听/daemon 订阅，不影响同一会话的其它视图，也不终止会话本身。未知会话或 PTY 的初始化错误直接返回该 RPC，不提前确认成功。
-- ACP 对话只使用与 harness 相同的 `SessionStore` / `ISessionPersistence` 会话持久化、全文查询和事件订阅；Host 重启或恢复 agent 时保留原会话 ID、回合与工具事件，不维护另一套 ACP JSONL 历史文件。
+- ACP 对话使用与 harness 相同的会话持久化、查询和事件订阅，Host 重启或恢复 agent 时保留原会话 ID、回合与工具事件。
+  已停止对话的历史按需读取，查看历史不会启动外部 agent；继续对话时才重新启动进程。
+  启动命令、参数与环境随 Host 登记以仅属主可读写的权限保存，公开会话登记和状态推送不包含这些字段。
 - 通知与已读标记只保存为 `host/notifications.json` 原子快照，跨 Host 重启保留；不维护单独的追加日志、压缩、保留期或 JSONL 导入引擎。
 - 浏览器：先单独安装 `dsharp-web`（见下方发布形态），再运行 `dsharp web` 或 `dsharp-web`；`dsharp host web` 也是同一进程转发入口，TUI/GUI 不加载 WebBridge 或 ASP.NET。独立 WebHost 内的真实 WebBridge 插件拥有 Fleet 连接、协议桥和监听生命周期，只监听 `127.0.0.1:8780`；`dsharp web --print-token`（或 `dsharp-web --print-token`）打印登录链接，其它设备先 `ssh -N -L 8780:127.0.0.1:8780 user@host` 转发再访问。
+  独立安装的 WebHost 可按需启动同一可执行文件内的 Host 与 PTY daemon，无需另装 TUI 可执行文件。
 - 手机触摸或触控笔点按终端会取得输入焦点，不阻止正常滚动手势；首屏快照解析完成后才解除忙碌标记，使用终端键栏发送 `Ctrl+C` 后仍可继续输入。文字、回车和键栏按键按各自终端的输入顺序提交，切换页面不会把已排队的输入发送到新会话；发送失败会显示错误且不自动重放。
 - `@deepseek-ai/dsh-fleet` 提供机器客户端服务并拥有客户端连接的生命周期，禁用时断开客户端而不终止 Host 会话；可复用连接与部署实现位于 `Dsh.Fleet.Client`，GUI、WebBridge 和 CLI 共用它。
 - SSH 的认证（agent/key/password、askpass）、ProxyCommand、进程管道及上传由 `SshTransport` 独占；部署策略通过 `IRemoteMachineTransport` 决定版本复用、远端下载或本地上传，doctor 也只消费该传输边界。Host 协议握手不再公开未握手的 raw Web/隧道入口；杀掉 SSH 桥接仍不结束常驻 Host 和原 PTY。
@@ -544,5 +547,5 @@ network:
   ```
 - 运行期数据:`<home>/logs/dsh-YYYYMMDD.log`(按天 + `file_max_mb` 切分、`keep_days` 清理),`<home>/sessions/<工作目录转写>/<会话 id>/session.jsonl.zstd`,`<home>/telemetry.jsonl`(agent 生命周期与错误事件,可用 `plugins: {"@deepseek-ai/dsh-telemetry": false}` 关闭)。
 - 子代理模型:模型可调用 `list_subagent_models` 查看子代理能用的模型路由,即已配置 key 的 provider 及其生效模型(`settings.yaml` 声明的模型 ∪ models.dev 目录),模型公布了推理强度时一并列出;`subagent` 工具的 `provider`/`model`/`reasoning_effort` 参数直接取用其中一行,不填则沿用该工具插件参数里的 `agentOptions`,其次是 `settings.yaml` 的 `subagent.default_model`,再缺省则跟随当前会话的模型。未配置 key 的 provider 不会出现在列表中。可用 `plugins: {"@deepseek-ai/dsh-tool-subagent/list-models": false}` 关闭该工具。
-- 会话检索:TUI/CLI 内 `/session-query <关键词>` 搜索历史会话(命中用 `/session <id>` 打开);模型侧对应 `session_search` 工具。检索覆盖内存中的活会话与 `sessions/` 下的历史日志。
+- 会话检索:TUI/CLI 内 `/session-query <关键词>` 搜索历史会话(命中用 `/session <id>` 打开);模型侧对应 `session_search` 工具。检索覆盖内存中的活会话与 `sessions/` 下的历史日志。系统 SQLite 提供 FTS5 时使用全文分词索引,否则使用本地文本匹配;无需为普通会话查询单独安装 SQLite,平台依赖与匹配差异见「安装」。
 - 交付物:模型生成报告、Office 文档、表格、幻灯片等文件后,用 `present` 工具把已存在的文件声明为最终交付物(只记录绝对路径,不复制、不转换内容;路径不存在或是目录会报错)。清单随会话日志保存,恢复会话后仍在,回退/截断会话时一并回退。TUI 会话流里显示交付物卡片(绝对路径可直接复制),`/deliverables` 列出本会话交付物,`/deliverables open <编号>` 用系统默认程序打开;GUI 见「图形界面」一节。不需要时用 `plugins: {"@deepseek-ai/dsh-tool-present": false}` 关闭。

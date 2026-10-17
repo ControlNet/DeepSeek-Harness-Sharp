@@ -4,6 +4,7 @@ using Dsh.AgentAdapters;
 using Dsh.AgentAdapters.Acp;
 using Dsh.Notifications;
 using Dsh.RemoteHost;
+using Dsh.Runtime;
 
 namespace Dsh.Host;
 
@@ -15,7 +16,7 @@ internal sealed record AcpSessionServices(HostSessionRegistry Registry, HostPend
  * Turns run in the background (prompt returns once the turn started); updates feed the transcript; permission requests go through
  * HostPendingDecisions, so every client sees them and the first answer wins. Allow selects the agent's allow-once option and
  * reject its reject-once option (the always-variant only when the agent offers no once-variant); a cancelled request answers "cancelled".
- * The transcript belongs to the caller: it outlives the process so the history stays readable after the agent exits.
+ * Its transcript owns a shared SessionStore entry while this process runs; persisted history remains readable after it exits.
  */
 internal sealed class AcpAgentSession : IAsyncDisposable
 {
@@ -56,15 +57,15 @@ internal sealed class AcpAgentSession : IAsyncDisposable
      * whose history replay is not recorded again because the transcript already holds it).
      */
     public static async Task<AcpAgentSession> StartAsync(
-        string sessionId,
+        RemoteHostSession registration,
         AgentCommand command,
-        string workingDirectory,
         IReadOnlyDictionary<string, string>? environment,
         string? resumeId,
-        AcpTranscript transcript,
+        Context ctx,
         AcpSessionServices services,
         CancellationToken cancellationToken)
     {
+        var workingDirectory = registration.ProjectPath!;
         var process = AcpAgentProcess.Start(command, workingDirectory, environment);
         try
         {
@@ -76,7 +77,9 @@ internal sealed class AcpAgentSession : IAsyncDisposable
                 : info.CanLoadSession ? client.LoadSessionAsync(resumeId, workingDirectory, cancellationToken)
                 : throw new NotSupportedException($"{command.Executable} can neither resume nor load ACP sessions");
             var session = await opened.WaitAsync(HandshakeTimeout, cancellationToken).ConfigureAwait(false);
-            return new AcpAgentSession(sessionId, session.SessionId ?? resumeId ?? throw new InvalidOperationException("the agent returned no session id"), process, transcript, services);
+            var acpSessionId = session.SessionId ?? resumeId ?? throw new InvalidOperationException("the agent returned no session id");
+            var transcript = await AcpTranscript.OpenAsync(ctx, registration).ConfigureAwait(false);
+            return new AcpAgentSession(registration.SessionId, acpSessionId, process, transcript, services);
         }
         catch
         {
@@ -90,6 +93,7 @@ internal sealed class AcpAgentSession : IAsyncDisposable
     {
         lock (_turnGate)
         {
+            _lifetime.Token.ThrowIfCancellationRequested();
             if (!_turn.IsCompleted)
                 throw new InvalidOperationException($"session {SessionId} is still running a turn; cancel it first");
             _transcript.BeginTurn(text);
@@ -162,8 +166,14 @@ internal sealed class AcpAgentSession : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _lifetime.CancelAsync().ConfigureAwait(false);
+        Task turn;
+        lock (_turnGate)
+            turn = _turn;
         _process.Client.SessionUpdate -= OnUpdate;
         await _process.DisposeAsync().ConfigureAwait(false);
+        await turn.ConfigureAwait(false);
+        await _transcript.DisposeAsync().ConfigureAwait(false);
+        _services.Registry.MarkExited(SessionId, await Exited.ConfigureAwait(false));
         _lifetime.Dispose();
     }
 }

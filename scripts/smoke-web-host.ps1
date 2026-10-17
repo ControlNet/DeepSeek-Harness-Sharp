@@ -15,7 +15,10 @@ foreach ($directory in @($TuiPublishDir, $GuiPublishDir)) {
     }
 }
 foreach ($directory in @($TuiPublishDir, $GuiPublishDir, $WebPublishDir)) {
-    $bytes = (Get-ChildItem $directory -Recurse -File | Measure-Object -Property Length -Sum).Sum
+    $files = @(Get-ChildItem $directory -Recurse -File)
+    $bundledSqlite = @($files | Where-Object { $_.Name -match '^(?:lib)?(?:e_sqlite3|sqlite3|winsqlite3)(?:\.\d+)*\.(?:dll|so|dylib|a|lib)(?:\.\d+)*$' })
+    if ($bundledSqlite.Count -ne 0) { throw "Publish bundles optional system SQLite libraries: $($bundledSqlite.Name -join ', ')" }
+    $bytes = ($files | Measure-Object -Property Length -Sum).Sum
     Write-Host "$directory : $bytes bytes"
 }
 
@@ -28,6 +31,7 @@ $oldHome = $env:DSH_HOME
 $env:DSH_HOME = $homeDirectory
 $hostCommand = $null
 $webCommand = $null
+$ptyCommand = $null
 $client = $null
 $socket = $null
 $deadline = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(60))
@@ -48,7 +52,36 @@ function Start-SmokeProcess([string]$Name, [string[]]$Arguments) {
     }
 }
 
+function Send-SmokeRequest([int]$Id, [string]$Method, $Parameters = $null) {
+    $request = @{ jsonrpc = $protocol.JsonRpc.Version; id = $Id; method = $Method }
+    if ($null -ne $Parameters) { $request.params = $Parameters }
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($request | ConvertTo-Json -Depth 10 -Compress))
+    $socket.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, $deadline.Token).GetAwaiter().GetResult() | Out-Null
+}
+
+function Read-SmokeMessage {
+    $message = [IO.MemoryStream]::new()
+    try {
+        $buffer = [byte[]]::new(65536)
+        do {
+            $received = $socket.ReceiveAsync([ArraySegment[byte]]::new($buffer), $deadline.Token).GetAwaiter().GetResult()
+            if ($received.MessageType -ne [Net.WebSockets.WebSocketMessageType]::Text) { throw 'Published WebSocket closed before the expected response' }
+            $message.Write($buffer, 0, $received.Count)
+        } while (-not $received.EndOfMessage)
+        $reply = [Text.Encoding]::UTF8.GetString($message.ToArray()) | ConvertFrom-Json
+        if ($null -ne $reply.error) { throw "Published RPC failed: $($reply.error.message)" }
+        return $reply
+    } finally { $message.Dispose() }
+}
+
 try {
+    $ptyCommand = Start-SmokeProcess -Name 'pty' -Arguments @('tui', 'daemon')
+    $ptyEndpoint = Join-Path $homeDirectory $(if ($IsWindows) { 'run/dsh.port' } else { 'run/dsh.sock' })
+    while (-not (Test-Path $ptyEndpoint)) {
+        $deadline.Token.ThrowIfCancellationRequested()
+        if ($ptyCommand.Process.HasExited) { throw 'Published WebHost could not run the shared PTY daemon command' }
+        Start-Sleep -Milliseconds 50
+    }
     $hostCommand = Start-SmokeProcess -Name 'host' -Arguments @('host', 'serve')
     $hostEndpoint = Join-Path $homeDirectory $(if ($IsWindows) { 'run/host.port' } else { 'run/host.sock' })
     while (-not (Test-Path $hostEndpoint)) {
@@ -102,38 +135,49 @@ try {
     if ($cookie -notmatch '(?i)httponly' -or $cookie -notmatch '(?i)samesite=strict' -or $cookie.Contains($token)) { throw 'Published cookie boundary is invalid' }
     $accepted.Dispose(); $login.Dispose()
     $page = $client.GetAsync("$origin/", $deadline.Token).GetAwaiter().GetResult()
-    if ([int]$page.StatusCode -ne 200 -or -not $page.Content.ReadAsStringAsync($deadline.Token).GetAwaiter().GetResult().Contains('app.js')) { throw 'Published embedded front end is missing' }
+    if ([int]$page.StatusCode -ne 200 -or $page.Content.Headers.ContentType.MediaType -ne 'text/html') { throw 'Published WebHost did not serve its HTML entry point' }
     if (($page.Headers.GetValues('Content-Security-Policy') -join ';') -notmatch "frame-ancestors 'none'") { throw 'Published CSP is missing' }
     $page.Dispose()
     $socket = [Net.WebSockets.ClientWebSocket]::new()
     $socket.Options.Cookies = $cookies
     $socket.Options.SetRequestHeader('Origin', $origin)
     $socket.ConnectAsync([Uri]"ws://127.0.0.1:$port/ws", $deadline.Token).GetAwaiter().GetResult()
-    $request = [Text.Encoding]::UTF8.GetBytes((@{ jsonrpc = $protocol.JsonRpc.Version; id = 1; method = $protocol.HostProtocol.MethodInfo } | ConvertTo-Json -Compress))
-    $sent = $false
+    do { $reply = Read-SmokeMessage } while ($reply.method -ne $protocol.BridgeProtocol.NotificationView -or $reply.params.State -ne $protocol.MachineConnectionState.Connected)
+    Send-SmokeRequest 1 $protocol.HostProtocol.MethodInfo
+    do { $reply = Read-SmokeMessage } while ($reply.id -ne 1)
+    if ([string]::IsNullOrWhiteSpace($reply.result.HostVersion)) { throw 'Published Fleet forwarding returned no Host info' }
+    $shell = if ($IsWindows) { Join-Path $env:SystemRoot 'System32/cmd.exe' } else { '/bin/sh' }
+    $arguments = @()
+    if ($IsWindows) { $arguments = @('/d', '/q') }
+    Send-SmokeRequest 2 $protocol.AgentProtocol.MethodAgentStart @{
+        AgentKind = 'terminal'; ProjectPath = $homeDirectory; Title = 'Published terminal'
+        Command = @{ Executable = $shell; Arguments = @($arguments) }
+    }
+    do { $reply = Read-SmokeMessage } while ($reply.id -ne 2)
+    $ptyId = $reply.result.SessionId
+    if ([string]::IsNullOrWhiteSpace($ptyId)) { throw 'Published Host did not register the terminal' }
+    Send-SmokeRequest 3 $protocol.PtyProtocol.MethodPtyAttach @{ PtyId = $ptyId; ViewId = 'published' }
+    do { $reply = Read-SmokeMessage } while ($reply.id -ne 3)
+    $input = if ($IsWindows) { "set /a p=6*7 >nul`r`necho PUBLISHED-%p%`r`n" } else { 'printf ''PUBLISHED-%s\n'' "$((6*7))"' + "`r" }
+    Send-SmokeRequest 4 $protocol.PtyProtocol.MethodPtyWrite @{ PtyId = $ptyId; Base64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($input)) }
+    $output = [Text.StringBuilder]::new()
+    $written = $false
     do {
-        $message = [IO.MemoryStream]::new()
-        try {
-            $buffer = [byte[]]::new(65536)
-            do {
-                $received = $socket.ReceiveAsync([ArraySegment[byte]]::new($buffer), $deadline.Token).GetAwaiter().GetResult()
-                if ($received.MessageType -ne [Net.WebSockets.WebSocketMessageType]::Text) { throw 'Published WebSocket closed before Host response' }
-                $message.Write($buffer, 0, $received.Count)
-            } while (-not $received.EndOfMessage)
-            $reply = [Text.Encoding]::UTF8.GetString($message.ToArray()) | ConvertFrom-Json
-        } finally { $message.Dispose() }
-        if (-not $sent -and $reply.method -eq $protocol.BridgeProtocol.NotificationView -and $reply.params.State -eq $protocol.MachineConnectionState.Connected) {
-            $socket.SendAsync([ArraySegment[byte]]::new($request), [Net.WebSockets.WebSocketMessageType]::Text, $true, $deadline.Token).GetAwaiter().GetResult()
-            $sent = $true
+        $reply = Read-SmokeMessage
+        if ($reply.id -eq 4) { $written = $true }
+        if ($reply.method -eq $protocol.PtyProtocol.NotificationPtyOutput -and $reply.params.PtyId -eq $ptyId) {
+            $output.Append([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($reply.params.Base64))) | Out-Null
         }
-    } while ($reply.id -ne 1)
-    if ($null -ne $reply.error -or [string]::IsNullOrWhiteSpace($reply.result.HostVersion)) { throw 'Published Fleet forwarding returned no Host info' }
+    } while (-not $written -or -not $output.ToString().Contains('PUBLISHED-42'))
+    Send-SmokeRequest 5 $protocol.PtyProtocol.MethodPtyStop @{ PtyId = $ptyId }
+    do { $reply = Read-SmokeMessage } while ($reply.id -ne 5)
+    if ($reply.result -ne $true) { throw 'Published Host did not stop the terminal' }
     $socket.CloseAsync([Net.WebSockets.WebSocketCloseStatus]::NormalClosure, '', $deadline.Token).GetAwaiter().GetResult()
-    Write-Host 'Published WebHost: shared Host command, HTTP authentication/CSRF/CSP/assets and WebSocket Fleet forwarding passed.'
+    Write-Host 'Published WebHost: shared Host/PTY commands, HTTP authentication/CSRF/CSP/assets, Fleet forwarding and real terminal input/output/stop passed.'
 } finally {
     if ($socket) { $socket.Dispose() }
     if ($client) { $client.Dispose() }
-    foreach ($command in @($webCommand, $hostCommand)) {
+    foreach ($command in @($webCommand, $hostCommand, $ptyCommand)) {
         if (-not $command) { continue }
         try {
             if (-not $command.Process.HasExited) { $command.Process.Kill($true) }
@@ -144,7 +188,7 @@ try {
     }
     $deadline.Dispose()
     $env:DSH_HOME = $oldHome
-    foreach ($name in @('web.err', 'host.err')) {
+    foreach ($name in @('web.err', 'host.err', 'pty.err')) {
         $log = Join-Path $homeDirectory $name
         if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) { Get-Content $log | Write-Host }
     }

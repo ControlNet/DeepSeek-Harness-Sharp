@@ -60,10 +60,10 @@ internal sealed class HarnessRemoteSessionBackend(HarnessRemoteRuntime runtime, 
     {
         var id = SessionId.Create(sessionId);
         var approvals = runtime.App.Ctx.Get<ApprovalService>(ApprovalService.ServiceName, false);
-        if (runtime.Registry.Get(id) is { } agent)
-            return Task.FromResult(new RemoteSessionSnapshot(DshJson.Serialize(agent.Session.Header),
-                [.. agent.Session.SnapshotEvents().Select(item => ToInfo(sessionId, item))],
-                approvals?.EffectivePolicy(agent.Session).ToString()));
+        if (runtime.Store.Get(id) is { } session)
+            return Task.FromResult(new RemoteSessionSnapshot(DshJson.Serialize(session.Header),
+                [.. session.SnapshotEvents().Select(item => ToInfo(sessionId, item))],
+                approvals?.EffectivePolicy(session).ToString()));
         using var handle = runtime.Persistence?.Open(id, SessionAccess.Read)
             ?? throw new InvalidOperationException($"unknown session: {sessionId}");
         var events = handle.Read();
@@ -130,12 +130,10 @@ internal sealed class HarnessRemoteSessionBackend(HarnessRemoteRuntime runtime, 
     }
 
     /** Install live listeners before taking history so subscribe replies cannot lose subsequent events. */
-    public async Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+    public Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
     {
         var id = SessionId.Create(sessionId);
-        var session = agents.IsAcp(sessionId)
-            ? await agents.SessionAsync(sessionId).ConfigureAwait(false)
-            : runtime.Registry.Get(id)?.Session;
+        var session = runtime.Store.Get(id);
         var stored = session is null ? runtime.Persistence?.Stat(id) : null;
         if (session is null && stored is null)
             throw new InvalidOperationException($"unknown session: {sessionId}");
@@ -164,12 +162,12 @@ internal sealed class HarnessRemoteSessionBackend(HarnessRemoteRuntime runtime, 
         try
         {
             var history = session?.SnapshotEvents(reset ? 0 : fromSeq) ?? ReadPersisted(id, reset ? 0 : fromSeq);
-            return new RemoteHostStream<RemoteEventInfo>(
-                LiveEventsAsync(sessionId, history, buffer, fromSeq, reset, cancellationToken), Release);
+            return Task.FromResult(new RemoteHostStream<RemoteEventInfo>(
+                LiveEventsAsync(sessionId, history, buffer, fromSeq, reset, cancellationToken), Release));
         }
         catch
         {
-            await Release().ConfigureAwait(false);
+            Release().GetAwaiter().GetResult();
             throw;
         }
     }
