@@ -19,7 +19,7 @@ public sealed class RemoteHostReaderInitializationTests
     public async Task StopDuringInitializationReleasesRealReaderAndPreservesAnotherView(bool pty)
     {
         DelayedBackend? delayed = null;
-        await using var host = await HarnessHostFixture.CreateAsync("reader-init", Ct,
+        await using var host = await HarnessHostFixture.CreateAsync("reader-init", TestContext.Current.CancellationToken,
             backend => delayed = new DelayedBackend(backend, pty));
         var client = await host.ConnectAsync("owner", Ct);
         string resource;
@@ -31,7 +31,7 @@ public sealed class RemoteHostReaderInitializationTests
         else
         {
             resource = (await client.CreateSessionAsync(host.Environment.App.Home.Root, cancellationToken: Ct)).Id;
-            RemoteHostMultiClientTests.Agent(host, resource).Session.Append(new UserMessagePayload(MessageFactory.CreateUserText("history")));
+            RemoteHostMultiClientTests.Agent(host, resource).Session.Append(new UserMessagePayload(MessageFactory.CreateUserText("history")), new SurfaceOp.Append());
         }
 
         await using var transport = await RemoteHostListener.ConnectAsync(host.Root, Ct);
@@ -72,7 +72,7 @@ public sealed class RemoteHostReaderInitializationTests
             }
             else
             {
-                RemoteHostMultiClientTests.Agent(host, resource).Session.Append(new UserMessagePayload(MessageFactory.CreateUserText(marker)));
+                RemoteHostMultiClientTests.Agent(host, resource).Session.Append(new UserMessagePayload(MessageFactory.CreateUserText(marker)), new SurfaceOp.Append());
             }
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
             deadline.CancelAfter(TimeSpan.FromSeconds(10));
@@ -109,7 +109,7 @@ public sealed class RemoteHostReaderInitializationTests
     [InlineData(true)]
     public async Task UnknownResourceFailsTheInitializingRpc(bool pty)
     {
-        await using var host = await HarnessHostFixture.CreateAsync("missing-reader", Ct);
+        await using var host = await HarnessHostFixture.CreateAsync("missing-reader", TestContext.Current.CancellationToken);
         await using var transport = await RemoteHostListener.ConnectAsync(host.Root, Ct);
         await using var peer = new JsonRpcPeer(transport);
         peer.Start();
