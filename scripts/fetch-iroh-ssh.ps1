@@ -37,7 +37,10 @@ try {
         $ThirdPartyHash = (Get-FileHash -LiteralPath $ThirdParty -Algorithm SHA256).Hash.ToLowerInvariant()
         if ((Get-Content -LiteralPath $Stamp -Raw).Trim() -eq "v2 $Revision $Toolchain $Target $Hash $LicenseHash $ThirdPartyHash") { return }
     }
-    foreach ($Command in @('tar', 'rustup', 'cargo')) {
+    # Windows tar handles drive-letter archives even when Git Bash supplied the parent PATH.
+    $Tar = Join-Path ([Environment]::GetFolderPath('System')) 'tar.exe'
+    if (-not (Test-Path -LiteralPath $Tar)) { throw 'Building bundled iroh-ssh requires the Windows system tar.exe.' }
+    foreach ($Command in @('rustup', 'cargo')) {
         if (-not (Get-Command $Command -ErrorAction SilentlyContinue)) { throw "Building bundled iroh-ssh requires $Command." }
     }
     $StageDir = Join-Path $WorkDir ".stage-$([Guid]::NewGuid().ToString('N'))"
@@ -105,7 +108,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Failed to install the pinned Rust toolchain.' }
     & rustup target add --toolchain $Toolchain $Target
     if ($LASTEXITCODE -ne 0) { throw 'Failed to install the Rust target.' }
-    & tar -xzf $Archive -C $StageDir
+    & $Tar -xzf $Archive -C $StageDir
     if ($LASTEXITCODE -ne 0) { throw 'Failed to extract the verified iroh-ssh source archive.' }
     $SourceDir = Join-Path $WorkDir "iroh-ssh-$Revision"
     if (Test-Path -LiteralPath $SourceDir) { Remove-Item -LiteralPath $SourceDir -Recurse -Force }
