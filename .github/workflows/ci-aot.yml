@@ -20,7 +20,8 @@ jobs:
   publish:
     name: Publish and validate product entries (${{ inputs.rid }})
     runs-on: ${{ inputs.os }}
-    timeout-minutes: 40
+    # Windows runs three full ILC passes before regression checks and artifact upload.
+    timeout-minutes: ${{ startsWith(inputs.rid, 'win-') && 60 || 40 }}
     steps:
       - uses: actions/checkout@v4
         with:
