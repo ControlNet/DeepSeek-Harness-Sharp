@@ -323,7 +323,7 @@ public static class PtyDaemonClient
         if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
             arguments.Add(Environment.GetCommandLineArgs()[0]);
         arguments.AddRange(["tui", "daemon"]);
-        BackgroundProcess.Start(executable, arguments, Directory.GetCurrentDirectory(), new Dictionary<string, string?>());
+        _ = BackgroundProcess.Start(executable, arguments, Directory.GetCurrentDirectory(), new Dictionary<string, string?>());
     }
 
     /**

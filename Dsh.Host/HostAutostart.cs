@@ -34,24 +34,14 @@ public static class HostAutostart
         return (executable, arguments);
     }
 
-    /** stdio 桥接之前按需启动 Host, 并等待真实监听就绪。 */
-    public static async Task EnsureRunningAsync(HarnessHome home, string? token)
+    /** 按需启动 Host，并在启动进程存活时等待真实监听就绪。 */
+    public static async Task EnsureRunningAsync(HarnessHome home, string? token, CancellationToken cancellationToken = default)
     {
-        if (await RemoteHostListener.IsReachableAsync(home.Root, CancellationToken.None))
+        if (await RemoteHostListener.IsReachableAsync(home.Root, cancellationToken))
             return;
-        StartDetached(token, home.Root);
-        using var connection = await RemoteHostListener.ConnectAsync(home.Root, CancellationToken.None);
-    }
-
-    /**
-     * 以脱离会话的方式起 `dsharp host serve`(ssh 断开不把 daemon 带走)。
-     * harnessHome 非空时子进程用它作 DSH_HOME, 否则继承本进程的 harness 根。
-     */
-    public static void StartDetached(string? token, string? harnessHome = null)
-    {
         var (executable, arguments) = ServeCommand(token);
-        Dictionary<string, string?> environment = harnessHome is { Length: > 0 } ? new() { [HarnessHome.HomeEnv] = harnessHome } : [];
-        BackgroundProcess.Start(executable, arguments, Directory.GetCurrentDirectory(), environment);
+        Dictionary<string, string?> environment = new() { [HarnessHome.HomeEnv] = home.Root };
+        var startupLifetime = BackgroundProcess.Start(executable, arguments, Directory.GetCurrentDirectory(), environment);
+        using var connection = await RemoteHostListener.ConnectAsync(home.Root, cancellationToken, startupLifetime: startupLifetime);
     }
-
 }
