@@ -197,15 +197,20 @@ public sealed class RemoteHostMultiClientTests
         {
             var path = Path.Combine(root, "sessions.json");
             using var pending = new HostPendingDecisions();
+            var launch = new HostAgentLaunch("agent-command", ["--private", "argument-secret"],
+                new Dictionary<string, string> { ["TOKEN"] = "credential-secret" }, "agent-conversation");
             Task<RemoteApprovalResponse?> decision;
             await using (var registry = await HostSessionRegistry.OpenAsync(path, pending, TestContext.Current.CancellationToken))
             {
                 registry.Register(new RemoteHostSession("agent", HostSessionKinds.Acp, "custom", root, "original",
-                    HostSessionStatuses.Idle, 10, 20, 0, null));
+                    HostSessionStatuses.Idle, 10, 20, 0, null), launch);
                 registry.Register(new RemoteHostSession("agent", HostSessionKinds.Acp, "custom", root, "renamed",
                     HostSessionStatuses.Idle, 99, 21, 0, null));
                 decision = pending.AskApprovalAsync(new RemoteApprovalRequest("permission", "agent", "write", null, "allow?"));
                 Assert.Equal((HostSessionStatuses.WaitingForUser, 1), (registry.Get("agent")!.Status, registry.Get("agent")!.PendingCount));
+                await registry.FlushAsync();
+                if (!OperatingSystem.IsWindows())
+                    Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
             }
             using (var document = JsonDocument.Parse(await File.ReadAllTextAsync(path, Ct)))
             {
@@ -220,6 +225,12 @@ public sealed class RemoteHostMultiClientTests
             var record = Assert.Single(restored.List());
             Assert.Equal(("agent", HostSessionKinds.Acp, "custom", root, "renamed"), (record.SessionId, record.Kind, record.AgentKind, record.ProjectPath, record.Title));
             Assert.Equal((10L, 21L, HostSessionStatuses.Exited, 0), (record.CreatedAt, record.LastActivityAt, record.Status, record.PendingCount));
+            var restoredLaunch = Assert.IsType<HostAgentLaunch>(restored.AgentLaunch(record.SessionId));
+            Assert.Equal((launch.Executable, launch.AcpSessionId), (restoredLaunch.Executable, restoredLaunch.AcpSessionId));
+            Assert.Equal(launch.Arguments, restoredLaunch.Arguments);
+            Assert.Equal(launch.Environment, restoredLaunch.Environment);
+            restored.Remove(record.SessionId);
+            Assert.Null(restored.AgentLaunch(record.SessionId));
         }
         finally
         {

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Dsh.Acp;
 using Dsh.Core;
 using Dsh.Llm;
+using Dsh.Runtime;
 
 namespace Dsh.Host;
 
@@ -13,20 +14,65 @@ namespace Dsh.Host;
  * tool_call_update becomes tool/result; plan entries become a system/message; the stop reason becomes turn/end.
  * Storage, sequence numbers, history and subscriptions belong to the same Session used by harness conversations.
  */
-internal sealed class AcpTranscript
+internal sealed class AcpTranscript : IAsyncDisposable
 {
     private readonly Lock _gate = new();
+    private readonly SessionStore _store;
     public Session Session { get; }
     private readonly StringBuilder _text = new();
     private readonly string _agentKind;
     private int _turn;
     private int _step;
 
-    public AcpTranscript(Session session, string agentKind)
+    private AcpTranscript(Session session, string agentKind, SessionStore store)
     {
         Session = session;
         _agentKind = agentKind;
+        _store = store;
         _turn = session.SnapshotEvents().Count(sessionEvent => sessionEvent.Data is TurnStartPayload);
+    }
+
+    /** Only running ACP processes own a writable Session; stopped histories are read directly from persistence. */
+    public static async Task<AcpTranscript> OpenAsync(Context ctx, RemoteHost.RemoteHostSession record)
+    {
+        var store = ctx.Get<SessionStore>(SessionStore.ServiceName) ?? throw new InvalidOperationException("session store is not registered");
+        var persistence = ctx.Get<ISessionPersistence>(ISessionPersistence.ServiceName)
+            ?? throw new InvalidOperationException("ACP conversations require session persistence");
+        var id = SessionId.Create(record.SessionId);
+        Session session;
+        if (persistence.Stat(id) is not null)
+        {
+            using var handle = persistence.Open(id, SessionAccess.Read);
+            session = store.Create(id, handle.Read(), handle.Header, handle.InheritedEventCount);
+        }
+        else
+            session = store.Create(id, header: new SessionHeader
+            {
+                Version = SessionHeader.SessionFormatVersion, Id = id, CreatedAt = record.CreatedAt,
+                Cwd = record.ProjectPath, Title = record.Title, IsSeeded = false,
+            });
+        try
+        {
+            await store.Flush(session).ConfigureAwait(false);
+            return new AcpTranscript(session, record.AgentKind!, store);
+        }
+        catch
+        {
+            store.Release(id);
+            throw;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await _store.Flush(Session).ConfigureAwait(false);
+        }
+        finally
+        {
+            _store.Release(Session.Id);
+        }
     }
 
     public void BeginTurn(string text)

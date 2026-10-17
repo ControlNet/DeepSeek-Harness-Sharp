@@ -74,7 +74,9 @@ public sealed class HostPtySessions(HostSessionRegistry registry, HostPtyDaemon 
         var started = await PtyDaemonClient.StartAsync(parameters, daemon.SocketPath, daemon.PortFile, cancellationToken).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         registry.Register(new RemoteHostSession(
-            started.Id, kind, agentKind, workingDirectory, request.Title ?? started.Command, HostSessionStatuses.Running, now, now, 0, null));
+            started.Id, kind, agentKind, workingDirectory, request.Title ?? started.Command, HostSessionStatuses.Running, now, now, 0, null),
+            kind == HostSessionKinds.External ? new HostAgentLaunch(request.FileName, request.Arguments, environment) : null);
+        await registry.FlushAsync().ConfigureAwait(false);
         await WatcherAsync(started.Id, _lifetime.Token).ConfigureAwait(false);
         return started.Id;
     }

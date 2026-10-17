@@ -50,7 +50,7 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
         var services = new AcpSessionServices(sessions, pending, notifications);
         var ptys = new HostPtySessions(sessions, ptyDaemon ?? HostPtyDaemon.Default(), app.Home.Root);
         await ptys.RestoreAsync(cancellationToken).ConfigureAwait(false);
-        var agents = await ExternalAgentSessions.OpenAsync(app.Home.HostPath, app.Ctx, services, ptys, cancellationToken).ConfigureAwait(false);
+        var agents = new ExternalAgentSessions(app.Ctx, services, ptys);
         return new HarnessRemoteHostBackend(app, services, ptys, agents);
     }
 

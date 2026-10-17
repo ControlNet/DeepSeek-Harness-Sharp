@@ -31,8 +31,8 @@ internal sealed class HarnessRemoteSessionEditingBackend(HarnessRemoteRuntime ru
     {
         var id = SessionId.Create(sessionId);
         var persistence = runtime.Persistence ?? throw new InvalidOperationException("session persistence is unavailable");
-        if (runtime.Registry.Get(id) is { } agent)
-            agent.Session.Rename(title);
+        if (runtime.Store.Get(id) is { } session)
+            session.Rename(title);
         persistence.Rename(id, title);
         runtime.Sessions.SetTitle(sessionId, title);
         return Task.CompletedTask;
