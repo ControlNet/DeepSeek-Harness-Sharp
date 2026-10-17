@@ -19,6 +19,9 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
     private readonly Dictionary<string, CancellationTokenSource> _subscriptions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TerminalOutput> _terminals = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<Task, byte> _operations = new();
+    // HostUploads belongs to the shared Host connection, but unfinished uploads still belong to
+    // the browser that created them. Keep the original lease; reconnecting must never retarget them.
+    private readonly ConcurrentDictionary<string, HostLease> _uploads = new(StringComparer.Ordinal);
 
     public static async Task RunAsync(WebSocket socket, MachineConnection machine, Func<string, string> redact, CancellationToken cancellationToken)
     {
@@ -72,6 +75,9 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
             try { await view.ConfigureAwait(false); }
             catch (Exception error) when (IsConnectionEnd(error)) { }
             await Task.WhenAll(_operations.Keys).ConfigureAwait(false);
+            foreach (var (uploadId, lease) in _uploads)
+                await AbortUploadAsync(uploadId, lease).ConfigureAwait(false);
+            _uploads.Clear();
             foreach (var lifetime in _subscriptions.Values)
                 lifetime.Dispose();
             foreach (var terminal in _terminals.Values)
@@ -184,10 +190,53 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
                 return True;
             }
         }
+        if (request.Method == HostProtocol.MethodFsUploadBegin)
+            return await BeginUploadAsync(parameters).ConfigureAwait(false);
+        if (request.Method is HostProtocol.MethodFsUploadChunk or HostProtocol.MethodFsUploadCommit or HostProtocol.MethodFsUploadAbort)
+            return await ForwardUploadAsync(request.Method, parameters).ConfigureAwait(false);
         var lease = ConnectedLease();
         if (request.Method == HostProtocol.MethodHello)
             return JsonSerializer.SerializeToElement(lease.Client.Hello, HostProtocolJsonContext.Default.HostHelloResponse);
         return await lease.Client.RequestAsync(request.Method!, parameters, _lifetime.Token).ConfigureAwait(false);
+    }
+
+    private async Task<JsonElement> BeginUploadAsync(JsonElement? parameters)
+    {
+        var lease = ConnectedLease();
+        // Once sent, begin must reach its response even if this browser closes. Otherwise the
+        // newly created UploadId and its FileShare.None temporary handle would be orphaned.
+        var result = await lease.Client.RequestAsync(HostProtocol.MethodFsUploadBegin, parameters, lease.Lifetime).ConfigureAwait(false);
+        var uploadId = Required(result, "UploadId");
+        _uploads[uploadId] = lease;
+        if (_lifetime.IsCancellationRequested && _uploads.TryRemove(uploadId, out _))
+            await AbortUploadAsync(uploadId, lease).ConfigureAwait(false);
+        return result;
+    }
+
+    private async Task<JsonElement> ForwardUploadAsync(string method, JsonElement? parameters)
+    {
+        var uploadId = Required(parameters, "UploadId");
+        if (!_uploads.TryGetValue(uploadId, out var lease))
+            throw new JsonRpcException(-32602, "unknown upload for this browser");
+        // Join an operation already sent before disconnect cleanup aborts its temporary file.
+        JsonElement result;
+        try { result = await lease.Client.RequestAsync(method, parameters, lease.Lifetime).ConfigureAwait(false); }
+        catch
+        {
+            if (method is HostProtocol.MethodFsUploadCommit or HostProtocol.MethodFsUploadAbort
+                && _uploads.TryRemove(uploadId, out _))
+                await AbortUploadAsync(uploadId, lease).ConfigureAwait(false);
+            throw;
+        }
+        if (method is HostProtocol.MethodFsUploadCommit or HostProtocol.MethodFsUploadAbort)
+            _uploads.TryRemove(uploadId, out _);
+        return result;
+    }
+
+    private static async Task AbortUploadAsync(string uploadId, HostLease lease)
+    {
+        try { await lease.Client.AbortUploadAsync(uploadId, lease.Lifetime).ConfigureAwait(false); }
+        catch (Exception error) when (IsConnectionEnd(error) || error is JsonRpcException) { }
     }
 
     private HostLease ConnectedLease()
@@ -270,7 +319,13 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(message, JsonRpcJsonContext.Default.JsonRpcMessage);
         await _writes.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try { await socket.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            // Cancelling a ManagedWebSocket send aborts the entire socket, not just this view.
+            // A detached view may stop waiting for the writer, but cannot cancel an in-flight frame.
+            await socket.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, _lifetime.Token).ConfigureAwait(false);
+        }
         finally { _writes.Release(); }
     }
 

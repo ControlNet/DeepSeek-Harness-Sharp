@@ -103,7 +103,7 @@ public sealed class WebBridgeHubTests
     }
 
     /** Decodes host.pty.output pushes of one PTY until the screen text contains the expected output. */
-    internal static async Task ReadTerminalUntilAsync(ClientWebSocket socket, string ptyId, string expected)
+    internal static async Task ReadTerminalUntilAsync(ClientWebSocket socket, string ptyId, string expected, string? viewId = null)
     {
         var screen = new StringBuilder();
         var seen = new List<string>();
@@ -118,7 +118,8 @@ public sealed class WebBridgeHubTests
                     seen.Add(message.ToString());
                     return message.TryGetProperty("method", out var method)
                         && method.GetString() == HostProtocol.NotificationPtyOutput
-                        && message.GetProperty("params").GetProperty("PtyId").GetString() == ptyId;
+                        && message.GetProperty("params").GetProperty("PtyId").GetString() == ptyId
+                        && (viewId is null || message.GetProperty("params").GetProperty("ViewId").GetString() == viewId);
                 }).WaitAsync(timeout.Token);
                 screen.Append(Encoding.UTF8.GetString(Convert.FromBase64String(output.GetProperty("params").GetProperty("Base64").GetString()!)));
             }

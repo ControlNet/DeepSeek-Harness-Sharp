@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 using Dsh.WebBridge;
@@ -34,6 +36,99 @@ public sealed class WebBridgeTests
             && method.GetString() == HostProtocol.NotificationEvent
             && message.GetProperty("params").GetProperty("EventJson").GetString()!.Contains("web-user-message", StringComparison.Ordinal));
         Assert.Equal(sessionId, pushed.GetProperty("params").GetProperty("SessionId").GetString());
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task DetachingOneBusyTerminalView_KeepsOtherViewsAndBrowserRequestsAlive()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("wbv", Ct);
+        await using var bridge = WebBridgeServer.Start(new WebBridgeOptions(host.Root, 0));
+        var access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(host.Root))!);
+        await access.WaitForMachinesAsync(statuses => statuses.Values.All(state => state == "Connected"), TimeSpan.FromSeconds(10), Ct);
+        var cookies = await access.LoginAsync(Ct);
+        using var browser = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
+        using var otherBrowser = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
+        var creator = await host.ConnectAsync("terminal-owner", Ct);
+        var ptyId = await creator.StartPtyAsync(new RemotePtyStartRequest(TestShell.FileName, TestShell.Arguments, Cwd: host.Environment.App.Home.Root), Ct);
+        await WebSocketRpc.RequestAsync(browser, 1, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-local","Columns":120,"Rows":40}""");
+        await WebSocketRpc.RequestAsync(otherBrowser, 1, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"kept-remote","Columns":120,"Rows":40}""");
+        await WebSocketRpc.RequestAsync(browser, 2, HostProtocol.MethodPtyAttach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view","Columns":120,"Rows":40}""");
+        var flood = OperatingSystem.IsWindows()
+            ? "for /l %i in (1,1,10000) do @echo view-output-%i"
+            : "i=0; while [ \"$i\" -lt 10000 ]; do printf 'view-output-%s\\n' \"$i\"; i=$((i+1)); done";
+        var input = Convert.ToBase64String(Encoding.UTF8.GetBytes(flood + "\r"));
+        await WebSocketRpc.SendAsync(browser, 3, HostProtocol.MethodPtyWrite, $$"""{"PtyId":"{{ptyId}}","Base64":"{{input}}"}""");
+        await WebBridgeHubTests.ReadTerminalUntilAsync(browser, ptyId, "view-output-1000", "closing-view");
+        await WebSocketRpc.RequestAsync(browser, 4, HostProtocol.MethodPtyDetach, $$"""{"PtyId":"{{ptyId}}","ViewId":"closing-view"}""");
+        Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(browser, 5, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
+        Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(otherBrowser, 2, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
+        var command = Convert.ToBase64String(Encoding.UTF8.GetBytes(TestShell.EchoAnswer("surviving-view") + "\r"));
+        await WebSocketRpc.SendAsync(browser, 6, HostProtocol.MethodPtyWrite, $$"""{"PtyId":"{{ptyId}}","Base64":"{{command}}"}""");
+        await WebBridgeHubTests.ReadTerminalUntilAsync(browser, ptyId, "surviving-view-42", "kept-local");
+        await WebBridgeHubTests.ReadTerminalUntilAsync(otherBrowser, ptyId, "surviving-view-42", "kept-remote");
+        Assert.Equal(WebSocketState.Open, browser.State);
+        Assert.Equal(WebSocketState.Open, otherBrowser.State);
+    }
+
+    [Theory(Timeout = 60000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ClosingBrowser_AbortsOnlyItsUnfinishedUploads_IncludingUnreadBeginReply(bool closeBeforeReadingBeginReply)
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("wbu", Ct);
+        await using var bridge = WebBridgeServer.Start(new WebBridgeOptions(host.Root, 0));
+        var access = new BridgeAccess(bridge.Port, LocalEndpointToken.Read(WebBridgeEndpoint.PortFile(host.Root))!);
+        await access.WaitForMachinesAsync(statuses => statuses.Values.All(state => state == "Connected"), TimeSpan.FromSeconds(10), Ct);
+        var cookies = await access.LoginAsync(Ct);
+        using var closing = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
+        using var retained = await access.ConnectWebSocketAsync(cookies, access.Origin, Ct);
+        var abandonedDirectory = Path.Combine(host.Environment.App.Home.Root, "abandoned-browser");
+        var retainedDirectory = Path.Combine(host.Environment.App.Home.Root, "retained-browser");
+        Directory.CreateDirectory(abandonedDirectory);
+        Directory.CreateDirectory(retainedDirectory);
+        var abandonedPath = Path.Combine(abandonedDirectory, "unfinished.bin");
+        var retainedPath = Path.Combine(retainedDirectory, "kept.bin");
+        var retainedBegin = JsonSerializer.Serialize(new RemoteUploadBegin(retainedPath), HostProtocolJsonContext.Default.RemoteUploadBegin);
+        var retainedUpload = (await WebSocketRpc.RequestAsync(retained, 1, HostProtocol.MethodFsUploadBegin, retainedBegin)).GetProperty("UploadId").GetString()!;
+        var prefix = Encoding.UTF8.GetBytes("second-");
+        var chunk = JsonSerializer.Serialize(new RemoteUploadChunk(retainedUpload, 0, Convert.ToBase64String(prefix)), HostProtocolJsonContext.Default.RemoteUploadChunk);
+        Assert.Equal(prefix.Length, (await WebSocketRpc.RequestAsync(retained, 2, HostProtocol.MethodFsUploadChunk, chunk)).GetInt64());
+        var abandonedBegin = JsonSerializer.Serialize(new RemoteUploadBegin(abandonedPath), HostProtocolJsonContext.Default.RemoteUploadBegin);
+        await WebSocketRpc.SendAsync(closing, 1, HostProtocol.MethodFsUploadBegin, abandonedBegin);
+        if (!closeBeforeReadingBeginReply)
+        {
+            var reply = await WebSocketRpc.ReceiveUntilAsync(closing, message => message.TryGetProperty("id", out var id) && id.GetInt32() == 1);
+            var uploadId = reply.GetProperty("result").GetProperty("UploadId").GetString()!;
+            Assert.Single(Directory.GetFiles(abandonedDirectory));
+            // Separate browser connections used to provide this ownership boundary at the Host.
+            var foreignAbort = JsonSerializer.Serialize(new RemoteUploadRef(uploadId), HostProtocolJsonContext.Default.RemoteUploadRef);
+            await WebSocketRpc.SendAsync(retained, 3, HostProtocol.MethodFsUploadAbort, foreignAbort);
+            var refused = await WebSocketRpc.ReceiveUntilAsync(retained, message => message.TryGetProperty("id", out var id) && id.GetInt32() == 3);
+            Assert.Equal(-32602, refused.GetProperty("error").GetProperty("code").GetInt32());
+            Assert.Single(Directory.GetFiles(abandonedDirectory));
+        }
+        if (closeBeforeReadingBeginReply)
+        {
+            // Observe real Host allocation without consuming the begin response, then lose the
+            // browser transport. The relay must recover its late UploadId before finishing cleanup.
+            await WebSocketRpc.WaitForAsync(() => Directory.GetFiles(abandonedDirectory).Length == 1);
+            closing.Abort();
+        }
+        else
+            await closing.CloseAsync(WebSocketCloseStatus.NormalClosure, "", Ct);
+        await WebSocketRpc.WaitForAsync(() => Directory.GetFiles(abandonedDirectory).Length == 0);
+        Assert.False(File.Exists(abandonedPath));
+        Assert.Single(Directory.GetFiles(retainedDirectory));
+        Assert.Equal(HostProtocol.Version, (await WebSocketRpc.RequestAsync(retained, 4, HostProtocol.MethodInfo, null)).GetProperty("ProtocolVersion").GetInt32());
+        var suffix = Encoding.UTF8.GetBytes("continued");
+        var continued = JsonSerializer.Serialize(new RemoteUploadChunk(retainedUpload, prefix.Length, Convert.ToBase64String(suffix)), HostProtocolJsonContext.Default.RemoteUploadChunk);
+        Assert.Equal(prefix.Length + suffix.Length, (await WebSocketRpc.RequestAsync(retained, 5, HostProtocol.MethodFsUploadChunk, continued)).GetInt64());
+        var commit = JsonSerializer.Serialize(new RemoteUploadCommit(retainedUpload, prefix.Length + suffix.Length), HostProtocolJsonContext.Default.RemoteUploadCommit);
+        await WebSocketRpc.RequestAsync(retained, 6, HostProtocol.MethodFsUploadCommit, commit);
+        Assert.Equal("second-continued", await File.ReadAllTextAsync(retainedPath, Ct));
+        Assert.Equal(["kept.bin"], Directory.GetFiles(retainedDirectory).Select(Path.GetFileName));
+        Assert.Empty(Directory.GetFiles(abandonedDirectory));
+        Assert.Equal(WebSocketState.Open, retained.State);
     }
 
     [Fact(Timeout = 30000)]
