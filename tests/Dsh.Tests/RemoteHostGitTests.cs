@@ -1,6 +1,7 @@
 using Dsh.GitInspect;
 using Dsh.RemoteHost;
 using Dsh.Transport;
+using Dsh.Tui;
 
 namespace Dsh.Tests;
 
@@ -37,6 +38,29 @@ public sealed class RemoteHostGitTests : IDisposable
         Assert.Contains("+changed", patch.Patch, StringComparison.Ordinal);
         Assert.Equal(GitChangeKind.Added, Assert.Single(commitDiff.Files).Kind);
         Assert.Equal("commit 2", Assert.Single(log).Subject);
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task TuiAndRemoteDiff_UseTheSameStructuredStatistics()
+    {
+        _repo.Commit(("old.txt", "alpha\nbeta\ngamma\ndelta\n"), ("logo.bin", "\0original"));
+        var path = OperatingSystem.IsWindows() ? "中文 [file].txt" : "中文\t[file]\n.txt";
+        _repo.Git("mv", "old.txt", path);
+        _repo.Write(path, "alpha\nbeta\ngamma\ndelta\nadded\n");
+        _repo.Write("logo.bin", "\0changed");
+        await using var host = await HarnessHostFixture.CreateAsync("mgt", Ct);
+        var client = await host.ConnectAsync("git", Ct);
+        await HarnessHostFixture.OpenProjectAsync(client, _repo.Sandbox, Ct);
+
+        var remote = await client.GitDiffAsync(new RemoteGitDiffRequest(_repo.Root, GitDiffTarget.Uncommitted), Ct);
+        var summary = await new GitInspector(_repo.Root).DiffSummaryAsync(GitDiffTarget.Uncommitted, cancellationToken: Ct);
+        var lines = await ChatWindow.LoadGitLinesAsync(_repo.Root, Ct);
+
+        Assert.Equal(remote.Files.Select(file => new GitFileStat(file.Path, file.OriginalPath, file.Kind, file.Added, file.Deleted)), summary.Files);
+        Assert.Equal(GitPanel.Format(summary, "未提交改动"), lines);
+        Assert.Equal(2, remote.Files.Count);
+        Assert.Contains(remote.Files, file => file.Path == path && file.OriginalPath == "old.txt" && file.Kind == GitChangeKind.Renamed && file.Added == 1 && file.Deleted == 0);
+        Assert.True(Assert.Single(remote.Files, file => file.Path == "logo.bin").IsBinary);
     }
 
     [Fact(Timeout = 60000)]

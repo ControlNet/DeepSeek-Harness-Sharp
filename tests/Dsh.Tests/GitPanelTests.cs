@@ -1,4 +1,5 @@
 using Dsh.Compaction;
+using Dsh.GitInspect;
 using Dsh.Tui;
 
 namespace Dsh.Tests;
@@ -32,29 +33,71 @@ public sealed class CompactionModelSettingTests
     }
 }
 
-public sealed class GitPanelTests
+public sealed class GitPanelTests : IDisposable
 {
+    private readonly GitTestRepository _repo = new();
+
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    public void Dispose() => _repo.Dispose();
+
     [Fact]
-    public void Format_SortsAndRendersNumstat()
+    public async Task Refresh_UsesSharedSummaryForStagedAndUnstagedChanges()
     {
-        const string numstat = "3\t1\tsrc/b.cs\n-\t-\tassets/logo.png\n2\t0\tsrc/a.cs\n";
+        _repo.Commit(("src/b.cs", "original\n"), ("src/a.cs", ""), ("assets/logo.png", "\0original"));
+        _repo.Write("src/b.cs", "first\nsecond\nthird\n");
+        _repo.Git("add", "src/b.cs");
+        _repo.Write("src/a.cs", "first\nsecond\n");
+        _repo.Write("assets/logo.png", "\0changed");
+        var summary = await new GitInspector(_repo.Root).DiffSummaryAsync(GitDiffTarget.Uncommitted, cancellationToken: Ct);
 
-        var lines = GitPanel.Format(numstat, "未提交改动");
+        var lines = await ChatWindow.LoadGitLinesAsync(_repo.Root, Ct);
 
-        Assert.Equal("未提交改动", lines[0]);
-        Assert.Equal("assets/logo.png (binary)", lines[1]);
-        Assert.Equal("src/a.cs 2+ 0-", lines[2]);
-        Assert.Equal("src/b.cs 3+ 1-", lines[3]);
+        Assert.Equal(GitPanel.Format(summary, "未提交改动"), lines);
+        Assert.Equal(["未提交改动", "assets/logo.png (binary)", "src/a.cs 2+ 0-", "src/b.cs 3+ 1-"], lines);
     }
 
     [Fact]
-    public void Format_TruncatesBeyondMaxRows()
+    public async Task Refresh_RendersRenameAndSpecialFileNamesWithoutParsingThemAgain()
     {
-        var numstat = string.Join('\n', Enumerable.Range(0, GitPanel.MaxRows + 3).Select(index => $"1\t0\tfile{index:D2}.cs"));
+        var path = OperatingSystem.IsWindows() ? "中文 [draft] file.txt" : "中文\t[draft]\nfile.txt";
+        var displayedPath = OperatingSystem.IsWindows() ? "中文 [draft] file.txt" : "中文\\t[draft]\\nfile.txt";
+        _repo.Commit(("old.txt", "alpha\nbeta\ngamma\ndelta\n"));
+        _repo.Git("mv", "old.txt", path);
+        var summary = await new GitInspector(_repo.Root).DiffSummaryAsync(GitDiffTarget.Uncommitted, cancellationToken: Ct);
 
-        var lines = GitPanel.Format(numstat, "上次提交");
+        var lines = await ChatWindow.LoadGitLinesAsync(_repo.Root, Ct);
 
+        Assert.Equal(new GitFileStat(path, "old.txt", GitChangeKind.Renamed, 0, 0), Assert.Single(summary.Files));
+        Assert.Equal(GitPanel.Format(summary, "未提交改动"), lines);
+        Assert.Equal(["未提交改动", $"{displayedPath} 0+ 0-"], lines);
+    }
+
+    [Fact]
+    public async Task Refresh_TruncatesSharedStatisticsBeyondMaxRows()
+    {
+        _repo.Commit(Enumerable.Range(0, GitPanel.MaxRows + 3).Select(index => ($"file{index:D2}.cs", "line\n")).ToArray());
+        var summary = await new GitInspector(_repo.Root).DiffSummaryAsync(GitDiffTarget.OfCommit("HEAD"), cancellationToken: Ct);
+
+        var lines = await ChatWindow.LoadGitLinesAsync(_repo.Root, Ct);
+
+        Assert.Equal(GitPanel.Format(summary, "上次提交"), lines);
         Assert.Equal(1 + GitPanel.MaxRows + 1, lines.Count);
+        Assert.Equal("file00.cs 1+ 0-", lines[1]);
         Assert.Equal("~ (+3)", lines[^1]);
+    }
+
+    [Fact]
+    public async Task Refresh_HandlesUnbornRepositoryAndStagedFirstCommit()
+    {
+        Assert.Equal(["(无变更)"], await ChatWindow.LoadGitLinesAsync(_repo.Root, Ct));
+        _repo.Write("first.txt", "first\n");
+        _repo.Git("add", "first.txt");
+
+        Assert.Equal(["未提交改动", "first.txt 1+ 0-"], await ChatWindow.LoadGitLinesAsync(_repo.Root, Ct));
+        _repo.Commit();
+        Assert.Equal(["上次提交", "first.txt 1+ 0-"], await ChatWindow.LoadGitLinesAsync(_repo.Root, Ct));
+        _repo.Commit();
+        Assert.Equal(["(无变更)"], await ChatWindow.LoadGitLinesAsync(_repo.Root, Ct));
     }
 }

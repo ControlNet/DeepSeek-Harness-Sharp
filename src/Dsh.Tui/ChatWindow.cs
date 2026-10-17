@@ -1,9 +1,9 @@
-using System.Diagnostics;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
 using System.Globalization;
 using Dsh.Boot;
 using Dsh.Core;
+using Dsh.GitInspect;
 using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Tui.Services;
@@ -1051,7 +1051,6 @@ public sealed class ChatWindow : IDisposable
         => _sessionInfos = null;
 
     private const int GitRefreshMinIntervalMs = 1500;
-    private const string EmptyGitTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
     private IReadOnlyList<string>? _gitLines;
     private string? _gitCwd;
@@ -1075,7 +1074,7 @@ public sealed class ChatWindow : IDisposable
     {
         try
         {
-            var lines = await Task.Run(() => LoadGitLines(cwd));
+            var lines = await Task.Run(() => LoadGitLinesAsync(cwd, _lifetime.Token));
             QueueAction(() =>
             {
                 _gitLines = lines;
@@ -1100,56 +1099,25 @@ public sealed class ChatWindow : IDisposable
         }
     }
 
-    private static IReadOnlyList<string> LoadGitLines(string cwd)
+    internal static async Task<IReadOnlyList<string>> LoadGitLinesAsync(string cwd, CancellationToken cancellationToken = default)
     {
-        var status = RunGit(cwd, "status", "--porcelain");
-        if (status is null)
-            return ["(非 git 仓库或 git 不可用)"];
-        if (status.Trim().Length > 0)
-            return GitPanel.Format(RunGit(cwd, "diff", "--numstat", "HEAD") ?? "", "未提交改动");
-        var last = RunGit(cwd, "diff", "--numstat", "HEAD~1", "HEAD")
-            ?? RunGit(cwd, "diff", "--numstat", EmptyGitTree, "HEAD")
-            ?? "";
-        return last.Trim().Length == 0 ? ["(无变更)"] : GitPanel.Format(last, "上次提交");
-    }
-
-    private static string? RunGit(string cwd, params string[] arguments)
-    {
+        var inspector = new GitInspector(cwd);
+        GitStatus status;
         try
         {
-            var info = new ProcessStartInfo("git")
-            {
-                WorkingDirectory = cwd,
-                // 后台查询不得继承终端: Unix .NET 会为继承标准流的子进程切回 canonical。
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            info.ArgumentList.Add("-C");
-            info.ArgumentList.Add(cwd);
-            info.ArgumentList.Add("-c");
-            info.ArgumentList.Add("core.quotepath=false");
-            foreach (var argument in arguments)
-                info.ArgumentList.Add(argument);
-            using var process = Process.Start(info);
-            if (process is null)
-                return null;
-            process.StandardInput.Close();
-            var output = process.StandardOutput.ReadToEnd();
-            process.StandardError.ReadToEnd();
-            if (!process.WaitForExit(3000))
-            {
-                process.Kill(entireProcessTree: true);
-                return null;
-            }
-            return process.ExitCode == 0 ? output : null;
+            status = await inspector.StatusAsync(cancellationToken);
         }
-        catch (Exception)
+        catch (GitCommandException)
         {
-            return null;
+            return ["(非 git 仓库或 git 不可用)"];
         }
+        if (status.IsClean && status.Branch.Oid is null)
+            return ["(无变更)"];
+        var target = status.IsClean ? GitDiffTarget.OfCommit(status.Branch.Oid!) : GitDiffTarget.Uncommitted;
+        var summary = await inspector.DiffSummaryAsync(target, cancellationToken: cancellationToken);
+        return status.IsClean && summary.Files.Count == 0
+            ? ["(无变更)"]
+            : GitPanel.Format(summary, status.IsClean ? "上次提交" : "未提交改动");
     }
 
     internal IReadOnlyList<string> McpLines()

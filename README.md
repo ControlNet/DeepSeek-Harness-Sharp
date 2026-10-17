@@ -245,6 +245,8 @@ dsharp host serve                                     # 手动前台运行 Host;
 - 终端的非独占订阅也可在进程退出后读取最终屏幕并正常结束；瞬时结束的命令仍正常入册，不因 Host 建立观察订阅稍晚而误报启动失败。
 - 终端聚焦时 `Ctrl+B`、`Ctrl+K`、`Esc` 等按键原样送往 PTY，不再被窗口快捷键先行截获；点击终端外的导航区后再使用工作台快捷键。普通 Chat 重新显示或重新挂载时会恢复输入框焦点及事件订阅。
 - 后台工具、Git、浏览器和剪贴板命令不会继承活动终端的输入；持续协议保留自己的输入管道，Unix 信号打断读取后仍可继续输入。
+- TUI Git 面板与 GUI/Web 的 Git 检查共用 `Dsh.GitInspect`：面板仅展示排序、截断后的结构化统计；刷新使用单次 `--raw --numstat -z` diff，不请求 patch，也不逐文件启动 Git。暂存与未暂存改动一起对比 HEAD，干净仓库显示上次提交；首次提交按仓库对象格式计算空树，重命名、二进制及含制表符/换行的文件名由同一解析器处理。GUI/Web 的 status、逐文件 diff、log 和 worktree 管理保持不变。
+- 这里继续使用 Git CLI，而未引入 [LibGit2Sharp](https://github.com/libgit2/libgit2sharp)：它能省去进程启动和机器输出解析，但会增加托管绑定、原生 libgit2 资产及各发布 RID 的加载/NativeAOT 验证，并需重新核对既有 Git 配置、属性/textconv、重命名和 worktree 行为；不能仅因是托管 API 就认定 AOT 发布已兼容。当前 summary 已去掉逐文件进程与 patch 生成，保留安装 Git 的既有执行边界和统一解析实现，不额外维护第二套后端。
 - 同一 home 只允许一个常驻 Host 持有会话注册表，SSH 自动启动会等待真实监听就绪，避免并发启动用旧注册表替换仍在运行的 PTY。
 - 本机下载发布包使用统一的 `network.outbound_proxy`，不再使用 GUI/Fleet 私有的 `downloadProxy`；旧值不自动迁移，请在统一设置中显式填写。
 - `fleet.deploy.serverProxy` 仅用于在远端下载部署包，不是每台服务器的一般网络出口；SSH 的跳板/代理命令仍配置在机器条目的 `proxy`。

@@ -9,6 +9,7 @@ namespace Dsh.GitInspect;
     UseStringEnumConverter = true)]
 [JsonSerializable(typeof(GitStatus))]
 [JsonSerializable(typeof(GitDiff))]
+[JsonSerializable(typeof(GitDiffSummary))]
 [JsonSerializable(typeof(GitDiffTarget))]
 [JsonSerializable(typeof(GitDiffLimits))]
 [JsonSerializable(typeof(IReadOnlyList<GitCommitSummary>))]

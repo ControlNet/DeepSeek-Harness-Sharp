@@ -45,6 +45,16 @@ public sealed class GitInspector(string directory)
         throw new GitCommandException("log", result.ExitCode, result.Error);
     }
 
+    /** Lists file statistics in one diff invocation, with no patches or per-file git processes. */
+    public async Task<GitDiffSummary> DiffSummaryAsync(
+        GitDiffTarget target,
+        IReadOnlyList<string>? paths = null,
+        CancellationToken cancellationToken = default)
+    {
+        var range = await RangeArgumentsAsync(target, cancellationToken);
+        return new GitDiffSummary(target, await DiffEntriesAsync(range, paths, cancellationToken));
+    }
+
     /**
      * Per-file unified diffs for Target, optionally restricted to Paths (repository-relative or absolute).
      * Patches are fetched file by file and cut at Limits, so a single huge file leaves the others readable.
@@ -57,8 +67,7 @@ public sealed class GitInspector(string directory)
     {
         limits ??= GitDiffLimits.Default;
         var range = await RangeArgumentsAsync(target, cancellationToken);
-        string[] listArguments = ["diff", .. range, "--raw", "--numstat", "-z", "-M", "--no-ext-diff", "--", .. paths ?? []];
-        var entries = GitDiffEntryParser.Parse(await RunAsync(listArguments, cancellationToken));
+        var entries = await DiffEntriesAsync(range, paths, cancellationToken);
         var files = new List<GitFileDiff>(entries.Count);
         var remaining = limits.MaxTotalChars;
         foreach (var entry in entries)
@@ -95,9 +104,18 @@ public sealed class GitInspector(string directory)
         await RunAsync(["worktree", "remove", .. forceArgument, "--", Path.GetFullPath(path, Directory)], cancellationToken);
     }
 
+    private async Task<IReadOnlyList<GitFileStat>> DiffEntriesAsync(
+        IReadOnlyList<string> range,
+        IReadOnlyList<string>? paths,
+        CancellationToken cancellationToken)
+    {
+        string[] arguments = ["diff", .. range, "--raw", "--numstat", "-z", "-M", "--no-ext-diff", "--no-textconv", "--", .. paths ?? []];
+        return GitDiffEntryParser.Parse(await RunAsync(arguments, cancellationToken));
+    }
+
     private async Task<GitFileDiff> FilePatchAsync(
         IReadOnlyList<string> range,
-        GitDiffEntry entry,
+        GitFileStat entry,
         int maxChars,
         CancellationToken cancellationToken)
     {
@@ -122,6 +140,8 @@ public sealed class GitInspector(string directory)
                 return [];
             case GitDiffSource.Staged:
                 return ["--cached"];
+            case GitDiffSource.Uncommitted:
+                return [await HasHeadCommitAsync(cancellationToken) ? "HEAD" : await EmptyTreeAsync(cancellationToken)];
             default:
                 var commit = target.Commit ?? throw new ArgumentException("a commit diff needs a commit", nameof(target));
                 var sha = (await RunAsync(["rev-parse", "--verify", "--end-of-options", $"{commit}^{{commit}}"], cancellationToken)).Trim();
