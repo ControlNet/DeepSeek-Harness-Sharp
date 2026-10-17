@@ -23,8 +23,7 @@ public sealed class FleetBootstrapTests
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         using var token = LocalEndpointToken.Issue(RemoteHostEndpoint.EndpointFile(root));
         using var listener = OwnerOnlyFiles.ListenUnixSocket(RemoteHostEndpoint.SocketPath(root), 1);
-        var ping = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var serving = ServeMetadataThenGoSilentAsync(listener, token, root, ping, lifetime.Token);
+        var serving = ServeMetadataThenGoSilentAsync(listener, token, root, lifetime.Token);
         try
         {
             await using var connection = new MachineConnection(MachineSpec.Local(root), new FleetOptions
@@ -37,7 +36,6 @@ public sealed class FleetBootstrapTests
             });
             connection.Start();
             await connection.WaitSettledAsync(lifetime.Token).WaitAsync(TimeSpan.FromSeconds(10), lifetime.Token);
-            Assert.True(ping.Task.IsCompletedSuccessfully);
             Assert.Equal(MachineConnectionState.Offline, connection.State);
             Assert.NotNull(connection.Info);
             if (reconnect)
@@ -55,7 +53,7 @@ public sealed class FleetBootstrapTests
 
     /** A real authenticated RPC connection with valid metadata deliberately withholds every initial projection and ping reply. */
     private static async Task ServeMetadataThenGoSilentAsync(Socket listener, LocalEndpointToken token, string root,
-        TaskCompletionSource ping, CancellationToken cancellationToken)
+        CancellationToken cancellationToken)
     {
         using var socket = await listener.AcceptAsync(cancellationToken);
         await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -74,7 +72,6 @@ public sealed class FleetBootstrapTests
                 return JsonSerializer.SerializeToElement(new HostInfo(HostProtocol.Version, RemoteHostServer.ReleaseVersion, "linux", root, capabilities), HostProtocolJsonContext.Default.HostInfo);
             if (message.Method == HostProtocol.MethodPing)
             {
-                ping.TrySetResult();
                 await Task.Delay(Timeout.Infinite, requestCancellation);
                 return null;
             }

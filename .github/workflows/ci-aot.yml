@@ -1,0 +1,245 @@
+name: AOT publish validation
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      rid:
+        required: true
+        type: string
+      native-cc:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish ${{ matrix.entry }} (${{ inputs.rid }})
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: [cli, gui, web]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+
+      - name: Check PR merge checkout contains the current head
+        if: github.event_name == 'pull_request' && github.event.action != 'closed'
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$PR_HEAD_SHA" HEAD
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Prepare local NuGet feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -NoProfile -File scripts/fetch-dryioc-feed.ps1 -UseGhArtifact
+          else
+            bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
+          fi
+
+      - name: Install AOT toolchain on Linux
+        if: inputs.rid == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld zlib1g-dev
+
+      - name: Publish NativeAOT entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          RID='${{ inputs.rid }}'
+          ENTRY='${{ matrix.entry }}'
+          case "$ENTRY" in
+            cli)
+              PROJECT="DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj"
+              PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
+              ;;
+            gui)
+              PROJECT="DshGuiHost/DshGuiHost.csproj"
+              PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
+              ;;
+            web)
+              PROJECT="Dsh.WebHost/Dsh.WebHost.csproj"
+              PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"
+              ;;
+          esac
+          NATIVE_ARGS=(-p:DshNativeCompiler='${{ inputs.native-cc }}' -p:DshShipFaultProbe=true)
+          dotnet publish "$PROJECT" \
+            -c Release -r "$RID" -p:PublishAot=true --self-contained true \
+            -p:DebugSymbols=false -p:DebugType=none "${NATIVE_ARGS[@]}" \
+            --nologo -v m
+          test -d "$PUB"
+          rm -f "$PUB"/*.pdb "$PUB"/*.dbg
+          mkdir -p artifacts
+          TAR="tar"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"
+          fi
+          # Archive the complete publish root before artifact upload changes Unix modes.
+          "$TAR" -cf "artifacts/aot-$RID-$ENTRY.tar" -C "$PUB" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aot-publish-${{ inputs.rid }}-${{ matrix.entry }}
+          path: artifacts/aot-${{ inputs.rid }}-${{ matrix.entry }}.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  assemble:
+    name: Assemble and validate AOT (${{ inputs.rid }})
+    needs: publish
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          fetch-depth: 0
+
+      - name: Check PR merge checkout contains the current head
+        if: github.event_name == 'pull_request' && github.event.action != 'closed'
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$PR_HEAD_SHA" HEAD
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Prepare local NuGet feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -NoProfile -File scripts/fetch-dryioc-feed.ps1 -UseGhArtifact
+          else
+            bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
+          fi
+
+      - name: Install AOT toolchain on Linux
+        if: inputs.rid == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld zlib1g-dev
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: aot-publish-${{ inputs.rid }}-cli
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: aot-publish-${{ inputs.rid }}-gui
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: aot-publish-${{ inputs.rid }}-web
+          path: artifacts
+
+      - name: Assemble, assert NativeAOT output, and smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          RID='${{ inputs.rid }}'
+          PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
+          GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
+          WEB_PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"
+          mkdir -p "$PUB" "$GUI_PUB" "$WEB_PUB"
+          TAR="tar"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"
+          fi
+          "$TAR" -xf "artifacts/aot-$RID-cli.tar" -C "$PUB"
+          "$TAR" -xf "artifacts/aot-$RID-gui.tar" -C "$GUI_PUB"
+          "$TAR" -xf "artifacts/aot-$RID-web.tar" -C "$WEB_PUB"
+          # Keep complete, independent product roots and the archived Unix modes.
+          bash scripts/assert-aot-output.sh "$PUB"
+          bash scripts/assert-aot-output.sh "$GUI_PUB" dsh-gui
+          bash scripts/assert-aot-output.sh "$WEB_PUB" dsharp-web
+          for ROOT in "$PUB" "$GUI_PUB" "$WEB_PUB"; do
+            for NATIVE in dsh_plugin_guard dsh_fault_probe; do
+              printf '%s\n' "$ROOT"/* | grep -E "/(lib)?$NATIVE\.(dll|so|dylib)$" || { echo "::error::AOT output is missing $NATIVE in $ROOT"; exit 1; }
+            done
+          done
+          pwsh -NoProfile -File scripts/smoke-web-host.ps1 \
+            -WebPublishDir "$WEB_PUB" \
+            -TuiPublishDir "$PUB" \
+            -GuiPublishDir "$GUI_PUB"
+          mkdir -p "$PUB/plugins"
+          EXE="$PUB/dsharp"
+          if [ ! -f "$EXE" ]; then
+            EXE="$EXE.exe"
+          fi
+          if command -v timeout >/dev/null 2>&1; then
+            timeout 120 "$EXE" --help > "$RUNNER_TEMP/aot-smoke.out" 2>&1
+          else
+            "$EXE" --help > "$RUNNER_TEMP/aot-smoke.out" 2>&1
+          fi || {
+            echo "::error::AOT smoke test failed"
+            tail -20 "$RUNNER_TEMP/aot-smoke.out"
+            exit 1
+          }
+          echo "AOT smoke test passed"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aot-${{ inputs.rid }}
+          path: artifacts/aot-${{ inputs.rid }}-*.tar
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Regress published guard and probe, including Linux AOT plugin ABI
+        shell: bash
+        run: |
+          set -euo pipefail
+          RID='${{ inputs.rid }}'
+          PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
+          BIN="tests/Dsh.Tests/bin/Debug/net10.0"
+          CLASSES=(-class Dsh.Tests.NativeGuardTests)
+          if [ "$RID" = "linux-x64" ]; then
+            dotnet publish tests/Dsh.NativePluginSample -c Release --nologo -v m
+            CLASSES+=(-class Dsh.Tests.NativePluginAbiTests)
+          fi
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo -v m -p:DshNativeCompiler='${{ inputs.native-cc }}'
+          # Run the real JIT test host with the guard and probe from the assembled release.
+          for NATIVE in dsh_plugin_guard dsh_fault_probe; do
+            FILE="$(printf '%s\n' "$PUB"/* | grep -E "/(lib)?$NATIVE\.(dll|so|dylib)$")"
+            FILE="${FILE##*/}"
+            cp "$PUB/$FILE" "$BIN/$FILE"
+            cmp "$PUB/$FILE" "$BIN/$FILE"
+            echo "Regression uses AOT output: $PUB/$FILE"
+          done
+          EXE="$BIN/Dsh.Tests"
+          if [ ! -x "$EXE" ]; then
+            EXE="$EXE.exe"
+          fi
+          "$EXE" -noColor "${CLASSES[@]}" -failSkips
