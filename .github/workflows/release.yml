@@ -246,7 +246,7 @@ jobs:
           # GUI 启动器一并发布并叠加进主产物。
           dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r "$RID" "${PUBLISH_ARGS[@]}" \
             -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none --nologo -v m
-          # WebHost is a separate asset. Never merge its ASP.NET assemblies into the TUI/GUI archive.
+          # The Web entry keeps its runtime closure in a separate optional asset.
           dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r "$RID" "${PUBLISH_ARGS[@]}" \
             -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none --nologo -v m
           WEB_PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"

@@ -1,4 +1,4 @@
-name: AOT publish validation
+name: Product NativeAOT publish validation
 
 on:
   workflow_call:
@@ -18,13 +18,9 @@ permissions:
 
 jobs:
   publish:
-    name: Publish ${{ matrix.entry }} (${{ inputs.rid }})
+    name: Publish and validate product entries (${{ inputs.rid }})
     runs-on: ${{ inputs.os }}
     timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        entry: [cli, gui, web]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,108 +60,30 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang lld zlib1g-dev
 
-      - name: Publish NativeAOT entry
+      - name: Publish native plugin sample before product builds
+        if: inputs.rid == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep the generator's cold restore covered before product builds warm it.
+          dotnet publish tests/Dsh.NativePluginSample -c Release --nologo -v m
+
+      - name: Publish the product's three NativeAOT entries
         shell: bash
         run: |
           set -euo pipefail
           RID='${{ inputs.rid }}'
-          ENTRY='${{ matrix.entry }}'
-          case "$ENTRY" in
-            cli)
-              PROJECT="DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj"
-              PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
-              ;;
-            gui)
-              PROJECT="DshGuiHost/DshGuiHost.csproj"
-              PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
-              ;;
-            web)
-              PROJECT="Dsh.WebHost/Dsh.WebHost.csproj"
-              PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"
-              ;;
-          esac
-          NATIVE_ARGS=(-p:DshNativeCompiler='${{ inputs.native-cc }}' -p:DshShipFaultProbe=true)
-          dotnet publish "$PROJECT" \
-            -c Release -r "$RID" -p:PublishAot=true --self-contained true \
-            -p:DebugSymbols=false -p:DebugType=none "${NATIVE_ARGS[@]}" \
+          PUBLISH_ARGS=(
+            -c Release -r "$RID" -p:PublishAot=true --self-contained true
+            -p:DebugSymbols=false -p:DebugType=none
+            -p:DshNativeCompiler='${{ inputs.native-cc }}' -p:DshShipFaultProbe=true
             --nologo -v m
-          test -d "$PUB"
-          rm -f "$PUB"/*.pdb "$PUB"/*.dbg
-          mkdir -p artifacts
-          TAR="tar"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"
-          fi
-          # Archive the complete publish root before artifact upload changes Unix modes.
-          "$TAR" -cf "artifacts/aot-$RID-$ENTRY.tar" -C "$PUB" .
+          )
+          dotnet publish DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj "${PUBLISH_ARGS[@]}"
+          dotnet publish DshGuiHost/DshGuiHost.csproj "${PUBLISH_ARGS[@]}"
+          dotnet publish Dsh.WebHost/Dsh.WebHost.csproj "${PUBLISH_ARGS[@]}"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: aot-publish-${{ inputs.rid }}-${{ matrix.entry }}
-          path: artifacts/aot-${{ inputs.rid }}-${{ matrix.entry }}.tar
-          if-no-files-found: error
-          retention-days: 1
-
-  assemble:
-    name: Assemble and validate AOT (${{ inputs.rid }})
-    needs: publish
-    runs-on: ${{ inputs.os }}
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
-          fetch-depth: 0
-
-      - name: Check PR merge checkout contains the current head
-        if: github.event_name == 'pull_request' && github.event.action != 'closed'
-        shell: bash
-        env:
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          git merge-base --is-ancestor "$PR_HEAD_SHA" HEAD
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-          cache: true
-          cache-dependency-path: '**/*.csproj'
-
-      - name: Prepare local NuGet feed
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            pwsh -NoProfile -File scripts/fetch-dryioc-feed.ps1 -UseGhArtifact
-          else
-            bash scripts/fetch-dryioc-feed.sh --use-gh-artifact
-          fi
-
-      - name: Install AOT toolchain on Linux
-        if: inputs.rid == 'linux-x64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld zlib1g-dev
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: aot-publish-${{ inputs.rid }}-cli
-          path: artifacts
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: aot-publish-${{ inputs.rid }}-gui
-          path: artifacts
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: aot-publish-${{ inputs.rid }}-web
-          path: artifacts
-
-      - name: Assemble, assert NativeAOT output, and smoke test
+      - name: Assert NativeAOT output and smoke test the product's three entries
         shell: bash
         run: |
           set -euo pipefail
@@ -173,15 +91,7 @@ jobs:
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
           GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
           WEB_PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"
-          mkdir -p "$PUB" "$GUI_PUB" "$WEB_PUB"
-          TAR="tar"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"
-          fi
-          "$TAR" -xf "artifacts/aot-$RID-cli.tar" -C "$PUB"
-          "$TAR" -xf "artifacts/aot-$RID-gui.tar" -C "$GUI_PUB"
-          "$TAR" -xf "artifacts/aot-$RID-web.tar" -C "$WEB_PUB"
-          # Keep complete, independent product roots and the archived Unix modes.
+          # Keep the product's three complete publish roots independent.
           bash scripts/assert-aot-output.sh "$PUB"
           bash scripts/assert-aot-output.sh "$GUI_PUB" dsh-gui
           bash scripts/assert-aot-output.sh "$WEB_PUB" dsharp-web
@@ -210,13 +120,6 @@ jobs:
           }
           echo "AOT smoke test passed"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: aot-${{ inputs.rid }}
-          path: artifacts/aot-${{ inputs.rid }}-*.tar
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Regress published guard and probe, including Linux AOT plugin ABI
         shell: bash
         run: |
@@ -226,11 +129,10 @@ jobs:
           BIN="tests/Dsh.Tests/bin/Debug/net10.0"
           CLASSES=(-class Dsh.Tests.NativeGuardTests)
           if [ "$RID" = "linux-x64" ]; then
-            dotnet publish tests/Dsh.NativePluginSample -c Release --nologo -v m
             CLASSES+=(-class Dsh.Tests.NativePluginAbiTests)
           fi
           dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo -v m -p:DshNativeCompiler='${{ inputs.native-cc }}'
-          # Run the real JIT test host with the guard and probe from the assembled release.
+          # Run the real JIT test host with the guard and probe from the published release.
           for NATIVE in dsh_plugin_guard dsh_fault_probe; do
             FILE="$(printf '%s\n' "$PUB"/* | grep -E "/(lib)?$NATIVE\.(dll|so|dylib)$")"
             FILE="${FILE##*/}"
@@ -243,3 +145,32 @@ jobs:
             EXE="$EXE.exe"
           fi
           "$EXE" -noColor "${CLASSES[@]}" -failSkips
+
+      - name: Archive the product's three complete publish roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          RID='${{ inputs.rid }}'
+          PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
+          GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
+          WEB_PUB="Dsh.WebHost/bin/Release/net10.0/$RID/publish"
+          for ROOT in "$PUB" "$GUI_PUB" "$WEB_PUB"; do
+            test -d "$ROOT"
+            rm -f "$ROOT"/*.pdb "$ROOT"/*.dbg
+          done
+          mkdir -p artifacts
+          TAR="tar"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"
+          fi
+          # Archive each complete entry root before artifact upload changes Unix modes.
+          "$TAR" -cf "artifacts/aot-$RID-cli.tar" -C "$PUB" .
+          "$TAR" -cf "artifacts/aot-$RID-gui.tar" -C "$GUI_PUB" .
+          "$TAR" -cf "artifacts/aot-$RID-web.tar" -C "$WEB_PUB" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aot-${{ inputs.rid }}
+          path: artifacts/aot-${{ inputs.rid }}-*.tar
+          if-no-files-found: error
+          retention-days: 7
