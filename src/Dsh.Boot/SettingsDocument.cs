@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Dsh.Plugins;
+using YamlDotNet.Core;
+using YamlDotNet.Core.Events;
 
 namespace Dsh.Boot;
 
@@ -46,6 +48,122 @@ internal static partial class SettingsDocument
         foreach (var key in before.Keys.Where(key => !after.ContainsKey(key)).ToList())
             ReplaceTopLevelBlock(lines, key, []);
         return $"{string.Join(newline, lines).TrimEnd()}{newline}";
+    }
+
+    /** Parser marks delimit edits; every byte outside the owned mapping child remains in place. */
+    public static string ReplaceMappingChild(string text, string parent, string key, string? value)
+    {
+        var parser = new Parser(new StringReader(text));
+        parser.Consume<StreamStart>();
+        parser.Consume<DocumentStart>();
+        var root = ReadSpan(parser);
+        parser.Consume<DocumentEnd>();
+        parser.Consume<StreamEnd>();
+        var owner = root.Children.SingleOrDefault(pair => pair.Key.Start is Scalar scalar && scalar.Value == parent);
+        if (owner.Value is null || owner.Value.Start is Scalar)
+            return value is null ? text : owner.Value is null
+                ? InsertEntry(text, root, parent, $"{{{key}: {value}}}")
+                : ReplaceRange(text, owner.Value.StartIndex, owner.Value.End, $"{{{key}: {value}}}");
+        if (owner.Value.Start is not MappingStart)
+            throw new InvalidDataException($"{parent} must be a YAML mapping.");
+        var child = owner.Value.Children.SingleOrDefault(pair => pair.Key.Start is Scalar scalar && scalar.Value == key);
+        if (child.Value is null)
+            return value is null ? text : InsertEntry(text, owner.Value, key, value);
+        if (value is not null)
+            return ReplaceRange(text, child.Value.StartIndex, child.Value.End, value);
+        if (owner.Value.Children.Count > 1)
+            return RemoveEntry(text, owner.Value, child.Key);
+        return root.Children.Count > 1
+            ? RemoveEntry(text, root, owner.Key)
+            : ReplaceRange(text, owner.Value.StartIndex, owner.Value.End, "{}");
+    }
+
+    private sealed record YamlSpan(ParsingEvent Start, int End, List<(YamlSpan Key, YamlSpan Value)> Children)
+    {
+        public int StartIndex => checked((int)Start.Start.Index);
+    }
+
+    /** Retain physical token bounds instead of block-end marks, which may point at the next sibling. */
+    private static YamlSpan ReadSpan(IParser parser)
+    {
+        var start = parser.Consume<ParsingEvent>();
+        var end = checked((int)start.End.Index);
+        List<(YamlSpan Key, YamlSpan Value)> children = [];
+        if (start is MappingStart mapping)
+        {
+            while (parser.Current is not MappingEnd)
+                children.Add((ReadSpan(parser), ReadSpan(parser)));
+            var closing = parser.Consume<MappingEnd>();
+            end = mapping.Style == MappingStyle.Flow ? checked((int)closing.End.Index + 1) : children[^1].Value.End;
+        }
+        else if (start is SequenceStart sequence)
+        {
+            while (parser.Current is not SequenceEnd)
+                end = ReadSpan(parser).End;
+            var closing = parser.Consume<SequenceEnd>();
+            if (sequence.Style == SequenceStyle.Flow)
+                end = checked((int)closing.End.Index + 1);
+        }
+        return new YamlSpan(start, end, children);
+    }
+
+    private static string InsertEntry(string text, YamlSpan mapping, string key, string value)
+    {
+        if (mapping.Start is not MappingStart start)
+            return ReplaceRange(text, mapping.StartIndex, mapping.End, $"{{{key}: {value}}}");
+        if (start.Style == MappingStyle.Flow)
+        {
+            var separator = mapping.Children.Count == 0 || FlowSeparator(text, mapping.Children[^1].Value.End, mapping.End - 1) >= 0 ? "" : ", ";
+            return text.Insert(mapping.End - 1, $"{separator}{key}: {value}");
+        }
+        var newline = NewLineOf(text);
+        var indent = new string(' ', checked((int)mapping.Children[0].Key.Start.Start.Column - 1));
+        var lineEnd = text.IndexOf('\n', mapping.End);
+        return lineEnd < 0
+            ? $"{text}{newline}{indent}{key}: {value}"
+            : text.Insert(lineEnd + 1, $"{indent}{key}: {value}{newline}");
+    }
+
+    private static string RemoveEntry(string text, YamlSpan mapping, YamlSpan key)
+    {
+        var index = mapping.Children.FindIndex(pair => ReferenceEquals(pair.Key, key));
+        var value = mapping.Children[index].Value;
+        if (mapping.Start is MappingStart { Style: MappingStyle.Flow } && mapping.Children.Count > 1)
+        {
+            var gapStart = index == 0 ? value.End : mapping.Children[index - 1].Value.End;
+            var gapEnd = index == 0 ? mapping.Children[1].Key.StartIndex : key.StartIndex;
+            var comma = FlowSeparator(text, gapStart, gapEnd);
+            if (comma >= value.End)
+                text = text.Remove(comma, 1);
+            else
+                return ReplaceRange(text, key.StartIndex, value.End, "").Remove(comma, 1);
+        }
+        return ReplaceRange(text, key.StartIndex, value.End, "");
+    }
+
+    private static int FlowSeparator(string text, int start, int end)
+    {
+        var scanner = new Scanner(new StringReader(text));
+        while (scanner.MoveNext())
+        {
+            if (scanner.Current is YamlDotNet.Core.Tokens.FlowEntry comma && comma.Start.Index >= start && comma.Start.Index < end)
+                return checked((int)comma.Start.Index);
+        }
+        return -1;
+    }
+
+    /** Keep comments even when the replaced value is a block containing its own comment tokens. */
+    private static string ReplaceRange(string text, int start, int end, string replacement)
+    {
+        var scanner = new Scanner(new StringReader(text), skipComments: false);
+        var newline = NewLineOf(text);
+        while (scanner.MoveNext())
+        {
+            if (scanner.Current is not YamlDotNet.Core.Tokens.Comment comment || comment.Start.Index < start || comment.Start.Index >= end)
+                continue;
+            replacement = $"{replacement} {text[checked((int)comment.Start.Index)..checked((int)comment.End.Index)]}{newline}";
+        }
+        return $"{text[..start]}{replacement}{text[end..]}";
     }
 
     private static Dictionary<string, string> TopLevelBlocks(string[] lines)

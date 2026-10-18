@@ -221,6 +221,42 @@ public sealed class OutboundProxyTests
     }
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task FailedSave_KeepsExistingHttpClientOnPreviousProxy(bool tui, bool clear)
+    {
+        await using var first = new TestForwardProxy();
+        await using var second = new TestForwardProxy();
+        using var harness = await TestHarness.ComposeAsync($"url: http://127.0.0.1:{first.Port}");
+        var proxy = OutboundProxy.FromContext(harness.App.Ctx);
+        using var client = new HttpClient(proxy.CreateHandler());
+        var path = harness.App.Home.SettingsFile;
+        var original = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
+        Assert.Equal(TestForwardProxy.ProxiedBody, await client.GetStringAsync(FetchTarget, TestContext.Current.CancellationToken));
+        Directory.CreateDirectory($"{path}.tmp");
+
+        var error = await Record.ExceptionAsync(async () =>
+        {
+            if (tui)
+                await harness.CommandAsync(clear ? "/proxy clear" : $"/proxy set http://127.0.0.1:{second.Port}");
+            else
+                new SettingsFacade(harness.App.Ctx, harness.App.Home).UpdateOutboundProxy(new OutboundProxySettings
+                {
+                    Url = clear ? null : $"http://127.0.0.1:{second.Port}",
+                });
+        });
+
+        Assert.NotNull(error);
+        Assert.True(error is IOException or UnauthorizedAccessException, error.ToString());
+        Assert.Equal(original, await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
+        Assert.Equal(TestForwardProxy.ProxiedBody, await client.GetStringAsync(FetchTarget, TestContext.Current.CancellationToken));
+        Assert.Equal(2, first.Requests.Count);
+        Assert.Empty(second.Requests);
+    }
+
+    [Theory]
     [InlineData("http://user:pass@host:8080", "http://***@host:8080")]
     [InlineData("user:pass@host:8080", "***@host:8080")]
     [InlineData("socks5://host:1080/path@x", "socks5://host:1080/path@x")]

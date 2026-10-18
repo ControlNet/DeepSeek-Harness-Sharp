@@ -1,4 +1,5 @@
 using Dsh.Plugins;
+using Dsh.Runtime;
 using Dsh.Runtime.Logging;
 using YamlDotNet.Serialization;
 
@@ -120,6 +121,27 @@ public sealed class HarnessSettings
         WriteAtomic(path, SettingsDocument.ReplacePluginsBlock(text, SettingsDocument.RenderPlugins(Plugins)));
     }
 
+    /** Validate independently, persist only the owned child, then publish the route to existing clients. */
+    public static void SaveOutboundProxy(HarnessHome home, OutboundProxySettings value, OutboundProxy proxy)
+    {
+        var candidate = new OutboundProxy();
+        candidate.Configure(value.Url, value.Bypass);
+        var empty = value.Url is null && value.Bypass.Count == 0 && value.ProbeUrl is null;
+        var serialized = empty ? null : new StaticSerializerBuilder(new DshYamlStaticContext())
+            .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
+            .JsonCompatible()
+            .Build()
+            .Serialize(value).TrimEnd();
+        var path = home.SettingsFile;
+        Directory.CreateDirectory(home.Root);
+        var existing = File.Exists(path) ? ReadSettingsTextShared(path) : LoadTemplate();
+        _ = Parse(existing);
+        var updated = SettingsDocument.ReplaceMappingChild(existing, "network", "outbound_proxy", serialized);
+        _ = Parse(updated);
+        WriteAtomic(path, updated);
+        proxy.Configure(value.Url, value.Bypass);
+    }
+
     /** Keep a complete snapshot while allowing WriteAtomic to replace settings.yaml on Windows. */
     private static string ReadSettingsTextShared(string path)
     {
@@ -137,7 +159,6 @@ public sealed class HarnessSettings
             File.Replace(temporary, path, destinationBackupFileName: null);
         else
             File.Move(temporary, path);
-        SettingsFilePermissions.Restrict(path);
     }
 
     public (string Provider, string Model)? ResolveDefaultModel() => ParseModelRoute(GlobalDefaultModel);
