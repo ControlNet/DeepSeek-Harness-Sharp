@@ -26,6 +26,7 @@ public sealed class SessionEventGraphTests : IDisposable
     private const string SummaryText = "## Current Work\n- graph summary";
     private const int CompactionContextWindow = 4000;
     private const int PrunableResultChars = 20000;
+    private static readonly TimeSpan EventTimeout = TimeSpan.FromSeconds(30);
 
     private static readonly string[] CompactableTurns =
     [
@@ -98,7 +99,8 @@ public sealed class SessionEventGraphTests : IDisposable
             _ = new WorkerThreadWorkflowEngine(Ctx, null);
             _owned.Add(ToolWorkflow.Apply(Ctx, new ToolWorkflowConfig()));
             Persistence = new JsonlSessionPersistence(Path.Combine(directory, "sessions"));
-            Ctx.Provide(ISessionPersistence.ServiceName, Persistence);
+            PersistenceReads = new CountingPersistence(Persistence);
+            Ctx.Provide(ISessionPersistence.ServiceName, PersistenceReads);
             var graph = new SessionEventGraphService(Ctx);
             Graph = graph;
             _owned.Add(graph);
@@ -114,6 +116,7 @@ public sealed class SessionEventGraphTests : IDisposable
         public CommandsService Commands { get; }
         public ToolResultPruner Pruner { get; }
         public JsonlSessionPersistence Persistence { get; }
+        public CountingPersistence PersistenceReads { get; }
         public ISessionEventGraph Graph { get; }
 
         /** probe 工具回显参数里的 text, 且每次执行前都要审批(自动批准), 让日志里出现审批配对。 */
@@ -150,6 +153,26 @@ public sealed class SessionEventGraphTests : IDisposable
                 owned.Dispose();
             Persistence.Dispose();
         }
+    }
+
+    private sealed class CountingPersistence(ISessionPersistence inner) : ISessionPersistence
+    {
+        public List<SessionId> StatCalls { get; } = [];
+        public int ListCalls { get; private set; }
+        public ISessionHandle Create(SessionHeader header, long? inheritedEventCount = null) => inner.Create(header, inheritedEventCount);
+        public ISessionHandle Open(SessionId id, SessionAccess access) => inner.Open(id, access);
+        public SessionPersistenceSnapshot? Stat(SessionId id)
+        {
+            StatCalls.Add(id);
+            return inner.Stat(id);
+        }
+        public IReadOnlyList<SessionPersistenceSnapshot> List()
+        {
+            ListCalls++;
+            return inner.List();
+        }
+        public void Rename(SessionId id, string title) => inner.Rename(id, title);
+        public void Delete(SessionId id) => inner.Delete(id);
     }
 
     private static IReadOnlyList<StreamChunk> TextAnswer(string text) =>
@@ -288,7 +311,7 @@ public sealed class SessionEventGraphTests : IDisposable
     }
 
     [Fact]
-    public async Task SubagentChild_IsLinkedToParentSession()
+    public async Task StandardSubagent_ParentCallId_LocatesItsParentToolCall()
     {
         using var fixture = new Fixture(_directory,
         [
@@ -297,18 +320,105 @@ public sealed class SessionEventGraphTests : IDisposable
             Reply("parent done"),
         ]);
         var parent = await fixture.CreateAgent("graph-subagent-parent");
-
-        await RunTurn(parent, "delegate");
+        var created = new TaskCompletionSource<(SessionLineage? Parent, IReadOnlyList<SessionLineage> Children, bool HasResult)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var unsubscribe = fixture.Ctx.On<SessionCreatedNotification>(notification =>
+        {
+            if (notification.Session.Header.ParentSession == parent.Id)
+                created.TrySetResult((fixture.Graph.Parent(notification.Session.Id), fixture.Graph.Children(parent.Id),
+                    parent.Session.SnapshotEvents().Any(sessionEvent => sessionEvent.Data is ToolResultPayload)));
+        }, new EventOptions { Global = true });
+        try
+        {
+            await RunTurn(parent, "delegate");
+        }
+        finally
+        {
+            unsubscribe();
+        }
 
         var child = fixture.Sessions.List().Single(session => session.Header.ParentSession == parent.Id);
         var graph = fixture.Graph;
-        // 前台 subagent 工具只把子代理输出文本写进 tool/result, 父日志里没有指向子会话的事件, 派生点为 null。
-        var lineage = new SessionLineage(child.Id, SessionLineageKind.Subagent, parent.Id, null);
+        var parentCallSeq = CallSeq(parent.Session, "call-sub");
+        Assert.Equal(ToolCallId.Create("call-sub"), child.Header.ParentCallId);
+        Assert.DoesNotContain(
+            parent.Session.SnapshotEvents().SelectMany(sessionEvent => SessionEventRelations.Of(sessionEvent.Data)),
+            relation => relation is SessionEventRelation.Spawns spawns && spawns.Child == child.Id);
+        var lineage = new SessionLineage(child.Id, SessionLineageKind.Subagent, parent.Id, parentCallSeq);
+        var beforeResult = await created.Task.WaitAsync(EventTimeout, TestContext.Current.CancellationToken);
+        Assert.False(beforeResult.HasResult);
+        Assert.Equal(lineage, beforeResult.Parent);
+        Assert.Equal([lineage], beforeResult.Children);
         Assert.Equal(lineage, graph.Parent(child.Id));
         Assert.Equal([lineage], graph.Children(parent.Id));
         var result = ResultSeq(parent.Session, "call-sub");
-        Assert.Equal([new SessionEventEdge(SessionEventEdgeKind.ResultOf, result, CallSeq(parent.Session, "call-sub"))], Edges(graph, parent.Id, result, SessionEventEdgeKind.ResultOf));
+        Assert.Equal([new SessionEventEdge(SessionEventEdgeKind.ResultOf, result, parentCallSeq)], Edges(graph, parent.Id, result, SessionEventEdgeKind.ResultOf));
         Assert.Null(graph.Parent(parent.Id));
+        foreach (var session in new[] { parent.Session, child })
+        {
+            using var handle = fixture.Persistence.Create(session.Header, session.InheritedEventCount);
+            handle.Append(session.SnapshotEvents());
+            handle.Close();
+        }
+        fixture.Sessions.Release(parent.Id);
+        Assert.Equal(lineage, graph.Parent(child.Id));
+        fixture.PersistenceReads.StatCalls.Clear();
+        Assert.Equal([lineage], graph.Children(parent.Id));
+        Assert.Equal([parent.Id], fixture.PersistenceReads.StatCalls);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("missing-call")]
+    public void SubagentWithoutMatchingCorrelation_KeepsAnUnknownParentSeq(string? callId)
+    {
+        using var fixture = new Fixture(_directory, []);
+        var parent = fixture.Sessions.Create(SessionId.Create("legacy-parent"));
+        parent.Append(new ToolCallPayload(1, 1, ToolCallId.Create("other-call"), ProbeTool, "{}"));
+        var childId = SessionId.Create("legacy-child");
+        fixture.Sessions.Create(childId, header: parent.Header with
+        {
+            Id = childId,
+            ParentSession = parent.Id,
+            ParentCallId = callId is null ? null : ToolCallId.Create(callId),
+            Origin = "subagent",
+        });
+        var lineage = new SessionLineage(childId, SessionLineageKind.Subagent, parent.Id, null);
+        Assert.Equal(lineage, fixture.Graph.Parent(childId));
+        Assert.Equal([lineage], fixture.Graph.Children(parent.Id));
+    }
+
+    [Fact]
+    public async Task Children_UsesLiveAndListedSnapshots_WithoutChildStats()
+    {
+        using var fixture = new Fixture(_directory, [Probe("call-seed", "seed"), Reply("done")]);
+        var parent = await fixture.CreateAgent("snapshot-parent");
+        await RunTurn(parent, "seed the forks");
+        foreach (var (id, createdAt, count) in new[] { ("b", 20L, 2L), ("a", 20L, 1L), ("z", 10L, 3L), ("moved", 0L, 1L) })
+        {
+            var childId = SessionId.Create(id);
+            var session = Session.Create(childId, parent.Session.SnapshotEvents(0, count),
+                parent.Session.Header with { Id = childId, ParentSession = parent.Id, CreatedAt = createdAt, IsSeeded = true }, count);
+            using var handle = fixture.Persistence.Create(session.Header, count);
+            handle.Append(session.SnapshotEvents());
+            handle.Close();
+        }
+        var listed = fixture.Persistence.List();
+        var liveSnapshot = listed.Single(snapshot => snapshot.Header.Id.Value == "z");
+        using (var handle = fixture.Persistence.Open(liveSnapshot.Header.Id, SessionAccess.Read))
+            fixture.Sessions.Create(liveSnapshot.Header.Id, handle.Read(), liveSnapshot.Header with { CreatedAt = 30 }, inheritedEventCount: 1);
+        var moved = listed.Single(snapshot => snapshot.Header.Id.Value == "moved");
+        var otherParent = SessionId.Create("other-parent");
+        using (var handle = fixture.Persistence.Open(moved.Header.Id, SessionAccess.Read))
+            fixture.Sessions.Create(moved.Header.Id, handle.Read(), moved.Header with { ParentSession = otherParent }, moved.InheritedEventCount);
+
+        var children = fixture.Graph.Children(parent.Id);
+
+        Assert.Equal(1, fixture.PersistenceReads.ListCalls);
+        Assert.Empty(fixture.PersistenceReads.StatCalls);
+        Assert.Equal(new[] { "a", "b", "z" }, children.Select(child => child.Session.Value));
+        Assert.Equal(new long?[] { 0, 1, 0 }, children.Select(child => child.ParentSeq));
+        Assert.All(children, child => Assert.Equal(child, fixture.Graph.Parent(child.Session)));
+        Assert.Equal([fixture.Graph.Parent(moved.Header.Id)!.Value], fixture.Graph.Children(otherParent));
     }
 
     [Fact]
