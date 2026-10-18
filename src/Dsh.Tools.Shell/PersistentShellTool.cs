@@ -5,7 +5,7 @@ using Dsh.Runtime;
 using Dsh.Core;
 using Dsh.Llm;
 
-namespace Dsh.Jobs;
+namespace Dsh.Tools;
 
 /** Start and end lines that frame one command's output in the shell's stdout; the end line carries the exit status. */
 internal sealed record PersistentShellMarkers(string Start, string End);

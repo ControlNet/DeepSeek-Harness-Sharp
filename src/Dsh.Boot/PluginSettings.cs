@@ -107,6 +107,24 @@ public static class PluginSettingsSection
 {
     public const string PluginsKey = "plugins";
 
+    private static readonly IReadOnlyDictionary<string, string> RemovedToolPackages = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["@deepseek-ai/dsh-tool-bash"] = "@deepseek-ai/dsh-tool-bash.shell",
+        ["@deepseek-ai/dsh-subprocess"] = "@deepseek-ai/dsh-subprocess.shell",
+        ["@deepseek-ai/dsh-tool-pwsh"] = "@deepseek-ai/dsh-tool-pwsh.shell",
+        ["@deepseek-ai/dsh-tool-fs"] = "@deepseek-ai/dsh-tool-fs.files",
+        ["@deepseek-ai/dsh-tool-fs-search"] = "@deepseek-ai/dsh-tool-fs.search",
+        ["@deepseek-ai/dsh-tool-todo"] = "@deepseek-ai/dsh-tool-todo.plan",
+        ["@deepseek-ai/dsh-tool-str-replace-editor"] = "@deepseek-ai/dsh-tool-str-replace-editor.fs",
+        ["@deepseek-ai/dsh-fs-local"] = "@deepseek-ai/dsh-fs-local.fs",
+        ["@deepseek-ai/dsh-tool-powershell"] = "@deepseek-ai/dsh-tool-powershell.shell",
+        ["@deepseek-ai/dsh-tool-wsl"] = "@deepseek-ai/dsh-tool-wsl.shell",
+        ["@deepseek-ai/dsh-tool-working-directory"] = "@deepseek-ai/dsh-tool-working-directory.fs",
+        ["@deepseek-ai/dsh-tool-worktree"] = "@deepseek-ai/dsh-tool-worktree.fs",
+        ["@deepseek-ai/dsh-tool-bash-persistent"] = "@deepseek-ai/dsh-tool-bash.shell-persistent",
+        ["@deepseek-ai/dsh-tool-pwsh-persistent"] = "@deepseek-ai/dsh-tool-pwsh.shell-persistent",
+    };
+
     public static Dictionary<string, PluginSetting> ParseDocument(string yaml)
     {
         var root = YamlConfig.LoadMapping(yaml);
@@ -115,11 +133,18 @@ public static class PluginSettingsSection
 
     private static Dictionary<string, PluginSetting> Parse(object? raw)
     {
-        if (raw is not IDictionary<string, object?> map)
+        if (raw is null)
             return new Dictionary<string, PluginSetting>(StringComparer.Ordinal);
+        if (raw is not IDictionary<string, object?> map)
+            throw new RuntimeException("INVALID_PLUGIN_SETTING", "plugins must be a mapping from package IDs to booleans or parameter mappings");
         var plugins = new Dictionary<string, PluginSetting>(StringComparer.Ordinal);
         foreach (var (name, value) in map)
+        {
+            if (RemovedToolPackages.TryGetValue(name, out var replacement))
+                throw new RuntimeException("TOOL_PACKAGE_MIGRATION_REQUIRED",
+                    $"Plugin package '{name}' moved to '{replacement}'. Rename its settings.yaml/profile key, preserving enabled, permissions and all parameters, and remove the old key even when the new key is also present. See README: 工具能力包迁移.");
             plugins[name] = PluginSetting.FromRaw(value);
+        }
         return plugins;
     }
 }

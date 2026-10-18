@@ -1,5 +1,6 @@
 using Dsh.Core;
 using Dsh.Jobs;
+using Dsh.Tools;
 
 namespace Dsh.Tests;
 

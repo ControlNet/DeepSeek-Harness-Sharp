@@ -2,7 +2,7 @@ using Dsh.Runtime;
 using Dsh.Core;
 using Dsh.Llm;
 
-namespace Dsh.Jobs;
+namespace Dsh.Tools;
 
 [global::Dsh.Plugins.DshPluginSettings]
 public sealed record PersistentBashConfig

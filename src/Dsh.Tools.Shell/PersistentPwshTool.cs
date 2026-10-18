@@ -2,7 +2,7 @@ using System.Text;
 using Dsh.Runtime;
 using Dsh.Core;
 
-namespace Dsh.Jobs;
+namespace Dsh.Tools;
 
 [global::Dsh.Plugins.DshPluginSettings]
 public sealed record PersistentPwshConfig

@@ -59,7 +59,10 @@
     <Project Path="src/Dsh.Skills/Dsh.Skills.csproj" />
     <Project Path="src/Dsh.Subagent/Dsh.Subagent.csproj" />
     <Project Path="src/Dsh.Telemetry/Dsh.Telemetry.csproj" />
-    <Project Path="src/Dsh.Tools/Dsh.Tools.csproj" />
+    <Project Path="src/Dsh.Tools.Fs/Dsh.Tools.Fs.csproj" />
+    <Project Path="src/Dsh.Tools.Search/Dsh.Tools.Search.csproj" />
+    <Project Path="src/Dsh.Tools.Shell/Dsh.Tools.Shell.csproj" />
+    <Project Path="src/Dsh.Tools.Plan/Dsh.Tools.Plan.csproj" />
     <Project Path="src/Dsh.Toon/Dsh.Toon.csproj" />
     <Project Path="src/Dsh.Transport/Dsh.Transport.csproj" />
     <Project Path="src/Dsh.Tui/Dsh.Tui.csproj" />

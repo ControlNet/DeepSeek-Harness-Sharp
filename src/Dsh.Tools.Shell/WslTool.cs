@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dsh.Runtime;
+using Dsh.Core;
 
 namespace Dsh.Tools;
 

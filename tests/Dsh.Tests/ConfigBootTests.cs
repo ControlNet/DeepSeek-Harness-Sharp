@@ -23,15 +23,15 @@ public class ConfigBootTests
                   "@deepseek-ai/dsh-core": true
                   "@deepseek-ai/dsh-interaction": true
                   "@deepseek-ai/dsh-persistence": true
-                  "@deepseek-ai/dsh-subprocess": true
-                  "@deepseek-ai/dsh-tool-bash": true
-                  "@deepseek-ai/dsh-tool-fs": true
-                  "@deepseek-ai/dsh-tool-fs-search":
+                  "@deepseek-ai/dsh-subprocess.shell": true
+                  "@deepseek-ai/dsh-tool-bash.shell": true
+                  "@deepseek-ai/dsh-tool-fs.files": true
+                  "@deepseek-ai/dsh-tool-fs.search":
                     sampleOverCapGlobResults: false
-                  "@deepseek-ai/dsh-tool-todo":
+                  "@deepseek-ai/dsh-tool-todo.plan":
                     allowParallelInProgress: true
-                  "@deepseek-ai/dsh-fs-local": true
-                  "@deepseek-ai/dsh-tool-str-replace-editor":
+                  "@deepseek-ai/dsh-fs-local.fs": true
+                  "@deepseek-ai/dsh-tool-str-replace-editor.fs":
                     maxOutputChars: 16000
                 """, TestContext.Current.CancellationToken);
 
@@ -49,7 +49,7 @@ public class ConfigBootTests
             Assert.Equal(ActivationState.Active, app.Composition!.Find("@deepseek-ai/dsh-checkpoints")?.State);
             Assert.Equal(ActivationState.Active, app.Composition.Find("@deepseek-ai/dsh-ide-history")?.State);
 
-            var fsSearch = app.Composition.Find("@deepseek-ai/dsh-tool-fs-search")!;
+            var fsSearch = app.Composition.Find("@deepseek-ai/dsh-tool-fs.search")!;
             Assert.Equal(false, (fsSearch.Config as IDictionary<string, object?>)?["sampleOverCapGlobResults"]);
         }
         finally
@@ -77,12 +77,12 @@ public class ConfigBootTests
             Directory.CreateDirectory(home.Root);
             await File.WriteAllTextAsync(Path.Combine(home.Root, "settings.yaml"), """
                 plugins:
-                  "@deepseek-ai/dsh-tool-todo": false
+                  "@deepseek-ai/dsh-tool-todo.plan": false
                 """, TestContext.Current.CancellationToken);
 
             app = await ConfigBoot.Compose(new HarnessOptions(home, Cwd: dir));
 
-            Assert.Null(app.Composition!.Find("@deepseek-ai/dsh-tool-todo"));
+            Assert.Null(app.Composition!.Find("@deepseek-ai/dsh-tool-todo.plan"));
             var tools = app.Ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!;
             Assert.Null(tools.Get("todo_write"));
             Assert.NotNull(tools.Get("bash"));

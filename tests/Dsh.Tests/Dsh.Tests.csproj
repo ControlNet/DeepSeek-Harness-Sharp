@@ -56,6 +56,7 @@
           Link="Profiles\Templates\settings.yaml"
           CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="ScheduleUpstreamFixtures.json" LogicalName="Dsh.Tests.ScheduleUpstreamFixtures.json" />
+    <EmbeddedResource Include="ToolPackageCatalogBaseline.json" LogicalName="Dsh.Tests.ToolPackageCatalogBaseline.json" />
     <!-- Search API responses captured from the real GitHub and Stack Exchange APIs; the engine tests replay them through a local handler. -->
     <None Update="Web\ApiSamples\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
@@ -74,7 +75,10 @@
     <ProjectReference Include="..\..\src\Dsh.Interaction\Dsh.Interaction.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Persistence\Dsh.Persistence.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Subagent\Dsh.Subagent.csproj" />
-    <ProjectReference Include="..\..\src\Dsh.Tools\Dsh.Tools.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.Tools.Fs\Dsh.Tools.Fs.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.Tools.Search\Dsh.Tools.Search.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.Tools.Shell\Dsh.Tools.Shell.csproj" />
+    <ProjectReference Include="..\..\src\Dsh.Tools.Plan\Dsh.Tools.Plan.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Boot\Dsh.Boot.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Plugins.Abstractions\Dsh.Plugins.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Dsh.Plugins.Host\Dsh.Plugins.Host.csproj" />

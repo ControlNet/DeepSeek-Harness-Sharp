@@ -1,8 +1,8 @@
 using System.Text.Json.Nodes;
 
-namespace Dsh.Tools;
+namespace Dsh.Core;
 
-internal static class ToolSchemas
+public static class ToolSchemas
 {
     public static JsonObject Parse(string json)
         => JsonNode.Parse(json)!.AsObject();
@@ -56,7 +56,7 @@ internal static class ToolSchemas
     }
 }
 
-internal sealed class CompositeDisposable(params IReadOnlyList<IDisposable> disposables) : IDisposable
+public sealed class CompositeDisposable(params IReadOnlyList<IDisposable> disposables) : IDisposable
 {
     public void Dispose()
     {

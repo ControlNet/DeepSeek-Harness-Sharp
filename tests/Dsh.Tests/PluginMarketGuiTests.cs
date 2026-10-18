@@ -17,7 +17,7 @@ namespace Dsh.Tests;
 [Collection(GuiSerialCollection.CollectionName)]
 public sealed class PluginMarketGuiTests
 {
-    private const string Todo = "@deepseek-ai/dsh-tool-todo";
+    private const string Todo = "@deepseek-ai/dsh-tool-todo.plan";
     private const string BrowseTip = "浏览并选择插件文件";
 
     private static readonly string ScreenshotDirectory = Path.GetFullPath(

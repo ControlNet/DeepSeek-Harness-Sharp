@@ -4,8 +4,6 @@ using Dsh.Plugins;
 
 [assembly: DshPlugin(Dsh.Jobs.Plugin.JobsLocal)]
 [assembly: DshPlugin(Dsh.Jobs.Plugin.ToolJobs)]
-[assembly: DshPlugin(Dsh.Jobs.Plugin.ToolBashPersistent)]
-[assembly: DshPlugin(Dsh.Jobs.Plugin.ToolPwshPersistent)]
 
 namespace Dsh.Jobs;
 
@@ -13,15 +11,11 @@ public sealed class Plugin(string packageName) : IDshPlugin
 {
     internal const string JobsLocal = "@deepseek-ai/dsh-jobs-local";
     internal const string ToolJobs = "@deepseek-ai/dsh-tool-jobs";
-    internal const string ToolBashPersistent = "@deepseek-ai/dsh-tool-bash-persistent";
-    internal const string ToolPwshPersistent = "@deepseek-ai/dsh-tool-pwsh-persistent";
 
     public string[] Inject => packageName switch
     {
         JobsLocal => [],
         ToolJobs => [ToolRuntime.ServiceName, SystemPrompt.ServiceName, JobsService.ServiceName],
-        ToolBashPersistent => [ToolRuntime.ServiceName, SubprocessService.ServiceName],
-        ToolPwshPersistent => [ToolRuntime.ServiceName, SubprocessService.ServiceName],
         _ => throw new InvalidOperationException($"Unknown DSH package '{packageName}'."),
     };
 
@@ -29,8 +23,6 @@ public sealed class Plugin(string packageName) : IDshPlugin
     {
         JobsLocal => RegisterJobsLocal(ctx, config),
         ToolJobs => global::Dsh.Jobs.ToolJobs.Register(ctx, ToolJobsConfigFrom(config)),
-        ToolBashPersistent => PersistentBashTool.Register(ctx, PersistentBashConfigFrom(config)),
-        ToolPwshPersistent => PersistentPwshTool.Register(ctx, PersistentPwshConfigFrom(config)),
         _ => throw new InvalidOperationException($"Unknown DSH package '{packageName}'."),
     };
 
@@ -56,29 +48,6 @@ public sealed class Plugin(string packageName) : IDshPlugin
             CompletionDelivery = dict?.GetValueOrDefault("completionDelivery") as string == "quiet"
                 ? CompletionDelivery.Quiet : new ToolJobsConfig().CompletionDelivery,
             MaxConsecutiveWakes = IntOf(dict, "maxConsecutiveWakes") ?? new ToolJobsConfig().MaxConsecutiveWakes,
-        };
-    }
-
-    private static PersistentBashConfig PersistentBashConfigFrom(object? config)
-    {
-        var dict = ConfigOf(config);
-        return new PersistentBashConfig
-        {
-            BashPath = dict?.GetValueOrDefault("bashPath") as string,
-            TimeoutMs = LongOf(dict, "timeoutMs") ?? new PersistentBashConfig().TimeoutMs,
-            MaxOutputChars = IntOf(dict, "maxOutputChars") ?? new PersistentBashConfig().MaxOutputChars,
-            Description = dict?.GetValueOrDefault("description") as string ?? PersistentBashConfig.DefaultDescription,
-        };
-    }
-
-    private static PersistentPwshConfig PersistentPwshConfigFrom(object? config)
-    {
-        var dict = ConfigOf(config);
-        return new PersistentPwshConfig
-        {
-            TimeoutMs = LongOf(dict, "timeoutMs") ?? new PersistentPwshConfig().TimeoutMs,
-            MaxOutputChars = IntOf(dict, "maxOutputChars") ?? new PersistentPwshConfig().MaxOutputChars,
-            Description = dict?.GetValueOrDefault("description") as string ?? PersistentPwshConfig.DefaultDescription,
         };
     }
 

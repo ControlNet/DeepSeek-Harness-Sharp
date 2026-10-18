@@ -265,10 +265,6 @@ plugins:
 #
 # @deepseek-ai/dsh-jobs-local:
 #   maxConcurrentJobsPerOwner:
-#   bashPath:
-#   timeoutMs:  # 毫秒
-#   maxOutputChars:  # 字符数
-#   description:
 #   waitTimeoutMs:  # 毫秒
 #   maxWaitTimeoutMs:  # 毫秒
 #   completionDelivery:
@@ -341,12 +337,18 @@ plugins:
 #   headChars:  # 字符数
 #   tailChars:  # 字符数
 #
-# @deepseek-ai/dsh-tool-bash:
+# @deepseek-ai/dsh-tool-bash.shell:
 #   cwd:
 #   timeoutMs:  # 毫秒
 #   maxTimeoutMs:  # 毫秒
 #   maxOutputBytes:  # 字节
 #   maxSpillBytes:  # 字节
+#   bashPath:
+#   maxOutputChars:  # 字符数
+#   description:
+#
+# @deepseek-ai/dsh-tool-fs.files:
+#   cwd:
 #   maxOutputChars:  # 字符数
 #   description:
 #

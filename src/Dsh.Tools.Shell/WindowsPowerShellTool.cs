@@ -1,4 +1,5 @@
 using Dsh.Runtime;
+using Dsh.Core;
 
 namespace Dsh.Tools;
 

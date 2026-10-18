@@ -16,31 +16,31 @@ public sealed class HotPlugTests
             var home = HarnessHome.Resolve(Path.Combine(dir, "home"));
             using var app = await ConfigBoot.Compose(new HarnessOptions(home, Cwd: dir, PluginsDirectory: Path.Combine(dir, "plugins")));
             var manager = app.Ctx.Get<HarnessPluginManager>("pluginManager")!;
-            Assert.Contains("@deepseek-ai/dsh-tool-todo", manager.PackageNames);
+            Assert.Contains("@deepseek-ai/dsh-tool-todo.plan", manager.PackageNames);
             var tools = app.Ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!;
             Assert.NotNull(tools.Get("todo_write"));
 
-            var removed = await manager.RemoveAsync("@deepseek-ai/dsh-tool-todo");
+            var removed = await manager.RemoveAsync("@deepseek-ai/dsh-tool-todo.plan");
             Assert.Contains("removed", removed);
             Assert.Null(tools.Get("todo_write"));
-            Assert.Null(app.Composition!.Find("@deepseek-ai/dsh-tool-todo"));
-            Assert.Contains("\"@deepseek-ai/dsh-tool-todo\": false", ReadSettings(home));
+            Assert.Null(app.Composition!.Find("@deepseek-ai/dsh-tool-todo.plan"));
+            Assert.Contains("\"@deepseek-ai/dsh-tool-todo.plan\": false", ReadSettings(home));
 
-            var added = await manager.AddAsync("@deepseek-ai/dsh-tool-todo");
+            var added = await manager.AddAsync("@deepseek-ai/dsh-tool-todo.plan");
             Assert.Contains("activated", added);
             Assert.NotNull(tools.Get("todo_write"));
-            Assert.Equal(ActivationState.Active, app.Composition.Find("@deepseek-ai/dsh-tool-todo")!.State);
-            Assert.Contains("\"@deepseek-ai/dsh-tool-todo\": true", ReadSettings(home));
+            Assert.Equal(ActivationState.Active, app.Composition.Find("@deepseek-ai/dsh-tool-todo.plan")!.State);
+            Assert.Contains("\"@deepseek-ai/dsh-tool-todo.plan\": true", ReadSettings(home));
 
-            var disabled = await manager.DisableAsync("@deepseek-ai/dsh-tool-todo");
+            var disabled = await manager.DisableAsync("@deepseek-ai/dsh-tool-todo.plan");
             Assert.Contains("disabled", disabled);
-            Assert.Null(app.Composition.Find("@deepseek-ai/dsh-tool-todo"));
-            Assert.Contains("\"@deepseek-ai/dsh-tool-todo\": false", ReadSettings(home));
+            Assert.Null(app.Composition.Find("@deepseek-ai/dsh-tool-todo.plan"));
+            Assert.Contains("\"@deepseek-ai/dsh-tool-todo.plan\": false", ReadSettings(home));
 
-            var enabled = await manager.EnableAsync("@deepseek-ai/dsh-tool-todo");
+            var enabled = await manager.EnableAsync("@deepseek-ai/dsh-tool-todo.plan");
             Assert.Contains("activated", enabled);
             Assert.NotNull(tools.Get("todo_write"));
-            Assert.Contains("\"@deepseek-ai/dsh-tool-todo\": true", ReadSettings(home));
+            Assert.Contains("\"@deepseek-ai/dsh-tool-todo.plan\": true", ReadSettings(home));
         }
         finally
         {
@@ -152,7 +152,7 @@ public sealed class HotPlugTests
 
                 # 用户注释:不要删我
                 plugins:
-                  "@deepseek-ai/dsh-tool-todo": false
+                  "@deepseek-ai/dsh-tool-todo.plan": false
 
                 safety:
                   autoApprove: false
@@ -162,7 +162,7 @@ public sealed class HotPlugTests
             var tools = app.Ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!;
             Assert.Null(tools.Get("todo_write"));
 
-            var enabled = await manager.EnableAsync("@deepseek-ai/dsh-tool-todo");
+            var enabled = await manager.EnableAsync("@deepseek-ai/dsh-tool-todo.plan");
 
             Assert.Contains("activated", enabled);
             Assert.NotNull(tools.Get("todo_write"));
@@ -170,7 +170,7 @@ public sealed class HotPlugTests
             Assert.Contains("# 用户注释:不要删我", settings);
             Assert.Contains("safety:", settings);
             Assert.Contains("autoApprove: false", settings);
-            Assert.Contains("\"@deepseek-ai/dsh-tool-todo\": true", settings);
+            Assert.Contains("\"@deepseek-ai/dsh-tool-todo.plan\": true", settings);
         }
         finally
         {

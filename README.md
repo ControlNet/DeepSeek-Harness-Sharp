@@ -84,7 +84,7 @@ SQLite 是可选的系统依赖,发布包不捆绑或自动下载 SQLite 原生�
    - `bash_persistent` / `pwsh_persistent`:每个会话一个常驻 bash / PowerShell 7 进程,当前目录、变量、函数在多次调用间保留;`exit` 或超时会重置该进程。
    - `powershell`:仅 Windows 提供,调用 Windows PowerShell 5.1(`powershell.exe`),用于只在 5.1 上可用的模块或 COM。
    - `wsl`:仅 Windows 提供,在 WSL 发行版里执行 `bash -lc <命令>`;`distro` 参数选择发行版,缺省用 WSL 的默认发行版。未安装 WSL 或没有发行版时返回 wsl.exe 自身的提示与非零退出码;连 `wsl.exe` 都不存在时直接报错并给出安装方法(`wsl.exe --install`)。
-   - 每个工具都是独立插件(`@deepseek-ai/dsh-tool-bash`、`dsh-tool-pwsh`、`dsh-tool-bash-persistent`、`dsh-tool-pwsh-persistent`、`dsh-tool-powershell`、`dsh-tool-wsl`),可用 `/plugins disable <包>` 单独关闭。
+   - 每个工具都是独立插件(`@deepseek-ai/dsh-tool-bash.shell`、`dsh-tool-pwsh.shell`、`dsh-tool-bash.shell-persistent`、`dsh-tool-pwsh.shell-persistent`、`dsh-tool-powershell.shell`、`dsh-tool-wsl.shell`),可用 `/plugins disable <包>` 单独关闭。
    - `safety.blacklist` 里的 shell 规则按方言生效:`bash:<命令>`(或 `bash_persistent:`、`wsl:`)同时拦截 `bash`、`bash_persistent`、`wsl`;`pwsh:<命令>`(或 `pwsh_persistent:`、`powershell:`)同时拦截 `pwsh`、`pwsh_persistent`、`powershell`。
 10. MCP 资源:`settings.yaml` 的 `mcp:` 段配置了 MCP 服务器时,模型可用 `list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource` 三个工具读取服务器暴露的资源,`server` 参数填 `mcp:` 段里的服务器名。
    - 文本资源直接返回;超过工具结果落盘阈值(`storage.tool_results.max_bytes`,缺省 64 KiB)时只保留头尾,全文写入 `<home>/tool-results/` 下的文件并在结果里给出路径,模型可用 `read` 分段读取。
@@ -146,8 +146,70 @@ SQLite 是可选的系统依赖,发布包不捆绑或自动下载 SQLite 原生�
 13. 工作目录与 worktree:模型可用 `working_directory` 查看或切换本会话的工作目录(`cd`),用 `create_worktree` 从本地 commit/branch/tag 新建 Git 分支与 worktree(位于 `<当前检出根>/.agents/worktrees/<名字>`)并切换进去。
    - 切换只影响之后的相对路径解析(包括 shell 的相对 `workdir`),以及新启动的 shell/终端的默认目录;已经存在的 `bash_persistent` / `pwsh_persistent` shell 与终端仍停在各自的目录。
    - 写权限根固定为会话的初始目录,不随切换移动:写入权限根之外的文件(`write`/`edit`/`str_replace_editor`)、在权限根之外启动 shell/终端或建 worktree,都会先弹审批,提示「目标路径在权限根之外」;审批策略为 never 时直接拒绝。
-   - 两者分别对应插件 `@deepseek-ai/dsh-tool-working-directory` 与 `@deepseek-ai/dsh-tool-worktree`,可用 `/plugins disable` 关闭。
+   - 两者分别对应插件 `@deepseek-ai/dsh-tool-working-directory.fs` 与 `@deepseek-ai/dsh-tool-worktree.fs`,可用 `/plugins disable` 关闭。
 14. A2A 宿主默认只监听回环地址；自动端口由实际 HTTP 监听器直接绑定并持有，连接时使用宿主报告的 `Endpoint`。指定端口已被占用时直接报错，不暗中换端口或重试；对非回环地址开放时必须配置认证令牌。关闭宿主会释放监听端口。
+
+## 工具能力包迁移
+
+工具实现按 `Dsh.Tools.Fs`、`Dsh.Tools.Search`、`Dsh.Tools.Shell`、`Dsh.Tools.Plan` 四个程序集分发。
+以下包名是本次提交供作者审阅的命名提案，不代表作者已批准。
+保留逐工具插件而非合并成四个总开关，能力后缀让包归属明确，并保持这些内置包之间的注册排序；模型看到的工具名、参数、描述和输出 schema 不变。
+
+| 旧插件 ID | 新插件 ID |
+| --- | --- |
+| `@deepseek-ai/dsh-tool-bash` | `@deepseek-ai/dsh-tool-bash.shell` |
+| `@deepseek-ai/dsh-subprocess` | `@deepseek-ai/dsh-subprocess.shell` |
+| `@deepseek-ai/dsh-tool-pwsh` | `@deepseek-ai/dsh-tool-pwsh.shell` |
+| `@deepseek-ai/dsh-tool-fs` | `@deepseek-ai/dsh-tool-fs.files` |
+| `@deepseek-ai/dsh-tool-fs-search` | `@deepseek-ai/dsh-tool-fs.search` |
+| `@deepseek-ai/dsh-tool-todo` | `@deepseek-ai/dsh-tool-todo.plan` |
+| `@deepseek-ai/dsh-tool-str-replace-editor` | `@deepseek-ai/dsh-tool-str-replace-editor.fs` |
+| `@deepseek-ai/dsh-fs-local` | `@deepseek-ai/dsh-fs-local.fs` |
+| `@deepseek-ai/dsh-tool-powershell` | `@deepseek-ai/dsh-tool-powershell.shell` |
+| `@deepseek-ai/dsh-tool-wsl` | `@deepseek-ai/dsh-tool-wsl.shell` |
+| `@deepseek-ai/dsh-tool-working-directory` | `@deepseek-ai/dsh-tool-working-directory.fs` |
+| `@deepseek-ai/dsh-tool-worktree` | `@deepseek-ai/dsh-tool-worktree.fs` |
+| `@deepseek-ai/dsh-tool-bash-persistent` | `@deepseek-ai/dsh-tool-bash.shell-persistent` |
+| `@deepseek-ai/dsh-tool-pwsh-persistent` | `@deepseek-ai/dsh-tool-pwsh.shell-persistent` |
+
+Fs 拥有文件读写、图片、编辑器、working_directory、create_worktree 和 FsLocal；Search 只拥有 glob/grep；Shell 拥有六种 shell 工具及 Subprocess 注册；Plan 拥有 todo_write。
+Jobs 仍拥有 JobsLocal 和 job_output/job_list/job_kill，但不再提供持久 shell。
+Core 的 SubprocessService 仍是 shell、worktree、jobs、terminal 等调用方共享的服务契约；拆包不改变服务名、effect 或 agent 释放进程的生命周期。
+FsLocal 的 cwd 只是该可选 fs 服务的解析基目录，不是会话 working_directory，也不会扩大写权限根。
+Fs/Search/Plan 不依赖另一个能力插件程序集，Fs 的 create_worktree 只按服务依赖等待 Subprocess，其他文件工具仍可独立使用。
+
+升级时先退出旧进程，用完整新发行包替换程序文件，保留用户 home 中的配置与会话。
+自行部署插件时移除旧 Dsh.Tools.dll 及其专属安装目录，替换 Dsh.Jobs.dll 和依赖闭包，安装所需能力程序集及其 deps/依赖，不能只在旧发行目录叠加四个新 DLL。
+不要同时加载旧 Jobs/Tools 版本和新 Shell，否则旧实现会再次注册同名模型工具。
+自建宿主将旧 Dsh.Tools ProjectReference/PackageReference 改为需要的四个工程/程序集；本仓库主宿主已通过 src/Dsh.* 通配装配它们。
+直接调用持久 shell C# API 的代码将 using Dsh.Jobs 改为 using Dsh.Tools，其工具实现随 Dsh.Tools.Shell 分发；其他工具仍保留 Dsh.Tools 命名空间。
+
+将每份 settings.yaml 以及自定义 profile 的 plugins 引用逐项按上表重命名。
+逐项保留原布尔值，或整个映射（enabled、permissions 和所有插件参数），不合并、不重命名内部参数。
+例如，旧 todo 为 false 就把新 todo 写成 false；没有配置的插件仍是发现即启用。
+若旧新键同时存在，先人工核对两份值，再只留下新键；程序对任何旧键（包括 false、null 或与新键混用）报 TOOL_PACKAGE_MIGRATION_REQUIRED，指出替代 ID，不会忽略旧禁用状态后默认启用新工具。
+新键的 enabled 非布尔值仍报 INVALID_PLUGIN_SETTING。
+plugins 根段须为映射或 null；列表、布尔值和字符串会报 INVALID_PLUGIN_SETTING，不会被当作空配置启用全部默认插件。
+
+参数迁移：FsLocal 的 cwd，str_replace_editor 的 maxOutputChars/description，todo 的 allowParallelInProgress，以及两个 persistent shell 的 timeoutMs/maxOutputChars/description 和 bash 的 bashPath 均原样保留。
+原有一次性 bash/pwsh/powershell/wsl 注册不读取插件级 BashToolConfig 参数，Search 注册也不读取 sampleOverCapGlobResults；保留这些旧值不会让它们突然生效，本次不改变已有行为。
+一次性 shell 的模型调用参数 workdir/timeoutMs/envs 不变。
+
+```yaml
+plugins:
+  "@deepseek-ai/dsh-tool-fs.search": false
+  "@deepseek-ai/dsh-tool-todo.plan":
+    enabled: true
+    allowParallelInProgress: false
+    permissions: { read: true, write: false, network: true }
+  "@deepseek-ai/dsh-tool-bash.shell-persistent":
+    timeoutMs: 300000
+    maxOutputChars: 16000
+```
+
+可用 `dsharp --dump-config` 核对新包 ID 与 enabled 状态，`dsharp config schema --json` 查看实际编译配置面；TUI 的 `/plugins disable <新包ID>` / `enable` 使用同一套注册。
+配置 schema 目前按程序集首个声明的包名展示合并参数，不等于每个逐工具 ID 的运行绑定；各 ID 的有效参数以上述迁移说明为准。
+禁用 FsLocal 不会禁用 read/write 等直接文件工具；禁用 Subprocess 后，依赖它的 shell、worktree 或 jobs 等插件会按既有依赖机制挂起，其他能力照常工作。
 
 ## 图形界面
 
@@ -535,7 +597,7 @@ network:
 
 `web_fetch` 不因配置代理而放宽公网限制:每次请求及重定向均在本机解析并拒绝非公网或混合公网/私网答案;直连钉住已校验地址,经代理则以已校验的 IP 作为 HTTP 绝对 URI、CONNECT 或 SOCKS 的实际目标,同时保留原始 Host、TLS SNI 与正常证书域名校验。代理不再替 `web_fetch` 解析目标域名,因此本机 DNS 不可用时请求明确失败。代理必须支持 IP 目标及原始 Host;拒绝这种路由的代理会报真实访问失败,不会回退到未校验的域名。代理服务器本身是可信传输边界,恶意代理仍可无视所请求的地址(HTTP 无端到端加密,HTTPS 仍校验证书);本机不声称能控制远端 DNS。其他 HTTP 客户端沿用各自的目标策略。
 
-- `plugins:` 支持两种写法:`"@deepseek-ai/dsh-tool-todo": false`(禁用),或带参数的 `"@deepseek-ai/dsh-tool-todo": { enabled: true, ... }`(保存插件参数);插件被发现即启用,这里的禁用项与 `/plugins` 命令是仅有的两个开关来源。
+- `plugins:` 支持两种写法:`"@deepseek-ai/dsh-tool-todo.plan": false`(禁用),或带参数的 `"@deepseek-ai/dsh-tool-todo.plan": { enabled: true, ... }`(保存插件参数);插件被发现即启用,这里的禁用项与 `/plugins` 命令是仅有的两个开关来源。
 - 插件权限:`permissions` 是与 `enabled` 并列的保留键(不会作为参数交给插件),含 `read`/`write`/`network` 三项布尔值;未写 `permissions` 或未写某一项时均为允许。由 `/plugins ban_write|enable_write` 与 GUI 插件市场的勾选框写入,也可手写;拼错的键或非布尔值会在启动时报 `INVALID_PLUGIN_SETTING`。目前只记录配置,强制执行由后续版本的插件沙箱(`sandbox.enabled: true`)提供:
 
   ```yaml

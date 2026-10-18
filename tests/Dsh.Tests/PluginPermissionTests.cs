@@ -9,7 +9,7 @@ namespace Dsh.Tests;
 /** Sandbox switch and plugins."<package>".permissions: parsing, typed read model and the /plugins write-back. */
 public sealed class PluginPermissionTests
 {
-    private const string Todo = "@deepseek-ai/dsh-tool-todo";
+    private const string Todo = "@deepseek-ai/dsh-tool-todo.plan";
     private const string OuterComment = "# keep: comment above the plugins block";
     private const string TrailingComment = "# keep: comment after the plugins block";
     private static readonly TimeSpan SubmitTimeout = TimeSpan.FromSeconds(20);
