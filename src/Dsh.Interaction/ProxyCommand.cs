@@ -45,20 +45,16 @@ public static class ProxyCommand
 
     private static CommandResult Save(OutboundProxy proxy, HarnessHome home, string? url)
     {
-        var settings = HarnessSettings.Load(home);
-        settings.Network ??= new NetworkSettings();
-        settings.Network.OutboundProxy ??= new OutboundProxySettings();
-        var outbound = settings.Network.OutboundProxy;
+        var outbound = HarnessSettings.Load(home).Network?.OutboundProxy ?? new OutboundProxySettings();
+        outbound.Url = url;
         try
         {
-            proxy.Configure(url, outbound.Bypass);
+            HarnessSettings.SaveOutboundProxy(home, outbound, proxy);
         }
         catch (ArgumentException error)
         {
             return new CommandResult.Error(error.Message);
         }
-        outbound.Url = url;
-        settings.Save(home);
         return new CommandResult.Success($"本机出口代理已保存并生效: {proxy.Describe()}");
     }
 
