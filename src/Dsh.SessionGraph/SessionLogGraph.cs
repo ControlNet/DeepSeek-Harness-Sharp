@@ -70,6 +70,8 @@ internal sealed class SessionLogGraph
     /** 启动子会话 child 的事件 seq; 日志里没有对应的派生事件时为 null。 */
     public long? SpawnOf(SessionId child) => _spawns.TryGetValue(child, out var seq) ? seq : null;
 
+    public long? OpenerOf(SessionEventCorrelation key) => _openers.TryGetValue(key, out var seq) ? seq : null;
+
     private void Relate(long seq, SessionEventRelation relation)
     {
         switch (relation)

@@ -49,17 +49,16 @@ public sealed class SessionEventGraphService : Service, ISessionEventGraph, IDis
 
     public IReadOnlyList<SessionLineage> Children(SessionId session)
     {
-        // JsonlSessionPersistence.List() 的快照不带 InheritedEventCount(恒为 0), 这里只用它找候选, 血缘逐个按 id 经 Parent 计算。
-        var headers = (Sessions?.List() ?? []).Select(live => live.Header)
-            .Concat((Persistence?.List() ?? []).Select(snapshot => snapshot.Header));
+        var snapshots = (Sessions?.List() ?? []).Select(live => (live.Header, live.InheritedEventCount))
+            .Concat((Persistence?.List() ?? []).Select(snapshot => (snapshot.Header, snapshot.InheritedEventCount)));
         return
         [
-            .. headers
-                .Where(header => header.ParentSession == session)
-                .DistinctBy(header => header.Id)
-                .OrderBy(header => header.CreatedAt)
-                .ThenBy(header => header.Id.Value, StringComparer.Ordinal)
-                .Select(header => Parent(header.Id))
+            .. snapshots
+                .DistinctBy(snapshot => snapshot.Header.Id)
+                .Where(snapshot => snapshot.Header.ParentSession == session)
+                .OrderBy(snapshot => snapshot.Header.CreatedAt)
+                .ThenBy(snapshot => snapshot.Header.Id.Value, StringComparer.Ordinal)
+                .Select(snapshot => LineageOf(snapshot.Header, snapshot.InheritedEventCount))
                 .OfType<SessionLineage>(),
         ];
     }
@@ -69,7 +68,9 @@ public sealed class SessionEventGraphService : Service, ISessionEventGraph, IDis
         if (header.ParentSession is not { } parent)
             return null;
         if (header.IsSubagent)
-            return new SessionLineage(header.Id, SessionLineageKind.Subagent, parent, Read(parent, graph => graph.SpawnOf(header.Id), null));
+            return new SessionLineage(header.Id, SessionLineageKind.Subagent, parent,
+                Read(parent, graph => graph.SpawnOf(header.Id)
+                    ?? (header.ParentCallId is { } callId ? graph.OpenerOf(SessionEventRelations.ToolCall(callId)) : null), null));
         return new SessionLineage(header.Id, SessionLineageKind.Fork, parent, inheritedEventCount > 0 ? inheritedEventCount - 1 : null);
     }
 
