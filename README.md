@@ -227,6 +227,24 @@ dsharp doctor [--machine build]                        # 逐项诊断连接,并�
 dsharp host serve                                     # 手动前台运行 Host; GUI/SSH 连接也会按需启动后台 Host
 ```
 
+**配置目标 Host 的网络出口**
+
+已保存的本机或 SSH 机器可直接管理目标 Host 的 `network.outbound_proxy`：
+
+```bash
+dsharp machine proxy build show
+dsharp machine proxy build set --json-stdin < outbound-proxy.json
+dsharp machine proxy build test --probe-url https://www.gstatic.com/generate_204
+dsharp machine proxy build clear
+```
+
+`outbound-proxy.json` 为 JSON 对象，例如 `{"url":"http://127.0.0.1:7890","bypass":["example.com"],"probeUrl":"https://www.gstatic.com/generate_204"}`；需要认证时也只通过 stdin 提交 URL，不把凭据放入命令参数。代理地址和探测地址均由目标 Host 访问，`127.0.0.1` 指目标机器而非 CLI 所在机器。
+输入文件含凭据时，将它纳入 `.gitignore` 或放在仓库之外，不要提交或上传。
+
+`show`、`set`、`clear` 输出脱敏 JSON 状态，包含目标 Host 身份、home 与修订号；`test` 输出可读的脱敏探测结果，连通时退出码为 0，否则为非零。`set` 和 `clear` 先读取当前修订号，并发修改会明确报冲突，不自动覆盖或重试。`clear` 删除目标的整个 `outbound_proxy` 子项，保留其它网络设置；探测不会保存或改变已有路由。
+
+这些命令借用 Fleet 的机器连接，不保存远端出口副本，不修改 CLI 所在机器的代理，也不自动部署或升级目标。目标 Host 必须提供 `network.outbound` 能力；旧 Host 会明确提示需要升级。连接断开时命令失败，不等待未来重连。
+
 - GUI:启动后进入总览,按 机器 → 项目 → 会话 分组,等待你审批的会话会高亮;`Ctrl+K` 快速跳转,`Esc` 返回;铃铛是通知中心,所有机器的待审批与提问都能在这里直接回答,先答者生效。侧栏还有文件、Git、机器三页;「设置 → 远程」与机器页是同一份机器清单。
 - 审批和提问由 Host 的单一待决队列拥有；`host.pending.changed` 在订阅时及每次变更后推送完整投影，结局可附首答者审计，所有客户端据此关闭已处理的对话，不保存已解决请求的记忆缓存。等待高亮只来自真实待决请求（包括 ACP 结构化权限请求）；外部终端仅显示进程状态，不再用屏幕文本或正则猜测审批、忙碌和等待。
 - 断线后每台机器独立重连,会话事件从断点续订,终端会重新接入。

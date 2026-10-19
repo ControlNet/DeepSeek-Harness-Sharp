@@ -84,13 +84,23 @@ public sealed class MachineConnection : IAsyncDisposable
 
     public void Start() => _loop ??= RunAsync(_lifetime.Token);
 
-    /** Completes once the first attempt has either connected or failed. */
+    /** Completes once the first attempt has connected, failed, or ended during disposal. */
     public Task WaitSettledAsync(CancellationToken cancellationToken) => _settled.Task.WaitAsync(cancellationToken);
 
     public Task<HostLease> WaitConnectedAsync(CancellationToken cancellationToken)
     {
         lock (_gate)
             return _connected.Task.WaitAsync(cancellationToken);
+    }
+
+    /** Borrows only the currently published lease; never waits for a future reconnect. */
+    internal HostLease? CurrentLease
+    {
+        get
+        {
+            lock (_gate)
+                return _connected.Task.IsCompletedSuccessfully ? _connected.Task.Result : null;
+        }
     }
 
     /** 每个读者使用共享 RemoteHost 续订语义，不保存另一份历史或去重记忆。 */
@@ -119,8 +129,11 @@ public sealed class MachineConnection : IAsyncDisposable
         {
             // Disposing while an attempt is still connecting cancels it; that ended FleetClient.DisposeAsync before the other machines were released.
         }
-
-        _lifetime.Dispose();
+        finally
+        {
+            _settled.TrySetResult();
+            _lifetime.Dispose();
+        }
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)

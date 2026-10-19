@@ -2,6 +2,7 @@ using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Plugins;
 using Dsh.RemoteHost;
+using Dsh.Runtime;
 
 namespace Dsh.Host;
 
@@ -37,6 +38,8 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
             Plugins = new HarnessRemotePluginsBackend(app, plugins);
         if (app.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false) is { } models)
             Models = new HarnessRemoteModelsBackend(models);
+        if (app.Ctx.GetProp(OutboundProxy.PropName) is OutboundProxy proxy)
+            Network = new HarnessRemoteNetworkBackend(app.Home, proxy);
         var platform = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
         _info = new HostInfo(HostProtocol.Version, RemoteHostServer.ReleaseVersion, platform, app.Home.Root);
     }
@@ -65,6 +68,7 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
     public IRemoteSessionEditingBackend SessionEditing { get; }
     public IRemotePluginsBackend? Plugins { get; }
     public IRemoteModelsBackend? Models { get; }
+    public IRemoteNetworkBackend? Network { get; }
 
     public Task<HostInfo> InfoAsync(CancellationToken cancellationToken) => Task.FromResult(_info);
 

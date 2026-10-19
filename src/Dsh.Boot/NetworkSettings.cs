@@ -2,14 +2,14 @@ using YamlDotNet.Serialization;
 
 namespace Dsh.Boot;
 
-/** settings.yaml 的 network 段: 只描述本机自身的网络出口; 每台远程机器自己的代理随它的机器条目配置。 */
+/** Outbound settings owned by this harness home; SSH transport proxies remain machine connection settings. */
 public sealed class NetworkSettings
 {
     [YamlMember(Alias = "outbound_proxy")]
     public OutboundProxySettings? OutboundProxy { get; set; }
 }
 
-/** 本机出口代理: 本机发出的出站 HTTP(web_search/web_fetch/LLM/下载远端 dsharp 等)经它访问外网。 */
+/** This process's HTTP egress, shared by its workspaces, tools, model providers, and downloads. */
 public sealed class OutboundProxySettings
 {
     public const string DefaultProbeUrl = "https://www.gstatic.com/generate_204";

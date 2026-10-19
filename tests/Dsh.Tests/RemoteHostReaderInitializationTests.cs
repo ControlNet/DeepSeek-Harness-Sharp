@@ -262,6 +262,7 @@ public sealed class RemoteHostReaderInitializationTests
         public IRemoteSessionEditingBackend? SessionEditing => backend.SessionEditing;
         public IRemotePluginsBackend? Plugins => backend.Plugins;
         public IRemoteModelsBackend? Models => backend.Models;
+        public IRemoteNetworkBackend? Network => backend.Network;
         public Task<HostInfo> InfoAsync(CancellationToken ct) => backend.InfoAsync(ct);
         public Task<IReadOnlyList<RemoteSessionInfo>> ListSessionsAsync(CancellationToken ct) => backend.Session.ListSessionsAsync(ct);
         public Task<RemoteSessionInfo> CreateSessionAsync(string cwd, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken ct) => backend.Session.CreateSessionAsync(cwd, selection, provider, ct);

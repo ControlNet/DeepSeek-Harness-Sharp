@@ -252,6 +252,7 @@ public sealed class RemoteHostMultiClientTests
         ];
         if (host.Backend.Plugins is not null) expectedCapabilities.Add(PluginsProtocol.Capability);
         if (host.Backend.Models is not null) expectedCapabilities.Add(ModelsProtocol.Capability);
+        expectedCapabilities.Add(NetworkProtocol.Capability);
 
         Assert.Equal(HostProtocol.Version, client.Hello.ProtocolVersion);
         Assert.Equal(expectedCapabilities, client.Hello.Capabilities);

@@ -188,6 +188,7 @@ public sealed class RemoteHostCapabilityTests
         if (includeOptional)
         {
             Assert.Contains(FilesProtocol.Capability, info.Capabilities!);
+            Assert.Contains(NetworkProtocol.Capability, info.Capabilities!);
             await client.Files.WriteFileAsync(file, "domain"u8.ToArray(), Ct);
             Assert.Equal("domain"u8.ToArray(), await client.Files.ReadFileAsync(file, Ct));
             await client.SessionEditing.RenameSessionAsync(created.Id, "domain title", Ct);
@@ -209,6 +210,9 @@ public sealed class RemoteHostCapabilityTests
                 () => client.Notifications.ListNotificationsAsync(cancellationToken: Ct),
                 () => client.Plugins.ListPluginsAsync(Ct),
                 () => client.Models.ListProviderModelsAsync("unused", Ct),
+                () => client.Network.GetOutboundAsync(Ct),
+                () => client.Network.SetOutboundAsync(new RemoteOutboundProxySetRequest("unsupported", new RemoteOutboundProxySettings()), Ct),
+                () => client.Network.ProbeOutboundAsync(new RemoteOutboundProxyProbeRequest(), Ct),
             ];
             foreach (var operation in otherDomains)
             {
@@ -233,6 +237,7 @@ public sealed class RemoteHostCapabilityTests
         public IRemoteSessionEditingBackend? SessionEditing => null;
         public IRemotePluginsBackend? Plugins => null;
         public IRemoteModelsBackend? Models => null;
+        public IRemoteNetworkBackend? Network => null;
     }
 
     private static async Task WaitForAsync(Func<bool> condition, CancellationToken cancellationToken)
@@ -286,6 +291,7 @@ public sealed class RemoteHostCapabilityTests
         public IRemoteSessionEditingBackend? SessionEditing => null;
         public IRemotePluginsBackend? Plugins => null;
         public IRemoteModelsBackend? Models => null;
+        public IRemoteNetworkBackend? Network => null;
 
         public HostNotificationCenter Notifications { get; }
 

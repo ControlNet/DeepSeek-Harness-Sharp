@@ -16,6 +16,7 @@ public interface IRemoteHostBackend
     IRemoteSessionEditingBackend? SessionEditing { get; }
     IRemotePluginsBackend? Plugins { get; }
     IRemoteModelsBackend? Models { get; }
+    IRemoteNetworkBackend? Network { get; }
 }
 
 /** Required session execution and event stream. Subscribe installs its live listener before returning. */

@@ -15,6 +15,7 @@ public interface IRemoteHost
     IRemoteSessionEditing SessionEditing { get; }
     IRemotePlugins Plugins { get; }
     IRemoteModels Models { get; }
+    IRemoteNetwork Network { get; }
 
     Task<HostInfo> InfoAsync(CancellationToken cancellationToken = default);
 
