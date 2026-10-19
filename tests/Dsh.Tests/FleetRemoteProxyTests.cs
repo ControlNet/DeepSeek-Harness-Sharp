@@ -336,6 +336,7 @@ public sealed class FleetRemoteProxyProcessSmokeTests
     private const string RealAnswer = "NET77_REAL_OK";
 
     [Fact(Explicit = true, Timeout = 180000)]
+    [Trait("Category", "LlmSmoke")]
     public async Task CliSavedTargetRoute_CarriesRealRemoteWebAndModel_WithoutChangingOtherHosts()
     {
         var cancellation = TestContext.Current.CancellationToken;
