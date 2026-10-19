@@ -1,10 +1,13 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using Dsh.Fleet;
 using Dsh.Pty;
 using Dsh.RemoteHost;
 using Dsh.AgentAdapters;
+using Dsh.Transport;
 
 namespace Dsh.Tests;
 
@@ -12,10 +15,50 @@ namespace Dsh.Tests;
  * Dsh.Fleet and the fleet CLI against real `dsharp host serve` processes of this build, each under its own throwaway harness home.
  * Covers starting the local host on demand, reconnecting after the host process is killed, and `dsharp machine|session|doctor` end to end on two machines.
  */
-public sealed class FleetLocalHostTests
+public sealed class FleetLocalHostTests(ITestOutputHelper output)
 {
+    private static readonly TimeSpan RecoveryArrival = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan ProbeArrival = TimeSpan.FromSeconds(10);
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
+    /** A negative peer accepts connections but never responds to the Host handshake. */
+    [Fact(Timeout = 30000)]
+    public async Task Cli_StartsAHostWhenASilentPeerOwnsTheEndpoint()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var home = RealHostProcesses.CreateHome("fp");
+        using var listener = new Socket(OperatingSystem.IsWindows() ? AddressFamily.InterNetwork : AddressFamily.Unix,
+            SocketType.Stream, ProtocolType.Unspecified);
+        try
+        {
+            using var token = LocalEndpointToken.Issue(RemoteHostEndpoint.EndpointFile(home));
+            if (OperatingSystem.IsWindows())
+            {
+                listener.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+                await File.WriteAllTextAsync(RemoteHostEndpoint.PortFile(home),
+                    ((IPEndPoint)listener.LocalEndPoint!).Port.ToString(), cancellationToken);
+            }
+            else
+                listener.Bind(new UnixDomainSocketEndPoint(RemoteHostEndpoint.SocketPath(home)));
+
+            listener.Listen(1);
+            var accepting = listener.AcceptAsync(cancellationToken).AsTask();
+
+            var listing = FleetCliProcess.RunAsync(RealHostProcesses.Executable, home, "session", "list");
+            using var peer = await accepting.WaitAsync(ProbeArrival, cancellationToken);
+            var result = await listing.WaitAsync(RecoveryArrival, cancellationToken);
+            Assert.True(result.ExitCode == 0, result.Error);
+            await using var stream = await RemoteHostListener.ConnectAsync(home, cancellationToken);
+            await using var client = await RemoteHostClient.ConnectAsync(stream, null, cancellationToken);
+            Assert.Equal(HostProtocol.Version, (await client.InfoAsync(cancellationToken)).ProtocolVersion);
+        }
+        finally
+        {
+            RealHostProcesses.KillAll(home);
+            listener.Dispose();
+            TempTree.Delete(home);
+        }
+    }
 
     [Theory(Timeout = 180000)]
     [InlineData(AgentKinds.Terminal)]
@@ -56,11 +99,13 @@ public sealed class FleetLocalHostTests
         try
         {
             Process? host = null;
+            var starts = 0;
             var hostOutput = new ConcurrentQueue<string>();
             var options = FleetConnectionTests.TestOptions with
             {
                 StartLocalHost = (_, _) =>
                 {
+                    Interlocked.Increment(ref starts);
                     host = RealHostProcesses.StartHost(executable, home, hostOutput.Enqueue);
                     return Task.CompletedTask;
                 },
@@ -71,13 +116,30 @@ public sealed class FleetLocalHostTests
             Assert.Equal(MachineConnectionState.Connected, connection.State);
             var first = Assert.IsType<Process>(host);
             Assert.Equal(RemoteHostServer.ReleaseVersion, connection.Info!.HostVersion);
+            await using (var healthy = new MachineConnection(MachineSpec.Local(home), options))
+            {
+                healthy.Start();
+                await healthy.WaitConnectedAsync(Ct).WaitAsync(RecoveryArrival, Ct);
+                Assert.Equal(1, starts);
+                Assert.Same(first, host);
+            }
 
+            var projected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            connection.SessionsChanged += changed =>
+            {
+                if (changed.Sessions.Any(session => session.Kind == HostSessionKinds.Terminal))
+                    projected.TrySetResult();
+            };
             var ptyId = await StartShellAsync(connection, home);
-            await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session is { Kind: HostSessionKinds.Terminal } && session.SessionId == ptyId));
+            await projected.Task.WaitAsync(RecoveryArrival, Ct);
+            Assert.Contains(connection.Sessions, session => session.Kind == HostSessionKinds.Terminal && session.SessionId == ptyId);
 
             var previousLease = await connection.WaitConnectedAsync(Ct);
             var reconnecting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var leaseEnded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var cancellation = previousLease.Lifetime.Register(() => leaseEnded.TrySetResult());
+            var firstExited = first.WaitForExitAsync(Ct);
             var states = new ConcurrentQueue<string>();
             // Subscribe before the kill, and publish both transitions through synchronized barriers.
             connection.StateChanged += changed =>
@@ -91,9 +153,9 @@ public sealed class FleetLocalHostTests
             first.Kill();
             try
             {
-                await FleetConnectionTests.WaitForAsync(() => recovered.Task.IsCompleted && connection.State == MachineConnectionState.Connected);
+                await Task.WhenAll(firstExited, leaseEnded.Task, recovered.Task).WaitAsync(RecoveryArrival, Ct);
             }
-            catch (OperationCanceledException)
+            catch (Exception error) when (error is TimeoutException or OperationCanceledException)
             {
                 var diagnostic = $"Host recovery failed; connection {connection.State} ({connection.Detail}); "
                     + $"previous lease cancelled={previousLease.Lifetime.IsCancellationRequested}; "
@@ -111,7 +173,18 @@ public sealed class FleetLocalHostTests
             Assert.True(first.HasExited);
             Assert.NotSame(first, host);
             Assert.False(Assert.IsType<Process>(host).HasExited);
-            await FleetConnectionTests.WaitForAsync(() => connection.Sessions.Any(session => session.SessionId == ptyId));
+            Assert.Equal(2, starts);
+            Assert.Equal(MachineConnectionState.Connected, connection.State);
+            Assert.Contains(connection.Sessions, session => session.SessionId == ptyId);
+            var replacementLease = await connection.WaitConnectedAsync(Ct);
+            Assert.Contains(await replacementLease.Client.ListHostSessionsAsync(Ct), session => session.SessionId == ptyId);
+            var listed = await FleetCliProcess.RunAsync(executable, home, "session", "list");
+            Assert.True(listed.ExitCode == 0, listed.Error);
+            Assert.Contains(FleetCliProcess.Rows(listed.Output), row => row is ["local", var id, HostSessionKinds.Terminal, ..] && id == ptyId);
+            Assert.Equal(2, starts);
+            output.WriteLine($"RECOVERY first={first.Id} exited={first.HasExited} leaseCancelled={previousLease.Lifetime.IsCancellationRequested} replacement={host!.Id} exited={host.HasExited} starts={starts} pty={ptyId}");
+            output.WriteLine($"STATES {string.Join(" -> ", states)}");
+            output.WriteLine($"CLI exit={listed.ExitCode}{Environment.NewLine}{listed.Output}");
         }
         finally
         {

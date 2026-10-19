@@ -37,8 +37,12 @@ public static class HostAutostart
     /** 按需启动 Host，并在启动进程存活时等待真实监听就绪。 */
     public static async Task EnsureRunningAsync(HarnessHome home, string? token, CancellationToken cancellationToken = default)
     {
-        if (await RemoteHostListener.IsReachableAsync(home.Root, cancellationToken))
-            return;
+        await using (var existing = await RemoteHostListener.TryConnectClientAsync(home.Root, token, clientName: null, cancellationToken).ConfigureAwait(false))
+        {
+            if (existing is not null)
+                return;
+        }
+        cancellationToken.ThrowIfCancellationRequested();
         var (executable, arguments) = ServeCommand(token);
         Dictionary<string, string?> environment = new() { [HarnessHome.HomeEnv] = home.Root };
         var startupLifetime = BackgroundProcess.Start(executable, arguments, Directory.GetCurrentDirectory(), environment);

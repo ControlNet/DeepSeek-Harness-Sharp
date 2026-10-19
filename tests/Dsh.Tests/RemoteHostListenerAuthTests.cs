@@ -41,6 +41,26 @@ public sealed class RemoteHostListenerAuthTests
     }
 
     [Fact(Timeout = 30000)]
+    public async Task Probe_PreservesAuthenticationErrorsAndCallerCancellation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var hostToken = Guid.NewGuid().ToString("N");
+        await WithDaemonAsync("rc", cancellationToken, async root =>
+        {
+            using var cancelled = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            await cancelled.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                RemoteHostListener.TryConnectClientAsync(root, hostToken, null, cancelled.Token));
+            await Assert.ThrowsAsync<IOException>(() =>
+                RemoteHostListener.TryConnectClientAsync(root, $"{hostToken}-invalid", null, cancellationToken));
+
+            await using var client = Assert.IsType<RemoteHostClient>(
+                await RemoteHostListener.TryConnectClientAsync(root, hostToken, null, cancellationToken));
+            Assert.Equal(HostProtocol.Version, (await client.InfoAsync(cancellationToken)).ProtocolVersion);
+        }, hostToken);
+    }
+
+    [Fact(Timeout = 30000)]
     public async Task Connect_WhenDaemonIssuedNoToken_FailsWithExplicitError()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -162,13 +182,13 @@ public sealed class RemoteHostListenerAuthTests
         }
     }
 
-    private static async Task WithDaemonAsync(string prefix, CancellationToken cancellationToken, Func<string, Task> body)
+    private static async Task WithDaemonAsync(string prefix, CancellationToken cancellationToken, Func<string, Task> body, string? hostToken = null)
     {
         // Socket paths are capped at 104 characters on macOS, so the daemon root is a shallow directory inside the repository.
         var root = TempTree.CreateSocketDirectory(prefix);
         TempTree.AssertFitsMacOsSocketLimit(RemoteHostEndpoint.SocketPath(root));
         using var daemonCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var server = new RemoteHostServer(new RemoteHostServerOptions());
+        var server = new RemoteHostServer(new RemoteHostServerOptions(hostToken));
         var daemon = Task.Run(() => RemoteHostListener.ServeLoopbackAsync(server, root, daemonCts.Token), cancellationToken);
         try
         {
