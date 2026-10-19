@@ -17,6 +17,10 @@ on:
         description: 'quick, regression-1, regression-2, regression-3, or raw'
         required: true
         type: string
+      diagnostic-routes:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -212,9 +216,18 @@ jobs:
           if [ "$RUNNER_OS" != "Windows" ]; then
             ARGS+=(-class- Dsh.Tests.TuiRawModeEndToEndTests)
           fi
+          if [ "${{ inputs.diagnostic-routes }}" = "true" ]; then
+            ARGS+=(-class Dsh.Tests.OutboundRouteTests
+              -class Dsh.Tests.OutboundProxyTests
+              -class Dsh.Tests.OutboundProxyGuiTests
+              -class Dsh.Tests.NetworkSettingsPersistenceTests
+              -class Dsh.Tests.GeneralSearchEngineTests
+              -class Dsh.Tests.SiteSearchEngineTests)
+          fi
           if [ "$RUNNER_OS" = "macOS" ]; then
             ARGS+=(-parallel none
               -method- Dsh.Tests.IrohReceiverEndToEndTests.TargetCli_Lan_Readiness_And_Restart_Work_Without_A_Relay)
+            ARGS+=(-reporter verbose -noAutoReporters -longRunning 30)
             echo "Running: ${ARGS[*]}"
             "${ARGS[@]}" &
             TESTPID=$!
