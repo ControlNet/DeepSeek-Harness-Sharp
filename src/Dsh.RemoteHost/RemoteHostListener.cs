@@ -14,6 +14,9 @@ namespace Dsh.RemoteHost;
  */
 public static class RemoteHostListener
 {
+    private const int ProbeConnectAttempts = 10;
+    private static readonly TimeSpan HostProbeTimeout = TimeSpan.FromSeconds(5);
+
     public static async Task ServeLoopbackAsync(
         RemoteHostServer server,
         string? root,
@@ -136,7 +139,7 @@ public static class RemoteHostListener
         }
     }
 
-    /** 常驻 daemon 是否可达: 短暂重试覆盖“正在重启/刚绑定”的窗口, 避免误判不可达而重复 spawn daemon。 */
+    /** Probes the local transport for read-only diagnostics. */
     public static async Task<bool> IsReachableAsync(string? root, CancellationToken cancellationToken)
     {
         try
@@ -147,6 +150,35 @@ public static class RemoteHostListener
         catch (Exception error) when (error is SocketException or IOException or TimeoutException)
         {
             return false;
+        }
+    }
+
+    /** Probes an existing Host handshake within a fixed budget and returns its usable client. */
+    public static async Task<RemoteHostClient?> TryConnectClientAsync(
+        string? root, string? token, string? clientName, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var probe = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        probe.CancelAfter(HostProbeTimeout);
+        Stream stream;
+        try
+        {
+            stream = await ConnectAsync(root, probe.Token, ProbeConnectAttempts).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is SocketException or IOException or TimeoutException
+            || error is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return null;
+        }
+
+        try
+        {
+            return await RemoteHostClient.ConnectAsync(stream, token, clientName, probe.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
         }
     }
 

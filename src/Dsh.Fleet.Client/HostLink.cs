@@ -24,8 +24,11 @@ internal sealed class HostLink(RemoteHostClient client, SshHostLauncher.Connecti
     {
         var root = LocalRoot(machine);
         var attempts = 1;
-        if (options.StartLocalHost is { } startHost && !await RemoteHostListener.IsReachableAsync(root, cancellationToken).ConfigureAwait(false))
+        if (options.StartLocalHost is { } startHost)
         {
+            if (await RemoteHostListener.TryConnectClientAsync(root, null, options.ClientName, cancellationToken).ConfigureAwait(false) is { } existing)
+                return new HostLink(existing, null);
+            cancellationToken.ThrowIfCancellationRequested();
             await startHost(machine, cancellationToken).ConfigureAwait(false);
             attempts = StartedHostConnectAttempts;
         }
