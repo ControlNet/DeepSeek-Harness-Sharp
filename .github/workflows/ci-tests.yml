@@ -215,6 +215,7 @@ jobs:
           if [ "$RUNNER_OS" = "macOS" ]; then
             ARGS+=(-parallel none
               -method- Dsh.Tests.IrohReceiverEndToEndTests.TargetCli_Lan_Readiness_And_Restart_Work_Without_A_Relay)
+            ARGS+=(-reporter verbose -noAutoReporters -longRunning 30)
             echo "Running: ${ARGS[*]}"
             "${ARGS[@]}" &
             TESTPID=$!

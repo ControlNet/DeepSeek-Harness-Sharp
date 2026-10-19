@@ -1,0 +1,32 @@
+name: Diagnose macOS quick duration (fork only)
+
+on:
+  push:
+    branches: ['diag/flaky-net77-macquick']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  native:
+    if: github.repository == 'ControlNet/DeepSeek-Harness-Sharp'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reuse the verified native component from the first PR run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 39258507932 --repo forestbat/DeepSeek-Harness-Sharp --name iroh-ssh-macos-latest --dir native
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iroh-ssh-macos-latest
+          path: native/iroh-ssh-component.tar
+          if-no-files-found: error
+  profile:
+    needs: native
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: macos-latest
+      native-cc: clang
+      suite: quick
