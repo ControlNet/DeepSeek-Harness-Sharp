@@ -26,8 +26,8 @@ internal static class SiteSearchHttp
 
     public static HttpClient CreateClient(Context ctx)
     {
-        var handler = OutboundProxy.FromContext(ctx).CreateHandler(allowAutoRedirect: false);
-        handler.AutomaticDecompression = DecompressionMethods.All;
+        var handler = OutboundProxy.FromContext(ctx).CreateHandler(
+            allowAutoRedirect: false, automaticDecompression: DecompressionMethods.All);
         return new HttpClient(handler, disposeHandler: true);
     }
 

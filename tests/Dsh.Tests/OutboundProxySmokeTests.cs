@@ -7,34 +7,113 @@ using Dsh.Web;
 
 namespace Dsh.Tests;
 
-/** 显式网络 smoke: 本地代理真实转发, HTTPS 保持默认 SNI/证书校验, 不使用固定响应。 */
+/** Explicit public-network smoke: real forwarding and default HTTPS SNI/certificate validation. */
 public sealed class OutboundProxySmokeTests
 {
     [Theory(Explicit = true)]
     [InlineData("http", "http://example.com/")]
     [InlineData("http", "https://example.com/")]
+    [InlineData("socks5", "http://example.com/")]
     [InlineData("socks5", "https://example.com/")]
     public async Task RealWebFetch_PinsProxyTarget_AndPreservesTlsIdentity(string scheme, string target)
     {
         await using var server = new TestForwardProxy(socks: scheme == "socks5", forward: true);
         var proxy = new OutboundProxy();
         proxy.Configure($"{scheme}://127.0.0.1:{server.Port}", null);
-        var provider = new HttpFetchProvider(proxy: proxy);
+        IReadOnlyList<PublicAddress>? addresses = null;
+        var provider = new HttpFetchProvider(
+            resolveAddresses: async (host, token) =>
+                addresses = await WebFetchHttpNetwork.ResolvePublicAddresses(host, token),
+            proxy: proxy);
 
         var result = await provider.Fetch(new WebFetchRequest(target), TestContext.Current.CancellationToken);
 
-        Assert.Equal(200, result.StatusCode);
-        Assert.Contains("Example Domain", result.Body.Content);
+        AssertExampleDomain(result, target);
         var line = Assert.Single(server.Requests);
         var destination = line.StartsWith("SOCKS ", StringComparison.Ordinal) || line.StartsWith("CONNECT ", StringComparison.Ordinal)
             ? new Uri($"http://{line.Split(' ')[1]}").Host
             : new Uri(line.Split(' ')[1]).Host;
         Assert.True(IPAddress.TryParse(destination, out _), line);
         Assert.True(WebFetchHttpNetwork.IsPublicIpAddress(destination), line);
-        Assert.Equal(target, result.Url);
+        Assert.NotNull(addresses);
+        Assert.Contains(addresses, address => IPAddress.Parse(address.Address).Equals(IPAddress.Parse(destination)));
+        if (scheme == "socks5")
+            Assert.StartsWith("SOCKS ", line);
+        else if (target.StartsWith("https:", StringComparison.Ordinal))
+            Assert.StartsWith("CONNECT ", line);
+        else
+            Assert.StartsWith("GET http://", line);
+    }
+
+    // Run alone in a fresh process: HttpClient.DefaultProxy captures the process/system proxy settings.
+    [Theory(Explicit = true)]
+    [InlineData("http://example.com/")]
+    [InlineData("https://example.com/")]
+    public async Task RealWebFetch_SystemDefaultRoute_PreservesTlsIdentity(string target)
+    {
+        var proxy = new OutboundProxy();
+        Assert.Null(proxy.Address);
+
+        var provider = new HttpFetchProvider(proxy: proxy);
+        var result = await provider.Fetch(new WebFetchRequest(target), TestContext.Current.CancellationToken);
+
+        AssertExampleDomain(result, target);
     }
 
     [Fact(Explicit = true)]
+    public async Task RealWebFetch_SystemDefaultProxy_ForwardsPublicHttpAndTlsInIsolatedProcess()
+    {
+        await using var server = new TestForwardProxy(forward: true);
+        var child = await OutboundProxyProcess.RunAsync(
+            $"{typeof(OutboundProxySmokeTests).FullName}.{nameof(RealWebFetch_SystemDefaultRoute_PreservesTlsIdentity)}",
+            $"http://127.0.0.1:{server.Port}", TestContext.Current.CancellationToken);
+        Assert.True(child.ExitCode == 0, "Isolated default-route HTTP/TLS smoke failed.");
+
+        var requests = server.Requests.ToArray();
+        Assert.Equal(2, requests.Length);
+        var get = Assert.Single(requests, line => line.StartsWith("GET ", StringComparison.Ordinal));
+        var httpTarget = new Uri(get.Split(' ')[1]);
+        Assert.Equal(Uri.UriSchemeHttp, httpTarget.Scheme);
+        Assert.Equal(80, httpTarget.Port);
+        Assert.Equal("/", httpTarget.PathAndQuery);
+        Assert.True(IPAddress.TryParse(httpTarget.Host, out _), get);
+        Assert.True(WebFetchHttpNetwork.IsPublicIpAddress(httpTarget.Host), get);
+        var connect = Assert.Single(requests, line => line.StartsWith("CONNECT ", StringComparison.Ordinal));
+        var tlsTarget = new Uri($"http://{connect.Split(' ')[1]}");
+        Assert.Equal(443, tlsTarget.Port);
+        Assert.True(IPAddress.TryParse(tlsTarget.Host, out _), connect);
+        Assert.True(WebFetchHttpNetwork.IsPublicIpAddress(tlsTarget.Host), connect);
+    }
+
+    [Theory(Explicit = true)]
+    [InlineData("http://example.com/")]
+    [InlineData("https://example.com/")]
+    public async Task RealWebFetch_Bypass_ConnectsDirectlyWithoutUsingConfiguredProxy(string target)
+    {
+        await using var server = new TestForwardProxy(forward: true);
+        var proxy = new OutboundProxy();
+        proxy.Configure($"http://127.0.0.1:{server.Port}", ["example.com"]);
+        Assert.Null(proxy.CaptureRoute(new Uri(target)).ProxyUri);
+        var provider = new HttpFetchProvider(proxy: proxy);
+
+        var result = await provider.Fetch(new WebFetchRequest(target), TestContext.Current.CancellationToken);
+
+        AssertExampleDomain(result, target);
+        Assert.Empty(server.Requests);
+        Assert.Equal(0, server.Connections);
+    }
+
+    private static void AssertExampleDomain(WebFetchResult result, string target)
+    {
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(target, result.Url);
+        Assert.Equal("html", result.Body.Kind);
+        Assert.Contains("<title>Example Domain</title>", result.Body.Content, StringComparison.Ordinal);
+        Assert.False(result.Truncated);
+    }
+
+    [Fact(Explicit = true)]
+    [Trait("Category", "LlmSmoke")]
     public async Task RealLlm_SavedProxyRoutesConfiguredProvider_AndCompletesTurn()
     {
         var configuredHome = HarnessHome.Resolve();

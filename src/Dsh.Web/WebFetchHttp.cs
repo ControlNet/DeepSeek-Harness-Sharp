@@ -295,7 +295,9 @@ public sealed class HttpFetchProvider : IWebFetchProvider
     {
         try
         {
-            var route = await HandlerFor(url, signal).ConfigureAwait(false);
+            var snapshot = _proxy.CaptureRoute(url);
+            using var routeSource = CancellationTokenSource.CreateLinkedTokenSource(signal, snapshot.CancellationToken);
+            var route = await HandlerFor(url, snapshot, routeSource.Token).ConfigureAwait(false);
             var client = new HttpClient(route.Handler, disposeHandler: true);
             try
             {
@@ -303,7 +305,7 @@ public sealed class HttpFetchProvider : IWebFetchProvider
                 request.Headers.Host = url.Authority;
                 request.Headers.TryAddWithoutValidation("User-Agent", _limits.UserAgent);
                 request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,text/*;q=0.9,application/json;q=0.8");
-                var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, signal).ConfigureAwait(false);
+                var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, routeSource.Token).ConfigureAwait(false);
                 return new PinnedHttpResponse(response, client);
             }
             catch
@@ -331,30 +333,23 @@ public sealed class HttpFetchProvider : IWebFetchProvider
     }
 
     /**
-     * 所有出口先用同一公网地址策略检查 DNS, 每次重定向均重新检查。
-     * 直连把连接钉在已校验的公网地址上; 代理的实际 HTTP/CONNECT/SOCKS 目标也使用已校验的 IP。
-     * 原 Host 保持 HTTP 虚拟主机、HTTPS SNI 与证书域名校验; 不依赖代理端域名解析。
-     * 代理本身仍是可信传输边界: 恶意代理可无视所请求的地址, HTTPS 仍执行正常证书校验。
+     * Validate public addresses before each request, including redirects, and pin every transport to them.
+     * The original Host preserves virtual hosting, HTTPS SNI and certificate-name validation.
+     * A proxy remains a trusted transport boundary, but HTTPS still verifies the origin certificate.
      */
-    private async Task<(SocketsHttpHandler Handler, Uri Target)> HandlerFor(Uri url, CancellationToken signal)
+    private async Task<(SocketsHttpHandler Handler, Uri Target)> HandlerFor(
+        Uri url, OutboundProxy.RouteSnapshot snapshot, CancellationToken signal)
     {
         var addresses = await _resolveAddresses(url.Host, signal).ConfigureAwait(false);
-        if (_proxy.ProxyFor(url) is { } endpoint)
+        signal.ThrowIfCancellationRequested();
+        if (snapshot.ProxyUri is not null)
         {
             var target = new UriBuilder(url) { Host = addresses[0].Address }.Uri;
-            return (new SocketsHttpHandler
-            {
-                AllowAutoRedirect = false,
-                Proxy = new WebProxy(endpoint) { Credentials = _proxy },
-                UseProxy = true,
-            }, target);
+            return (snapshot.CreateHandler(allowAutoRedirect: false), target);
         }
-        return (new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false,
-            UseProxy = false,
-            ConnectCallback = (context, token) => ConnectPinnedAsync(addresses, context.DnsEndPoint.Port, token),
-        }, url);
+        return (snapshot.CreateHandler(
+            allowAutoRedirect: false,
+            connectCallback: (context, token) => ConnectPinnedAsync(addresses, context.DnsEndPoint.Port, token)), url);
     }
 
     private static async ValueTask<Stream> ConnectPinnedAsync(IReadOnlyList<PublicAddress> addresses, int port, CancellationToken signal)
