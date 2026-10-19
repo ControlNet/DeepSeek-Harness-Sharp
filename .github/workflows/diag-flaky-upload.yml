@@ -1,0 +1,52 @@
+name: Diagnose cancelled upload (fork only)
+
+on:
+  push:
+    branches: ['diag/flaky-net77-upload']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  compare:
+    if: github.repository == 'ControlNet/DeepSeek-Harness-Sharp'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      DOTNET_PROCESSOR_COUNT: '1'
+      CARGO_BUILD_JOBS: '1'
+      CMAKE_BUILD_PARALLEL_LEVEL: '1'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Prepare verified process-tree limiter and existing native component
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $owned = Join-Path $env:GITHUB_WORKSPACE '.qa/net77-win'
+          if (Test-Path -LiteralPath $owned) { throw 'Diagnostic directory already exists' }
+          New-Item -ItemType Directory -Path $owned | Out-Null
+          $governor = Join-Path $owned 'procgov.exe'
+          Invoke-WebRequest 'https://github.com/lowleveldesign/process-governor/releases/download/4.1.26190/procgov.exe' -OutFile $governor
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $governor).Hash.ToLowerInvariant() -ne 'fa59212a32306ca22c22680a36c047ca3ffea52f511acb09dd9d7145c1673069') { throw 'Process governor digest mismatch' }
+          & $governor --help
+          if ($LASTEXITCODE -ne 0) { throw 'Process governor help failed' }
+          gh run download 39258507932 --repo forestbat/DeepSeek-Harness-Sharp --name iroh-ssh-windows-latest --dir (Join-Path $owned 'native')
+          if ($LASTEXITCODE -ne 0) { throw 'Native component download failed' }
+      - name: Compare actual baseline and candidate under one four-GiB job object
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $owned = Join-Path $env:GITHUB_WORKSPACE '.qa/net77-win'
+          & (Join-Path $owned 'procgov.exe') -r --maxjobmem 4G -- pwsh -NoProfile -File scripts/diagnose-upload-cancel.ps1
+          $code = $LASTEXITCODE
+          $left = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($owned, [StringComparison]::OrdinalIgnoreCase) }
+          if ($left) { throw 'Owned diagnostic executable remains after the bounded job' }
+          Write-Output 'OWNED_EXECUTABLES_ABSENT'
+          exit $code

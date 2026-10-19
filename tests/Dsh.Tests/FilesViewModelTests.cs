@@ -8,6 +8,7 @@ namespace Dsh.Tests;
 public sealed class FilesViewModelTests : IDisposable
 {
     private readonly string _local = TempTree.CreateDirectory("files-vm");
+    private const int DiagnosticExceptionLimit = 32;
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -54,12 +55,27 @@ public sealed class FilesViewModelTests : IDisposable
                     transfer.CancelCommand.Execute(null);
             };
         };
-
-        await viewModel.UploadAsync([source]);
-
-        Assert.Equal(TransferState.Cancelled, Assert.Single(viewModel.Transfers).State);
-        await FleetConnectionTests.WaitForAsync(() => Directory.GetFileSystemEntries(root).Length == 0);
-        Assert.DoesNotContain(viewModel.Roots[0].Children, child => child.Name == "large.bin");
+        var failures = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        void ObserveIo(object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs failure)
+        {
+            if (failure.Exception is IOException or ObjectDisposedException && failures.Count < DiagnosticExceptionLimit)
+                failures.Enqueue($"{failure.Exception.GetType().Name} hresult=0x{failure.Exception.HResult:X8}\n{new System.Diagnostics.StackTrace(failure.Exception, false)}");
+        }
+        AppDomain.CurrentDomain.FirstChanceException += ObserveIo;
+        try
+        {
+            await viewModel.UploadAsync([source]);
+            Assert.Equal(TransferState.Cancelled, Assert.Single(viewModel.Transfers).State);
+            await FleetConnectionTests.WaitForAsync(() => Directory.GetFileSystemEntries(root).Length == 0);
+            Assert.DoesNotContain(viewModel.Roots[0].Children, child => child.Name == "large.bin");
+        }
+        finally
+        {
+            AppDomain.CurrentDomain.FirstChanceException -= ObserveIo;
+            TestContext.Current.TestOutputHelper!.WriteLine($"remaining synthetic files: {string.Join(", ", Directory.GetFileSystemEntries(root).Select(Path.GetFileName))}");
+            foreach (var failure in failures)
+                TestContext.Current.TestOutputHelper!.WriteLine(failure);
+        }
     }
 
     [Fact(Timeout = 60000)]
