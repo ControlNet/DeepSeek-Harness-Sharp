@@ -382,7 +382,7 @@ public sealed class FleetRemoteProxyProcessSmokeTests
             Assert.True(reason is TurnEndReason.Completed, failure);
             Assert.Contains(events.Select(item => item.Data).OfType<ToolCallPayload>(), call => call.Name == "web_fetch");
             Assert.Contains(events.Select(item => item.Data).OfType<ToolResultPayload>(),
-                result => result.Error is null && result.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains("Example Domain", StringComparison.Ordinal)));
+                result => result.Error is null && result.Message.Block.Content.OfType<TextBlock>().Any(block => block.Text.Contains("Example Domain", StringComparison.Ordinal)));
             var answer = events.Select(item => item.Data).OfType<AssistantMessagePayload>().Last();
             Assert.Equal(RealAnswer, string.Concat(answer.Message.Content.OfType<TextBlock>().Select(block => block.Text)).Trim());
             Assert.Contains(targetProxy.Requests, line => line.StartsWith($"CONNECT {selected.ProviderHost}:443 ", StringComparison.Ordinal));
