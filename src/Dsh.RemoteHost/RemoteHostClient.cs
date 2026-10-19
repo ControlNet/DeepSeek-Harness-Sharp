@@ -32,6 +32,7 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
         SessionEditing = new RemoteSessionEditingClient(this);
         Plugins = new RemotePluginsClient(this);
         Models = new RemoteModelsClient(this);
+        Network = new RemoteNetworkClient(this);
         peer.NotificationReceived += OnNotification;
         peer.Closed += OnClosed;
     }
@@ -45,6 +46,7 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     public IRemoteSessionEditing SessionEditing { get; }
     public IRemotePlugins Plugins { get; }
     public IRemoteModels Models { get; }
+    public IRemoteNetwork Network { get; }
     internal bool IsClosed => _peer.IsClosed;
 
     /** Whether the host advertises a capability from HostProtocolCatalog. */

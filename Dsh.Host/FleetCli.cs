@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.Pty;
@@ -31,9 +32,12 @@ internal static class FleetCli
     /** resumeHarness opens a harness session of the local machine in this terminal's TUI. */
     public static async Task<int> RunAsync(HarnessHome home, string[] args, Func<HarnessHome, string, Task<int>> resumeHarness)
     {
-        var parsed = FleetArguments.Parse(args.Skip(1), Flags, ValueOptions);
+        var isProxyCommand = args is [MachineCommand, "proxy", ..];
+        var parsed = FleetArguments.Parse(args.Skip(1),
+            isProxyCommand ? [.. Flags, "--json-stdin"] : Flags,
+            isProxyCommand ? [.. ValueOptions, "--probe-url"] : ValueOptions);
         if (parsed.Error is { } error)
-            return await FailAsync(error);
+            return await FailAsync(isProxyCommand ? "invalid machine proxy options (try --help)" : error);
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>
         {
@@ -71,6 +75,10 @@ internal static class FleetCli
                dsharp machine remove <name>
                dsharp machine test <name>               (connect without deploying)
                dsharp machine deploy <name> [--force]   (install or upgrade dsharp on the machine)
+               dsharp machine proxy <name> show
+               dsharp machine proxy <name> set --json-stdin
+               dsharp machine proxy <name> clear
+               dsharp machine proxy <name> test [--probe-url <url>]
                dsharp session list [--machine <name>]
                dsharp session attach <machine>/<session>   (terminal sessions; leave with Ctrl+])
                dsharp session stop <machine>/<session>
@@ -88,7 +96,8 @@ internal static class FleetCli
         "test" => TestMachineAsync(context),
         "deploy" => DeployMachineAsync(context),
         "enable-iroh" => EnableIrohAsync(context),
-        var other => FailAsync($"unknown machine subcommand \"{other}\" (list | add | remove | test | deploy | enable-iroh)"),
+        "proxy" => RunMachineProxyAsync(context),
+        var other => FailAsync($"unknown machine subcommand \"{other}\" (list | add | remove | test | deploy | enable-iroh | proxy)"),
     };
 
     private static Task<int> RunSessionAsync(FleetCliContext context) => context.Arguments.Subcommand switch
@@ -169,6 +178,90 @@ internal static class FleetCli
         var info = connection.Info!;
         await Console.Out.WriteLineAsync($"{machine.Name} ({machine.Target}): host {info.HostVersion} on {info.Platform}, harness home {info.HomeRoot}, {connection.Sessions.Count} session(s)");
         return 0;
+    }
+
+    private static async Task<int> RunMachineProxyAsync(FleetCliContext context)
+    {
+        var arguments = context.Arguments;
+        var operation = arguments.Positional.ElementAtOrDefault(2);
+        if (arguments.Positional.Count != 3 || operation is not ("show" or "set" or "clear" or "test")
+            || arguments.Flags.Any(flag => flag != "--json-stdin" || operation != "set")
+            || arguments.Options.Keys.Any(option => option != "--probe-url" || operation != "test")
+            || operation == "set" && !arguments.Has("--json-stdin"))
+            return await FailAsync("usage: machine proxy <name> show | set --json-stdin | clear | test [--probe-url <url>]");
+
+        RemoteOutboundProxySettings? supplied = null;
+        var probeUrl = arguments.Value("--probe-url");
+        try
+        {
+            if (operation == "set")
+            {
+                try
+                {
+                    supplied = JsonSerializer.Deserialize(await Console.In.ReadToEndAsync(context.Cancellation),
+                        NetworkProtocolJsonContext.Default.RemoteOutboundProxySettings);
+                }
+                catch (JsonException)
+                {
+                    return await FailAsync("machine proxy set requires a valid JSON settings object on stdin");
+                }
+                if (supplied is null)
+                    return await FailAsync("machine proxy set requires a JSON settings object on stdin");
+            }
+
+            var machine = context.RequireMachine(arguments.Operand);
+            await using var connection = new MachineConnection(machine, context.Options(deploy: false, startLocalHost: true));
+            connection.Start();
+            var network = new FleetNetwork(connection);
+            if (operation == "test")
+            {
+                var result = await network.ProbeOutboundAsync(new RemoteOutboundProxyProbeRequest(ProbeUrl: probeUrl), context.Cancellation);
+                var message = result.Message;
+                if (!string.IsNullOrEmpty(probeUrl))
+                    message = message.Replace(probeUrl, RedactProxyUrl(probeUrl), StringComparison.Ordinal);
+                await Console.Out.WriteLineAsync(OutboundProxy.Redact(message));
+                return result.Reachable ? 0 : 1;
+            }
+
+            var state = await network.GetOutboundAsync(context.Cancellation);
+            if (operation is "set" or "clear")
+                state = await network.SetOutboundAsync(new RemoteOutboundProxySetRequest(state.Revision,
+                    supplied ?? new RemoteOutboundProxySettings()), context.Cancellation);
+            var settings = state.Settings;
+            var redacted = state with
+            {
+                Settings = settings with
+                {
+                    Url = settings.Url is { } url ? RedactProxyUrl(url) : null,
+                    ProbeUrl = settings.ProbeUrl is { } savedProbeUrl ? RedactProxyUrl(savedProbeUrl) : null,
+                },
+            };
+            await Console.Out.WriteLineAsync(JsonSerializer.Serialize(redacted, NetworkProtocolJsonContext.Default.RemoteOutboundProxyState));
+            return 0;
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or IOException or NotSupportedException or JsonRpcException or HttpRequestException or UnauthorizedAccessException or ArgumentException)
+        {
+            // Do not rely on URI parsing to hide credentials in malformed user-supplied URLs.
+            var message = failure.Message;
+            if (supplied?.Url is { Length: > 0 } suppliedUrl)
+                message = message.Replace(suppliedUrl, "[redacted URL]", StringComparison.Ordinal);
+            if (supplied?.ProbeUrl is { Length: > 0 } suppliedProbeUrl)
+                message = message.Replace(suppliedProbeUrl, "[redacted URL]", StringComparison.Ordinal);
+            if (!string.IsNullOrEmpty(probeUrl))
+                message = message.Replace(probeUrl, "[redacted URL]", StringComparison.Ordinal);
+            return await FailAsync(OutboundProxy.Redact(message));
+        }
+    }
+
+    /** Redacts field values even when whitespace makes their user info an invalid URI. */
+    private static string RedactProxyUrl(string url)
+    {
+        var at = url.LastIndexOf('@');
+        if (at < 0)
+            return url;
+        var scheme = url.IndexOf("://", StringComparison.Ordinal);
+        var start = scheme < 0 ? 0 : scheme + 3;
+        return at < start ? url : string.Concat(url.AsSpan(0, start), "***@", url.AsSpan(at + 1));
     }
 
     private static async Task<int> DeployMachineAsync(FleetCliContext context)

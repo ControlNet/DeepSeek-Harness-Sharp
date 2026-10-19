@@ -187,6 +187,7 @@ public sealed class RemoteHostPersistenceTests
         public IRemoteSessionEditingBackend? SessionEditing => null;
         public IRemotePluginsBackend? Plugins => null;
         public IRemoteModelsBackend? Models => null;
+        public IRemoteNetworkBackend? Network => null;
 
         public Task<HostInfo> InfoAsync(CancellationToken cancellationToken)
             => Task.FromResult(new HostInfo(HostProtocol.Version, "test", "test", "/home"));

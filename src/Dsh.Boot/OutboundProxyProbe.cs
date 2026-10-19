@@ -9,15 +9,15 @@ namespace Dsh.Boot;
 public readonly record struct OutboundProxyProbeResult(bool Reachable, string Message);
 
 /**
- * 本机出口代理连通性自检, GUI 设置页与 TUI /proxy test 共用。
- * 分两层判断: 先直连代理端口(不通即"本机出口代理不通"), 再经代理请求探测地址(任何 HTTP 响应都算出口可用, 407 视为认证失败)。
+ * Connectivity probing shared by local commands and the target Host backend.
+ * TCP reachability and the subsequent HTTP response are reported under the caller's outbound owner.
  */
 public static class OutboundProxyProbe
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
 
-    public static async Task<OutboundProxyProbeResult> RunAsync(OutboundProxySettings? settings, CancellationToken cancellationToken)
+    public static async Task<OutboundProxyProbeResult> RunAsync(OutboundProxySettings? settings, CancellationToken cancellationToken, string ownerLabel = "本机出口")
     {
         var proxy = new OutboundProxy();
         try
@@ -26,15 +26,15 @@ public static class OutboundProxyProbe
         }
         catch (ArgumentException error)
         {
-            return new OutboundProxyProbeResult(false, $"本机出口代理不通: 配置无效({error.Message})");
+            return new OutboundProxyProbeResult(false, $"{ownerLabel}代理不通: 配置无效({OutboundProxy.Redact(error.Message)})");
         }
         var probeText = string.IsNullOrWhiteSpace(settings?.ProbeUrl) ? OutboundProxySettings.DefaultProbeUrl : settings.ProbeUrl.Trim();
         if (!Uri.TryCreate(probeText, UriKind.Absolute, out var probe) || probe.Scheme is not ("http" or "https"))
-            return new OutboundProxyProbeResult(false, $"探测地址无效(需要 http/https URL): {OutboundProxy.Redact(probeText)}");
+            return new OutboundProxyProbeResult(false, $"{ownerLabel}探测地址无效(需要 http/https URL)");
         var endpoint = proxy.ProxyFor(probe);
-        var layer = proxy.Address is null ? "本机出口(未配置本机出口代理, 跟随系统代理)"
-            : endpoint is null ? "本机出口(探测地址在直连名单内)"
-            : "本机出口代理";
+        var layer = proxy.Address is null ? $"{ownerLabel}(未配置{ownerLabel}代理, 跟随系统代理)"
+            : endpoint is null ? $"{ownerLabel}(探测地址在直连名单内)"
+            : $"{ownerLabel}代理";
         var via = endpoint is null ? "直连" : proxy.Address is null ? OutboundProxy.Redact(endpoint.GetLeftPart(UriPartial.Authority)) : proxy.Describe();
         if (endpoint is not null && await ConnectFailureAsync(endpoint, cancellationToken) is { } connectError)
             return new OutboundProxyProbeResult(false, $"{layer}不通: 无法连接代理 {via}({connectError})");
@@ -78,11 +78,11 @@ public static class OutboundProxyProbe
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
         {
             var reason = error is TaskCanceledException ? $"{RequestTimeout.TotalSeconds:0} 秒内无响应" : OutboundProxy.Redact(Flatten(error));
-            return new OutboundProxyProbeResult(false, $"{layer}不通: 经 {via} 访问 {probe} 失败({reason})");
+            return new OutboundProxyProbeResult(false, $"{layer}不通: 经 {via} 访问 {OutboundProxy.Redact(probe.AbsoluteUri)} 失败({reason})");
         }
         return status == HttpStatusCode.ProxyAuthenticationRequired
             ? new OutboundProxyProbeResult(false, $"{layer}不通: 代理 {via} 要求认证或用户名密码错误(HTTP 407)")
-            : new OutboundProxyProbeResult(true, $"{layer}可用: 经 {via} 访问 {probe} 返回 HTTP {(int)status}, 耗时 {watch.ElapsedMilliseconds} ms");
+            : new OutboundProxyProbeResult(true, $"{layer}可用: 经 {via} 访问 {OutboundProxy.Redact(probe.AbsoluteUri)} 返回 HTTP {(int)status}, 耗时 {watch.ElapsedMilliseconds} ms");
     }
 
     private static string Flatten(Exception error)

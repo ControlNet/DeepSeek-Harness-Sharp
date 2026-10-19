@@ -273,6 +273,7 @@ internal sealed class TestSshServer : IAsyncDisposable
 
     private readonly Process _process;
     private readonly int _port;
+    private readonly TaskCompletionSource _listening = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private TestSshServer(string root, Process process, int port)
     {
@@ -302,11 +303,32 @@ internal sealed class TestSshServer : IAsyncDisposable
             UseShellExecute = false,
             RedirectStandardError = true,
         }) ?? throw new InvalidOperationException("failed to start sshd");
-        process.ErrorDataReceived += (_, _) => { };
-        process.BeginErrorReadLine();
         var server = new TestSshServer(root, process, port);
-        await server.WaitListeningAsync(cancellationToken);
-        return server;
+        string? startupError = null;
+        process.ErrorDataReceived += (_, args) =>
+        {
+            if (args.Data is not { } line)
+            {
+                server._listening.TrySetException(new IOException($"test sshd exited before listening: {startupError}"));
+                return;
+            }
+            if (server._listening.Task.IsCompleted)
+                return;
+            startupError = line;
+            if (line.StartsWith("Server listening on ", StringComparison.Ordinal))
+                server._listening.TrySetResult();
+        };
+        process.BeginErrorReadLine();
+        try
+        {
+            await server.WaitListeningAsync(cancellationToken);
+            return server;
+        }
+        catch
+        {
+            await server.DisposeAsync();
+            throw;
+        }
     }
 
     /** A machine for this server: key authentication with the test key, the test known_hosts, and no connection sharing through the real ~/.ssh. */
@@ -351,7 +373,7 @@ internal sealed class TestSshServer : IAsyncDisposable
         Subsystem sftp {SftpServer}
         SetEnv HOME={Path.Combine(root, "home")} DOTNET_ROOT={DotnetRoot}
         ForceCommand cd "$HOME" && exec "$SHELL" -c "$SSH_ORIGINAL_COMMAND"
-        LogLevel ERROR
+        LogLevel INFO
         """;
 
     /** The .NET installation running this test (<root>/shared/Microsoft.NETCore.App/<version>), which the framework-dependent build needs on the "remote" side too. */
@@ -364,21 +386,6 @@ internal sealed class TestSshServer : IAsyncDisposable
         return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
-    private async Task WaitListeningAsync(CancellationToken cancellationToken)
-    {
-        var deadline = DateTime.UtcNow + StartTimeout;
-        while (true)
-        {
-            try
-            {
-                using var client = new TcpClient();
-                await client.ConnectAsync(IPAddress.Loopback, _port, cancellationToken);
-                return;
-            }
-            catch (SocketException) when (DateTime.UtcNow < deadline && !_process.HasExited)
-            {
-                await Task.Delay(100, cancellationToken);
-            }
-        }
-    }
+    private Task WaitListeningAsync(CancellationToken cancellationToken)
+        => _listening.Task.WaitAsync(StartTimeout, cancellationToken);
 }

@@ -17,5 +17,6 @@ public static class HostProtocolCatalog
             ["SessionEditing"] = SessionEditingProtocol.Capability,
             ["PluginManagement"] = PluginsProtocol.Capability,
             ["ModelCatalog"] = ModelsProtocol.Capability,
+            ["NetworkOutbound"] = NetworkProtocol.Capability,
         });
 }
