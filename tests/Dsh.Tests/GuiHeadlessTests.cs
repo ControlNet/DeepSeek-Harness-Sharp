@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.VisualTree;
@@ -149,6 +150,99 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
             Dispatcher.UIThread.RunJobs();
             var answer = Assert.IsType<AskUserQuestionAnswer>(decision.Result);
             Assert.Equal("全量", Assert.Single(answer.Answers).Selected[0]);
+        });
+
+    [Theory]
+    [InlineData(Key.Y, ApprovalOutcome.AllowedOnce)]
+    [InlineData(Key.A, ApprovalOutcome.AllowedForSession)]
+    [InlineData(Key.N, ApprovalOutcome.Rejected)]
+    [InlineData(Key.C, ApprovalOutcome.Cancelled)]
+    [InlineData(Key.Escape, ApprovalOutcome.Cancelled)]
+    public async Task DecisionDialog_ApprovalKeyboardActions_CloseWithoutAllowingOnEscape(Key key, ApprovalOutcome expected)
+        => await HeadlessGui.RunAsync(() =>
+        {
+            var decision = DecisionViewModel.ForApproval("bash", """{"command":"echo review"}""", "Review execution");
+            var dialog = new DecisionDialog(decision);
+            dialog.Show();
+            Dispatcher.UIThread.RunJobs();
+            var input = new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = key };
+            dialog.RaiseEvent(input);
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(input.Handled);
+            Assert.Equal(expected, decision.Result);
+            Assert.False(dialog.IsVisible);
+            return Task.CompletedTask;
+        });
+
+    [Fact]
+    public async Task DecisionDialog_EscapeFromCustomInput_DismissesWholeQuestionGroup()
+        => await HeadlessGui.RunAsync(() =>
+        {
+            var decision = DecisionViewModel.ForQuestion(new AskUserQuestionRequest(
+            [
+                new("choice", "Choose", Options: [new("Default", Value: "default", Default: true)]),
+                new("custom", "Add details"),
+            ]));
+            var dialog = new DecisionDialog(decision);
+            dialog.Show();
+            Dispatcher.UIThread.RunJobs();
+            var custom = dialog.GetVisualDescendants().OfType<TextBox>().Last();
+            custom.Focus();
+            custom.Text = "Partial answer";
+            var input = new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Escape };
+            custom.RaiseEvent(input);
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(input.Handled);
+            var result = Assert.IsType<AskUserQuestionAnswer>(decision.Result);
+            Assert.True(result.IsDismissed);
+            Assert.Empty(result.Answers);
+            Assert.Equal("user_cancelled", result.Reason);
+            Assert.False(dialog.IsVisible);
+            return Task.CompletedTask;
+        });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DecisionDialog_UnsupportedCancellation_LeavesPendingVisible_AndExistingAnswerAvailable(bool approval)
+        => await HeadlessGui.RunAsync(() =>
+        {
+            var decision = approval
+                ? DecisionViewModel.ForApproval("bash", null, "Review")
+                : DecisionViewModel.ForQuestion(new AskUserQuestionRequest(
+                    [new("q", "Choose", Options: [new("Yes", Value: "yes", Default: true)])]));
+            decision.SetCancellationSupported(false);
+            var dialog = new DecisionDialog(decision);
+            dialog.Show();
+            Dispatcher.UIThread.RunJobs();
+            var cancel = dialog.GetVisualDescendants().OfType<Button>().First(button => button.Command == decision.CancelCommand);
+            Assert.False(cancel.IsEffectivelyEnabled);
+            Assert.Contains(dialog.GetVisualDescendants(), visual =>
+                visual is TextBlock { IsVisible: true, Text: { } text } && text.Contains("Unsupported", StringComparison.Ordinal));
+
+            var escape = new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Escape };
+            dialog.RaiseEvent(escape);
+            dialog.Close();
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(escape.Handled);
+            Assert.True(dialog.IsVisible);
+            Assert.False(decision.IsClosed);
+            Assert.Null(decision.Result);
+
+            var answer = new KeyEventArgs
+            {
+                RoutedEvent = InputElement.KeyDownEvent,
+                Key = approval ? Key.N : Key.Enter,
+                KeyModifiers = approval ? KeyModifiers.None : KeyModifiers.Control,
+            };
+            dialog.RaiseEvent(answer);
+            Dispatcher.UIThread.RunJobs();
+            Assert.False(dialog.IsVisible);
+            if (approval)
+                Assert.Equal(ApprovalOutcome.Rejected, decision.Result);
+            else
+                Assert.Equal(["yes"], Assert.Single(Assert.IsType<AskUserQuestionAnswer>(decision.Result).Answers).Selected);
+            return Task.CompletedTask;
         });
 
     [Fact]

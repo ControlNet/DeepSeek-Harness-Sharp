@@ -1,6 +1,9 @@
 using System.Text.Json;
 using Dsh.AgentAdapters;
 using Dsh.Core;
+using Dsh.Fleet;
+using Dsh.Gui.ViewModels;
+using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Notifications;
 using Dsh.RemoteHost;
@@ -19,6 +22,38 @@ public sealed class RemoteHostAgentTests : IDisposable
     private static readonly TimeSpan FirstScreen = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan Handshake = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan Turn = TimeSpan.FromMinutes(4);
+    private const string PermissionOptions = """
+        [{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"allow-always","name":"Remember in the provider","kind":"allow_always"},{"optionId":"reject-once","name":"Reject once","kind":"reject_once"}]
+        """;
+    private const string PermissionPeer = """
+        exec 3< "$2"
+        while IFS= read -r line; do
+          id=${line#*\"id\":}
+          id=${id%%,*}
+          id=${id%%\}*}
+          case "$line" in
+            *'"method":"initialize"'*)
+              printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id"
+              ;;
+            *'"method":"session/new"'*)
+              printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"choice-acp"}}\n' "$id"
+              ;;
+            *'"method":"session/prompt"'*)
+              prompt_id=$id
+              IFS= read -r permission <&3
+              printf '%s\n' "$permission"
+              ;;
+            *'"id":"choice-permission-'*)
+              printf '%s\n' "$line" >> "$1"
+              if IFS= read -r permission <&3; then
+                printf '%s\n' "$permission"
+              else
+                printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt_id"
+              fi
+              ;;
+          esac
+        done
+        """;
 
     private readonly string _workspace = Path.GetFullPath(Path.Combine(
         AppContext.BaseDirectory, "../../../../../artifacts020/test-tmp", $"agent-{Guid.NewGuid():N}"));
@@ -231,6 +266,164 @@ public sealed class RemoteHostAgentTests : IDisposable
         Assert.Equal((session.SessionId, HostSessionStatuses.Idle, "renamed acp"), (reopened.SessionId, reopened.Status, reopened.Title));
     }
 
+    [Theory(Timeout = 60000)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task CustomAcp_ApprovalCancellation_Preserves_Cancelled_Wire_Outcome(bool cancelled, bool allow)
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("uses a POSIX shell as an ACP wire peer");
+        await using var host = await HarnessHostFixture.CreateAsync("mcc", TestContext.Current.CancellationToken);
+        var alice = await host.ConnectAsync("alice", Ct);
+        var bob = await host.ConnectAsync("bob", Ct);
+        var responsePath = Path.Combine(_workspace, "permission-response.json");
+        // This process is an ACP wire peer; it does not simulate or call a model.
+        var session = await StartPermissionPeerAsync(alice, responsePath, PermissionRequest("cancel", null, PermissionOptions));
+        await alice.Agent.PromptAgentAsync(session.SessionId, "Request the protocol permission.", Ct);
+        var request = Assert.Single((await RemoteHostMultiClientTests.NextAsync(alice.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
+        var other = Assert.Single((await RemoteHostMultiClientTests.NextAsync(bob.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
+        Assert.Equal(request, other);
+
+        Assert.True(await alice.RespondApprovalAsync(request.RequestId, allow, cancellationToken: Ct,
+            rememberForSession: true, cancelled: cancelled));
+        Assert.False(await bob.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct));
+        await ReadEventsAsync(alice, session.SessionId, item => item.Data is TurnEndPayload, cancellationToken: Ct);
+        using var response = JsonDocument.Parse(await File.ReadAllTextAsync(responsePath, Ct));
+        var outcome = response.RootElement.GetProperty("result").GetProperty("outcome");
+        Assert.Equal(cancelled ? "cancelled" : "selected", outcome.GetProperty("outcome").GetString());
+        if (cancelled)
+            Assert.False(outcome.TryGetProperty("optionId", out _));
+        else
+            Assert.Equal("reject-once", outcome.GetProperty("optionId").GetString());
+        foreach (var client in new[] { alice, bob })
+        {
+            var change = await RemoteHostMultiClientTests.NextAsync(client.PendingChangesAsync(Ct),
+                change => change.Resolution?.RequestId == request.RequestId);
+            Assert.Empty(change.Pending.Approvals);
+            Assert.Equal(cancelled ? PendingResolutions.Cancelled : PendingResolutions.Rejected,
+                change.Resolution!.Resolution);
+        }
+        await alice.Agent.StopAgentAsync(session.SessionId, Ct);
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task CustomAcp_OnceCannotSelectProviderAlways_AndUnsupportedResponseLeavesItPending()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("uses a POSIX shell as an ACP wire peer");
+        await using var host = await HarnessHostFixture.CreateAsync("mco", TestContext.Current.CancellationToken);
+        var client = await host.ConnectAsync("approval", Ct);
+        var responsePath = Path.Combine(_workspace, "once-response.jsonl");
+        const string options = """[{"optionId":"provider-always","name":"Allow permanently","kind":"allow_always"},{"optionId":"reject","name":"Reject once","kind":"reject_once"}]""";
+        var session = await StartPermissionPeerAsync(client, responsePath, PermissionRequest("once", "edit_file", options));
+        await client.Agent.PromptAgentAsync(session.SessionId, "Request the protocol permission.", Ct);
+        var request = Assert.Single((await RemoteHostMultiClientTests.NextAsync(client.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
+        Assert.False(await client.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct));
+        Assert.Equal(request.RequestId, Assert.Single((await client.ListPendingAsync(Ct)).Approvals).RequestId);
+        Assert.True(await client.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct, cancelled: true));
+        await ReadEventsAsync(client, session.SessionId, item => item.Data is TurnEndPayload, cancellationToken: Ct);
+        using var response = JsonDocument.Parse(await File.ReadAllTextAsync(responsePath, Ct));
+        Assert.Equal("cancelled", response.RootElement.GetProperty("result").GetProperty("outcome").GetProperty("outcome").GetString());
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task CustomAcp_MissingStableToolName_CannotRememberAnUnscopedGrant()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("uses a POSIX shell as an ACP wire peer");
+        await using var host = await HarnessHostFixture.CreateAsync("mcn", TestContext.Current.CancellationToken);
+        var client = await host.ConnectAsync("approval", Ct);
+        var responsePath = Path.Combine(_workspace, "unnamed-response.jsonl");
+        var session = await StartPermissionPeerAsync(client, responsePath, PermissionRequest("unnamed", null, PermissionOptions));
+        await client.Agent.PromptAgentAsync(session.SessionId, "Request the protocol permission.", Ct);
+        var request = Assert.Single((await RemoteHostMultiClientTests.NextAsync(client.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
+        Assert.False(await client.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct, rememberForSession: true));
+        Assert.Equal(request.RequestId, Assert.Single((await client.ListPendingAsync(Ct)).Approvals).RequestId);
+        Assert.True(await client.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct));
+        var events = await ReadEventsAsync(client, session.SessionId, item => item.Data is TurnEndPayload, cancellationToken: Ct);
+        Assert.Empty(events.Select(item => item.Data).OfType<ApprovalGrantedPayload>());
+        using var response = JsonDocument.Parse(await File.ReadAllTextAsync(responsePath, Ct));
+        Assert.Equal("allow-once", response.RootElement.GetProperty("result").GetProperty("outcome").GetProperty("optionId").GetString());
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task CustomAcp_AlwaysUsesOnlyTheCurrentHostSessionTool_AndNeverProviderAlways()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("uses a POSIX shell as an ACP wire peer");
+        await using var host = await HarnessHostFixture.CreateAsync("mca", TestContext.Current.CancellationToken);
+        var client = await host.ConnectAsync("approval", Ct);
+        var responsePath = Path.Combine(_workspace, "session-responses.jsonl");
+        var first = PermissionRequest("first", "edit_file", PermissionOptions);
+        var session = await StartPermissionPeerAsync(client, responsePath, first,
+            PermissionRequest("second", "edit_file", PermissionOptions), PermissionRequest("other", "write_other_file", PermissionOptions));
+        await client.Agent.PromptAgentAsync(session.SessionId, "Request the protocol permissions.", Ct);
+        var request = Assert.Single((await RemoteHostMultiClientTests.NextAsync(client.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
+        Assert.True(await client.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct, rememberForSession: true));
+        var other = Assert.Single((await RemoteHostMultiClientTests.NextAsync(client.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Any(item => item.RequestId != request.RequestId))).Pending.Approvals);
+        using var target = JsonDocument.Parse(other.Arguments!);
+        Assert.Equal("other.txt", target.RootElement.GetProperty("path").GetString());
+        Assert.Equal("write_other_file", other.Tool);
+        Assert.True(await client.RespondApprovalAsync(other.RequestId, false, cancellationToken: Ct));
+        var events = await ReadEventsAsync(client, session.SessionId, item => item.Data is TurnEndPayload, cancellationToken: Ct);
+        Assert.Equal("edit_file", Assert.Single(events.Select(item => item.Data).OfType<ApprovalGrantedPayload>()).ToolName);
+        var responses = await File.ReadAllLinesAsync(responsePath, Ct);
+        var selected = responses.Select(line =>
+        {
+            using var response = JsonDocument.Parse(line);
+            return response.RootElement.GetProperty("result").GetProperty("outcome").GetProperty("optionId").GetString();
+        }).ToArray();
+        Assert.Equal(["allow-once", "allow-once", "reject-once"], selected);
+        var separate = await StartPermissionPeerAsync(client, Path.Combine(_workspace, "separate-response.jsonl"), first);
+        await client.Agent.PromptAgentAsync(separate.SessionId, "Request the same tool in another session.", Ct);
+        var separateRequest = Assert.Single((await RemoteHostMultiClientTests.NextAsync(client.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Any(item => item.SessionId == separate.SessionId))).Pending.Approvals);
+        Assert.Equal("edit_file", separateRequest.Tool);
+        Assert.True(await client.RespondApprovalAsync(separateRequest.RequestId, false, cancellationToken: Ct, cancelled: true));
+        await ReadEventsAsync(client, separate.SessionId, item => item.Data is TurnEndPayload, cancellationToken: Ct);
+    }
+
+    [Theory(Timeout = 60000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CustomAcp_PendingCard_PreservesActionsAfterAnUnsupportedReply(bool advertiseAvailability)
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("uses a POSIX shell as an ACP wire peer");
+        await using var host = await HarnessHostFixture.CreateAsync("mcp", TestContext.Current.CancellationToken);
+        var client = await host.ConnectAsync("card", Ct);
+        var session = await StartPermissionPeerAsync(client, Path.Combine(_workspace, "card-response.jsonl"),
+            PermissionRequest("card", null, PermissionOptions));
+        await client.Agent.PromptAgentAsync(session.SessionId, "Request the protocol permission.", Ct);
+        var request = Assert.Single((await RemoteHostMultiClientTests.NextAsync(client.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
+        await using var connection = new MachineConnection(MachineSpec.Local(host.Root), FleetConnectionTests.TestOptions);
+        connection.Start();
+        await connection.WaitConnectedAsync(Ct);
+        var shown = advertiseAvailability ? request : request with { Availability = null };
+        var card = new PendingDecisionViewModel(new("local", request.RequestId, session.SessionId, PendingKinds.Approval, shown, null), () => connection);
+        var superseded = 0;
+        card.Superseded += _ => superseded++;
+        if (advertiseAvailability)
+            Assert.False(card.AlwaysCommand.CanExecute(null));
+        await card.AlwaysCommand.ExecuteAsync(null);
+        Assert.False(card.IsBusy);
+        Assert.Equal(0, superseded);
+        Assert.Equal(request.RequestId, Assert.Single((await client.ListPendingAsync(Ct)).Approvals).RequestId);
+        Assert.True(card.AllowCommand.CanExecute(null));
+        await card.AllowCommand.ExecuteAsync(null);
+        Assert.False(card.AllowCommand.CanExecute(null));
+        Assert.Empty((await client.ListPendingAsync(Ct)).Approvals);
+        await ReadEventsAsync(client, session.SessionId, item => item.Data is TurnEndPayload, cancellationToken: Ct);
+    }
+
     [Fact(Timeout = 600000)]
     [Trait("Category", "LlmSmoke")]
     public async Task OpenCodeAcp_PromptTurn_PersistsAndRemainsQueryableAcrossRestart()
@@ -379,6 +572,18 @@ public sealed class RemoteHostAgentTests : IDisposable
         Assert.Contains(query.Search(text), hit => hit.SessionId == sessionId
             && (eventType is null || hit.Type == eventType)
             && events.Any(item => item.Seq == hit.Seq && item.Type == hit.Type));
+    }
+
+    private static string PermissionRequest(string id, string? toolName, string options)
+        => $$$"""{"jsonrpc":"2.0","id":"choice-permission-{{{id}}}","method":"session/request_permission","params":{"sessionId":"choice-acp","toolCall":{"toolCallId":"tool-{{{id}}}","name":{{{JsonSerializer.Serialize(toolName)}}},"title":"Update file","kind":"edit","rawInput":{"path":"{{{id}}}.txt"}},"options":{{{options}}}}}""";
+
+    private async Task<RemoteHostSession> StartPermissionPeerAsync(RemoteHostClient client, string responsePath, params string[] requests)
+    {
+        var requestsPath = $"{responsePath}.requests.jsonl";
+        await File.WriteAllLinesAsync(requestsPath, requests, Ct);
+        return await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(
+            AgentKinds.Acp, _workspace, Mode: RemoteAgentModes.Acp,
+            Command: new RemoteAgentCommand("/bin/sh", ["-c", PermissionPeer, "choice-acp-peer", responsePath, requestsPath])), Ct);
     }
 
     private static void RequireOpenCode()

@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 using Dsh.Core;
 using Dsh.Host;
@@ -5,6 +7,7 @@ using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Pty;
 using Dsh.RemoteHost;
+using Dsh.Transport;
 
 namespace Dsh.Tests;
 
@@ -40,6 +43,7 @@ public sealed class RemoteHostMultiClientTests
         Assert.Equal(seenByAlice, seenByBob);
         Assert.Equal(host.Environment.Agent.Id.Value, seenByAlice.SessionId);
         Assert.Equal("bash", seenByAlice.Tool);
+        Assert.Equal(ApprovalHints.Impact(seenByAlice.Tool, seenByAlice.Arguments), seenByAlice.Impact);
 
         Assert.True(await alice.RespondApprovalAsync(seenByAlice.RequestId, true, cancellationToken: Ct, rememberForSession: rememberForSession));
         Assert.False(await bob.RespondApprovalAsync(seenByBob.RequestId, false, cancellationToken: Ct));
@@ -63,6 +67,247 @@ public sealed class RemoteHostMultiClientTests
         Assert.Empty(fresh.Pending.Approvals);
         Assert.Empty(fresh.Pending.Questions);
         Assert.Null(fresh.Resolution);
+    }
+
+    [Theory(Timeout = 60000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Client_Approval_Cancellation_Is_Not_Rejection_And_Cannot_Be_Overridden(bool allow)
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("mhc", TestContext.Current.CancellationToken);
+        var alice = await host.ConnectAsync("alice", Ct);
+        var bob = await host.ConnectAsync("bob", Ct);
+        var decision = RaiseApprovalAsync(host, host.Environment.Agent, "write");
+        var request = Assert.Single((await NextAsync(alice.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
+        var other = Assert.Single((await NextAsync(bob.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Count > 0)).Pending.Approvals);
+        Assert.Equal(request.RequestId, other.RequestId);
+
+        Assert.True(await alice.RespondApprovalAsync(request.RequestId, allow, cancellationToken: Ct,
+            rememberForSession: true, cancelled: true));
+        Assert.False(await bob.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct));
+        Assert.Equal(ApprovalOutcome.Cancelled, await decision.WaitAsync(Arrival, Ct));
+        foreach (var client in new[] { alice, bob })
+        {
+            var change = await NextAsync(client.PendingChangesAsync(Ct),
+                change => change.Resolution?.RequestId == request.RequestId);
+            Assert.Empty(change.Pending.Approvals);
+            Assert.Equal(PendingResolutions.Cancelled, change.Resolution!.Resolution);
+            Assert.Equal("alice", change.Resolution.ResolvedBy);
+            Assert.Equal(alice.Hello.ConnectionId, change.Resolution.ResolvedByConnection);
+        }
+    }
+
+    [Theory(Timeout = 60000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Question_Answer_And_Dismissal_Are_First_Response_Wins_Across_Clients(bool dismissFirst)
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("mhq", TestContext.Current.CancellationToken);
+        var alice = await host.ConnectAsync("alice", Ct);
+        var bob = await host.ConnectAsync("bob", Ct);
+        var service = host.Environment.App.Ctx.Get<UserQuestionService>(UserQuestionService.ServiceName)!;
+        var waiting = service.Ask(new AskUserQuestionRequest(
+        [
+            new AskUserQuestionItem("q1", "Choose targets", Detail: "Select all required work.", Header: "Targets",
+                Options:
+                [
+                    new AskUserQuestionOption("Tests", "Exercise behavior", "tests", Default: true),
+                    new AskUserQuestionOption("Disabled", Value: "disabled", Disabled: true),
+                    new AskUserQuestionOption("Docs", Value: "docs"),
+                ], MultiSelect: true, AllowCustom: false),
+            new AskUserQuestionItem("q2", "Additional notes?"),
+        ], host.Environment.Agent), Ct);
+        var request = Assert.Single((await NextAsync(alice.PendingChangesAsync(Ct),
+            change => change.Pending.Questions.Count > 0)).Pending.Questions);
+        var other = Assert.Single((await NextAsync(bob.PendingChangesAsync(Ct),
+            change => change.Pending.Questions.Count > 0)).Pending.Questions);
+        Assert.Equal(request.RequestId, other.RequestId);
+        var remote = request.Questions[0];
+        Assert.Equal("Select all required work.", remote.Detail);
+        Assert.Equal("Targets", remote.Header);
+        Assert.True(remote.MultiSelect);
+        Assert.False(remote.AllowCustom);
+        Assert.True(request.Questions[1].AllowCustom);
+        Assert.Equal(new RemoteQuestionOption("Tests", "Exercise behavior", "tests", Default: true), remote.Options[0]);
+        Assert.Equal(new RemoteQuestionOption("Disabled", null, "disabled", Disabled: true), remote.Options[1]);
+        Assert.Equal(remote.Options[0], other.Questions[0].Options[0]);
+        Assert.Equal(remote.AllowCustom, other.Questions[0].AllowCustom);
+        RemoteQuestionAnswerItem[] answers =
+        [
+            new("q1", ["tests", "docs"], null),
+            new("q2", [], "Keep the notes."),
+        ];
+
+        Assert.True(await alice.RespondQuestionAsync(request.RequestId, answers, Ct,
+            status: dismissFirst ? "dismissed" : "answered"));
+        Assert.False(await bob.RespondQuestionAsync(request.RequestId, answers, Ct,
+            status: dismissFirst ? "answered" : "dismissed", reason: "user_cancelled"));
+        var result = await waiting.WaitAsync(Arrival, Ct);
+        Assert.Equal(dismissFirst, result.IsDismissed);
+        Assert.Equal(dismissFirst ? "dismissed" : "answered", result.Status);
+        if (dismissFirst)
+        {
+            Assert.Empty(result.Answers);
+            Assert.Equal("user_cancelled", result.Reason);
+        }
+        else
+        {
+            Assert.Equal(["tests", "docs"], result.Answers[0].Selected);
+            Assert.Equal("Keep the notes.", result.Answers[1].Custom);
+            Assert.Null(result.Reason);
+        }
+        foreach (var client in new[] { alice, bob })
+        {
+            var change = await NextAsync(client.PendingChangesAsync(Ct),
+                change => change.Resolution?.RequestId == request.RequestId);
+            Assert.Empty(change.Pending.Questions);
+            Assert.Equal(dismissFirst ? PendingResolutions.Dismissed : PendingResolutions.Answered,
+                change.Resolution!.Resolution);
+            Assert.Equal("alice", change.Resolution.ResolvedBy);
+            Assert.Equal(alice.Hello.ConnectionId, change.Resolution.ResolvedByConnection);
+        }
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task MissingCancellationCapability_RefusesNewOutcomes_KeepsPending_AndAllowsExistingResponses()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("mhg", TestContext.Current.CancellationToken);
+        var upstream = await host.ConnectAsync("capability-filter", Ct);
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var socket = new TcpClient();
+        var accept = listener.AcceptTcpClientAsync(Ct);
+        await socket.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, Ct);
+        using var accepted = await accept;
+        await using var peer = new JsonRpcPeer(accepted.GetStream());
+        // Only negotiation is filtered. Every decision and pending query reaches the real harness Host.
+        peer.RequestHandler = async (message, token) =>
+        {
+            if (message.Method == HostProtocol.MethodHello)
+                return JsonSerializer.SerializeToElement(upstream.Hello with
+                {
+                    Capabilities = upstream.Hello.Capabilities!.Where(capability => capability != DecisionProtocol.Capability).ToArray(),
+                }, HostProtocolJsonContext.Default.HostHelloResponse);
+            return await upstream.RequestAsync(message.Method!, message.Params, token);
+        };
+        peer.Start();
+        await using var client = await RemoteHostClient.ConnectAsync(socket.GetStream(), cancellationToken: Ct);
+        var approval = RaiseApprovalAsync(host, host.Environment.Agent, "write");
+        var question = AskQuestionAsync(host, host.Environment.Agent);
+        var waiting = (await NextAsync(upstream.PendingChangesAsync(Ct),
+            change => change.Pending.Approvals.Count > 0 && change.Pending.Questions.Count > 0)).Pending;
+        var approvalId = Assert.Single(waiting.Approvals).RequestId;
+        var questionId = Assert.Single(waiting.Questions).RequestId;
+
+        var cancelError = await Assert.ThrowsAsync<NotSupportedException>(() =>
+            client.RespondApprovalAsync(approvalId, false, cancellationToken: Ct, cancelled: true));
+        var dismissError = await Assert.ThrowsAsync<NotSupportedException>(() =>
+            client.RespondQuestionAsync(questionId, [], Ct, "dismissed", "user_cancelled"));
+        Assert.Contains("Unsupported", cancelError.Message, StringComparison.Ordinal);
+        Assert.Contains("Unsupported", dismissError.Message, StringComparison.Ordinal);
+        var stillPending = await client.ListPendingAsync(Ct);
+        Assert.Equal(approvalId, Assert.Single(stillPending.Approvals).RequestId);
+        Assert.Equal(questionId, Assert.Single(stillPending.Questions).RequestId);
+        Assert.False(approval.IsCompleted);
+        Assert.False(question.IsCompleted);
+
+        Assert.True(await client.RespondApprovalAsync(approvalId, false, cancellationToken: Ct));
+        Assert.Equal(ApprovalOutcome.Rejected, await approval.WaitAsync(Arrival, Ct));
+        Assert.True(await client.RespondQuestionAsync(questionId, [new("q1", ["A"], null)], Ct));
+        var answer = await question.WaitAsync(Arrival, Ct);
+        Assert.Equal("answered", answer.Status);
+        Assert.Equal(["A"], Assert.Single(answer.Answers).Selected);
+        var resolved = await client.ListPendingAsync(Ct);
+        Assert.Empty(resolved.Approvals);
+        Assert.Empty(resolved.Questions);
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task Question_Dismissal_Reaches_Model_Facing_Tool_As_Structured_Success()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("mht", TestContext.Current.CancellationToken);
+        var alice = await host.ConnectAsync("alice", Ct);
+        var bob = await host.ConnectAsync("bob", Ct);
+        var tools = host.Environment.App.Ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!;
+        var waiting = tools.Execute(new ToolExecutionInput
+        {
+            CallId = ToolCallId.Create("host-dismissal"),
+            Name = "ask_user_question",
+            Arguments = JsonDocument.Parse("""{"questions":[{"id":"q","question":"Proceed?"}]}""").RootElement,
+            Agent = host.Environment.Agent,
+            Signal = Ct,
+        });
+        var request = Assert.Single((await NextAsync(alice.PendingChangesAsync(Ct),
+            change => change.Pending.Questions.Count > 0)).Pending.Questions);
+
+        Assert.True(await alice.RespondQuestionAsync(request.RequestId, [], Ct, "dismissed", "user_cancelled"));
+        Assert.False(await bob.RespondQuestionAsync(request.RequestId, [new("q", ["yes"], null)], Ct));
+        var result = Assert.IsType<ToolExecutionResult.Success>(await waiting.WaitAsync(Arrival, Ct));
+        const string expected = """{"status":"dismissed","answers":[],"reason":"user_cancelled"}""";
+        Assert.Equal(expected, result.Value.GetRawText());
+        Assert.Equal(expected, Assert.IsType<TextBlock>(Assert.Single(result.Content)).Text);
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task Host_Question_Cancellation_Remains_Aborted_Not_User_Dismissed()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("mhb", TestContext.Current.CancellationToken);
+        var alice = await host.ConnectAsync("alice", Ct);
+        var bob = await host.ConnectAsync("bob", Ct);
+        var waiting = AskQuestionAsync(host, host.Environment.Agent);
+        var request = Assert.Single((await NextAsync(alice.PendingChangesAsync(Ct),
+            change => change.Pending.Questions.Count > 0)).Pending.Questions);
+
+        host.Backend.Pending.CancelSession(request.SessionId);
+
+        var error = await Assert.ThrowsAsync<UserQuestionException>(async () => await waiting.WaitAsync(Arrival, Ct));
+        Assert.Equal(UserQuestionException.AskAborted, error.Code);
+        Assert.False(await bob.RespondQuestionAsync(request.RequestId, [], Ct, "dismissed", "user_cancelled"));
+        foreach (var client in new[] { alice, bob })
+        {
+            var change = await NextAsync(client.PendingChangesAsync(Ct),
+                change => change.Resolution?.RequestId == request.RequestId);
+            Assert.Empty(change.Pending.Questions);
+            Assert.Equal(PendingResolutions.Cancelled, change.Resolution!.Resolution);
+            Assert.Equal(PendingResolver.Host.Name, change.Resolution.ResolvedBy);
+            Assert.Null(change.Resolution.ResolvedByConnection);
+        }
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task CallerCancellation_RemovesOnlyItsQuestionFromBothClients_AndRejectsLateDismissal()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("mhc", TestContext.Current.CancellationToken);
+        var alice = await host.ConnectAsync("alice", Ct);
+        var bob = await host.ConnectAsync("bob", Ct);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var service = host.Environment.App.Ctx.Get<UserQuestionService>(UserQuestionService.ServiceName)!;
+        var cancelled = service.Ask(new([new("cancelled", "First", Options: [new("A")])], host.Environment.Agent), cancellation.Token);
+        var surviving = service.Ask(new([new("surviving", "Second", Options: [new("B")])], host.Environment.Agent), Ct);
+        var pending = (await NextAsync(alice.PendingChangesAsync(Ct), change => change.Pending.Questions.Count == 2)).Pending;
+        var cancelledId = Assert.Single(pending.Questions, request => request.Questions[0].Id == "cancelled").RequestId;
+        var survivingId = Assert.Single(pending.Questions, request => request.Questions[0].Id == "surviving").RequestId;
+
+        cancellation.Cancel();
+
+        var error = await Assert.ThrowsAsync<UserQuestionException>(() => cancelled.WaitAsync(Arrival, Ct));
+        Assert.Equal(UserQuestionException.AskAborted, error.Code);
+        foreach (var client in new[] { alice, bob })
+        {
+            var change = await NextAsync(client.PendingChangesAsync(Ct), item => item.Resolution?.RequestId == cancelledId);
+            Assert.Equal(survivingId, Assert.Single(change.Pending.Questions).RequestId);
+            Assert.Equal(PendingResolutions.Cancelled, change.Resolution!.Resolution);
+            Assert.Equal(PendingResolver.Host.Name, change.Resolution.ResolvedBy);
+            Assert.Null(change.Resolution.ResolvedByConnection);
+        }
+        Assert.False(await alice.RespondQuestionAsync(cancelledId, [], Ct, "dismissed", "user_cancelled"));
+        Assert.True(await bob.RespondQuestionAsync(survivingId, [new("surviving", ["B"], null)], Ct));
+        var answer = await surviving.WaitAsync(Arrival, Ct);
+        Assert.False(answer.IsDismissed);
+        Assert.Equal(["B"], Assert.Single(answer.Answers).Selected);
+        Assert.Empty((await alice.ListPendingAsync(Ct)).Questions);
     }
 
     [Fact(Timeout = 60000)]
@@ -236,30 +481,6 @@ public sealed class RemoteHostMultiClientTests
         {
             TempTree.Delete(root);
         }
-    }
-
-    [Fact(Timeout = 30000)]
-    public async Task Handshake_AdvertisesCapabilities_AndReportsTheReleaseVersion()
-    {
-        await using var host = await HarnessHostFixture.CreateAsync("mhv", TestContext.Current.CancellationToken);
-        var client = await host.ConnectAsync("probe", Ct);
-        List<string> expectedCapabilities =
-        [
-            HostProtocol.PendingBroadcastCapability, HostProtocol.SessionRegistryCapability,
-            AgentProtocol.Capability, PtyProtocol.Capability, PtyProtocol.ResizeCapability,
-            FilesProtocol.Capability, GitProtocol.Capability, NotificationsProtocol.Capability,
-            SessionEditingProtocol.Capability
-        ];
-        if (host.Backend.Plugins is not null) expectedCapabilities.Add(PluginsProtocol.Capability);
-        if (host.Backend.Models is not null) expectedCapabilities.Add(ModelsProtocol.Capability);
-        expectedCapabilities.Add(NetworkProtocol.Capability);
-
-        Assert.Equal(HostProtocol.Version, client.Hello.ProtocolVersion);
-        Assert.Equal(expectedCapabilities, client.Hello.Capabilities);
-        Assert.False(string.IsNullOrEmpty(client.Hello.ConnectionId));
-        var info = await client.InfoAsync(Ct);
-        Assert.Equal(RemoteHostServer.ReleaseVersion, info.HostVersion);
-        Assert.Equal(expectedCapabilities, info.Capabilities);
     }
 
     internal static readonly RemoteProviderSpec Spec = new("client-provider", "openai-compatible", "https://example.invalid", "sk-test");

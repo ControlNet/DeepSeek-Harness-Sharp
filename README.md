@@ -78,6 +78,14 @@ SQLite 是可选的系统依赖,发布包不捆绑或自动下载 SQLite 原生�
    ```
 
    动作名:`newSession`、`sessionMenu`、`detach`、`deleteSessionMenu`、`agentList`、`overview`、`openShell`、`quit`、`splitPane`、`closePane`、`prevSession`、`nextSession`、`focusLeft`/`focusRight`/`focusUp`/`focusDown`、`focusNextPane`、`interrupt`(默认 `Ctrl+C`,连按两次退出)、`promptCommandMenu`(默认 `Ctrl+P`)。按键串的首键必须带 `Ctrl`/`Alt` 或是 F 键(否则会吞掉正常输入);同一按键串绑了多个动作、或一个按键串是另一个的前缀时,启动时记 WARN 日志并让冲突的自定义项回退默认。按下前缀后再按 `Esc` 或未绑定的键即取消。焦点在 shell 窗格时,`interrupt` 与 `promptCommandMenu` 的按键直达 shell,其余动作仍由 DSH 处理。
+   - 0.4.0 待发布的 ChoicePrompt 问答与现有工具审批优先接管键盘和鼠标，不向聊天输入、时间线、全局快捷键或 shell 穿透。
+   - 方向键与 `Home` / `End` 移动可用选项，`Space` 或 `1-9` 选择/切换，`Tab` / `Shift+Tab` 在选项、自定义输入、提交与取消之间切换，`Enter` 确认；长说明可用滚轮或 `PageUp` / `PageDown` 浏览，支持中文换行后的点击与悬停。
+   - 提示关闭时恢复打开前的聊天草稿及光标；问答 `Esc` 取消整个题组并丢弃此前部分答案，模型收到 `{"status":"dismissed","answers":[],"reason":"user_cancelled"}`，不与没有问答提供者或服务错误混淆。
+   - 审批提供 `Allow once` (`y`)、`Always` (`a`，仅当前会话的该工具，fork 会话不继承)、`Reject` (`n`) 和 `Cancel` (`c` / `Esc`)；取消不会放行工具、退出界面或取消整个回合，不新增持久权限策略。
+   - 审批忽略带 `Ctrl` / `Alt` 的确认键和授权快捷键，避免聊天或全局组合键误授权。
+   - GUI 与 Web 使用相同选项值、禁用/默认、自定义输入及结果契约；Host 的 request id 和单一待决投影仍为唯一权威，其他客户端先回答或取消会关闭本地提示，迟到结果不覆盖。
+   - GUI/Web 仅在 Host 宣告 `decision-cancellation-v1` 能力时启用题组 Dismissed 与审批 Cancel；旧 v2 Host 显示 Unsupported 并保持请求未决，仍可正常回答或拒绝。此能力不提升 Host 协议版本，也不影响旧 Host 已有的网络 Get/Set/Probe。
+   - ACP 审批按代理实际提供的选项启用按钮；没有单次允许或拒绝选项时不代用更高权限选项，响应未被 Host 接受时保留待决状态。
 9. shell 工具:模型可按需选用以下几种 shell,各工具的提示词写明了彼此差异与常见坑。
    - `bash`:每次调用起一个新的 `bash -c`;Windows 上是 Git-Bash(不是 WSL)。
    - `pwsh`:每次调用起一个新的 PowerShell 7 进程,跨平台。
@@ -441,6 +449,16 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 ## 各版本新增功能
 
 0.1.1 起的发布说明未单独张贴,这里按版本折叠列出新增能力(0.1.0 的完整发布说明见[讨论区](https://github.com/deepseek-ai/deepseek-harness/discussions/8952))。
+<details>
+<summary><b>0.4.0 待发布</b> — ChoicePrompt 问答与审批</summary>
+
+- TUI 问答与既有审批共用键鼠选择控件，支持多选、自定义输入、禁用/默认、中文折行命中、长内容滚动和草稿光标恢复。
+- 问答整组取消返回结构化 `dismissed`，审批保留当前会话工具授权边界，GUI/Web 复用选择与结果契约及 Host 先答者生效生命周期。
+- 决策取消采用显式 Host 能力门禁：旧 v2 Host 不会把取消误读为空答案或拒绝；GUI/Web 显示 Unsupported、保留未决项，既有回答与拒绝继续可用。
+- Host 的内置 Agent 在未显式选模时使用已配置的默认模型；恢复已有会话仍保留其持久化模型选择。
+
+</details>
+
 
 <details>
 <summary><b>未发布</b> — SSH-over-iroh</summary>

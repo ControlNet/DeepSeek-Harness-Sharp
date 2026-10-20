@@ -92,7 +92,7 @@ public sealed class ApprovalService : Service, IApprovalService
     /** 会话级授权: 只要该工具在本会话被「总是允许」过, 后续调用不再询问。 */
     public static bool HasGrant(Session session, string toolName)
     {
-        for (var seq = session.Seq - 1; seq >= 0; seq--)
+        for (var seq = session.Seq - 1; seq >= session.InheritedEventCount; seq--)
         {
             if (session.EventAt(seq)?.Data is ApprovalGrantedPayload payload
                 && string.Equals(payload.ToolName, toolName, StringComparison.Ordinal))

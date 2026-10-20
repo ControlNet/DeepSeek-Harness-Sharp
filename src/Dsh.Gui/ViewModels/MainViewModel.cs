@@ -1021,7 +1021,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         _disposed = true;
         foreach (var dialog in _pendingDialogs.Values)
-            dialog?.CancelCommand.Execute(null);
+            dialog?.Invalidate();
         _pendingDialogs.Clear();
         _chat.Fleet.Changed -= OnFleetChanged;
         _chat.Reset -= ShowSession;
@@ -1230,18 +1230,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var present = pending.Select(item => item.RequestId).ToHashSet(StringComparer.Ordinal);
         foreach (var id in _pendingDialogs.Keys.Where(id => !present.Contains(id)).ToList())
         {
-            _pendingDialogs[id]?.CancelCommand.Execute(null);
+            var dialog = _pendingDialogs[id];
             _pendingDialogs.Remove(id);
+            dialog?.Invalidate();
         }
         if (_disposed || DecisionRequested is null)
             return;
+        var supportsCancellation = _chat.Fleet.Find(MachineSpec.LocalName)?.Hello?.Capabilities?.Contains(DecisionProtocol.Capability) == true;
         foreach (var item in pending)
         {
-            if (_pendingDialogs.ContainsKey(item.RequestId))
+            if (_pendingDialogs.TryGetValue(item.RequestId, out var existing))
+            {
+                existing?.SetCancellationSupported(supportsCancellation);
                 continue;
+            }
             var decision = item.Approval is { } approval
-                ? DecisionViewModel.ForApproval(approval.Tool, approval.Arguments, approval.Reason)
-                : DecisionViewModel.ForQuestion(new AskUserQuestionRequest([.. item.Question!.Questions.Select(PendingDecisionViewModel.ToItem)]));
+                ? DecisionViewModel.ForApproval(approval.Tool, approval.Arguments, approval.Reason, item.RequestId,
+                    approval.Availability?.AllowOnce ?? true, approval.Availability?.AllowForSession ?? true, approval.Availability?.Reject ?? true)
+                : DecisionViewModel.ForQuestion(new AskUserQuestionRequest([.. item.Question!.Questions.Select(PendingDecisionViewModel.ToItem)]), item.RequestId);
+            decision.SetCancellationSupported(supportsCancellation);
             _pendingDialogs[item.RequestId] = decision;
             _ = AnswerPendingAsync(item, decision);
         }
@@ -1252,22 +1259,31 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             var result = await DecisionRequested!(decision);
-            if (_disposed || !_pendingDialogs.ContainsKey(item.RequestId))
+            if (_disposed || decision.IsSuperseded || !_pendingDialogs.ContainsKey(item.RequestId))
                 return;
-            _pendingDialogs[item.RequestId] = null;
             var client = await _chat.ClientAsync();
+            if (_disposed || decision.IsSuperseded || !_pendingDialogs.ContainsKey(item.RequestId))
+                return;
             if (item.Approval is not null && result is ApprovalOutcome outcome)
                 await client.RespondApprovalAsync(item.RequestId,
                     outcome is ApprovalOutcome.AllowedOnce or ApprovalOutcome.AllowedForSession,
-                    rememberForSession: outcome is ApprovalOutcome.AllowedForSession);
+                    rememberForSession: outcome is ApprovalOutcome.AllowedForSession,
+                    cancelled: outcome is ApprovalOutcome.Cancelled);
             else if (result is AskUserQuestionAnswer answer)
                 await client.RespondQuestionAsync(item.RequestId,
-                    [.. answer.Answers.Select(value => new RemoteQuestionAnswerItem(value.Id, value.Selected, value.Custom))]);
+                    [.. answer.Answers.Select(value => new RemoteQuestionAnswerItem(value.Id, value.Selected, value.Custom))],
+                    status: answer.Status, reason: answer.Reason);
+            if (_pendingDialogs.ContainsKey(item.RequestId))
+                _pendingDialogs[item.RequestId] = null;
         }
         catch (Exception error)
         {
             if (!_disposed)
+            {
                 StatusText = $"决定提交失败: {error.Message}";
+                if (_pendingDialogs.Remove(item.RequestId))
+                    RefreshPendingDialogs();
+            }
         }
     }
     private void OnComposerPropertyChanged(object? sender, PropertyChangedEventArgs args)

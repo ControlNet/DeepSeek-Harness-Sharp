@@ -173,12 +173,14 @@ public sealed class VtScreen
     }
 
     /** 独占控制台 attach 的可见屏投影: 留在宿主备用屏, detach 时才能还原调用方的 shell。 */
-    internal string ConsoleSnapshot()
+    internal string ConsoleSnapshot(bool wantsMouse)
     {
         var output = new StringBuilder("\u001b[?1049h\u001b[?7h\u001b[4l\u001b[r");
         AppendScreen(output, _lines);
         AppendRegion(output, _scrollTop, _scrollBottom);
         AppendModes(output);
+        if (wantsMouse)
+            output.Append(PtyConsoleBridge.MouseEnableSequence);
         AppendCursor(output, CaptureCursor(), _lines);
         AppendPendingCharset(output);
         return output.ToString();

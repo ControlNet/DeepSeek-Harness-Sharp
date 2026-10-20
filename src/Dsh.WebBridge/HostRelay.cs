@@ -114,7 +114,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
             var result = await HandleAsync(request).ConfigureAwait(false);
             await SendAsync(new JsonRpcMessage { Id = request.Id, Result = result }, _lifetime.Token).ConfigureAwait(false);
         }
-        catch (Exception error) when (error is JsonRpcException or IOException or WebSocketException or InvalidOperationException or ArgumentException or JsonException or OperationCanceledException or ObjectDisposedException)
+        catch (Exception error) when (error is JsonRpcException or IOException or WebSocketException or InvalidOperationException or NotSupportedException or ArgumentException or JsonException or OperationCanceledException or ObjectDisposedException)
         {
             if (_lifetime.IsCancellationRequested)
                 return;

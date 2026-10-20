@@ -214,6 +214,153 @@ public sealed class GuiComponentTests
         Assert.Equal("按我的方案来", freeDecision.BuildAnswer()!.Answers[0].Custom);
     }
 
+    [Fact]
+    public void DecisionQuestions_UseSharedDefaultsDisabledValuesAndCustomPolicy()
+    {
+        var decision = DecisionViewModel.ForQuestion(new AskUserQuestionRequest(
+        [
+            new("single", "Choose", Options:
+            [
+                new("Unavailable", Value: "disabled", Disabled: true, Default: true),
+                new("First", Value: "first", Default: true),
+                new("Second", Value: "second", Default: true),
+            ], AllowCustom: false),
+            new("multi", "Choose several", Options:
+            [
+                new("Tests", Value: "tests", Default: true),
+                new("Docs", Value: "docs", Default: true),
+                new("Unavailable", Value: "no", Disabled: true),
+            ], MultiSelect: true),
+        ]), "request-choices");
+        var single = decision.Questions[0];
+        var multi = decision.Questions[1];
+        Assert.Equal("request-choices", single.State.Prompt.RequestId);
+        Assert.False(single.Options[0].IsEnabled);
+        Assert.False(single.Options[0].IsSelected);
+        Assert.True(single.Options[1].IsSelected);
+        Assert.False(single.Options[2].IsSelected);
+        single.SelectCommand.Execute(single.Options[0]);
+        single.CustomText = "Not permitted";
+        Assert.Equal("", single.CustomText);
+        Assert.False(single.AllowCustom);
+        Assert.Equal(["first"], single.BuildAnswer().Selected);
+        Assert.True(decision.CanSubmit);
+
+        single.SelectCommand.Execute(single.Options[2]);
+        multi.SelectCommand.Execute(multi.Options[2]);
+        multi.CustomText = "  Additional work  ";
+        decision.SubmitCommand.Execute(null);
+        var answer = Assert.IsType<AskUserQuestionAnswer>(decision.Result);
+        Assert.Equal("answered", answer.Status);
+        Assert.Equal(["second"], answer.Answers[0].Selected);
+        Assert.Null(answer.Answers[0].Custom);
+        Assert.Equal(["tests", "docs"], answer.Answers[1].Selected);
+        Assert.Equal("Additional work", answer.Answers[1].Custom);
+    }
+
+    [Fact]
+    public void QuestionCancellation_DiscardsPartialAnswers_AndLateSubmitCannotReplaceDismissal()
+    {
+        var decision = DecisionViewModel.ForQuestion(new AskUserQuestionRequest(
+        [
+            new("first", "Answered first", Options: [new("Yes", Value: "yes")]),
+            new("second", "Still unanswered"),
+        ]), "dismiss-request");
+        var closed = 0;
+        decision.Closed += _ => closed++;
+        decision.Questions[0].SelectCommand.Execute(decision.Questions[0].Options[0]);
+        decision.CancelCommand.Execute(null);
+        decision.Questions[1].CustomText = "Late answer";
+        decision.SubmitCommand.Execute(null);
+        decision.Resolve(new AskUserQuestionAnswer([new("second", ["late"])]));
+
+        var result = Assert.IsType<AskUserQuestionAnswer>(decision.Result);
+        Assert.Equal("dismissed", result.Status);
+        Assert.Equal("user_cancelled", result.Reason);
+        Assert.Empty(result.Answers);
+        Assert.True(decision.IsClosed);
+        Assert.False(decision.CanSubmit);
+        Assert.False(decision.SubmitCommand.CanExecute(null));
+        Assert.Equal(1, closed);
+    }
+
+    [Fact]
+    public void AuthoritativeInvalidation_ClosesOnce_AndDisablesLateApproval()
+    {
+        var decision = DecisionViewModel.ForApproval("bash", """{"command":"echo approval"}""", "Review", "approval-request");
+        Assert.Equal("approval-request", decision.ApprovalState!.Prompt.RequestId);
+        var closed = 0;
+        decision.Closed += _ => closed++;
+        decision.Invalidate();
+        decision.AllowAlwaysCommand.Execute(null);
+        decision.AllowOnceCommand.Execute(null);
+        decision.Resolve(ApprovalOutcome.AllowedOnce);
+        Assert.Equal(ApprovalOutcome.Cancelled, decision.Result);
+        Assert.Equal(["cancel"], decision.ApprovalState.SelectedValues());
+        Assert.True(decision.IsSuperseded);
+        Assert.False(decision.AllowAlwaysCommand.CanExecute(null));
+        Assert.Equal(1, closed);
+    }
+
+    [Theory]
+    [InlineData(false, false, true, ApprovalOutcome.Rejected)]
+    [InlineData(true, false, true, ApprovalOutcome.AllowedOnce)]
+    [InlineData(true, true, false, ApprovalOutcome.AllowedForSession)]
+    public void UnavailableApprovalChoices_CannotCloseOrChangeTheRepresentableDecision(bool once, bool session, bool reject, ApprovalOutcome expected)
+    {
+        var decision = DecisionViewModel.ForApproval("edit_file", "{}", "Review", "limited", once, session, reject);
+        var closed = 0;
+        decision.Closed += _ => closed++;
+        if (!once)
+            decision.AllowOnceCommand.Execute(null);
+        if (!session)
+            decision.AllowAlwaysCommand.Execute(null);
+        if (!reject)
+            decision.RejectCommand.Execute(null);
+        Assert.False(decision.IsClosed);
+        Assert.Null(decision.Result);
+        Assert.Equal(0, closed);
+
+        var command = expected switch
+        {
+            ApprovalOutcome.AllowedOnce => decision.AllowOnceCommand,
+            ApprovalOutcome.AllowedForSession => decision.AllowAlwaysCommand,
+            ApprovalOutcome.Rejected => decision.RejectCommand,
+            _ => throw new ArgumentOutOfRangeException(nameof(expected)),
+        };
+        command.Execute(null);
+        decision.AllowAlwaysCommand.Execute(null);
+        Assert.Equal(expected, decision.Result);
+        Assert.Equal(1, closed);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MissingCancellationCapability_KeepsDecisionOpen_UntilAnswerOrHostResolution(bool approval)
+    {
+        var decision = approval
+            ? DecisionViewModel.ForApproval("bash", null, "Review", "unsupported")
+            : DecisionViewModel.ForQuestion(new AskUserQuestionRequest([new("q", "Choose")]), "unsupported");
+        decision.SetCancellationSupported(false);
+        var closed = 0;
+        decision.Closed += _ => closed++;
+
+        Assert.False(decision.CancelCommand.CanExecute(null));
+        Assert.Contains("Unsupported", decision.CancellationSupportMessage, StringComparison.Ordinal);
+        decision.CancelCommand.Execute(null);
+        decision.Resolve(null);
+        decision.Resolve(approval ? ApprovalOutcome.Cancelled : AskUserQuestionAnswer.Dismissed);
+        Assert.False(decision.IsClosed);
+        Assert.Null(decision.Result);
+        Assert.Equal(0, closed);
+
+        decision.Invalidate();
+        Assert.True(decision.IsClosed);
+        Assert.True(decision.IsSuperseded);
+        Assert.Equal(1, closed);
+    }
+
     /** 选择模型提供者: 前 7 项是协议族(只带 Type), 其后是按 id 排序、带 ProviderId 的目录 provider; 两类都带段前缀。 */
     [Fact]
     public void ProviderChoices_Put_Protocol_Families_First_And_Tag_Both_Kinds()

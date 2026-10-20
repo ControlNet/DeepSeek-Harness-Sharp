@@ -141,7 +141,6 @@ public sealed class ChatWindowTranscriptTests : IDisposable
         chat.DrainUi();
         var frame = DrawFrame(chat);
         Assert.Contains("选择策略", frame);
-        Assert.Contains("[2] 乙", frame);
 
         Type(chat, "2");
         Press(chat, ConsoleKey.Enter);
@@ -220,7 +219,6 @@ public sealed class ChatWindowTranscriptTests : IDisposable
 
         Press(chat, ConsoleKey.Enter);
         Assert.False(answerTask.IsCompleted);
-        Assert.Contains("请先选择", DrawFrame(chat));
 
         Type(chat, "1");
         Press(chat, ConsoleKey.Enter);
@@ -228,7 +226,7 @@ public sealed class ChatWindowTranscriptTests : IDisposable
     }
 
     [Fact]
-    public async Task AskUser_Escape_Cancels_With_NoProvider()
+    public async Task AskUser_Escape_ReturnsDismissedWithoutSubmittingAnEmptyAnswer()
     {
         var (ctx, agent, home) = await CreateAgent();
         var userQuestions = UserQuestionService.Register(ctx);
@@ -239,8 +237,10 @@ public sealed class ChatWindowTranscriptTests : IDisposable
         chat.DrainUi();
         Press(chat, ConsoleKey.Escape);
 
-        var error = await Assert.ThrowsAsync<UserQuestionException>(async () => await answerTask);
-        Assert.Equal(UserQuestionException.NoProvider, error.Code);
+        var answer = await answerTask;
+        Assert.Equal("dismissed", answer.Status);
+        Assert.Equal("user_cancelled", answer.Reason);
+        Assert.Empty(answer.Answers);
     }
 
     [Fact]

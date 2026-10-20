@@ -48,7 +48,14 @@ internal sealed class HarnessRemoteRuntime(HarnessApp app, HostSessionRegistry s
     internal AgentOptions? ResolveAgentOptions(RemoteModelSelection? selection, RemoteProviderSpec? provider)
     {
         if (selection is null || !HasSelection(selection))
-            return null;
+        {
+            if (string.IsNullOrEmpty(app.Provider) || string.IsNullOrEmpty(app.Model))
+                return null;
+            ReasoningEffortId? effort = string.IsNullOrWhiteSpace(app.ReasoningEffort)
+                ? null
+                : ReasoningEffortId.Create(app.ReasoningEffort);
+            return new AgentOptions(app.Provider, app.Model, effort);
+        }
         if (provider is not null)
             EnsureProviderRegistered(provider);
         return new AgentOptions(selection.Provider, selection.Model, EffortOf(selection));

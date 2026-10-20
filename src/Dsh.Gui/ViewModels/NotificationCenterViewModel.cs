@@ -97,6 +97,8 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
     {
         _fleet.Changed -= OnFleetChanged;
         _fleet.NotificationsChanged -= OnNotificationsChanged;
+        foreach (var pending in _pending.Values)
+            pending.Invalidate();
     }
 
     partial void OnUnreadTotalChanged(int value)
@@ -217,10 +219,14 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
             if (!_pending.TryGetValue(key, out var pending))
                 _pending[key] = pending = CreatePending(item);
             pending.SessionTitle = _sessionTitle(item.Machine, item.SessionId) ?? item.SessionId;
+            pending.RefreshCapabilities();
             current.Add(pending);
         }
         foreach (var gone in _pending.Keys.Except(current.Select(item => (item.Machine, item.RequestId))).ToList())
+        {
+            _pending[gone].Invalidate();
             _pending.Remove(gone);
+        }
         CollectionSync.Sync(Pending, current);
         OnPropertyChanged(nameof(HasPending));
     }

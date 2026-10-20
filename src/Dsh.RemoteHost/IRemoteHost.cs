@@ -39,10 +39,10 @@ public interface IRemoteHost
     IAsyncEnumerable<RemotePendingChange> PendingChangesAsync(CancellationToken cancellationToken = default);
 
     /** 返回 false 表示该请求已被别的客户端先回答或已取消, 本次回答无效。 */
-    Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason = null, CancellationToken cancellationToken = default, bool rememberForSession = false);
+    Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason = null, CancellationToken cancellationToken = default, bool rememberForSession = false, bool cancelled = false);
 
     /** 返回 false 表示该请求已被别的客户端先回答或已取消。 */
-    Task<bool> RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken = default);
+    Task<bool> RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken = default, string status = "answered", string? reason = null);
 
     Task<RemotePendingList> ListPendingAsync(CancellationToken cancellationToken = default);
 

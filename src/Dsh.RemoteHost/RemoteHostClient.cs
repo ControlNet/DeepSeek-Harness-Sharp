@@ -55,8 +55,18 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     public Task WhenClosed => _closed.Task;
 
     public async Task<JsonElement> RequestAsync(string method, JsonElement? parameters, CancellationToken cancellationToken)
-        => await _peer.RequestAsync(method, parameters, cancellationToken).ConfigureAwait(false)
+    {
+        if (parameters is { ValueKind: JsonValueKind.Object } value
+            && ((method == HostProtocol.MethodApprovalRespond
+                    && value.TryGetProperty(nameof(RemoteApprovalResponse.Cancelled), out var cancelled)
+                    && cancelled.ValueKind == JsonValueKind.True)
+                || (method == HostProtocol.MethodQuestionRespond
+                    && value.TryGetProperty(nameof(RemoteQuestionResponse.Status), out var status)
+                    && status.ValueKind == JsonValueKind.String && status.ValueEquals("dismissed"))))
+            RequireDecisionCancellation();
+        return await _peer.RequestAsync(method, parameters, cancellationToken).ConfigureAwait(false)
             ?? throw new IOException($"host returned no result for {method}");
+    }
 
     public static Task<RemoteHostClient> ConnectAsync(
         Stream duplex,
@@ -146,12 +156,22 @@ public sealed class RemoteHostClient : IRemoteHost, IAsyncDisposable
     public IAsyncEnumerable<RemotePendingChange> PendingChangesAsync(CancellationToken cancellationToken = default)
         => _pendingChanges.Reader.ReadAllAsync(cancellationToken);
 
-    public Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason = null, CancellationToken cancellationToken = default, bool rememberForSession = false)
-        => SendAsync(HostProtocol.MethodApprovalRespond, Serialize(new RemoteApprovalResponse(requestId, allow, reason, rememberForSession), HostProtocolJsonContext.Default.RemoteApprovalResponse), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+    public Task<bool> RespondApprovalAsync(string requestId, bool allow, string? reason = null, CancellationToken cancellationToken = default, bool rememberForSession = false, bool cancelled = false)
+    {
+        return SendAsync(HostProtocol.MethodApprovalRespond, Serialize(new RemoteApprovalResponse(requestId, allow, reason, rememberForSession, cancelled), HostProtocolJsonContext.Default.RemoteApprovalResponse), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+    }
 
 
-    public Task<bool> RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken = default)
-        => SendAsync(HostProtocol.MethodQuestionRespond, Serialize(new RemoteQuestionResponse(requestId, answers), HostProtocolJsonContext.Default.RemoteQuestionResponse), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+    public Task<bool> RespondQuestionAsync(string requestId, IReadOnlyList<RemoteQuestionAnswerItem> answers, CancellationToken cancellationToken = default, string status = "answered", string? reason = null)
+    {
+        return SendAsync(HostProtocol.MethodQuestionRespond, Serialize(new RemoteQuestionResponse(requestId, answers, status, reason), HostProtocolJsonContext.Default.RemoteQuestionResponse), HostProtocolJsonContext.Default.Boolean, cancellationToken);
+    }
+
+    private void RequireDecisionCancellation()
+    {
+        if (!Supports(DecisionProtocol.Capability))
+            throw new NotSupportedException($"Unsupported: host does not support {DecisionProtocol.Capability}; the request is still pending. Upgrade the host to cancel it.");
+    }
 
 
     public Task<RemotePendingList> ListPendingAsync(CancellationToken cancellationToken = default)
