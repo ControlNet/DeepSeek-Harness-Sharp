@@ -1,5 +1,6 @@
 using Dsh.Plugins;
 using Dsh.Runtime;
+using System.Text.Encodings.Web;
 using Dsh.Runtime.Logging;
 using YamlDotNet.Serialization;
 
@@ -124,7 +125,7 @@ public sealed class HarnessSettings
     /** Validate independently, persist only the owned child, then publish the route to existing clients. */
     public static void SaveOutboundProxy(HarnessHome home, OutboundProxySettings value, OutboundProxy proxy)
     {
-        var candidate = new OutboundProxy();
+        using var candidate = new OutboundProxy();
         candidate.Configure(value.Url, value.Bypass);
         var empty = value.Url is null && value.Bypass.Count == 0 && value.ProbeUrl is null;
         var serialized = empty ? null : new StaticSerializerBuilder(new DshYamlStaticContext())
@@ -140,6 +141,19 @@ public sealed class HarnessSettings
         _ = Parse(updated);
         WriteAtomic(path, updated);
         proxy.Configure(value.Url, value.Bypass);
+    }
+
+    /** Persists only the shared selection; transport validation and publication belong to the route controller. */
+    public static void SaveBorrowedOutboundMachine(HarnessHome home, string? machine)
+    {
+        var serialized = machine is null ? null : $"\"{JavaScriptEncoder.Default.Encode(machine)}\"";
+        var path = home.SettingsFile;
+        Directory.CreateDirectory(home.Root);
+        var existing = File.Exists(path) ? ReadSettingsTextShared(path) : LoadTemplate();
+        _ = Parse(existing);
+        var updated = SettingsDocument.ReplaceMappingChild(existing, "network", "borrowed_outbound_machine", serialized);
+        _ = Parse(updated);
+        WriteAtomic(path, updated);
     }
 
     /** Keep a complete snapshot while allowing WriteAtomic to replace settings.yaml on Windows. */

@@ -1,4 +1,5 @@
 using Dsh.Boot;
+using Dsh.Core;
 using Dsh.Plugins;
 using Dsh.Runtime;
 
@@ -17,6 +18,7 @@ public sealed class Plugin : IDshPlugin
             ?? throw new InvalidOperationException("the fleet plugin requires a harness home");
         var service = new FleetService(new HarnessHome(root), ctx);
         ctx.Provide(FleetService.ServiceName, service);
+        ctx.Provide(IOutboundRouteController.ServiceName, service.OutboundRoute);
         return service;
     }
 }

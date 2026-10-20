@@ -53,6 +53,7 @@ rules: []
 # url 留空(或不写本段)跟随系统代理;支持 http/https/socks4/socks4a/socks5,可带 user:pass@(日志与报错会脱敏)。
 # bypass 是直连的主机(含子域),回环地址、不带点的主机名与私网 IP 总是直连;probe_url 是 GUI 设置页与 /proxy test 自检的探测地址。
 # network:
+#   borrowed_outbound_machine: null  # Select one machine's proxyCommand tunnel; null uses the baseline below.
 #   outbound_proxy:
 #     url: http://127.0.0.1:7890
 #     bypass: [example.com, "*.example.org"]
@@ -226,6 +227,7 @@ plugins:
 #     url:  # http://、https://、socks4://、socks4a://、socks5:// 代理 URL, 可带 user:pass@; 留空跟随系统代理
 #     bypass:  # 不走代理的主机(含其子域), 只在 url 非空时生效; 回环地址、不带点的主机名与私网 IP 始终直连
 #     probe_url:  # 连通性自检的探测地址; 留空用 https://www.gstatic.com/generate_204
+#   borrowed_outbound_machine:
 # sandbox:  # 映射(见子项)
 #   enabled:  # Plugin sandbox switch; false (the default) keeps plugin loading and execution unchanged.
 # plugins:  # 映射(见子项)

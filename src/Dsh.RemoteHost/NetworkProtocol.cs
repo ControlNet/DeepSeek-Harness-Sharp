@@ -6,6 +6,8 @@ namespace Dsh.RemoteHost;
 public static class NetworkProtocol
 {
     public const string Capability = "network.outbound";
+    public const string ReloadCapability = "network.reload";
+    public const string MethodReload = "host.network.reload";
     public const int RevisionConflict = -32009;
     public static IReadOnlyList<string> Methods { get; } = Array.AsReadOnly<string>(
         [MethodOutboundGet, MethodOutboundSet, MethodOutboundProbe]);

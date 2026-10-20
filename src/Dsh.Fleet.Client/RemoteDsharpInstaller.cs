@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Dsh.Boot;
 using Dsh.RemoteHost;
 using Dsh.Runtime;
 
@@ -23,6 +24,9 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport)
     /** 远端没有 curl 也没有 wget 时下载脚本的退出码, auto 模式据此回退到本地下发。 */
     private const int NoDownloaderExitCode = 42;
 
+    private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(10);
+    private const int DownloadBufferSize = 81920;
+
     /** 停掉旧宿主后等它退出的轮询: 最多 50 次, 每次 0.2 秒。 */
     private const int StopWaitAttempts = 50;
 
@@ -45,7 +49,8 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport)
         CancellationToken cancellationToken,
         Func<DeploySettings, string, CancellationToken, Task<string>>? archiveFactory = null,
         bool force = false,
-        OutboundProxy? localProxy = null)
+        OutboundProxy? localProxy = null,
+        HarnessHome? localHome = null)
     {
         var installation = await InspectAsync(cancellationToken).ConfigureAwait(false);
         var identity = RemoteHostServer.ReleaseVersion;
@@ -56,7 +61,7 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport)
             ? $"远端缺少 dsharp, 正在部署 {identity}({installation.Rid}) …"
             : $"远端 dsharp 版本 {installation.Version ?? "(未知)"} 需要更新到 {identity}, 重新部署 …");
         var stop = StopHostCommand(installation.CommandPath);
-        var deployed = await DeployAsync(settings, installation.Rid, stop, progress, archiveFactory, localProxy, cancellationToken).ConfigureAwait(false);
+        var deployed = await DeployAsync(settings, installation.Rid, stop, progress, archiveFactory, localProxy, localHome, cancellationToken).ConfigureAwait(false);
         await WriteIdentityAsync(installation.Rid, identity, cancellationToken).ConfigureAwait(false);
         return new Result(deployed, false);
     }
@@ -67,13 +72,14 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport)
         Action<string>? progress,
         CancellationToken cancellationToken,
         Func<DeploySettings, string, CancellationToken, Task<string>>? archiveFactory = null,
-        OutboundProxy? localProxy = null)
+        OutboundProxy? localProxy = null,
+        HarnessHome? localHome = null)
     {
         var rid = await DetectRidAsync(cancellationToken).ConfigureAwait(false);
         if (rid.StartsWith("win-", StringComparison.Ordinal))
             throw new NotSupportedException(WindowsUnsupported);
         var directory = $"\"$HOME/.dsharp/iroh-receiver/{rid}/{Guid.NewGuid():N}\"";
-        return await DeployAsync(settings, rid, "", progress, archiveFactory, localProxy, cancellationToken, directory).ConfigureAwait(false);
+        return await DeployAsync(settings, rid, "", progress, archiveFactory, localProxy, localHome, cancellationToken, directory).ConfigureAwait(false);
     }
 
     /** 只探测不部署: 识别平台(Windows 抛 NotSupportedException), 解析 harness home, 找出 dsharp 与其部署版本。 */
@@ -171,6 +177,7 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport)
         Action<string>? progress,
         Func<DeploySettings, string, CancellationToken, Task<string>>? archiveFactory,
         OutboundProxy? localProxy,
+        HarnessHome? localHome,
         CancellationToken cancellationToken,
         string? directory = null)
     {
@@ -190,7 +197,7 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport)
 
         progress?.Invoke($"正在准备 {AssetName(rid)} …");
         var archive = archiveFactory is null
-            ? await DownloadAsync(settings, rid, localProxy ?? new OutboundProxy(), cancellationToken).ConfigureAwait(false)
+            ? await DownloadAsync(settings, rid, localProxy, localHome, cancellationToken).ConfigureAwait(false)
             : await archiveFactory(settings, rid, cancellationToken).ConfigureAwait(false);
         try
         {
@@ -266,14 +273,31 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport)
 
     private static string LastLine(string output) => Lines(output).LastOrDefault() ?? "";
 
-    private static async Task<string> DownloadAsync(DeploySettings settings, string rid, OutboundProxy proxy, CancellationToken cancellationToken)
+    private static async Task<string> DownloadAsync(DeploySettings settings, string rid, OutboundProxy? proxy, HarnessHome? home, CancellationToken cancellationToken)
     {
-        var url = AssetUrl(settings, rid);
-        using var client = new HttpClient(proxy.CreateHandler()) { Timeout = TimeSpan.FromMinutes(10) };
-        var bytes = await client.GetByteArrayAsync(url, cancellationToken).ConfigureAwait(false);
+        using var download = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        download.CancelAfter(DownloadTimeout);
+        // A download owns only its short-lived route. It cannot retire a workspace's or Host's shared Context.
+        using var ownedProxy = home is not null || proxy is null ? new OutboundProxy() : null;
+        var outbound = ownedProxy ?? proxy!;
+        await using var route = home is null ? null : new BorrowedOutboundRoute(home, outbound);
+        await using var lease = route is null ? null : await route.AcquireAsync(download.Token).ConfigureAwait(false);
+        using var client = new HttpClient(outbound.CreateHandler()) { Timeout = Timeout.InfiniteTimeSpan };
         var path = Path.Combine(Path.GetTempPath(), $"dsharp-{rid}-{Guid.NewGuid():N}.tar.gz");
-        await File.WriteAllBytesAsync(path, bytes, cancellationToken).ConfigureAwait(false);
-        return path;
+        try
+        {
+            using var response = await client.GetAsync(AssetUrl(settings, rid), HttpCompletionOption.ResponseHeadersRead, download.Token).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            await using var body = await response.Content.ReadAsStreamAsync(download.Token).ConfigureAwait(false);
+            await using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, DownloadBufferSize, FileOptions.Asynchronous);
+            await body.CopyToAsync(file, download.Token).ConfigureAwait(false);
+            return path;
+        }
+        catch
+        {
+            TryDelete(path);
+            throw;
+        }
     }
 
     private async Task<string> UploadAndDeployAsync(string archive, string rid, string stop, CancellationToken cancellationToken, string? directory = null)

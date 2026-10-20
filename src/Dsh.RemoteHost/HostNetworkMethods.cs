@@ -29,4 +29,12 @@ internal static class HostNetworkMethods
                 throw MethodNotFound(name);
         }
     }
+
+    public static async ValueTask<JsonElement?> ReloadAsync(IRemoteNetworkReloadBackend backend, JsonRpcMessage message, CancellationToken cancellationToken)
+    {
+        if (message.Params is { ValueKind: not JsonValueKind.Null })
+            throw new JsonRpcException(InvalidParams, "network.reload takes no configuration parameters");
+        await backend.ReloadAsync(cancellationToken).ConfigureAwait(false);
+        return Serialize(true, HostProtocolJsonContext.Default.Boolean);
+    }
 }

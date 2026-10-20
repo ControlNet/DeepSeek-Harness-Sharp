@@ -11,7 +11,7 @@ public static class IrohRemoteInstaller
         _ = IrohSshComponent.RequireExecutable();
         progress?.Invoke("Deploying the current dsharp receiver over the existing SSH connection …");
         var transport = new SshTransport(machine);
-        var commandPath = await new RemoteDsharpInstaller(transport).EnsureReceiverAsync(options.Deploy, progress, cancellationToken, options.ArchiveFactory, options.LocalProxy).ConfigureAwait(false);
+        var commandPath = await new RemoteDsharpInstaller(transport).EnsureReceiverAsync(options.Deploy, progress, cancellationToken, options.ArchiveFactory, options.LocalProxy, options.LocalHome).ConfigureAwait(false);
         var connection = (await transport.RunAsync("printf '%s' \"$SSH_CONNECTION\"", cancellationToken).ConfigureAwait(false))
             .Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (connection is not [_, _, _, var portText] || !int.TryParse(portText, out var sshPort) || sshPort is <= 0 or > ushort.MaxValue)

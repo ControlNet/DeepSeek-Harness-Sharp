@@ -192,7 +192,7 @@ public sealed class MachineConnection : IAsyncDisposable
             SetState(MachineConnectionState.Deploying, null);
             var deployed = await new RemoteDsharpInstaller(new SshTransport(Machine)).EnsureAsync(
                 _options.Deploy, step => SetState(MachineConnectionState.Deploying, step), cancellationToken, _options.ArchiveFactory,
-                localProxy: _options.LocalProxy).ConfigureAwait(false);
+                localProxy: _options.LocalProxy, localHome: _options.LocalHome).ConfigureAwait(false);
             return _commandPath = deployed.CommandPath;
         }
 

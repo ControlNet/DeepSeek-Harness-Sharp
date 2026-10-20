@@ -40,6 +40,11 @@ public sealed record FleetOptions
 
     public OutboundProxy LocalProxy { get; init; } = new();
 
+    /** Acquires a shared route before this client's consumers start; disposal always awaits its release. */
+    public Func<CancellationToken, ValueTask<IAsyncDisposable>>? AcquireOutboundRoute { get; init; }
+
+    public Dsh.Boot.HarnessHome? LocalHome { get; init; }
+
     public bool AutoReconnect { get; init; } = true;
 
     public TimeSpan InitialBackoff { get; init; } = DefaultInitialBackoff;

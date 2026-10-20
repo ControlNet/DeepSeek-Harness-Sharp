@@ -1,4 +1,3 @@
-using Dsh.Boot;
 using Dsh.RemoteHost;
 
 namespace Dsh.Fleet;
@@ -28,9 +27,13 @@ public sealed class FleetClient : IAsyncDisposable
     private readonly List<MachineConnection> _machines;
     private readonly object _disposeSync = new();
     private Task? _disposeTask;
+    private readonly Task<IAsyncDisposable>? _outboundLease;
+    private Task? _startTask;
+    private bool _disposed;
 
     public FleetClient(IEnumerable<MachineSpec> machines, FleetOptions options)
     {
+        _outboundLease = options.AcquireOutboundRoute?.Invoke(CancellationToken.None).AsTask();
         _machines = [.. machines.Select(machine => new MachineConnection(machine, options))];
         foreach (var machine in _machines)
         {
@@ -38,13 +41,6 @@ public sealed class FleetClient : IAsyncDisposable
             machine.SessionsChanged += OnMachineChanged;
             machine.PendingChanged += OnMachineChanged;
         }
-    }
-
-    /** A client for the local machine and every machine in the store of this harness home, deploying with the stored preferences. */
-    public static FleetClient FromStore(HarnessHome home, FleetOptions options)
-    {
-        var config = new MachineStore(home).Load();
-        return new FleetClient([MachineSpec.Local(home.Root), .. config.Machines], options with { Deploy = config.Deploy });
     }
 
     public event Action? Changed;
@@ -56,13 +52,36 @@ public sealed class FleetClient : IAsyncDisposable
 
     public void Start()
     {
-        foreach (var machine in _machines)
-            machine.Start();
+        lock (_disposeSync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _startTask ??= StartMachinesAsync();
+        }
+    }
+
+    private async Task StartMachinesAsync()
+    {
+        if (_outboundLease is not null)
+            await _outboundLease.ConfigureAwait(false);
+        lock (_disposeSync)
+        {
+            if (_disposed)
+                return;
+            foreach (var machine in _machines)
+                machine.Start();
+        }
     }
 
     /** Completes once every machine has either connected or failed its first attempt. */
-    public Task WaitSettledAsync(CancellationToken cancellationToken)
-        => Task.WhenAll(_machines.Select(machine => machine.WaitSettledAsync(cancellationToken)));
+    public async Task WaitSettledAsync(CancellationToken cancellationToken)
+    {
+        Task? started;
+        lock (_disposeSync)
+            started = _startTask;
+        if (started is not null)
+            await started.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await Task.WhenAll(_machines.Select(machine => machine.WaitSettledAsync(cancellationToken))).ConfigureAwait(false);
+    }
 
     public IReadOnlyList<FleetMachineStatus> Statuses()
         => [.. _machines.Select(machine => new FleetMachineStatus(
@@ -90,7 +109,10 @@ public sealed class FleetClient : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         lock (_disposeSync)
+        {
+            _disposed = true;
             return new ValueTask(_disposeTask ??= DisposeMachinesAsync());
+        }
     }
 
     private async Task DisposeMachinesAsync()
@@ -110,9 +132,23 @@ public sealed class FleetClient : IAsyncDisposable
                 (errors ??= []).Add(error);
             }
         }
-        Disposed?.Invoke(this);
-        if (errors is not null)
-            throw new AggregateException(errors);
+        try
+        {
+            if (errors is not null)
+                throw new AggregateException(errors);
+        }
+        finally
+        {
+            try
+            {
+                if (_outboundLease is not null)
+                    await (await _outboundLease.ConfigureAwait(false)).DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                Disposed?.Invoke(this);
+            }
+        }
     }
 
     private static IEnumerable<FleetPendingItem> PendingOf(string machine, RemotePendingList pending)

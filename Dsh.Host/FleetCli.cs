@@ -55,7 +55,7 @@ internal static class FleetCli
             eventArgs.Cancel = true;
             cancellation.Cancel();
         };
-        var context = new FleetCliContext(home, new MachineStore(home), parsed, resumeHarness, cancellation.Token);
+        await using var context = new FleetCliContext(home, new MachineStore(home), parsed, resumeHarness, cancellation.Token);
         try
         {
             return args[0] switch
@@ -94,6 +94,8 @@ internal static class FleetCli
                dsharp machine tunnel <name> show
                dsharp machine tunnel <name> clear
                dsharp machine tunnel <name> test [--probe-url <url>]
+               dsharp machine tunnel <name> use         (select this machine for this home's outbound requests)
+               dsharp machine tunnel direct             (restore the local baseline without opening SSH)
                dsharp session list [--machine <name>]
                dsharp session attach <machine>/<session>   (terminal sessions; leave with Ctrl+])
                dsharp session stop <machine>/<session>
@@ -273,17 +275,24 @@ internal static class FleetCli
     {
         var arguments = context.Arguments;
         var operation = arguments.Positional.ElementAtOrDefault(2);
-        if (arguments.Positional.Count != 3 || operation is not ("show" or "set" or "clear" or "test")
+        var direct = arguments.Positional is ["tunnel", "direct"] && arguments.Flags.Count == 0 && arguments.Options.Count == 0;
+        if (!direct && (arguments.Positional.Count != 3 || operation is not ("show" or "set" or "clear" or "test" or "use")
             || arguments.Flags.Any(flag => flag != "--json-stdin" || operation != "set")
             || arguments.Options.Any(option => option.Key != "--probe-url" || operation != "test" || option.Value.Count != 1)
-            || operation == "set" && !arguments.Has("--json-stdin"))
-            return await FailAsync("usage: machine tunnel <name> set --json-stdin | show | clear | test [--probe-url <url>]");
+            || operation == "set" && !arguments.Has("--json-stdin")))
+            return await FailAsync("usage: machine tunnel <name> set --json-stdin | show | clear | test [--probe-url <url>] | use; machine tunnel direct");
 
         OutboundTunnelSpec? supplied = null;
         OutboundTunnelSpec? saved = null;
         var probeUrl = arguments.Value("--probe-url") ?? "https://example.com/";
         try
         {
+            if (direct || operation == "use")
+            {
+                await context.OutboundRoute.SelectAsync(direct ? null : arguments.Operand, context.Cancellation);
+                await Console.Out.WriteLineAsync(direct ? "Local outbound selection cleared." : "Local outbound selection saved.");
+                return 0;
+            }
             var machine = context.RequireMachine(arguments.Operand);
             saved = machine.OutboundTunnel;
             if (machine.IsLocal)
@@ -383,7 +392,7 @@ internal static class FleetCli
         var deploy = context.Store.Load().Deploy;
         var result = await new RemoteDsharpInstaller(new SshTransport(machine)).EnsureAsync(
             deploy, step => Console.Error.WriteLine(step), context.Cancellation, force: context.Arguments.Has("--force"),
-            localProxy: context.Options(deploy: true, startLocalHost: false).LocalProxy);
+            localHome: context.Home);
         await Console.Out.WriteLineAsync(result.AlreadyPresent
             ? $"{machine.Name}: {result.CommandPath} is already at {RemoteHostServer.ReleaseVersion} or newer (use --force to redeploy)"
             : $"{machine.Name}: deployed {RemoteHostServer.ReleaseVersion} to {result.CommandPath}");
@@ -592,20 +601,52 @@ internal sealed record FleetCliContext(
     MachineStore Store,
     FleetArguments Arguments,
     Func<HarnessHome, string, Task<int>> ResumeHarness,
-    CancellationToken Cancellation)
+    CancellationToken Cancellation) : IAsyncDisposable
 {
+    private readonly OutboundProxy _proxy = new();
+    private BorrowedOutboundRoute? _outboundRoute;
+    private Task<IAsyncDisposable>? _outboundLease;
+
+    public BorrowedOutboundRoute OutboundRoute => _outboundRoute ??= new BorrowedOutboundRoute(Home, _proxy);
+
+    public async ValueTask DisposeAsync()
+    {
+        var routeDisposal = _outboundRoute?.DisposeAsync().AsTask();
+        try
+        {
+            if (_outboundLease is not null)
+                await (await _outboundLease.ConfigureAwait(false)).DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            try
+            {
+                if (routeDisposal is not null)
+                    await routeDisposal.ConfigureAwait(false);
+            }
+            finally
+            {
+                _proxy.Dispose();
+            }
+        }
+    }
+
     /** The CLI connects once per command: no reconnects, the stored deployment preferences, and a local host started on demand like ssh starts a remote one. */
     public FleetOptions Options(bool deploy, bool startLocalHost)
     {
         var settings = Store.Load().Deploy;
-        var proxy = new OutboundProxy();
-        var proxySettings = HarnessSettings.Load(Home).Network?.OutboundProxy;
-        proxy.Configure(proxySettings?.Url, proxySettings?.Bypass);
+        if (_outboundLease is null && settings.Via != DownloadVia.Server)
+        {
+            var acquisition = OutboundRoute.AcquireAsync().AsTask();
+            acquisition.GetAwaiter().GetResult();
+            _outboundLease = acquisition;
+        }
         return new FleetOptions
         {
             ClientName = $"cli@{Environment.MachineName}",
             Deploy = deploy ? settings : settings with { AutoDeploy = false },
-            LocalProxy = proxy,
+            LocalProxy = _proxy,
+            LocalHome = Home,
             AutoReconnect = false,
             StartLocalHost = startLocalHost ? StartLocalHostAsync : null,
         };

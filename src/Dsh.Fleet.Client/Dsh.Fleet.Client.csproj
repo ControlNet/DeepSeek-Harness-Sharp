@@ -10,6 +10,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Dsh.Tests" />
     <ProjectReference Include="..\Dsh.Boot\Dsh.Boot.csproj" />
+    <ProjectReference Include="..\Dsh.Core\Dsh.Core.csproj" />
     <ProjectReference Include="..\Dsh.Notifications\Dsh.Notifications.csproj" />
     <ProjectReference Include="..\Dsh.Transport\Dsh.Transport.csproj" />
     <ProjectReference Include="..\Dsh.RemoteHost\Dsh.RemoteHost.csproj" />
