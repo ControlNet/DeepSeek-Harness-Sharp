@@ -5,6 +5,11 @@ using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.Runtime;
 using Dsh.Transport;
+using Dsh.Core;
+using Dsh.Persistence;
+using Dsh.RemoteHost;
+using Dsh.Web;
+using Dsh.Llm;
 
 namespace Dsh.Tests;
 
@@ -214,6 +219,250 @@ public sealed class NetworkProxySmokeTests
         await AssertExampleDomainAsync(client, HttpTarget, 1, TestContext.Current.CancellationToken);
         await AssertExampleDomainAsync(client, HttpsTarget, 2, TestContext.Current.CancellationToken);
         OwnerOnlyFiles.Write(Path.Combine(root, "ssh-command-evidence.txt"), string.Join(Environment.NewLine, commands));
+    }
+
+    [Theory(Explicit = true, Timeout = 240000)]
+    [InlineData("A")]
+    [InlineData("A with spaces")]
+    public async Task RealTuiSelection_PersistsTheSharedRoute_ForAnActualHttpFetchConsumer(string selectedMachine)
+    {
+        var executable = FleetSshEndToEndTests.RequireEnvironment();
+        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var selected = new TestForwardProxy(forward: true);
+        await using var other = new TestForwardProxy(forward: true);
+        await using var baseline = new TestForwardProxy(forward: true);
+        var root = RealHostProcesses.CreateHome("b80t");
+        try
+        {
+            var home = PrepareTuiHome(root, ssh, selected, other, baseline);
+            var store = new MachineStore(home);
+            store.Upsert(store.Load().Find("A")! with { Name = selectedMachine });
+            var before = HarnessSettings.Load(home).Network!.OutboundProxy!.Url;
+            using var terminal = new PtyHost();
+            var session = await StartTuiAsync(terminal, executable, root);
+            await WaitUntilAsync(() => TuiReady(session), "The real TUI must render its input before commands are sent.");
+            await session.WriteAsync(Encoding.UTF8.GetBytes($"/proxy via {selectedMachine}\r"), Ct);
+            await WaitUntilAsync(() => HarnessSettings.Load(home).Network?.BorrowedOutboundMachine == selectedMachine, "The real TUI must persist its validated selection.");
+
+            using (var outbound = new OutboundProxy())
+            {
+                await using var route = new BorrowedOutboundRoute(home, outbound);
+                await using var lease = await route.AcquireAsync(Ct);
+                var result = await new HttpFetchProvider(proxy: outbound).Fetch(new WebFetchRequest(HttpsTarget), Ct);
+                Assert.Equal(200, result.StatusCode);
+                Assert.Contains("Example Domain", result.Body.Content);
+            }
+            Assert.Contains(selected.Requests, request => request.StartsWith("CONNECT ", StringComparison.Ordinal));
+            Assert.Empty(other.Requests);
+            Assert.Equal(before, HarnessSettings.Load(home).Network?.OutboundProxy?.Url);
+            var saved = await File.ReadAllTextAsync(home.SettingsFile, Ct);
+            await session.WriteAsync(Encoding.UTF8.GetBytes("/proxy via missing-machine\r"), Ct);
+            await WaitUntilAsync(() => TuiText(session, out _).Contains("selected outbound machine does not exist", StringComparison.Ordinal),
+                "An invalid TUI selection must produce an explicit command error.");
+            Assert.True(saved == await File.ReadAllTextAsync(home.SettingsFile, Ct), "An invalid TUI selection must leave settings unchanged.");
+            await session.WriteAsync(Encoding.UTF8.GetBytes("/proxy direct\r"), Ct);
+            await WaitUntilAsync(() => HarnessSettings.Load(home).Network?.BorrowedOutboundMachine is null, "Direct must clear only the borrowed selection.");
+            await session.WriteAsync(Encoding.UTF8.GetBytes("/exit\r"), Ct);
+            await session.WaitForExitAsync(Ct);
+            Assert.Equal(0, session.ExitCode);
+            await BorrowedOutboundProxyTests.AssertOwnedSshRetiredAsync(root, selected.Port);
+            Assert.Empty(other.Requests);
+        }
+        finally
+        {
+            RealHostProcesses.KillAll(root);
+            TempTree.Delete(root);
+        }
+    }
+
+    [Fact(Explicit = true, Timeout = 360000)]
+    [Trait("Category", "LlmSmoke")]
+    public async Task RealTuiModel_WebFetchAndSearch_AndLocalHostReload_UseTheSameSavedBorrowedSelection()
+    {
+        var executable = FleetSshEndToEndTests.RequireEnvironment();
+        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var selected = new TestForwardProxy(forward: true);
+        await using var other = new TestForwardProxy(forward: true);
+        await using var baseline = new TestForwardProxy(forward: true);
+        var root = RealHostProcesses.CreateHome("b80m");
+        try
+        {
+            RealHostProcesses.CopyRealConfiguration(root);
+            var home = new HarnessHome(root);
+            var settings = HarnessSettings.Load(home);
+            var model = settings.ResolveDefaultModel() ?? throw new InvalidOperationException("The real TUI smoke needs a selected HTTP provider and model.");
+            var provider = settings.Providers[model.Provider];
+            var options = provider.Options ?? throw new InvalidOperationException("The selected provider needs HTTP options.");
+            var credential = options.ApiKey ?? (options.ApiKeyEnv is { } name ? new EnvCredentials(HarnessHome.Default()).Get(name) : null);
+            Assert.False(string.IsNullOrWhiteSpace(credential), "The real TUI smoke needs its selected provider's actual credential.");
+            options.ApiKey = credential;
+            options.ApiKeyEnv = null;
+            var providerHost = new Uri(options.BaseUrl!).Host;
+            settings.Providers = new() { [model.Provider] = provider };
+            settings.Fleet = null;
+            settings.Plugins.Remove("@deepseek-ai/dsh-fleet");
+            settings.Plugins.Remove("@deepseek-ai/dsh-web-search-github");
+            settings.Save(home);
+            settings.SavePlugins(home);
+            PrepareTuiHome(root, ssh, selected, other, baseline);
+            using var hostProcess = RealHostProcesses.StartHost(executable, root);
+            await using var host = await RemoteHostClient.ConnectAsync(await RemoteHostListener.ConnectAsync(root, Ct,
+                startupLifetime: hostProcess.WaitForExitAsync(Ct)), null, "borrowed-route-acceptance", Ct);
+            using var terminal = new PtyHost();
+            var tui = await StartTuiAsync(terminal, executable, root);
+            await WaitUntilAsync(() => TuiReady(tui), "The real model TUI must become ready.");
+            await tui.WriteAsync(Encoding.UTF8.GetBytes("/proxy via A\r"), Ct);
+            await WaitUntilAsync(() => HarnessSettings.Load(home).Network?.BorrowedOutboundMachine == "A", "The real TUI must select A.");
+            await tui.WriteAsync(Encoding.UTF8.GetBytes(
+                "Use web_fetch to read https://example.com/ and web_search with engine github-repos to search for the official dotnet runtime repository. " +
+                "After both tools succeed and search returns a usable source URL, reply exactly NET80_TUI_DONE. Do not use other tools.\r"), Ct);
+            IReadOnlyList<SessionEvent>? completed = null;
+            await WaitUntilAsync(() => (completed = ReadCompletedTuiTurn(home)) is not null, "The real TUI model turn must complete.");
+            Assert.NotNull(completed);
+            Assert.IsType<TurnEndReason.Completed>(completed.Select(value => value.Data).OfType<TurnEndPayload>().Last().Reason);
+            Assert.Contains(completed.Select(value => value.Data).OfType<AssistantMessagePayload>(), value =>
+                value.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains("NET80_TUI_DONE", StringComparison.Ordinal)));
+            var calls = completed.Select(value => value.Data).OfType<ToolCallPayload>().ToArray();
+            Assert.Contains(calls, call => call.Name == "web_fetch");
+            var searchCalls = calls.Where(call => call.Name == "web_search").Select(call => call.CallId).ToHashSet();
+            var results = completed.Select(value => value.Data).OfType<ToolResultPayload>().ToArray();
+            Assert.Contains(results, result => result.Error is null && result.Message.Block.Content.OfType<TextBlock>()
+                .Any(block => block.Text.Contains("Example Domain", StringComparison.Ordinal)));
+            Assert.Contains(results, result => WebFetchTool.FetchMetaFromResult(result.Meta) is { StatusCode: 200, Url: HttpsTarget });
+            var sources = results.Where(result => result.Error is null && searchCalls.Contains(result.Message.Block.ToolCallId))
+                .SelectMany(result => WebSearchTool.SearchMetaFromResult(result.Meta)?.Sources ?? []).ToArray();
+            Assert.NotEmpty(sources);
+            Assert.Contains(selected.Requests, request => request.StartsWith($"CONNECT {providerHost}:443 ", StringComparison.Ordinal));
+            Assert.Contains(selected.Requests, request => request.StartsWith("CONNECT api.github.com:443 ", StringComparison.Ordinal));
+            using (var outbound = new OutboundProxy())
+            {
+                await using var route = new BorrowedOutboundRoute(home, outbound);
+                await using var lease = await route.AcquireAsync(Ct);
+                using var client = new HttpClient(outbound.CreateHandler());
+                using var source = await client.GetAsync(sources[0].Url, HttpCompletionOption.ResponseHeadersRead, Ct);
+                Assert.Equal(HttpStatusCode.OK, source.StatusCode);
+            }
+
+            var beforeHost = selected.Requests.Count;
+            await host.Network.ReloadAsync(Ct);
+            var hostSession = await host.CreateSessionAsync(root, new RemoteModelSelection(model.Provider, model.Model), cancellationToken: Ct);
+            var hostEvents = ReadHostTurnAsync(host, hostSession.Id);
+            await host.SendMessageAsync(hostSession.Id, "Use web_fetch to read https://example.com/. After success reply NET80_HOST_DONE. Do not use other tools.", [], Ct);
+            var events = await hostEvents;
+            Assert.IsType<TurnEndReason.Completed>(Assert.IsType<TurnEndPayload>(events[^1].Data).Reason);
+            Assert.Contains(events.Select(value => value.Data).OfType<AssistantMessagePayload>(), value =>
+                value.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains("NET80_HOST_DONE", StringComparison.Ordinal)));
+            Assert.Contains(events.Select(value => value.Data).OfType<ToolCallPayload>(), call => call.Name == "web_fetch");
+            Assert.Contains(events.Select(value => value.Data).OfType<ToolResultPayload>(), result => result.Error is null
+                && result.Message.Block.Content.OfType<TextBlock>().Any(block => block.Text.Contains("Example Domain", StringComparison.Ordinal)));
+            Assert.True(selected.Requests.Count > beforeHost);
+            Assert.Empty(other.Requests);
+            await tui.WriteAsync(Encoding.UTF8.GetBytes("/exit\r"), Ct);
+            await tui.WaitForExitAsync(Ct);
+            Assert.Equal(0, tui.ExitCode);
+            Assert.True(await host.PingAsync(Ct) > 0, "Exiting TUI must leave the independent local Host alive.");
+            await host.Network.ReloadAsync(Ct);
+            HarnessSettings.SaveBorrowedOutboundMachine(home, null);
+            await host.Network.ReloadAsync(Ct);
+            await BorrowedOutboundProxyTests.AssertOwnedSshRetiredAsync(root, selected.Port);
+        }
+        finally
+        {
+            RealHostProcesses.KillAll(root);
+            TempTree.Delete(root);
+        }
+    }
+
+    private static HarnessHome PrepareTuiHome(string root, TestSshServer ssh, TestForwardProxy selected, TestForwardProxy other, TestForwardProxy baseline)
+    {
+        TempTree.AssertFitsMacOsSocketLimit(Path.Combine(root, "run", "host.sock"));
+        var home = new HarnessHome(root);
+        var settings = HarnessSettings.Load(home);
+        settings.Network = new NetworkSettings { OutboundProxy = new OutboundProxySettings { Url = $"http://127.0.0.1:{baseline.Port}", ProbeUrl = HttpsTarget } };
+        settings.Fleet = null;
+        settings.Save(home);
+        var store = new MachineStore(home);
+        store.Upsert(BorrowedOutboundProxyTests.ObserveSsh(ssh.Machine("A", root), root) with { OutboundTunnel = new("proxyCommand", $"http://127.0.0.1:{selected.Port}") });
+        store.Upsert(ssh.Machine("B", root) with { OutboundTunnel = new("proxyCommand", $"http://127.0.0.1:{other.Port}") });
+        return home;
+    }
+
+    private static Task<PtySession> StartTuiAsync(PtyHost host, string executable, string root)
+        => host.StartAsync(new PtyStartInfo
+        {
+            FileName = executable,
+            Arguments = ["tui"],
+            Home = root,
+            WorkingDirectory = root,
+            Columns = 140,
+            Rows = 40,
+            Environment = new Dictionary<string, string?>
+            {
+                [HarnessHome.HomeEnv] = root,
+                [HarnessHome.ChildHomeEnv] = root,
+                ["DSH_PTY_CHILD"] = "1",
+                ["TERM"] = "xterm-256color",
+                ["LC_ALL"] = "C",
+            },
+        }, cancellationToken: Ct);
+
+    private static bool TuiReady(PtySession session)
+    {
+        var text = TuiText(session, out var alternateScreen);
+        return alternateScreen && text.Contains("快捷键", StringComparison.Ordinal);
+    }
+
+    private static string TuiText(PtySession session, out bool alternateScreen)
+    {
+        var screen = new VtScreen(140, 40);
+        screen.Feed(session.Snapshot());
+        alternateScreen = screen.IsAlternateScreen;
+        var text = new StringBuilder(140 * 41);
+        for (var row = 0; row < screen.Height; row++)
+        {
+            foreach (var cell in screen.Row(row))
+                if (cell.Character != '\0')
+                    text.Append(cell.Character);
+            text.Append('\n');
+        }
+        return text.ToString();
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, string failure)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(120));
+        while (!condition())
+        {
+            Assert.False(deadline.IsCancellationRequested, failure);
+            await Task.Delay(50, Ct);
+        }
+    }
+
+    private static IReadOnlyList<SessionEvent>? ReadCompletedTuiTurn(HarnessHome home)
+    {
+        using var persistence = new JsonlSessionPersistence(home.SessionsPath);
+        foreach (var session in persistence.List())
+        {
+            using var handle = persistence.Open(session.Header.Id, SessionAccess.Read);
+            var events = handle.Read();
+            if (events.Any(value => value.Data is TurnEndPayload))
+                return events;
+        }
+        return null;
+    }
+
+    private static async Task<IReadOnlyList<SessionEvent>> ReadHostTurnAsync(RemoteHostClient host, string sessionId)
+    {
+        var events = new List<SessionEvent>();
+        await foreach (var item in host.SubscribeAsync(sessionId, 0, Ct))
+        {
+            var value = DshJson.Deserialize<SessionEvent>(item.EventJson)!;
+            events.Add(value);
+            if (value.Data is TurnEndPayload)
+                return events;
+        }
+        throw new IOException("The Host event stream ended before its real model turn completed.");
     }
 
     private static async ValueTask<Stream> ConnectObservedAsync(SshOutboundTunnel tunnel, DnsEndPoint endpoint,

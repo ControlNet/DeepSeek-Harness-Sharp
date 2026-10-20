@@ -3,17 +3,35 @@ using Dsh.Runtime;
 
 namespace Dsh.Fleet;
 
-/** Plugin-lifetime owner of frontend clients, never host sessions or a second connection/state cache. */
-public sealed class FleetService(HarnessHome home, Context? context = null) : IDisposable
+/** Plugin-lifetime owner of frontend clients and this Context's outbound route, never target Host sessions. */
+public sealed class FleetService : IDisposable
 {
     public const string ServiceName = "fleet";
 
     private readonly object _sync = new();
     private readonly List<FleetClient> _clients = [];
+    private readonly Task<IAsyncDisposable>? _runtimeLease;
+    private readonly bool _ownsProxy;
     private bool _disposed;
 
-    public HarnessHome Home { get; } = home;
-    public MachineStore Store { get; } = new(home);
+    public FleetService(HarnessHome home, Context? context = null)
+    {
+        Home = home;
+        Store = new MachineStore(home);
+        _ownsProxy = context?.GetProp(OutboundProxy.PropName) is not OutboundProxy;
+        var proxy = _ownsProxy ? new OutboundProxy() : OutboundProxy.FromContext(context!);
+        OutboundRoute = new BorrowedOutboundRoute(home, proxy);
+        if (context is not null)
+        {
+            _runtimeLease = OutboundRoute.AcquireAsync().AsTask();
+            // Initial acquisition only reads configuration; fail startup explicitly for an invalid saved selection.
+            _runtimeLease.GetAwaiter().GetResult();
+        }
+    }
+
+    public HarnessHome Home { get; }
+    public MachineStore Store { get; }
+    public BorrowedOutboundRoute OutboundRoute { get; }
 
     public FleetClient CreateClient(FleetOptions options)
     {
@@ -24,7 +42,9 @@ public sealed class FleetService(HarnessHome home, Context? context = null) : ID
             var client = new FleetClient([MachineSpec.Local(Home.Root), .. config.Machines], options with
             {
                 Deploy = config.Deploy,
-                LocalProxy = context is null ? options.LocalProxy : OutboundProxy.FromContext(context),
+                LocalHome = Home,
+                LocalProxy = OutboundRoute.Proxy,
+                AcquireOutboundRoute = OutboundRoute.AcquireAsync,
             });
             client.Disposed += RemoveClient;
             _clients.Add(client);
@@ -50,6 +70,8 @@ public sealed class FleetService(HarnessHome home, Context? context = null) : ID
             clients = [.. _clients];
             _clients.Clear();
         }
+        // Cancel an in-flight selection before waiting for client/runtime leases that share its gate.
+        var routeDisposal = OutboundRoute.DisposeAsync().AsTask();
         List<Exception>? errors = null;
         foreach (var client in clients)
         {
@@ -60,6 +82,23 @@ public sealed class FleetService(HarnessHome home, Context? context = null) : ID
             catch (Exception error)
             {
                 (errors ??= []).Add(error);
+            }
+        }
+        try
+        {
+            if (_runtimeLease is not null)
+                _runtimeLease.GetAwaiter().GetResult().DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        finally
+        {
+            try
+            {
+                routeDisposal.GetAwaiter().GetResult();
+            }
+            finally
+            {
+                if (_ownsProxy)
+                    OutboundRoute.Proxy.Dispose();
             }
         }
         if (errors is not null)

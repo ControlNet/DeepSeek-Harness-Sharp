@@ -1,47 +1,90 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using Dsh.Boot;
+using Dsh.Core;
 using Dsh.RemoteHost;
 using Dsh.Runtime;
 using Dsh.Transport;
 
 namespace Dsh.Host;
 
-internal sealed class HarnessRemoteNetworkBackend(HarnessHome home, OutboundProxy proxy) : IRemoteNetworkBackend
+internal sealed class HarnessRemoteNetworkBackend(HarnessHome home, OutboundProxy proxy, IOutboundRouteController? controller = null)
+    : IRemoteNetworkBackend, IRemoteNetworkReloadBackend
 {
-    private readonly Lock _gate = new();
+    private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string _ownerId = Guid.NewGuid().ToString("N");
 
-    public Task<RemoteOutboundProxyState> GetOutboundAsync(CancellationToken cancellationToken)
+    public async Task<RemoteOutboundProxyState> GetOutboundAsync(CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        lock (_gate)
-            return Task.FromResult(ReadState());
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return ReadState();
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
-    public Task<RemoteOutboundProxyState> SetOutboundAsync(RemoteOutboundProxySetRequest request, CancellationToken cancellationToken)
+    public async Task<RemoteOutboundProxyState> SetOutboundAsync(RemoteOutboundProxySetRequest request, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        lock (_gate)
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
             if (!string.Equals(request.ExpectedRevision, ReadState().Revision, StringComparison.Ordinal))
                 throw new JsonRpcException(NetworkProtocol.RevisionConflict, "outbound proxy settings changed; reload before saving");
             cancellationToken.ThrowIfCancellationRequested();
             HarnessSettings.SaveOutboundProxy(home, ToLocalSettings(request.Settings), proxy);
-            return Task.FromResult(ReadState());
+            return ReadState();
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 
     public async Task<RemoteOutboundProxyProbeResult> ProbeOutboundAsync(RemoteOutboundProxyProbeRequest request, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
         OutboundProxySettings settings;
-        lock (_gate)
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
             settings = ToLocalSettings(request.Draft ?? ReadSettings());
+        }
+        finally
+        {
+            _gate.Release();
+        }
         if (request.ProbeUrl is { } probeUrl)
             settings.ProbeUrl = probeUrl;
         var result = await OutboundProxyProbe.RunAsync(settings, cancellationToken, "远端服务器出口");
         return new RemoteOutboundProxyProbeResult(result.Reachable, result.Message);
+    }
+
+    public async Task ReloadAsync(CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (controller is not null)
+            {
+                await controller.ReloadAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            var settings = HarnessSettings.Load(home).Network;
+            if (settings?.BorrowedOutboundMachine is not null)
+            {
+                proxy.SuspendBorrowed();
+                throw new InvalidOperationException("The Host cannot apply a borrowed selection without its outbound route controller.");
+            }
+            proxy.Configure(settings?.OutboundProxy?.Url, settings?.OutboundProxy?.Bypass);
+            proxy.ConfigureBorrowed(null, null);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     private RemoteOutboundProxyState ReadState()

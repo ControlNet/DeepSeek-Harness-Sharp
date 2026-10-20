@@ -6,7 +6,8 @@ namespace Dsh.Fleet;
 public sealed class SshOutboundTunnel : IAsyncDisposable
 {
     private readonly object _gate = new();
-    private readonly MachineSpec _machine;
+    private MachineSpec? _machine;
+    private Uri? _proxyUri;
     private readonly HashSet<SshProxyStream> _connections = [];
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Action<SshProxyStream> _released;
@@ -16,27 +17,37 @@ public sealed class SshOutboundTunnel : IAsyncDisposable
     public SshOutboundTunnel(MachineSpec machine)
     {
         ArgumentNullException.ThrowIfNull(machine);
-        ProxyUri = MachineStore.ValidateOutboundTunnel(machine)
+        _proxyUri = MachineStore.ValidateOutboundTunnel(machine)
             ?? throw new InvalidOperationException("The machine has no outbound tunnel configured.");
         _machine = machine;
         _released = Release;
     }
 
-    public Uri ProxyUri { get; }
+    public Uri ProxyUri
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                return _proxyUri!;
+            }
+        }
+    }
 
     public async ValueTask<Stream> ConnectAsync(DnsEndPoint endpoint, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
-        if (endpoint.Port != ProxyUri.Port || !endpoint.Host.AsSpan().Trim("[]").Equals(ProxyUri.IdnHost.AsSpan().Trim("[]"), StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("The connection endpoint does not match the configured remote proxy.");
-        cancellationToken.ThrowIfCancellationRequested();
         SshProxyStream connection;
         CancellationTokenSource linked;
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            if (endpoint.Port != _proxyUri!.Port || !endpoint.Host.AsSpan().Trim("[]").Equals(_proxyUri!.IdnHost.AsSpan().Trim("[]"), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The connection endpoint does not match the configured remote proxy.");
+            cancellationToken.ThrowIfCancellationRequested();
             linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
-            connection = new SshProxyStream(_machine, endpoint, _released);
+            connection = new SshProxyStream(_machine!, endpoint, _released);
             _connections.Add(connection);
         }
         using (linked)
@@ -67,6 +78,8 @@ public sealed class SshOutboundTunnel : IAsyncDisposable
             if (_disposal is not null)
                 return new ValueTask(_disposal);
             _disposed = true;
+            _machine = null;
+            _proxyUri = null;
             _disposal = DisposeConnectionsAsync([.. _connections]);
             return new ValueTask(_disposal);
         }

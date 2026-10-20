@@ -47,7 +47,21 @@ public sealed class FleetNetwork(MachineConnection connection) : IRemoteNetwork
         }
     }
 
-    private async Task<HostLease> BorrowAsync(CancellationToken cancellationToken)
+    public async Task ReloadAsync(CancellationToken cancellationToken = default)
+    {
+        var lease = await BorrowAsync(cancellationToken, NetworkProtocol.ReloadCapability).ConfigureAwait(false);
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
+        try
+        {
+            await lease.Client.Network.ReloadAsync(lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && lease.Lifetime.IsCancellationRequested)
+        {
+            throw new IOException("The target Host disconnected during the network reload request.");
+        }
+    }
+
+    private async Task<HostLease> BorrowAsync(CancellationToken cancellationToken, string capability = NetworkProtocol.Capability)
     {
         await connection.WaitSettledAsync(cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
@@ -55,8 +69,8 @@ public sealed class FleetNetwork(MachineConnection connection) : IRemoteNetwork
             ?? throw new IOException($"The target Host is not connected: {connection.Detail ?? "connection unavailable"}");
         if (lease.Lifetime.IsCancellationRequested)
             throw new IOException("The target Host disconnected before the outbound proxy request.");
-        if (!lease.Client.Supports(NetworkProtocol.Capability))
-            throw new NotSupportedException("The target Host does not support network.outbound; upgrade the target Host to configure its outbound proxy.");
+        if (!lease.Client.Supports(capability))
+            throw new NotSupportedException($"The target Host does not support {capability}; upgrade the target Host to use this network operation.");
         return lease;
     }
 }

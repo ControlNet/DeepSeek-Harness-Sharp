@@ -25,7 +25,7 @@ public static class ConfigBoot
         ctx.SetOwn(DshPaths.PropName, paths);
         ctx.SetOwn("credentials", credentials);
         ctx.SetOwn("harnessOptions", options with { Home = home });
-        ctx.SetOwn(OutboundProxy.PropName, CreateOutboundProxy(ctx, settings.Network?.OutboundProxy));
+        ctx.SetOwn(OutboundProxy.PropName, CreateOutboundProxy(ctx, settings.Network));
         _ = new ToolResultSpill(ctx, settings.Storage?.ToolResults is { } toolResults
             ? new ToolResultSpillOptions(toolResults.MaxBytes)
             : null);
@@ -77,18 +77,20 @@ public static class ConfigBoot
         return app;
     }
 
-    /** 代理地址非法时记错误并跟随系统代理, 不阻断启动; /proxy 与设置页的自检会给出同一条原因。 */
-    private static OutboundProxy CreateOutboundProxy(Context ctx, OutboundProxySettings? settings)
+    /** Invalid baselines retain their existing startup policy; a saved borrowed selection always starts fail-closed. */
+    private static OutboundProxy CreateOutboundProxy(Context ctx, NetworkSettings? network)
     {
         var proxy = new OutboundProxy();
         try
         {
-            proxy.Configure(settings?.Url, settings?.Bypass);
+            proxy.Configure(network?.OutboundProxy?.Url, network?.OutboundProxy?.Bypass);
         }
         catch (ArgumentException error)
         {
             ctx.LoggerFor("network").Error("%s", error.Message);
         }
+        if (network?.BorrowedOutboundMachine is not null)
+            proxy.SuspendBorrowed();
         return proxy;
     }
 

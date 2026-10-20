@@ -234,6 +234,52 @@ public sealed class NetworkSettingsPersistenceTests
         Assert.Contains("canary: keep", await File.ReadAllTextAsync(fixture.Home.SettingsFile, TestContext.Current.CancellationToken));
     }
 
+    [Theory]
+    [InlineData(false, "machine: # 'quoted'")]
+    [InlineData(true, "machine: # 'quoted'")]
+    [InlineData(false, "")]
+    [InlineData(true, "")]
+    [InlineData(false, "null")]
+    [InlineData(true, "null")]
+    [InlineData(false, "中文 \"机器\"\nnext\\line")]
+    [InlineData(true, "中文 \"机器\"\nnext\\line")]
+    public async Task BorrowedSelection_TargetedSaveAndClear_PreserveBaselineAndEverySibling(bool flow, string selected)
+    {
+        var network = flow
+            ? $"network: {{outbound_proxy: {{url: '{FirstProxy}', bypass: [keep.example]}}, future: {{nested: [one, two]}}}} # keep network"
+            : $"network: # keep network\r\n  outbound_proxy: {{url: '{FirstProxy}', bypass: [keep.example]}}\r\n  future: {{nested: [one, two]}}";
+        var root = TempTree.CreateSocketDirectory("b80p");
+        try
+        {
+            var home = new HarnessHome(root);
+            await File.WriteAllTextAsync(home.SettingsFile, $"{Prefix}{network}{Suffix}", TestContext.Current.CancellationToken);
+
+            HarnessSettings.SaveBorrowedOutboundMachine(home, selected);
+
+            var saved = await File.ReadAllTextAsync(home.SettingsFile, TestContext.Current.CancellationToken);
+            Assert.Equal(selected, HarnessSettings.Load(home).Network?.BorrowedOutboundMachine);
+            Assert.StartsWith(Prefix, saved);
+            Assert.EndsWith(Suffix, saved);
+            Assert.Contains($"outbound_proxy: {{url: '{FirstProxy}', bypass: [keep.example]}}", saved);
+            Assert.Contains("future: {nested: [one, two]}", saved);
+            Assert.Contains("# keep network", saved);
+            Assert.Equal(saved.ReplaceLineEndings("\r\n"), saved);
+
+            HarnessSettings.SaveBorrowedOutboundMachine(home, null);
+
+            var cleared = await File.ReadAllTextAsync(home.SettingsFile, TestContext.Current.CancellationToken);
+            Assert.Null(HarnessSettings.Load(home).Network?.BorrowedOutboundMachine);
+            Assert.DoesNotContain("borrowed_outbound_machine", cleared);
+            Assert.Contains($"outbound_proxy: {{url: '{FirstProxy}', bypass: [keep.example]}}", cleared);
+            Assert.Contains("future: {nested: [one, two]}", cleared);
+            Assert.EndsWith(Suffix, cleared);
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
     private sealed class Fixture(HarnessApp app, string directory, IAgent agent) : IAsyncDisposable
     {
         public HarnessHome Home => app.Home;

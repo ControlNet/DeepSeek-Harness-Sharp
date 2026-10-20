@@ -10,7 +10,7 @@ internal sealed class SshProxyStream : Stream, IOutboundTransportLifetime
 {
     private const int DiagnosticCapacity = 8192;
     private readonly object _gate = new();
-    private readonly MachineSpec _machine;
+    private MachineSpec? _machine;
     private readonly DnsEndPoint _endpoint;
     private readonly Action<SshProxyStream> _released;
     private readonly CancellationTokenSource _stop = new();
@@ -50,8 +50,16 @@ internal sealed class SshProxyStream : Stream, IOutboundTransportLifetime
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            cancellationToken.ThrowIfCancellationRequested();
-            var setup = SshTransport.CreateProxyStart(_machine, _endpoint);
+            (ProcessStartInfo StartInfo, string? AskPass, string AuthenticationMarker) setup;
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                setup = SshTransport.CreateProxyStart(_machine!, _endpoint);
+            }
+            finally
+            {
+                _machine = null;
+            }
             Process.StartInfo = setup.StartInfo;
             _askPass = setup.AskPass;
             _authenticationMarker = setup.AuthenticationMarker;
@@ -323,6 +331,7 @@ internal sealed class SshProxyStream : Stream, IOutboundTransportLifetime
                     return;
                 }
                 _disposed = true;
+                _machine = null;
                 try
                 {
                     _stop.Cancel();

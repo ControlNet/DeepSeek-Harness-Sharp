@@ -39,7 +39,7 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
         if (app.Ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false) is { } models)
             Models = new HarnessRemoteModelsBackend(models);
         if (app.Ctx.GetProp(OutboundProxy.PropName) is OutboundProxy proxy)
-            Network = new HarnessRemoteNetworkBackend(app.Home, proxy);
+            Network = new HarnessRemoteNetworkBackend(app.Home, proxy, app.Ctx.Get<IOutboundRouteController>(IOutboundRouteController.ServiceName, false));
         var platform = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
         _info = new HostInfo(HostProtocol.Version, RemoteHostServer.ReleaseVersion, platform, app.Home.Root);
     }

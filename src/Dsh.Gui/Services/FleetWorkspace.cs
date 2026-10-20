@@ -46,6 +46,7 @@ public sealed class FleetWorkspace : IAsyncDisposable
         var options = new FleetOptions
         {
             ClientName = GuiSettings.RemoteClientName,
+            LocalHome = home,
             StartLocalHost = startLocalHost is null ? null : (machine, token) => startLocalHost(machine.HarnessHome ?? home.Root, token),
         };
         return new FleetWorkspace(store, options, () =>
@@ -62,6 +63,9 @@ public sealed class FleetWorkspace : IAsyncDisposable
         var options = new FleetOptions
         {
             ClientName = GuiSettings.RemoteClientName,
+            LocalHome = service.Home,
+            LocalProxy = service.OutboundRoute.Proxy,
+            AcquireOutboundRoute = service.OutboundRoute.AcquireAsync,
             StartLocalHost = startLocalHost is null ? null : (machine, token) => startLocalHost(machine.HarnessHome ?? home.Root, token),
         };
         return new FleetWorkspace(service.Store, options, () => service.CreateClient(options));

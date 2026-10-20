@@ -64,6 +64,7 @@ public sealed class RemoteHostServer(
         if (backend.Plugins is not null) capabilities.Add(PluginsProtocol.Capability);
         if (backend.Models is not null) capabilities.Add(ModelsProtocol.Capability);
         if (backend.Network is not null) capabilities.Add(NetworkProtocol.Capability);
+        if (backend.Network is IRemoteNetworkReloadBackend) capabilities.Add(NetworkProtocol.ReloadCapability);
         return capabilities;
     }
 
@@ -231,6 +232,8 @@ public sealed class RemoteHostServer(
                 Register(ModelsProtocol.Methods, (name, message, ct) => HostModelsMethods.HandleAsync(models, name, message, ct));
             if (backend.Network is { } network)
                 Register(NetworkProtocol.Methods, (name, message, ct) => HostNetworkMethods.HandleAsync(network, name, message, ct));
+            if (backend.Network is IRemoteNetworkReloadBackend reload)
+                Register([NetworkProtocol.MethodReload], (_, message, ct) => HostNetworkMethods.ReloadAsync(reload, message, ct));
         }
 
         private void Register(IReadOnlyList<string> methods, DomainHandler handler, DomainPreparation? prepare = null)

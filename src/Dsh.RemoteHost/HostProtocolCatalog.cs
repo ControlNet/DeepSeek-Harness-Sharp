@@ -18,5 +18,6 @@ public static class HostProtocolCatalog
             ["PluginManagement"] = PluginsProtocol.Capability,
             ["ModelCatalog"] = ModelsProtocol.Capability,
             ["NetworkOutbound"] = NetworkProtocol.Capability,
+            ["NetworkReload"] = NetworkProtocol.ReloadCapability,
         });
 }

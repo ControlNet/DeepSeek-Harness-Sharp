@@ -34,6 +34,7 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
     private Route _configured = new(null, null, []);
     private Route? _borrowed;
     private Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? _borrowedConnect;
+    private bool _borrowedSuspended;
     private bool _disposed;
 
     internal sealed record Route(Uri? Address, CredentialHolder? Credential, string[] Bypass)
@@ -51,12 +52,13 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
     {
         internal RouteGeneration(long number, Route configuration,
             Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? connect = null,
-            Action<RouteGeneration>? transportFailed = null)
+            Action<RouteGeneration>? transportFailed = null, bool unavailable = false)
         {
             Number = number;
             Configuration = configuration;
             Connect = connect;
             _transportFailed = transportFailed;
+            IsUnavailable = unavailable;
             if (configuration.Credential is { } credential)
                 Lifetime.Register(credential);
         }
@@ -68,18 +70,28 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
         internal long Number { get; }
         internal Route Configuration { get; }
         internal OutboundResourceLifetime Lifetime { get; } = new();
+        internal bool IsUnavailable { get; }
+
+        internal void ThrowIfUnavailable()
+        {
+            if (IsUnavailable)
+                throw new IOException("The selected outbound route is unavailable; acquire a consumer lease or correct and reload its saved selection.");
+        }
     }
 
     /** ctx 里没有登记时(未经 ConfigBoot 的测试或工具)返回一份跟随系统代理的独立实例。 */
     public static OutboundProxy FromContext(Context ctx) => ctx.GetProp(PropName) as OutboundProxy ?? new OutboundProxy();
 
-    /** 已配置的代理地址(不含用户名密码); null 表示跟随系统代理。 */
+    /** Active proxy address without credentials; null also covers a suspended route, so status surfaces use Describe(). */
     public Uri? Address => Volatile.Read(ref _route).Configuration.Address;
 
     /** 脱敏后的路由描述, 日志、错误与界面只用它。 */
     public string Describe()
     {
-        var route = Volatile.Read(ref _route).Configuration;
+        var generation = Volatile.Read(ref _route);
+        if (generation.IsUnavailable)
+            return "Borrowed route unavailable";
+        var route = generation.Configuration;
         if (route.Address is not { } address)
             return SystemProxyLabel;
         var userInfo = route.Credential is null ? "" : RedactedUserInfo;
@@ -108,7 +120,7 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
             }
             _configured.Credential?.Dispose();
             _configured = configuration;
-            if (_borrowed is not null)
+            if (_borrowed is not null || _borrowedSuspended)
                 return;
             (previous, retired) = ReplaceRouteLocked(configuration, null);
         }
@@ -130,7 +142,8 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
                 configuration?.Credential?.Dispose();
                 throw new ObjectDisposedException(nameof(OutboundProxy));
             }
-            if ((_borrowed is null ? configuration is null : configuration is not null && _borrowed.EquivalentTo(configuration))
+            if (!_borrowedSuspended
+                && (_borrowed is null ? configuration is null : configuration is not null && _borrowed.EquivalentTo(configuration))
                 && Equals(_borrowedConnect, connect))
             {
                 configuration?.Credential?.Dispose();
@@ -139,17 +152,37 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
             _borrowed?.Credential?.Dispose();
             _borrowed = configuration;
             _borrowedConnect = connect;
+            _borrowedSuspended = false;
             (previous, retired) = ReplaceRouteLocked(configuration ?? _configured, connect);
         }
         previous.Lifetime.CompleteRetirement(retired);
     }
 
+    /// <summary>Retires a borrowed generation without revealing the baseline or retaining its credentials.</summary>
+    public void SuspendBorrowed()
+    {
+        RouteGeneration previous;
+        IDisposable[] retired;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_borrowedSuspended)
+                return;
+            _borrowed?.Credential?.Dispose();
+            _borrowed = null;
+            _borrowedConnect = null;
+            _borrowedSuspended = true;
+            (previous, retired) = ReplaceRouteLocked(new Route(null, null, []), null, unavailable: true);
+        }
+        previous.Lifetime.CompleteRetirement(retired);
+    }
+
     private (RouteGeneration Previous, IDisposable[] Retired) ReplaceRouteLocked(
-        Route configuration, Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? connect)
+        Route configuration, Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? connect, bool unavailable = false)
     {
         var previous = _route;
         var next = new RouteGeneration(previous.Number + 1, configuration.CopyForGeneration(), connect,
-            connect is null ? null : TransportFailed);
+            connect is null ? null : TransportFailed, unavailable);
         var retired = previous.Lifetime.BeginRetirement();
         Volatile.Write(ref _route, next);
         return (previous, retired);
@@ -198,6 +231,7 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
     {
         ArgumentNullException.ThrowIfNull(destination);
         var generation = Volatile.Read(ref _route);
+        generation.ThrowIfUnavailable();
         generation.Lifetime.ThrowIfRetired();
         var route = generation.Configuration;
         var systemProxy = route.Address is null ? HttpClient.DefaultProxy : null;
@@ -215,7 +249,9 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
     /// <summary>Returns the effective proxy endpoint, or null for a direct route.</summary>
     public Uri? ProxyFor(Uri destination)
     {
-        var route = Volatile.Read(ref _route).Configuration;
+        var generation = Volatile.Read(ref _route);
+        generation.ThrowIfUnavailable();
+        var route = generation.Configuration;
         return EffectiveProxy(route, route.Address is null ? HttpClient.DefaultProxy : null, destination);
     }
 
@@ -468,7 +504,9 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
 
     public Uri? GetProxy(Uri destination)
     {
-        var route = Volatile.Read(ref _route).Configuration;
+        var generation = Volatile.Read(ref _route);
+        generation.ThrowIfUnavailable();
+        var route = generation.Configuration;
         if (route.Address is null)
             return HttpClient.DefaultProxy.GetProxy(destination);
         return Bypassed(route, destination) ? null : route.Address;
@@ -476,13 +514,17 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
 
     public bool IsBypassed(Uri host)
     {
-        var route = Volatile.Read(ref _route).Configuration;
+        var generation = Volatile.Read(ref _route);
+        generation.ThrowIfUnavailable();
+        var route = generation.Configuration;
         return route.Address is null ? HttpClient.DefaultProxy.IsBypassed(host) : Bypassed(route, host);
     }
 
     public NetworkCredential? GetCredential(Uri uri, string authType)
     {
-        var route = Volatile.Read(ref _route).Configuration;
+        var generation = Volatile.Read(ref _route);
+        generation.ThrowIfUnavailable();
+        var route = generation.Configuration;
         return route.Address is null ? HttpClient.DefaultProxy.Credentials?.GetCredential(uri, authType) : route.Credential?.GetCredential(uri, authType);
     }
 

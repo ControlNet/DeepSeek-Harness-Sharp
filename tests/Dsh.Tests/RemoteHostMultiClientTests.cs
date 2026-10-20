@@ -238,29 +238,6 @@ public sealed class RemoteHostMultiClientTests
         }
     }
 
-    [Fact(Timeout = 30000)]
-    public async Task Handshake_AdvertisesCapabilities_AndReportsTheReleaseVersion()
-    {
-        await using var host = await HarnessHostFixture.CreateAsync("mhv", TestContext.Current.CancellationToken);
-        var client = await host.ConnectAsync("probe", Ct);
-        List<string> expectedCapabilities =
-        [
-            HostProtocol.PendingBroadcastCapability, HostProtocol.SessionRegistryCapability,
-            AgentProtocol.Capability, PtyProtocol.Capability, PtyProtocol.ResizeCapability,
-            FilesProtocol.Capability, GitProtocol.Capability, NotificationsProtocol.Capability,
-            SessionEditingProtocol.Capability
-        ];
-        if (host.Backend.Plugins is not null) expectedCapabilities.Add(PluginsProtocol.Capability);
-        if (host.Backend.Models is not null) expectedCapabilities.Add(ModelsProtocol.Capability);
-        expectedCapabilities.Add(NetworkProtocol.Capability);
-
-        Assert.Equal(HostProtocol.Version, client.Hello.ProtocolVersion);
-        Assert.Equal(expectedCapabilities, client.Hello.Capabilities);
-        Assert.False(string.IsNullOrEmpty(client.Hello.ConnectionId));
-        var info = await client.InfoAsync(Ct);
-        Assert.Equal(RemoteHostServer.ReleaseVersion, info.HostVersion);
-        Assert.Equal(expectedCapabilities, info.Capabilities);
-    }
 
     internal static readonly RemoteProviderSpec Spec = new("client-provider", "openai-compatible", "https://example.invalid", "sk-test");
 

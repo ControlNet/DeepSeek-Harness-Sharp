@@ -275,19 +275,20 @@ dsharp machine proxy build clear
 - 这里继续使用 Git CLI，而未引入 [LibGit2Sharp](https://github.com/libgit2/libgit2sharp)：它能省去进程启动和机器输出解析，但会增加托管绑定、原生 libgit2 资产及各发布 RID 的加载/NativeAOT 验证，并需重新核对既有 Git 配置、属性/textconv、重命名和 worktree 行为；不能仅因是托管 API 就认定 AOT 发布已兼容。当前 summary 已去掉逐文件进程与 patch 生成，保留安装 Git 的既有执行边界和统一解析实现，不额外维护第二套后端。
 - 同一 home 只允许一个常驻 Host 持有会话注册表，SSH、GUI 与 CLI 自动启动共用就绪等待；后台启动进程仍存活时继续等真实监听，退出或取消时结束等待，普通端点连接保留有界探测，避免冷启动被误判为不可达。
 - 机器清单与部署偏好只读写 `settings.yaml` 的 `fleet` 段；不读取或自动导入 `fleet/machines.json`、旧 GUI 插件的 `remoteWorkspaces` 或私有代理配置。试用过这些布局的用户需在机器页、CLI 或 `fleet` 段显式重新添加配置；原文件和旧插件参数不会因读取配置而被改写或删除。
-- 本机下载发布包使用统一的 `network.outbound_proxy`，不再使用 GUI/Fleet 私有的 `downloadProxy`；旧值不自动迁移，请在统一设置中显式填写。
+- 本机下载发布包使用与当前 home 相同的有效出口：已选择借用机器时建立独立的短期借用租约，否则使用 `network.outbound_proxy`；取消或下载结束只回收本次资源。旧 GUI/Fleet 私有的 `downloadProxy` 不自动迁移。
 - `fleet.deploy.serverProxy` 仅用于在远端下载部署包，不是每台服务器的一般网络出口；SSH 的跳板/代理命令仍配置在机器条目的 `proxy`。
 
 ```yaml
 network:
+  borrowed_outbound_machine: null
   outbound_proxy:
     url: http://127.0.0.1:7890  # 留空跟随系统代理
     bypass: [example.com, "*.example.org"]
 ```
 
-### 通过 SSH 命令流借用远端代理（CLI）
+### 通过 SSH 命令流借用远端代理
 
-已保存的 SSH 或 SSH-over-iroh 机器可配置独立的 `outboundTunnel`，让本机 CLI 自检通过受管 `ssh -T -W` 字节流访问远端 TCP 代理。
+已保存的 SSH 或 SSH-over-iroh 机器可配置独立的 `outboundTunnel`，通过受管 `ssh -T -W` 字节流访问远端 TCP 代理。
 远端只需可用的 SSH 和代理，不要求安装 `dsharp` 或启动 Host；这与设置目标 Host 自身出口的 `machine proxy` 命令不同。
 
 保存 `outbound-tunnel.json`，内容例如：
@@ -300,7 +301,6 @@ network:
 dsharp machine tunnel build set --json-stdin < outbound-tunnel.json
 dsharp machine tunnel build show
 dsharp machine tunnel build test --probe-url https://example.com/
-dsharp machine tunnel build clear
 ```
 
 PowerShell 中保存时使用 `Get-Content -Raw .\outbound-tunnel.json | dsharp machine tunnel build set --json-stdin`。
@@ -316,6 +316,32 @@ PowerShell 中保存时使用 `Get-Content -Raw .\outbound-tunnel.json | dsharp 
 自检目标不能被直连规则排除；正常请求仍保留既有 bypass 和安全校验，进入借用路由后失败不会回退或重放原请求，SSH 掉线后仅下一次新请求可重建。
 TCP HTTP/1.1 和 HTTP/2 可用，借用出口强制 HTTP/3 会明确报不支持；取消或命令退出会等待自有 SSH、流及 askpass 清理，不会停止目标 Host 或 PTY。
 受管隧道保留 SSH 的 `LocalCommand`/`PermitLocalCommand` 来识别目标认证完成，`sshOptions` 不得显式设置这两项，SSH 配置文件中的同名命令也不会用于该隧道；普通 Host 连接保持原有认证行为。
+
+配置好机器后，显式选择当前 home 的共享借用出口：
+
+```bash
+dsharp machine tunnel build use
+```
+
+TUI 中使用 `/proxy via build` 选择机器，`/proxy direct` 清除选择，`/proxy reload` 重新读取当前 TUI 的配置。
+机器名中的空格可直接跟在 `/proxy via` 后面。
+CLI 与 TUI 共用 `settings.yaml` 的 `network.borrowed_outbound_machine`；默认 null 仅使用基准本机出口，不建立 SSH。
+选择前会验证机器、隧道和探测请求；验证或保存失败保留原选择和路由，已保存的无效借用选择明确失败，不暗中退回基准或另一台机器。
+基准的 `/proxy set`、`/proxy clear`、`/proxy test` 仍只操作或检查 `network.outbound_proxy`，不会解除借用选择。
+
+```bash
+dsharp machine tunnel direct
+dsharp machine tunnel build clear
+```
+
+`direct` 只清除共享选择；随后可用 `clear` 删除已不需要的机器隧道定义。
+不要用删除隧道定义代替清除仍在使用的选择。
+共享的是同一 home 的选择，不是跨进程共享连接：各 Context 独立持有运行期租约，同一 Context 的消费者共用该代路由。
+切换、重载、最后消费者退出或卸载会关闭旧代自有连接、SSH 与 askpass，不会结束目标 Host、后台会话或 PTY，也不会重放已经发出的请求。
+本机 Host 是独立消费者，需要支持 `network.reload` 的连接客户端单独请求它重读自身文件；不会接收客户端的完整网络配置快照。
+仅提供 `network.outbound` 的旧 Host 仍可读取、保存和探测基准出口，但不支持此重载。
+Server 下载仍只使用 `fleet.deploy.serverProxy`，不启用本机借用选择。
+
 
 ### 通过 iroh 接入没有公网 SSH 地址的机器
 
@@ -481,7 +507,7 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 - 接收端启动会同步地址发现就绪再验证 SSH 隧道，发布包附带上游修改补丁及来源说明。
 - macOS 接收端嵌入本地网络用途声明，局域网接入遵循用户授权，不静默提权。
 - 使用方法与平台差异见「通过 iroh 接入没有公网 SSH 地址的机器」。
-- CLI 新增 `machine tunnel` 配置与实际 HTTP(S) 自检，通过 SSH 或 SSH-over-iroh 的命令流借用远端代理，保留认证、TLS 和连接释放边界，不修改本机基准或远端 Host 出口。
+- CLI 新增 `machine tunnel` 配置、实际 HTTP(S) 自检及共享出口的 `use`/`direct`，TUI 通过 `/proxy via`、`/proxy direct` 与 `/proxy reload` 使用同一选择；受管租约保留认证、TLS 和连接释放边界，不修改基准或远端 Host 的出口配置。
 
 </details>
 

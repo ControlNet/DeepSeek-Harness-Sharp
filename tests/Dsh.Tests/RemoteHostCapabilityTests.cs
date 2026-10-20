@@ -2,6 +2,9 @@
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
+using System.Text.Json;
+using Dsh.Boot;
+using Dsh.Runtime;
 using Dsh.Core;
 using Dsh.Host;
 using Dsh.Transport;
@@ -223,7 +226,69 @@ public sealed class RemoteHostCapabilityTests
         }
     }
 
-    private sealed class CoreOnlyBackend(IRemoteHostBackend backend) : IRemoteHostBackend
+    [Fact(Timeout = 30000)]
+    public async Task NetworkReload_ReadsOnlyTheHostsFile_RetiresItsOldPool_AndRejectsSnapshots()
+    {
+        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, Ct);
+        await using var fixture = await HostFixture.CreateAsync(backend, Ct);
+        await using var first = new TestForwardProxy(keepAlive: true);
+        await using var second = new TestForwardProxy(keepAlive: true);
+        var home = environment.App.Home;
+        var proxy = OutboundProxy.FromContext(environment.App.Ctx);
+        HarnessSettings.SaveOutboundProxy(home, new OutboundProxySettings { Url = $"http://127.0.0.1:{first.Port}" }, proxy);
+        using var consumer = new HttpClient(proxy.CreateHandler());
+        Assert.Equal(TestForwardProxy.ProxiedBody, await consumer.GetStringAsync("http://example.com/before-host-reload", Ct));
+        using var unrelated = new OutboundProxy();
+        HarnessSettings.SaveOutboundProxy(home, new OutboundProxySettings { Url = $"http://127.0.0.1:{second.Port}" }, unrelated);
+        var saved = await File.ReadAllTextAsync(home.SettingsFile, Ct);
+        Assert.True(fixture.Client.Supports(NetworkProtocol.ReloadCapability));
+
+        await fixture.Client.Network.ReloadAsync(Ct);
+
+        await FleetConnectionTests.WaitForAsync(() => first.ActiveConnections == 0);
+        Assert.Equal(TestForwardProxy.ProxiedBody, await consumer.GetStringAsync("http://example.com/after-host-reload", Ct));
+        Assert.Equal(saved, await File.ReadAllTextAsync(home.SettingsFile, Ct));
+        Assert.Equal(["GET http://example.com/before-host-reload HTTP/1.1"], first.Requests);
+        Assert.Equal(["GET http://example.com/after-host-reload HTTP/1.1"], second.Requests);
+        using var snapshot = JsonDocument.Parse("""{"network":{"outbound_proxy":{"url":"http://unexpected.invalid:3128"}}}""");
+        var rejected = await Assert.ThrowsAsync<JsonRpcException>(() => fixture.Client.RequestAsync(NetworkProtocol.MethodReload, snapshot.RootElement, Ct));
+        Assert.Equal(-32602, rejected.Code);
+        Assert.Equal(saved, await File.ReadAllTextAsync(home.SettingsFile, Ct));
+        Assert.Equal(TestForwardProxy.ProxiedBody, await consumer.GetStringAsync("http://example.com/snapshot-did-not-apply", Ct));
+        Assert.Single(first.Requests);
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task OutboundOnlyHost_RejectsReload_WhileRealGetSetAndProbeRemainUsable()
+    {
+        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, Ct);
+        await using var forwarding = new TestForwardProxy();
+        var outbound = new OutboundOnlyNetwork(backend.Network!);
+        await using var fixture = await HostFixture.CreateAsync(new CoreOnlyBackend(backend, outbound), Ct);
+        var client = fixture.Client;
+        Assert.True(client.Supports(NetworkProtocol.Capability));
+        Assert.False(client.Supports(NetworkProtocol.ReloadCapability));
+        var state = await client.Network.GetOutboundAsync(Ct);
+        await client.Network.SetOutboundAsync(new(state.Revision, new($"http://127.0.0.1:{forwarding.Port}")), Ct);
+        var saved = await File.ReadAllTextAsync(environment.App.Home.SettingsFile, Ct);
+        Assert.True((await client.Network.ProbeOutboundAsync(new(ProbeUrl: "http://example.com/old-host-probe"), Ct)).Reachable);
+        await Assert.ThrowsAsync<NotSupportedException>(() => client.Network.ReloadAsync(Ct));
+        var unsupported = await Assert.ThrowsAsync<JsonRpcException>(() => client.RequestAsync(NetworkProtocol.MethodReload, null, Ct));
+        Assert.Equal(JsonRpcPeer.MethodNotFound, unsupported.Code);
+        Assert.Equal(saved, await File.ReadAllTextAsync(environment.App.Home.SettingsFile, Ct));
+        Assert.Equal(["GET http://example.com/old-host-probe HTTP/1.1"], forwarding.Requests);
+    }
+
+    private sealed class OutboundOnlyNetwork(IRemoteNetworkBackend backend) : IRemoteNetworkBackend
+    {
+        public Task<RemoteOutboundProxyState> GetOutboundAsync(CancellationToken ct) => backend.GetOutboundAsync(ct);
+        public Task<RemoteOutboundProxyState> SetOutboundAsync(RemoteOutboundProxySetRequest request, CancellationToken ct) => backend.SetOutboundAsync(request, ct);
+        public Task<RemoteOutboundProxyProbeResult> ProbeOutboundAsync(RemoteOutboundProxyProbeRequest request, CancellationToken ct) => backend.ProbeOutboundAsync(request, ct);
+    }
+
+    private sealed class CoreOnlyBackend(IRemoteHostBackend backend, IRemoteNetworkBackend? network = null) : IRemoteHostBackend
     {
         public HostPendingDecisions Pending => backend.Pending;
         public HostSessionRegistry Sessions => backend.Sessions;
@@ -237,7 +302,7 @@ public sealed class RemoteHostCapabilityTests
         public IRemoteSessionEditingBackend? SessionEditing => null;
         public IRemotePluginsBackend? Plugins => null;
         public IRemoteModelsBackend? Models => null;
-        public IRemoteNetworkBackend? Network => null;
+        public IRemoteNetworkBackend? Network => network;
     }
 
     private static async Task WaitForAsync(Func<bool> condition, CancellationToken cancellationToken)
