@@ -693,7 +693,7 @@ internal sealed class TestForwardProxy : IAsyncDisposable
                 return null;
             bytes.Add(one[0]);
         }
-        return Encoding.ASCII.GetString([.. bytes]);
+        return Encoding.ASCII.GetString(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(bytes)[..^4]);
     }
 
     private static async Task<byte[]> ReadExactAsync(NetworkStream stream, int count)

@@ -87,6 +87,7 @@ public sealed class DoctorCheckRow(DoctorCheck check)
 public sealed partial class MachineEditorViewModel : ObservableObject
 {
     private const int MaxPort = 65535;
+    private OutboundTunnelSpec? OutboundTunnel { get; init; }
 
     public static IReadOnlyList<string> AuthModes { get; } = [SshAuth.Agent, SshAuth.Key, SshAuth.Password];
 
@@ -170,6 +171,7 @@ public sealed partial class MachineEditorViewModel : ObservableObject
         RemotePath = spec.RemotePath ?? "",
         HarnessHome = spec.HarnessHome ?? "",
         SshOptions = string.Join(Environment.NewLine, spec.SshOptions ?? []),
+        OutboundTunnel = spec.OutboundTunnel,
     };
 
     /** 表单 → 机器记录; 字段不完整时抛 ArgumentException(名称规则由 MachineStore 保存时再校验)。 */
@@ -193,6 +195,7 @@ public sealed partial class MachineEditorViewModel : ObservableObject
             RemotePath = Optional(RemotePath),
             HarnessHome = Optional(HarnessHome),
             SshOptions = options.Length == 0 ? null : options,
+            OutboundTunnel = OutboundTunnel,
         };
     }
 

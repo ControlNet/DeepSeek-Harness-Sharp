@@ -44,7 +44,8 @@ public sealed record MachineSpec(
     string? HarnessHome = null,
     IReadOnlyList<string>? SshOptions = null,
     string? EndpointId = null,
-    IReadOnlyList<string>? RelayUrls = null)
+    IReadOnlyList<string>? RelayUrls = null,
+    OutboundTunnelSpec? OutboundTunnel = null)
 {
     public const int DefaultSshPort = 22;
 
@@ -70,3 +71,6 @@ public sealed record MachineSpec(
     [JsonIgnore]
     public string Target => IsLocal ? HarnessHome ?? "this computer" : $"{User}@{ConnectionHost}:{Port}";
 }
+
+/** A logical proxy endpoint borrowed through the machine's SSH connection. */
+public sealed record OutboundTunnelSpec(string Mode, string ProxyUrl, int? LocalPort = null);

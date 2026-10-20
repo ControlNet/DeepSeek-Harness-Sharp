@@ -292,8 +292,8 @@ internal sealed class TestSshServer : IAsyncDisposable
     {
         var root = TempTree.CreateDirectory("sshd");
         Directory.CreateDirectory(Path.Combine(root, "home"));
-        await RunAsync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", Path.Combine(root, "host_key")], cancellationToken);
-        await RunAsync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", Path.Combine(root, "client_key")], cancellationToken);
+        await RunAsync("ssh-keygen", ["-q", "-t", "ed25519", "-C", "dsh-test", "-N", "", "-f", Path.Combine(root, "host_key")], cancellationToken);
+        await RunAsync("ssh-keygen", ["-q", "-t", "ed25519", "-C", "dsh-test", "-N", "", "-f", Path.Combine(root, "client_key")], cancellationToken);
         File.Copy(Path.Combine(root, "client_key.pub"), Path.Combine(root, "authorized_keys"));
         var port = FreePort();
         var config = Path.Combine(root, "sshd_config");

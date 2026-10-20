@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.Pty;
@@ -27,17 +28,27 @@ internal static class FleetCli
     private static readonly HashSet<string> ValueOptions =
         ["--host", "--port", "--user", "--auth", "--key", "--proxy", "--remote-path", "--remote-home", "--ssh-option", "--home", "--machine", "--endpoint-id", "--relay-url", "--ssh-port", "--activation"];
 
+    private static readonly FleetTunnelJsonContext TunnelJson = new(new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        AllowDuplicateProperties = false,
+    });
+
     public static bool Handles(string[] args) => args is [MachineCommand or SessionCommand or DoctorCommand or RemoteCommand, ..];
 
     /** resumeHarness opens a harness session of the local machine in this terminal's TUI. */
     public static async Task<int> RunAsync(HarnessHome home, string[] args, Func<HarnessHome, string, Task<int>> resumeHarness)
     {
         var isProxyCommand = args is [MachineCommand, "proxy", ..];
+        var isTunnelCommand = args is [MachineCommand, "tunnel", ..];
+        var hasPrivateInput = isProxyCommand || isTunnelCommand;
         var parsed = FleetArguments.Parse(args.Skip(1),
-            isProxyCommand ? [.. Flags, "--json-stdin"] : Flags,
-            isProxyCommand ? [.. ValueOptions, "--probe-url"] : ValueOptions);
+            hasPrivateInput ? [.. Flags, "--json-stdin"] : Flags,
+            hasPrivateInput ? [.. ValueOptions, "--probe-url"] : ValueOptions);
         if (parsed.Error is { } error)
-            return await FailAsync(isProxyCommand ? "invalid machine proxy options (try --help)" : error);
+            return await FailAsync(isProxyCommand ? "invalid machine proxy options (try --help)"
+                : isTunnelCommand ? "invalid machine tunnel options (try --help)" : error);
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>
         {
@@ -79,6 +90,10 @@ internal static class FleetCli
                dsharp machine proxy <name> set --json-stdin
                dsharp machine proxy <name> clear
                dsharp machine proxy <name> test [--probe-url <url>]
+               dsharp machine tunnel <name> set --json-stdin
+               dsharp machine tunnel <name> show
+               dsharp machine tunnel <name> clear
+               dsharp machine tunnel <name> test [--probe-url <url>]
                dsharp session list [--machine <name>]
                dsharp session attach <machine>/<session>   (terminal sessions; leave with Ctrl+])
                dsharp session stop <machine>/<session>
@@ -97,7 +112,8 @@ internal static class FleetCli
         "deploy" => DeployMachineAsync(context),
         "enable-iroh" => EnableIrohAsync(context),
         "proxy" => RunMachineProxyAsync(context),
-        var other => FailAsync($"unknown machine subcommand \"{other}\" (list | add | remove | test | deploy | enable-iroh | proxy)"),
+        "tunnel" => RunMachineTunnelAsync(context),
+        var other => FailAsync($"unknown machine subcommand \"{other}\" (list | add | remove | test | deploy | enable-iroh | proxy | tunnel)"),
     };
 
     private static Task<int> RunSessionAsync(FleetCliContext context) => context.Arguments.Subcommand switch
@@ -249,6 +265,101 @@ internal static class FleetCli
                 message = message.Replace(suppliedProbeUrl, "[redacted URL]", StringComparison.Ordinal);
             if (!string.IsNullOrEmpty(probeUrl))
                 message = message.Replace(probeUrl, "[redacted URL]", StringComparison.Ordinal);
+            return await FailAsync(OutboundProxy.Redact(message));
+        }
+    }
+
+    private static async Task<int> RunMachineTunnelAsync(FleetCliContext context)
+    {
+        var arguments = context.Arguments;
+        var operation = arguments.Positional.ElementAtOrDefault(2);
+        if (arguments.Positional.Count != 3 || operation is not ("show" or "set" or "clear" or "test")
+            || arguments.Flags.Any(flag => flag != "--json-stdin" || operation != "set")
+            || arguments.Options.Any(option => option.Key != "--probe-url" || operation != "test" || option.Value.Count != 1)
+            || operation == "set" && !arguments.Has("--json-stdin"))
+            return await FailAsync("usage: machine tunnel <name> set --json-stdin | show | clear | test [--probe-url <url>]");
+
+        OutboundTunnelSpec? supplied = null;
+        OutboundTunnelSpec? saved = null;
+        var probeUrl = arguments.Value("--probe-url") ?? "https://example.com/";
+        try
+        {
+            var machine = context.RequireMachine(arguments.Operand);
+            saved = machine.OutboundTunnel;
+            if (machine.IsLocal)
+                return await FailAsync("outbound tunnels are not available for local machines");
+            if (operation == "set")
+            {
+                try
+                {
+                    supplied = JsonSerializer.Deserialize(await Console.In.ReadToEndAsync(context.Cancellation), TunnelJson.OutboundTunnelSpec);
+                }
+                catch (JsonException)
+                {
+                    return await FailAsync("machine tunnel set requires a valid JSON settings object on stdin");
+                }
+                if (supplied is null)
+                    return await FailAsync("machine tunnel set requires a JSON settings object on stdin");
+                machine = machine with { OutboundTunnel = supplied };
+                context.Store.Upsert(machine);
+            }
+            else if (operation == "clear")
+            {
+                machine = machine with { OutboundTunnel = null };
+                context.Store.Upsert(machine);
+            }
+            else if (operation == "test")
+            {
+                if (!Uri.TryCreate(probeUrl, UriKind.Absolute, out var destination)
+                    || destination.Scheme is not ("http" or "https") || destination.Host.Length == 0
+                    || destination.UserInfo.Length > 0 || destination.Fragment.Length > 0)
+                    return await FailAsync("machine tunnel test requires an absolute HTTP(S) probe URL without credentials or a fragment");
+                if (MachineStore.ValidateOutboundTunnel(machine) is null)
+                    return await FailAsync("machine has no outbound tunnel configured");
+                await using var tunnel = new SshOutboundTunnel(machine);
+                using var outbound = new OutboundProxy();
+                outbound.ConfigureBorrowed(tunnel.ProxyUri.OriginalString, tunnel.ConnectAsync);
+                if (outbound.CaptureRoute(destination).ProxyUri is null)
+                    return await FailAsync("probe URL bypasses the configured tunnel; use a public HTTP(S) destination");
+                using var client = new HttpClient(outbound.CreateHandler());
+                using var response = await client.GetAsync(destination, HttpCompletionOption.ResponseHeadersRead, context.Cancellation);
+                await using var body = await response.Content.ReadAsStreamAsync(context.Cancellation);
+                await body.CopyToAsync(Stream.Null, context.Cancellation);
+                await Console.Out.WriteLineAsync($"HTTP {(int)response.StatusCode} through {outbound.Describe()} (response consumed)");
+                return response.IsSuccessStatusCode ? 0 : 1;
+            }
+
+            var redacted = machine.OutboundTunnel is { } settings
+                ? settings with { ProxyUrl = RedactProxyUrl(settings.ProxyUrl) }
+                : null;
+            await Console.Out.WriteLineAsync(JsonSerializer.Serialize(redacted, TunnelJson.OutboundTunnelSpec));
+            return 0;
+        }
+        catch (YamlDotNet.Core.YamlException)
+        {
+            return await FailAsync("could not read machine tunnel settings: invalid YAML");
+        }
+        catch (OperationCanceledException) when (!context.Cancellation.IsCancellationRequested)
+        {
+            return await FailAsync("machine tunnel test timed out");
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or IOException or NotSupportedException or HttpRequestException or UnauthorizedAccessException or ArgumentException)
+        {
+            var message = failure.Message;
+            foreach (var url in new[] { supplied?.ProxyUrl, saved?.ProxyUrl, probeUrl })
+            {
+                if (string.IsNullOrEmpty(url))
+                    continue;
+                message = message.Replace(url, "[redacted URL]", StringComparison.Ordinal);
+                if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.UserInfo.Length > 0)
+                    foreach (var part in uri.UserInfo.Split(':', 2))
+                    {
+                        if (part.Length == 0)
+                            continue;
+                        message = message.Replace(part, "***", StringComparison.Ordinal);
+                        message = message.Replace(Uri.UnescapeDataString(part), "***", StringComparison.Ordinal);
+                    }
+            }
             return await FailAsync(OutboundProxy.Redact(message));
         }
     }
@@ -554,3 +665,6 @@ internal sealed record FleetCliContext(
             Console.Error.WriteLine($"{machine.Machine.Name}: {step}");
     }
 }
+
+[JsonSerializable(typeof(OutboundTunnelSpec))]
+internal partial class FleetTunnelJsonContext : JsonSerializerContext;

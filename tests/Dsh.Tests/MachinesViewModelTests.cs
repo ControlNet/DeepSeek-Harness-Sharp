@@ -56,6 +56,33 @@ public sealed class MachinesViewModelTests : IDisposable
         Assert.Equal(4, changes);
     }
 
+    [Theory]
+    [InlineData(MachineKinds.Ssh)]
+    [InlineData(MachineKinds.Iroh)]
+    public async Task EditingAnExistingMachine_PreservesItsCliConfiguredOutboundTunnel(string kind)
+    {
+        var tunnel = new OutboundTunnelSpec("proxyCommand", "http://fixture-user:fixture-password@proxy.internal:3128");
+        var machine = MachineSpec.Ssh("target", "server.internal", 22, "fixture-user", SshAuth.Agent) with
+        {
+            Kind = kind,
+            EndpointId = kind == MachineKinds.Iroh ? new string('a', 64) : null,
+            OutboundTunnel = tunnel,
+        };
+        var store = new MachineStore(new HarnessHome(_home));
+        store.Upsert(machine);
+        var viewModel = new MachinesViewModel(store, new FleetOptions());
+        viewModel.Load("target");
+        viewModel.Editor!.Name = "renamed";
+        viewModel.Editor.RemotePath = "/srv/updated";
+
+        await viewModel.SaveCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.StatusIsError, viewModel.Status);
+        var saved = Assert.Single(store.Load().Machines);
+        Assert.Equal(("renamed", "/srv/updated", kind), (saved.Name, saved.RemotePath, saved.Kind));
+        Assert.Equal(tunnel, saved.OutboundTunnel);
+    }
+
     [Fact]
     public async Task DeploySettings_AreSavedSeparately_AndSurviveSavingAMachine()
     {

@@ -50,7 +50,12 @@ public sealed class MachineStore(HarnessHome home)
     }
 
     private static FleetConfig FromSettings(FleetSettings fleet)
-        => new([.. fleet.Machines.Select(FromSettings)], FromSettings(fleet.Deploy));
+    {
+        var config = new FleetConfig([.. fleet.Machines.Select(FromSettings)], FromSettings(fleet.Deploy));
+        foreach (var machine in config.Machines)
+            ValidateOutboundTunnel(machine);
+        return config;
+    }
 
     private static MachineSpec FromSettings(MachineSettings machine)
         => new(
@@ -67,7 +72,8 @@ public sealed class MachineStore(HarnessHome home)
             machine.HarnessHome,
             machine.SshOptions,
             machine.EndpointId,
-            machine.RelayUrls);
+            machine.RelayUrls,
+            machine.OutboundTunnel is { } tunnel ? new OutboundTunnelSpec(tunnel.Mode ?? "", tunnel.ProxyUrl ?? "", tunnel.LocalPort) : null);
 
     private static DeploySettings FromSettings(FleetDeploySettings? deploy)
     {
@@ -111,6 +117,9 @@ public sealed class MachineStore(HarnessHome home)
             SshOptions = machine.SshOptions is { Count: > 0 } options ? [.. options] : null,
             EndpointId = machine.EndpointId,
             RelayUrls = machine.RelayUrls is { Count: > 0 } relays ? [.. relays] : null,
+            OutboundTunnel = machine.OutboundTunnel is { } tunnel
+                ? new OutboundTunnelSettings { Mode = tunnel.Mode, ProxyUrl = tunnel.ProxyUrl, LocalPort = tunnel.LocalPort }
+                : null,
         };
     }
 
@@ -141,7 +150,43 @@ public sealed class MachineStore(HarnessHome home)
         if (incomplete is not null)
             throw new InvalidOperationException($"SSH machine \"{incomplete.Name}\" has no host");
         foreach (var machine in machines)
+        {
             IrohSshTransport.Validate(machine);
+            ValidateOutboundTunnel(machine);
+        }
+    }
+
+    /** Validates without exposing credentials and preserves the proxy's logical hostname and user information. */
+    public static Uri? ValidateOutboundTunnel(MachineSpec machine)
+    {
+        if (machine.OutboundTunnel is not { } tunnel)
+            return null;
+        if (machine.IsLocal)
+            throw new InvalidOperationException("outbound tunnels are not available for local machines");
+        if (machine.Kind is not (MachineKinds.Ssh or MachineKinds.Iroh))
+            throw new InvalidOperationException("outbound tunnels require an SSH or iroh machine");
+        if (string.IsNullOrWhiteSpace(tunnel.Mode) || string.IsNullOrWhiteSpace(tunnel.ProxyUrl))
+            throw new InvalidOperationException("outboundTunnel mode and proxyUrl must both be supplied");
+        if (tunnel.Mode == "localForward")
+            throw new NotSupportedException("outboundTunnel localForward is not supported yet");
+        if (tunnel.Mode != "proxyCommand")
+            throw new InvalidOperationException("outboundTunnel mode must be proxyCommand");
+        if (tunnel.LocalPort is not null)
+            throw new InvalidOperationException("outboundTunnel proxyCommand must not specify localPort");
+        var url = tunnel.ProxyUrl;
+        if (!url.Contains("://", StringComparison.Ordinal) || url.Any(char.IsWhiteSpace) || url.Contains('\\')
+            || !Uri.TryCreate(url, UriKind.Absolute, out var proxy) || proxy.Host.Length == 0
+            || proxy.Scheme is not ("http" or "https" or "socks4" or "socks4a" or "socks5")
+            || proxy.Port is < 1 or > 65535
+            || proxy.AbsolutePath is not ("" or "/") || proxy.Query.Length > 0 || proxy.Fragment.Length > 0)
+            throw new InvalidOperationException("outboundTunnel proxyUrl requires an HTTP(S) or SOCKS4/4a/5 proxy hostname and valid port, without a path, query or fragment");
+        var authority = url.AsSpan(url.IndexOf("://", StringComparison.Ordinal) + 3);
+        var end = authority.IndexOfAny('/', '?', '#');
+        if (end >= 0)
+            authority = authority[..end];
+        if (authority.EndsWith(":"))
+            throw new InvalidOperationException("outboundTunnel proxyUrl must not contain an empty port");
+        return proxy;
     }
 }
 
