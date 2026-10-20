@@ -17,6 +17,10 @@ on:
         description: 'quick, regression-1, regression-2, regression-3, or raw'
         required: true
         type: string
+      diagnostic-ref:
+        required: false
+        type: string
+        default: ''
       diagnostic-routes:
         required: false
         type: boolean
@@ -33,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          ref: ${{ inputs.diagnostic-ref || (github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha) }}
           fetch-depth: 0
 
       - name: Verify the checkout contains the current PR head

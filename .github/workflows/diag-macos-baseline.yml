@@ -1,0 +1,44 @@
+name: Diagnose PR89 macOS quick against both preceding baselines (fork only)
+
+on:
+  push:
+    branches: ['diag/pr89-mac-baseline']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  native:
+    if: github.repository == 'ControlNet/DeepSeek-Harness-Sharp'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reuse the verified native component from the exact PR head run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 39295590084 --repo forestbat/DeepSeek-Harness-Sharp --name iroh-ssh-macos-latest --dir native
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iroh-ssh-macos-latest
+          path: native/iroh-ssh-component.tar
+          if-no-files-found: error
+  compare:
+    needs: native
+    name: ${{ matrix.version.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - label: before77
+            sha: 15e7c62d487649c3e542b227306799e14a659cf9
+          - label: after77
+            sha: e4cc934c9dee7cd28b7a63df970842c76f432f3e
+          - label: pr89
+            sha: def1c7ebedd29f429ab98b0540829418ffbc5445
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: macos-latest
+      native-cc: clang
+      suite: quick
+      diagnostic-ref: ${{ matrix.version.sha }}
