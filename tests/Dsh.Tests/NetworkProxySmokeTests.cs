@@ -22,13 +22,19 @@ public sealed class NetworkProxySmokeTests
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Theory(Explicit = true, Timeout = 90000)]
-    [InlineData("http", HttpTarget, 1)]
-    [InlineData("http", HttpsTarget, 1)]
-    [InlineData("http", HttpsTarget, 2)]
-    [InlineData("socks5", HttpTarget, 1)]
-    [InlineData("socks5", HttpsTarget, 1)]
-    [InlineData("socks5", HttpsTarget, 2)]
-    public async Task SshBorrowedProxy_ForwardsAuthenticatedPublicHttpAndTls(string scheme, string target, int version)
+    [InlineData("proxyCommand", "http", HttpTarget, 1)]
+    [InlineData("proxyCommand", "http", HttpsTarget, 1)]
+    [InlineData("proxyCommand", "http", HttpsTarget, 2)]
+    [InlineData("proxyCommand", "socks5", HttpTarget, 1)]
+    [InlineData("proxyCommand", "socks5", HttpsTarget, 1)]
+    [InlineData("proxyCommand", "socks5", HttpsTarget, 2)]
+    [InlineData("localForward", "http", HttpTarget, 1)]
+    [InlineData("localForward", "http", HttpsTarget, 1)]
+    [InlineData("localForward", "http", HttpsTarget, 2)]
+    [InlineData("localForward", "socks5", HttpTarget, 1)]
+    [InlineData("localForward", "socks5", HttpsTarget, 1)]
+    [InlineData("localForward", "socks5", HttpsTarget, 2)]
+    public async Task SshBorrowedProxy_ForwardsAuthenticatedPublicHttpAndTls(string mode, string scheme, string target, int version)
     {
         FleetSshEndToEndTests.RequireEnvironment();
         var guard = FleetSshEndToEndTests.RealHomeGuard.Capture();
@@ -43,7 +49,7 @@ public sealed class NetworkProxySmokeTests
             await using var forwarding = new TestForwardProxy(socks: scheme == "socks5", requiredCredential: credential, forward: true);
             var machine = ssh.Machine("public-proxy", root) with
             {
-                OutboundTunnel = new("proxyCommand", $"{scheme}://{user}:{password}@127.0.0.1:{forwarding.Port}"),
+                OutboundTunnel = new(mode, $"{scheme}://{user}:{password}@127.0.0.1:{forwarding.Port}"),
             };
             await using var tunnel = new SshOutboundTunnel(machine);
             var commands = new ConcurrentQueue<string>();
@@ -54,7 +60,7 @@ public sealed class NetworkProxySmokeTests
             await AssertExampleDomainAsync(client, target, version, TestContext.Current.CancellationToken);
 
             AssertProxyRequest(forwarding, scheme, target);
-            AssertCommandStreams(forwarding, commands.ToArray(), "127.0.0.1", forwarding.Port);
+            AssertCommandStreams(forwarding, commands.ToArray(), "127.0.0.1", forwarding.Port, mode);
             Assert.True(forwarding.Credentials.Count > 0 && forwarding.Credentials.All(value => value == credential),
                 "The real forwarding proxy must authenticate only this fixture's credential.");
             AssertPrivateOutput(outbound.Describe(), user, password);
@@ -73,8 +79,10 @@ public sealed class NetworkProxySmokeTests
         }
     }
 
-    [Fact(Explicit = true, Timeout = 240000)]
-    public async Task IrohBorrowedProxy_ForwardsPublicHttpAndTlsThroughTheBuiltInProxyCommand()
+    [Theory(Explicit = true, Timeout = 240000)]
+    [InlineData("proxyCommand")]
+    [InlineData("localForward")]
+    public async Task IrohBorrowedProxy_ForwardsPublicHttpAndTlsThroughTheBuiltInProxyCommand(string mode)
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
         var guard = FleetSshEndToEndTests.RealHomeGuard.Capture();
@@ -96,7 +104,7 @@ public sealed class NetworkProxySmokeTests
                 Kind = MachineKinds.Iroh,
                 Host = "192.0.2.1",
                 EndpointId = receiver.EndpointId,
-                OutboundTunnel = new("proxyCommand", $"http://{user}:{password}@127.0.0.1:{forwarding.Port}"),
+                OutboundTunnel = new(mode, $"http://{user}:{password}@127.0.0.1:{forwarding.Port}"),
             };
             await using var tunnel = new SshOutboundTunnel(machine);
             var commands = new ConcurrentQueue<string>();
@@ -110,7 +118,7 @@ public sealed class NetworkProxySmokeTests
             Assert.Equal(2, forwarding.Requests.Count);
             Assert.True(forwarding.Requests.Contains($"GET {HttpTarget} HTTP/1.1"), "The iroh route must carry a real absolute-form HTTP request.");
             Assert.True(forwarding.Requests.Contains("CONNECT example.com:443 HTTP/1.1"), "The iroh route must carry the real TLS CONNECT request.");
-            AssertCommandStreams(forwarding, commands.ToArray(), "127.0.0.1", forwarding.Port);
+            AssertCommandStreams(forwarding, commands.ToArray(), "127.0.0.1", forwarding.Port, mode);
             Assert.True(forwarding.Credentials.Count >= 2 && forwarding.Credentials.All(value => value == credential),
                 "Both public requests must authenticate at this fixture's real forwarding proxy.");
             AssertPrivateOutput(outbound.Describe(), user, password);
@@ -136,8 +144,10 @@ public sealed class NetworkProxySmokeTests
         }
     }
 
-    [Fact(Explicit = true, Timeout = 120000)]
-    public async Task HttpsBorrowedProxy_PreservesLocalhostCertificateIdentityInAnIsolatedProcess()
+    [Theory(Explicit = true, Timeout = 120000)]
+    [InlineData("proxyCommand")]
+    [InlineData("localForward")]
+    public async Task HttpsBorrowedProxy_PreservesLocalhostCertificateIdentityInAnIsolatedProcess(string mode)
     {
         FleetSshEndToEndTests.RequireEnvironment();
         var guard = FleetSshEndToEndTests.RealHomeGuard.Capture();
@@ -153,7 +163,7 @@ public sealed class NetworkProxySmokeTests
             await using var tls = await HttpsForwardProxyFixture.StartAsync(root, forwarding, Ct);
             var machine = ssh.Machine(TlsMachineName, root) with
             {
-                OutboundTunnel = new("proxyCommand", $"https://{user}:{password}@localhost:{tls.Port}"),
+                OutboundTunnel = new(mode, $"https://{user}:{password}@localhost:{tls.Port}"),
             };
             new MachineStore(new HarnessHome(root)).Upsert(machine);
 
@@ -164,7 +174,7 @@ public sealed class NetworkProxySmokeTests
             AssertPrivateOutput(child.StandardOutput + child.StandardError, user, password);
             Assert.True(child.ExitCode == 0, "The isolated real HTTPS-proxy HTTP/TLS smoke failed.");
             var commands = await File.ReadAllLinesAsync(Path.Combine(root, "ssh-command-evidence.txt"), Ct);
-            AssertCommandStreams(forwarding, commands, "localhost", tls.Port);
+            AssertCommandStreams(forwarding, commands, "localhost", tls.Port, mode);
             Assert.Equal(2, forwarding.Requests.Count);
             Assert.True(forwarding.Requests.Contains($"GET {HttpTarget} HTTP/1.1"), "The HTTPS proxy must forward the public absolute-form HTTP request.");
             Assert.True(forwarding.Requests.Contains("CONNECT example.com:443 HTTP/1.1"), "The HTTPS proxy must forward the public TLS CONNECT request.");
@@ -222,9 +232,11 @@ public sealed class NetworkProxySmokeTests
     }
 
     [Theory(Explicit = true, Timeout = 240000)]
-    [InlineData("A")]
-    [InlineData("A with spaces")]
-    public async Task RealTuiSelection_PersistsTheSharedRoute_ForAnActualHttpFetchConsumer(string selectedMachine)
+    [InlineData("proxyCommand", "A")]
+    [InlineData("proxyCommand", "A with spaces")]
+    [InlineData("localForward", "A")]
+    [InlineData("localForward", "A with spaces")]
+    public async Task RealTuiSelection_PersistsTheSharedRoute_ForAnActualHttpFetchConsumer(string mode, string selectedMachine)
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
         await using var ssh = await TestSshServer.StartAsync(Ct);
@@ -234,7 +246,7 @@ public sealed class NetworkProxySmokeTests
         var root = RealHostProcesses.CreateHome("b80t");
         try
         {
-            var home = PrepareTuiHome(root, ssh, selected, other, baseline);
+            var home = PrepareTuiHome(root, ssh, selected, other, baseline, mode);
             var store = new MachineStore(home);
             store.Upsert(store.Load().Find("A")! with { Name = selectedMachine });
             var before = HarnessSettings.Load(home).Network!.OutboundProxy!.Url;
@@ -265,7 +277,7 @@ public sealed class NetworkProxySmokeTests
             await session.WriteAsync(Encoding.UTF8.GetBytes("/exit\r"), Ct);
             await session.WaitForExitAsync(Ct);
             Assert.Equal(0, session.ExitCode);
-            await BorrowedOutboundProxyTests.AssertOwnedSshRetiredAsync(root, selected.Port);
+            await FleetLocalForwardEgressTests.AssertOwnedSshRetiredAsync(root, mode, selected.Port);
             Assert.Empty(other.Requests);
         }
         finally
@@ -275,9 +287,11 @@ public sealed class NetworkProxySmokeTests
         }
     }
 
-    [Fact(Explicit = true, Timeout = 360000)]
+    [Theory(Explicit = true, Timeout = 360000)]
+    [InlineData("proxyCommand")]
+    [InlineData("localForward")]
     [Trait("Category", "LlmSmoke")]
-    public async Task RealTuiModel_WebFetchAndSearch_AndLocalHostReload_UseTheSameSavedBorrowedSelection()
+    public async Task RealTuiModel_WebFetchAndSearch_AndLocalHostReload_UseTheSameSavedBorrowedSelection(string mode)
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
         await using var ssh = await TestSshServer.StartAsync(Ct);
@@ -304,7 +318,7 @@ public sealed class NetworkProxySmokeTests
             settings.Plugins.Remove("@deepseek-ai/dsh-web-search-github");
             settings.Save(home);
             settings.SavePlugins(home);
-            PrepareTuiHome(root, ssh, selected, other, baseline);
+            PrepareTuiHome(root, ssh, selected, other, baseline, mode);
             using var hostProcess = RealHostProcesses.StartHost(executable, root);
             await using var host = await RemoteHostClient.ConnectAsync(await RemoteHostListener.ConnectAsync(root, Ct,
                 startupLifetime: hostProcess.WaitForExitAsync(Ct)), null, "borrowed-route-acceptance", Ct);
@@ -313,6 +327,8 @@ public sealed class NetworkProxySmokeTests
             await WaitUntilAsync(() => TuiReady(tui), "The real model TUI must become ready.");
             await tui.WriteAsync(Encoding.UTF8.GetBytes("/proxy via A\r"), Ct);
             await WaitUntilAsync(() => HarnessSettings.Load(home).Network?.BorrowedOutboundMachine == "A", "The real TUI must select A.");
+            var tuiFetchAddresses = await WebFetchHttpNetwork.ResolvePublicAddresses(new Uri(HttpsTarget).Host, Ct);
+            var tuiTrafficStart = selected.Requests.ToArray().Length;
             await tui.WriteAsync(Encoding.UTF8.GetBytes(
                 "Use web_fetch to read https://example.com/ and web_search with engine github-repos to search for the official dotnet runtime repository. " +
                 "After both tools succeed and search returns a usable source URL, reply exactly NET80_TUI_DONE. Do not use other tools.\r"), Ct);
@@ -323,17 +339,20 @@ public sealed class NetworkProxySmokeTests
             Assert.Contains(completed.Select(value => value.Data).OfType<AssistantMessagePayload>(), value =>
                 value.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains("NET80_TUI_DONE", StringComparison.Ordinal)));
             var calls = completed.Select(value => value.Data).OfType<ToolCallPayload>().ToArray();
-            Assert.Contains(calls, call => call.Name == "web_fetch");
+            var fetchCalls = calls.Where(call => call.Name == "web_fetch").Select(call => call.CallId).ToHashSet();
+            Assert.NotEmpty(fetchCalls);
             var searchCalls = calls.Where(call => call.Name == "web_search").Select(call => call.CallId).ToHashSet();
             var results = completed.Select(value => value.Data).OfType<ToolResultPayload>().ToArray();
-            Assert.Contains(results, result => result.Error is null && result.Message.Block.Content.OfType<TextBlock>()
-                .Any(block => block.Text.Contains("Example Domain", StringComparison.Ordinal)));
-            Assert.Contains(results, result => WebFetchTool.FetchMetaFromResult(result.Meta) is { StatusCode: 200, Url: HttpsTarget });
+            Assert.Contains(results, result => fetchCalls.Contains(result.Message.Block.ToolCallId) && result.Error is null
+                && WebFetchTool.FetchMetaFromResult(result.Meta) is { StatusCode: 200, Url: HttpsTarget }
+                && result.Message.Block.Content.OfType<TextBlock>().Any(block => block.Text.Contains("Example Domain", StringComparison.Ordinal)));
             var sources = results.Where(result => result.Error is null && searchCalls.Contains(result.Message.Block.ToolCallId))
                 .SelectMany(result => WebSearchTool.SearchMetaFromResult(result.Meta)?.Sources ?? []).ToArray();
             Assert.NotEmpty(sources);
-            Assert.Contains(selected.Requests, request => request.StartsWith($"CONNECT {providerHost}:443 ", StringComparison.Ordinal));
-            Assert.Contains(selected.Requests, request => request.StartsWith("CONNECT api.github.com:443 ", StringComparison.Ordinal));
+            var tuiTraffic = selected.Requests.ToArray()[tuiTrafficStart..];
+            Assert.Contains(tuiTraffic, request => request == $"CONNECT {providerHost}:443 HTTP/1.1");
+            Assert.Contains(tuiTraffic, request => request.StartsWith("CONNECT api.github.com:443 ", StringComparison.Ordinal));
+            AssertPinnedFetchTraffic(tuiTraffic, tuiFetchAddresses);
             using (var outbound = new OutboundProxy())
             {
                 await using var route = new BorrowedOutboundRoute(home, outbound);
@@ -343,8 +362,9 @@ public sealed class NetworkProxySmokeTests
                 Assert.Equal(HttpStatusCode.OK, source.StatusCode);
             }
 
-            var beforeHost = selected.Requests.Count;
             await host.Network.ReloadAsync(Ct);
+            var hostFetchAddresses = await WebFetchHttpNetwork.ResolvePublicAddresses(new Uri(HttpsTarget).Host, Ct);
+            var hostTrafficStart = selected.Requests.ToArray().Length;
             var hostSession = await host.CreateSessionAsync(root, new RemoteModelSelection(model.Provider, model.Model), cancellationToken: Ct);
             var hostEvents = ReadHostTurnAsync(host, hostSession.Id);
             await host.SendMessageAsync(hostSession.Id, "Use web_fetch to read https://example.com/. After success reply NET80_HOST_DONE. Do not use other tools.", [], Ct);
@@ -352,10 +372,16 @@ public sealed class NetworkProxySmokeTests
             Assert.IsType<TurnEndReason.Completed>(Assert.IsType<TurnEndPayload>(events[^1].Data).Reason);
             Assert.Contains(events.Select(value => value.Data).OfType<AssistantMessagePayload>(), value =>
                 value.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains("NET80_HOST_DONE", StringComparison.Ordinal)));
-            Assert.Contains(events.Select(value => value.Data).OfType<ToolCallPayload>(), call => call.Name == "web_fetch");
-            Assert.Contains(events.Select(value => value.Data).OfType<ToolResultPayload>(), result => result.Error is null
-                && result.Message.Block.Content.OfType<TextBlock>().Any(block => block.Text.Contains("Example Domain", StringComparison.Ordinal)));
-            Assert.True(selected.Requests.Count > beforeHost);
+            var hostFetchCalls = events.Select(value => value.Data).OfType<ToolCallPayload>()
+                .Where(call => call.Name == "web_fetch").Select(call => call.CallId).ToHashSet();
+            Assert.NotEmpty(hostFetchCalls);
+            Assert.Contains(events.Select(value => value.Data).OfType<ToolResultPayload>(),
+                result => hostFetchCalls.Contains(result.Message.Block.ToolCallId) && result.Error is null
+                    && WebFetchTool.FetchMetaFromResult(result.Meta) is { StatusCode: 200, Url: HttpsTarget }
+                    && result.Message.Block.Content.OfType<TextBlock>().Any(block => block.Text.Contains("Example Domain", StringComparison.Ordinal)));
+            var hostTraffic = selected.Requests.ToArray()[hostTrafficStart..];
+            Assert.Contains(hostTraffic, request => request == $"CONNECT {providerHost}:443 HTTP/1.1");
+            AssertPinnedFetchTraffic(hostTraffic, hostFetchAddresses);
             Assert.Empty(other.Requests);
             await tui.WriteAsync(Encoding.UTF8.GetBytes("/exit\r"), Ct);
             await tui.WaitForExitAsync(Ct);
@@ -364,7 +390,7 @@ public sealed class NetworkProxySmokeTests
             await host.Network.ReloadAsync(Ct);
             HarnessSettings.SaveBorrowedOutboundMachine(home, null);
             await host.Network.ReloadAsync(Ct);
-            await BorrowedOutboundProxyTests.AssertOwnedSshRetiredAsync(root, selected.Port);
+            await FleetLocalForwardEgressTests.AssertOwnedSshRetiredAsync(root, mode, selected.Port);
         }
         finally
         {
@@ -373,7 +399,16 @@ public sealed class NetworkProxySmokeTests
         }
     }
 
-    private static HarnessHome PrepareTuiHome(string root, TestSshServer ssh, TestForwardProxy selected, TestForwardProxy other, TestForwardProxy baseline)
+    private static void AssertPinnedFetchTraffic(IEnumerable<string> traffic, IReadOnlyList<PublicAddress> targetAddresses)
+    {
+        Assert.NotEmpty(targetAddresses);
+        Assert.All(targetAddresses, address => Assert.True(WebFetchHttpNetwork.IsPublicIpAddress(address.Address)));
+        var expected = targetAddresses.Select(address =>
+            $"CONNECT {(address.Family == 6 ? $"[{address.Address}]" : address.Address)}:443 HTTP/1.1").ToHashSet();
+        Assert.Contains(traffic, expected.Contains);
+    }
+
+    private static HarnessHome PrepareTuiHome(string root, TestSshServer ssh, TestForwardProxy selected, TestForwardProxy other, TestForwardProxy baseline, string mode)
     {
         TempTree.AssertFitsMacOsSocketLimit(Path.Combine(root, "run", "host.sock"));
         var home = new HarnessHome(root);
@@ -382,8 +417,8 @@ public sealed class NetworkProxySmokeTests
         settings.Fleet = null;
         settings.Save(home);
         var store = new MachineStore(home);
-        store.Upsert(BorrowedOutboundProxyTests.ObserveSsh(ssh.Machine("A", root), root) with { OutboundTunnel = new("proxyCommand", $"http://127.0.0.1:{selected.Port}") });
-        store.Upsert(ssh.Machine("B", root) with { OutboundTunnel = new("proxyCommand", $"http://127.0.0.1:{other.Port}") });
+        store.Upsert(BorrowedOutboundProxyTests.ObserveSsh(ssh.Machine("A", root), root) with { OutboundTunnel = new(mode, $"http://127.0.0.1:{selected.Port}") });
+        store.Upsert(ssh.Machine("B", root) with { OutboundTunnel = new(mode, $"http://127.0.0.1:{other.Port}") });
         return home;
     }
 
@@ -454,8 +489,10 @@ public sealed class NetworkProxySmokeTests
 
     private static async Task<IReadOnlyList<SessionEvent>> ReadHostTurnAsync(RemoteHostClient host, string sessionId)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(120));
         var events = new List<SessionEvent>();
-        await foreach (var item in host.SubscribeAsync(sessionId, 0, Ct))
+        await foreach (var item in host.SubscribeAsync(sessionId, 0, deadline.Token))
         {
             var value = DshJson.Deserialize<SessionEvent>(item.EventJson)!;
             events.Add(value);
@@ -471,19 +508,30 @@ public sealed class NetworkProxySmokeTests
         var stream = (SshProxyStream)await tunnel.ConnectAsync(endpoint, token);
         var arguments = stream.Process.StartInfo.ArgumentList;
         var forwarding = arguments.IndexOf("-W");
-        if (forwarding < 0 || forwarding + 1 >= arguments.Count)
+        if (forwarding < 0)
         {
-            await stream.DisposeAsync();
-            throw new InvalidOperationException("The actual SSH process has no stdio forwarding destination.");
+            forwarding = arguments.IndexOf("-L");
+            Assert.NotNull(tunnel.LocalPort);
+            FleetLocalForwardEgressTests.AssertOnlyLoopbackListener(tunnel.LocalPort.Value);
         }
+        Assert.True(forwarding >= 0 && forwarding + 1 < arguments.Count, "The actual SSH must own the forwarding connection.");
         commands.Enqueue(arguments[forwarding + 1]);
         return stream;
     }
 
-    private static void AssertCommandStreams(TestForwardProxy forwarding, string[] commands, string host, int port)
+    private static void AssertCommandStreams(TestForwardProxy forwarding, string[] commands, string host, int port, string mode)
     {
         Assert.Equal(forwarding.Connections, commands.Length);
-        Assert.All(commands, target => Assert.Equal($"{host}:{port}", target));
+        Assert.All(commands, target =>
+        {
+            if (mode == "proxyCommand")
+                Assert.Equal($"{host}:{port}", target);
+            else
+            {
+                Assert.StartsWith("127.0.0.1:", target, StringComparison.Ordinal);
+                Assert.EndsWith($":{host}:{port}", target, StringComparison.Ordinal);
+            }
+        });
     }
 
     private static async Task AssertExampleDomainAsync(HttpClient client, string target, int version, CancellationToken cancellationToken)

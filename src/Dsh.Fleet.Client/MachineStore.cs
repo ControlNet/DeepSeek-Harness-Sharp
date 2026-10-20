@@ -167,11 +167,11 @@ public sealed class MachineStore(HarnessHome home)
             throw new InvalidOperationException("outbound tunnels require an SSH or iroh machine");
         if (string.IsNullOrWhiteSpace(tunnel.Mode) || string.IsNullOrWhiteSpace(tunnel.ProxyUrl))
             throw new InvalidOperationException("outboundTunnel mode and proxyUrl must both be supplied");
-        if (tunnel.Mode == "localForward")
-            throw new NotSupportedException("outboundTunnel localForward is not supported yet");
-        if (tunnel.Mode != "proxyCommand")
-            throw new InvalidOperationException("outboundTunnel mode must be proxyCommand");
-        if (tunnel.LocalPort is not null)
+        if (tunnel.Mode is not ("proxyCommand" or "localForward"))
+            throw new InvalidOperationException("outboundTunnel mode must be proxyCommand or localForward");
+        if (tunnel.LocalPort is < 1 or > 65535)
+            throw new InvalidOperationException("outboundTunnel localPort must be between 1 and 65535");
+        if (tunnel.Mode == "proxyCommand" && tunnel.LocalPort is not null)
             throw new InvalidOperationException("outboundTunnel proxyCommand must not specify localPort");
         var url = tunnel.ProxyUrl;
         if (!url.Contains("://", StringComparison.Ordinal) || url.Any(char.IsWhiteSpace) || url.Contains('\\')

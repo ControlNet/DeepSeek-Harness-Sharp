@@ -389,3 +389,74 @@ internal sealed class TestSshServer : IAsyncDisposable
     private Task WaitListeningAsync(CancellationToken cancellationToken)
         => _listening.Task.WaitAsync(StartTimeout, cancellationToken);
 }
+
+/// <summary>Holds an actual SSH ProxyCommand before target authentication, using a private control socket rather than a fabricated SSH handshake.</summary>
+internal sealed class SshAuthenticationGate : IAsyncDisposable
+{
+    private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+    private TcpClient? _control;
+
+    public SshAuthenticationGate() => _listener.Start();
+
+    public string? AskPass { get; private set; }
+
+    public MachineSpec Wrap(MachineSpec machine)
+    {
+        Assert.True(File.Exists("/bin/bash"), "The real authentication gate requires POSIX bash.");
+        var port = ((IPEndPoint)_listener.LocalEndpoint).Port;
+        var options = string.Join(' ', (machine.SshOptions ?? []).Select(option => $"-o {RemoteShell.Quote(option)}"));
+        var onward = $"exec ssh -T -F /dev/null -p {machine.Port} -i {RemoteShell.Quote(machine.KeyPath!)} {options} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -W %h:%p {RemoteShell.Quote($"{machine.User}@{machine.Host}")}";
+        var command = $"exec 3<>/dev/tcp/127.0.0.1/{port}; printf '%%s\\n' \"$SSH_ASKPASS\" >&3; IFS= read -r release <&3; exec 3>&-; {onward}";
+        return machine with
+        {
+            Auth = SshAuth.Password,
+            Password = "synthetic-gate-password",
+            Proxy = $"/bin/bash -c {RemoteShell.Quote(command)}",
+            SshOptions = [.. machine.SshOptions ?? [], $"IdentityFile={machine.KeyPath}", "PreferredAuthentications=publickey", "IdentitiesOnly=yes", "IdentityAgent=none"],
+        };
+    }
+
+    public async Task WaitForBlockedAuthenticationAsync(Task pending, CancellationToken cancellationToken)
+    {
+        _control?.Dispose();
+        _control = null;
+        AskPass = null;
+        using var handshakeLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var blocked = ReadHandshakeAsync(handshakeLifetime.Token);
+        if (await Task.WhenAny(blocked, pending) == pending)
+        {
+            await handshakeLifetime.CancelAsync();
+            try
+            {
+                await blocked;
+            }
+            catch (OperationCanceledException) when (handshakeLifetime.IsCancellationRequested)
+            {
+            }
+            await pending;
+            Assert.Fail("The actual request completed before reaching the SSH authentication gate.");
+        }
+        await blocked;
+    }
+
+    private async Task ReadHandshakeAsync(CancellationToken cancellationToken)
+    {
+        _control = await _listener.AcceptTcpClientAsync(cancellationToken);
+        using var reader = new StreamReader(_control.GetStream(), leaveOpen: true);
+        AskPass = await reader.ReadLineAsync(cancellationToken);
+        Assert.False(string.IsNullOrWhiteSpace(AskPass), "The actual pending SSH must identify its authentication-owned askpass.");
+    }
+
+    public async Task ReleaseAsync(CancellationToken cancellationToken)
+    {
+        Assert.NotNull(_control);
+        await _control.GetStream().WriteAsync("continue\n"u8.ToArray(), cancellationToken);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _control?.Dispose();
+        _listener.Stop();
+        return ValueTask.CompletedTask;
+    }
+}
