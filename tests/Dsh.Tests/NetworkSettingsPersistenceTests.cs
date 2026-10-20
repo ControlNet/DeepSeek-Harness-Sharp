@@ -479,7 +479,11 @@ public sealed class NetworkSettingsPersistenceTests
 
         public static async Task<SettingsWriterProcess> StartAsync(HarnessHome home, string role, CancellationToken cancellation)
         {
-            var name = $"dsh-settings-test-{Guid.NewGuid():N}";
+            var name = OperatingSystem.IsWindows()
+                ? $"dsh-settings-test-{Guid.NewGuid():N}"
+                : Path.Combine(home.Root, role);
+            if (!OperatingSystem.IsWindows())
+                TempTree.AssertFitsMacOsSocketLimit(name);
             var pipe = new NamedPipeServerStream(name, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             var executable = Path.Combine(AppContext.BaseDirectory, $"{typeof(NetworkSettingsPersistenceTests).Assembly.GetName().Name}{(OperatingSystem.IsWindows() ? ".exe" : "")}");
             var start = new ProcessStartInfo(executable)

@@ -5,7 +5,6 @@ using Dsh.Runtime.Logging;
 using YamlDotNet.Serialization;
 using System.Security.Cryptography;
 using System.Text;
-using Dsh.Transport;
 
 namespace Dsh.Boot;
 
@@ -220,7 +219,7 @@ public sealed class HarnessSettings
         var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {
-            OwnerOnlyFiles.Write(temporary, content);
+            SettingsFilePermissions.Write(temporary, content);
             if (File.Exists(path))
                 File.Replace(temporary, path, destinationBackupFileName: null);
             else
