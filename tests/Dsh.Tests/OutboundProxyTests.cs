@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Dsh.Boot;
@@ -431,11 +432,12 @@ public sealed class OutboundProxyGuiTests
     });
 }
 
-/** 测试专用代理: HTTP 模式(绝对 URI 的 GET 与 CONNECT, 可要求 Basic 认证)或 SOCKS5 模式(用户名密码认证), 记录请求后回固定响应。 */
+/** An actual TCP proxy with optional authentication, forwarding, persistent connections and response barriers. */
 internal sealed class TestForwardProxy : IAsyncDisposable
 {
     private const byte SocksVersion = 5;
     private const byte UserPasswordMethod = 2;
+    private const byte NoAcceptableMethod = byte.MaxValue;
     private const byte NoAuthMethod = 0;
     private const byte AddressIpv4 = 1;
     private const byte AddressDomain = 3;
@@ -445,18 +447,29 @@ internal sealed class TestForwardProxy : IAsyncDisposable
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
     private readonly CancellationTokenSource _stop = new();
     private readonly bool _socks;
-    private readonly string? _requiredCredential;
+    private string? _requiredCredential;
     private readonly bool _forward;
+    private readonly bool _keepAlive;
+    private readonly bool _pauseResponses;
+    private readonly bool _pauseBody;
+    private readonly ConcurrentDictionary<TcpClient, byte> _clients = new();
+    private readonly ConcurrentBag<Task> _serving = [];
+    private readonly Channel<string> _received = Channel.CreateUnbounded<string>();
+    private readonly Channel<int> _closed = Channel.CreateUnbounded<int>();
+    private readonly SemaphoreSlim _responses = new(0);
     private readonly Task _accepting;
     private int _connections;
 
     public const string ProxiedBody = "via-test-proxy";
 
-    public TestForwardProxy(bool socks = false, string? requiredCredential = null, bool forward = false)
+    public TestForwardProxy(bool socks = false, string? requiredCredential = null, bool forward = false, bool keepAlive = false, bool pauseResponses = false, bool pauseBody = false)
     {
         _socks = socks;
         _requiredCredential = requiredCredential;
         _forward = forward;
+        _keepAlive = keepAlive;
+        _pauseResponses = pauseResponses;
+        _pauseBody = pauseBody;
         _listener.Start();
         _accepting = AcceptAsync();
     }
@@ -464,6 +477,18 @@ internal sealed class TestForwardProxy : IAsyncDisposable
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
 
     public int Connections => Volatile.Read(ref _connections);
+
+    public int ActiveConnections => _clients.Count;
+
+    public ValueTask<string> WaitForRequestAsync(CancellationToken cancellationToken)
+        => _received.Reader.ReadAsync(cancellationToken);
+
+    public ValueTask<int> WaitForClosedConnectionAsync(CancellationToken cancellationToken)
+        => _closed.Reader.ReadAsync(cancellationToken);
+
+    public void ReleaseResponse() => _responses.Release();
+
+    public void RequireCredential(string credential) => Volatile.Write(ref _requiredCredential, credential);
 
     public ConcurrentQueue<string> Requests { get; } = new();
 
@@ -476,6 +501,12 @@ internal sealed class TestForwardProxy : IAsyncDisposable
         await _stop.CancelAsync();
         _listener.Stop();
         await _accepting;
+        foreach (var client in _clients.Keys)
+            client.Dispose();
+        await Task.WhenAll(_serving);
+        _received.Writer.TryComplete();
+        _closed.Writer.TryComplete();
+        _responses.Dispose();
         _stop.Dispose();
     }
 
@@ -492,23 +523,29 @@ internal sealed class TestForwardProxy : IAsyncDisposable
             {
                 return;
             }
-            Interlocked.Increment(ref _connections);
-            _ = ServeAsync(client);
+            var connection = Interlocked.Increment(ref _connections);
+            _clients.TryAdd(client, 0);
+            _serving.Add(ServeAsync(client, connection));
         }
     }
 
-    private async Task ServeAsync(TcpClient client)
+    private async Task ServeAsync(TcpClient client, int connection)
     {
-        using (client)
+        try
         {
-            await using var stream = client.GetStream();
-            try
+            using (client)
             {
+                await using var stream = client.GetStream();
                 await (_socks ? ServeSocksAsync(stream) : ServeHttpAsync(stream));
             }
-            catch (Exception error) when (error is IOException or SocketException or EndOfStreamException or OperationCanceledException)
-            {
-            }
+        }
+        catch (Exception error) when (error is IOException or SocketException or EndOfStreamException or OperationCanceledException or ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            _clients.TryRemove(client, out _);
+            _closed.Writer.TryWrite(connection);
         }
     }
 
@@ -517,16 +554,20 @@ internal sealed class TestForwardProxy : IAsyncDisposable
         while (await ReadHeadAsync(stream) is { } head)
         {
             var lines = head.Split("\r\n");
-            if (_requiredCredential is not null && BasicCredential(lines) != _requiredCredential)
+            var requiredCredential = Volatile.Read(ref _requiredCredential);
+            if (requiredCredential is not null && BasicCredential(lines) != requiredCredential)
             {
                 await WriteAsync(stream, "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"test\"\r\nContent-Length: 0\r\n\r\n");
                 continue;
             }
-            if (_requiredCredential is not null)
-                Credentials.Enqueue(_requiredCredential);
+            if (requiredCredential is not null)
+                Credentials.Enqueue(requiredCredential);
             Requests.Enqueue(lines[0]);
             foreach (var line in lines.Skip(1))
                 Headers.Enqueue(line);
+            _received.Writer.TryWrite(lines[0]);
+            if (_pauseResponses)
+                await _responses.WaitAsync(_stop.Token);
             if (_forward)
             {
                 var parts = lines[0].Split(' ');
@@ -545,7 +586,8 @@ internal sealed class TestForwardProxy : IAsyncDisposable
             await (lines[0].StartsWith("CONNECT ", StringComparison.Ordinal)
                 ? WriteAsync(stream, "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 : WriteBodyAsync(stream));
-            return;
+            if (!_keepAlive || lines[0].StartsWith("CONNECT ", StringComparison.Ordinal))
+                return;
         }
     }
 
@@ -554,9 +596,14 @@ internal sealed class TestForwardProxy : IAsyncDisposable
         var greeting = await ReadExactAsync(stream, 2);
         var methods = await ReadExactAsync(stream, greeting[1]);
         var authenticate = methods.Contains(UserPasswordMethod);
-        await stream.WriteAsync(new[] { SocksVersion, authenticate ? UserPasswordMethod : NoAuthMethod });
-        if (authenticate)
-            await ReadSocksCredentialAsync(stream);
+        if (Volatile.Read(ref _requiredCredential) is not null && !authenticate)
+        {
+            await stream.WriteAsync(new[] { SocksVersion, NoAcceptableMethod }, _stop.Token);
+            return;
+        }
+        await stream.WriteAsync(new[] { SocksVersion, authenticate ? UserPasswordMethod : NoAuthMethod }, _stop.Token);
+        if (authenticate && !await ReadSocksCredentialAsync(stream))
+            return;
         var request = await ReadExactAsync(stream, 4);
         var host = request[3] switch
         {
@@ -602,13 +649,17 @@ internal sealed class TestForwardProxy : IAsyncDisposable
         }
     }
 
-    private async Task ReadSocksCredentialAsync(NetworkStream stream)
+    private async Task<bool> ReadSocksCredentialAsync(NetworkStream stream)
     {
         var header = await ReadExactAsync(stream, 2);
         var user = Encoding.UTF8.GetString(await ReadExactAsync(stream, header[1]));
         var password = Encoding.UTF8.GetString(await ReadExactAsync(stream, (await ReadExactAsync(stream, 1))[0]));
-        Credentials.Enqueue($"{user}:{password}");
-        await stream.WriteAsync(new byte[] { 1, 0 });
+        var credential = $"{user}:{password}";
+        Credentials.Enqueue(credential);
+        var required = Volatile.Read(ref _requiredCredential);
+        var accepted = required is null || required == credential;
+        await stream.WriteAsync(new byte[] { 1, accepted ? (byte)0 : (byte)1 }, _stop.Token);
+        return accepted;
     }
 
     private static string? BasicCredential(string[] lines)
@@ -616,8 +667,18 @@ internal sealed class TestForwardProxy : IAsyncDisposable
             ? Encoding.UTF8.GetString(Convert.FromBase64String(header["Proxy-Authorization: Basic ".Length..].Trim()))
             : null;
 
-    private static Task WriteBodyAsync(NetworkStream stream)
-        => WriteAsync(stream, $"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {ProxiedBody.Length}\r\nConnection: close\r\n\r\n{ProxiedBody}");
+    private async Task WriteBodyAsync(NetworkStream stream)
+    {
+        var head = $"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {ProxiedBody.Length}\r\nConnection: {(_keepAlive ? "keep-alive" : "close")}\r\n\r\n";
+        if (!_pauseBody)
+        {
+            await WriteAsync(stream, $"{head}{ProxiedBody}");
+            return;
+        }
+        await WriteAsync(stream, head);
+        await _responses.WaitAsync(_stop.Token);
+        await WriteAsync(stream, ProxiedBody);
+    }
 
     private static async Task WriteAsync(NetworkStream stream, string text)
         => await stream.WriteAsync(Encoding.ASCII.GetBytes(text));
