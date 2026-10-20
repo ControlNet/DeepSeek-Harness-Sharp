@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Net;
 using System.Text;
 using Dsh.Transport;
 
@@ -28,6 +29,17 @@ public sealed class SshTransport(MachineSpec machine) : IRemoteMachineTransport
                 TryDelete(askPass);
             throw;
         }
+    }
+
+    internal static (ProcessStartInfo StartInfo, string? AskPass, string AuthenticationMarker) CreateProxyStart(MachineSpec machine, DnsEndPoint endpoint)
+    {
+        RequirePassword(machine);
+        var marker = $"dsh-ssh-auth-{Guid.NewGuid():N}";
+        var startInfo = BuildSshStartInfo(machine, out var askPass, marker);
+        var host = endpoint.Host.Contains(':') && !endpoint.Host.StartsWith('[') ? $"[{endpoint.Host}]" : endpoint.Host;
+        startInfo.ArgumentList.Insert(startInfo.ArgumentList.Count - 1, "-W");
+        startInfo.ArgumentList.Insert(startInfo.ArgumentList.Count - 1, $"{host}:{endpoint.Port}");
+        return (startInfo, askPass, marker);
     }
 
 
@@ -150,7 +162,7 @@ public sealed class SshTransport(MachineSpec machine) : IRemoteMachineTransport
     }
 
 
-    private static ProcessStartInfo BuildSshStartInfo(MachineSpec workspace, out string? askPass)
+    private static ProcessStartInfo BuildSshStartInfo(MachineSpec workspace, out string? askPass, string? authenticationMarker = null)
     {
         var startInfo = new ProcessStartInfo("ssh")
         {
@@ -164,6 +176,32 @@ public sealed class SshTransport(MachineSpec machine) : IRemoteMachineTransport
         arguments.Add("-T"); // 不要远端 TTY: 帧通道走干净管道。
         arguments.Add("-p");
         arguments.Add(workspace.Port.ToString());
+        if (authenticationMarker is not null)
+        {
+            foreach (var option in workspace.SshOptions ?? [])
+            {
+                var key = option.AsSpan().TrimStart();
+                var separator = key.IndexOfAny("= \t\r\n");
+                if (separator >= 0)
+                    key = key[..separator];
+                if (key.Equals("LocalCommand", StringComparison.OrdinalIgnoreCase) ||
+                    key.Equals("PermitLocalCommand", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("SSH outbound tunnels manage LocalCommand and PermitLocalCommand; remove these conflicting SSH options.");
+            }
+            // Only this target SSH executes the nonce command after authentication.
+            // echo and descriptor redirection work in both the Unix shell and Windows system(cmd).
+            // No user data, SSH tokens or credentials enter this fixed command.
+            arguments.Add("-o");
+            arguments.Add("PermitLocalCommand=yes");
+            arguments.Add("-o");
+            arguments.Add($"LocalCommand=echo {authenticationMarker} 1>&2");
+            arguments.Add("-o");
+            arguments.Add("ExitOnForwardFailure=yes");
+            arguments.Add("-o");
+            arguments.Add("ControlMaster=no");
+            arguments.Add("-o");
+            arguments.Add("ControlPath=none");
+        }
         AddCommonOptions(arguments, workspace);
         askPass = ApplyAskPass(startInfo, workspace);
         arguments.Add($"{workspace.User}@{workspace.ConnectionHost}");

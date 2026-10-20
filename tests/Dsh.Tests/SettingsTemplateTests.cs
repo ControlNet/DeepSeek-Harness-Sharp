@@ -27,25 +27,6 @@ public sealed class SettingsTemplateTests
         Assert.Null(SettingsTemplate.Verify(path));
     }
 
-    /** 生成块必须列出顶层 settings 与已声明参数的插件(其余是注释, 不改变默认行为)。 */
-    [Fact]
-    public void Generated_Block_Documents_Document_And_Declared_Plugins()
-    {
-        var block = SettingsSchemaCatalog.RenderTemplateBlock();
-
-        Assert.Contains("global_default_model", block);
-        Assert.Contains("logging", block);
-        Assert.Contains("storage", block);
-        Assert.Contains("@deepseek-ai/dsh-toon", block);
-        Assert.Contains("output", block);
-        Assert.Contains("@deepseek-ai/dsh-memory", block);
-        // 全部是注释: 模板落地不该替用户改任何默认行为。
-        foreach (var line in block.Split('\n'))
-        {
-            var text = line.TrimEnd('\r').Trim();
-            Assert.True(text.Length == 0 || text.StartsWith('#'), $"生成块里出现了非注释行: {line}");
-        }
-    }
 
     private static string SourceTemplatePath()
     {

@@ -285,6 +285,38 @@ network:
     bypass: [example.com, "*.example.org"]
 ```
 
+### 通过 SSH 命令流借用远端代理（CLI）
+
+已保存的 SSH 或 SSH-over-iroh 机器可配置独立的 `outboundTunnel`，让本机 CLI 自检通过受管 `ssh -T -W` 字节流访问远端 TCP 代理。
+远端只需可用的 SSH 和代理，不要求安装 `dsharp` 或启动 Host；这与设置目标 Host 自身出口的 `machine proxy` 命令不同。
+
+保存 `outbound-tunnel.json`，内容例如：
+
+```json
+{"mode":"proxyCommand","proxyUrl":"http://127.0.0.1:7890"}
+```
+
+```bash
+dsharp machine tunnel build set --json-stdin < outbound-tunnel.json
+dsharp machine tunnel build show
+dsharp machine tunnel build test --probe-url https://example.com/
+dsharp machine tunnel build clear
+```
+
+PowerShell 中保存时使用 `Get-Content -Raw .\outbound-tunnel.json | dsharp machine tunnel build set --json-stdin`。
+`proxyUrl` 从远端视角解析，`127.0.0.1` 指该 SSH 机器；支持 HTTP、HTTPS、SOCKS4/4a/5，并保留代理的原始主机名、TLS 校验和认证。
+含认证信息的 URL 只通过 stdin 输入，输入文件应仅自己可读并加入 `.gitignore`，不要放进命令参数、提交或评论。
+
+配置保存在 `fleet.machines[].outboundTunnel`，也可直接填写 `mode: proxyCommand` 和 `proxyUrl`；两项必须同时有效。
+本机机器不接受此配置；`proxyCommand` 不接受 `localPort`，`localForward` 模式明确返回尚不支持。
+它不会修改 `network.outbound_proxy`、机器的 SSH `proxy`、`fleet.deploy.serverProxy` 或其他机器；`clear` 只删除该机器的 `outboundTunnel`。
+保存配置本身不会将 TUI、GUI 或其它请求切换到借用出口；这里的 `test` 使用独立、用完即释放的出口实例。
+
+`test` 实际发送 HTTP(S) 请求并消费响应正文，输出脱敏状态，成功状态退出码为 0，连接、认证、TLS 或请求失败时为非零。
+自检目标不能被直连规则排除；正常请求仍保留既有 bypass 和安全校验，进入借用路由后失败不会回退或重放原请求，SSH 掉线后仅下一次新请求可重建。
+TCP HTTP/1.1 和 HTTP/2 可用，借用出口强制 HTTP/3 会明确报不支持；取消或命令退出会等待自有 SSH、流及 askpass 清理，不会停止目标 Host 或 PTY。
+受管隧道保留 SSH 的 `LocalCommand`/`PermitLocalCommand` 来识别目标认证完成，`sshOptions` 不得显式设置这两项，SSH 配置文件中的同名命令也不会用于该隧道；普通 Host 连接保持原有认证行为。
+
 ### 通过 iroh 接入没有公网 SSH 地址的机器
 
 普通 SSH 保持不变；选择 SSH-over-iroh 后，客户端通过稳定的 Endpoint ID 寻址，能直连时直连，否则使用可达的 relay。
@@ -443,12 +475,13 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 0.1.1 起的发布说明未单独张贴,这里按版本折叠列出新增能力(0.1.0 的完整发布说明见[讨论区](https://github.com/deepseek-ai/deepseek-harness/discussions/8952))。
 
 <details>
-<summary><b>未发布</b> — SSH-over-iroh</summary>
+<summary><b>未发布</b> — SSH-over-iroh 与 SSH 命令流代理</summary>
 
 - 多机连接新增 Endpoint ID 接入、客户端内置 iroh-ssh、已有 SSH 自动启用与目标端本地启用两种入口，沿用原有 SSH 认证和 Fleet 会话生命周期。
 - 接收端启动会同步地址发现就绪再验证 SSH 隧道，发布包附带上游修改补丁及来源说明。
 - macOS 接收端嵌入本地网络用途声明，局域网接入遵循用户授权，不静默提权。
 - 使用方法与平台差异见「通过 iroh 接入没有公网 SSH 地址的机器」。
+- CLI 新增 `machine tunnel` 配置与实际 HTTP(S) 自检，通过 SSH 或 SSH-over-iroh 的命令流借用远端代理，保留认证、TLS 和连接释放边界，不修改本机基准或远端 Host 出口。
 
 </details>
 

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text.RegularExpressions;
 
 namespace Dsh.Runtime;
@@ -7,7 +8,7 @@ namespace Dsh.Runtime;
 /// Process-local outbound routing.
 /// Configuration changes retire the previous generation; handlers reuse connection pools while a route is unchanged.
 /// </summary>
-public sealed partial class OutboundProxy : IWebProxy, ICredentials
+public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
 {
     public const string PropName = "outboundProxy";
 
@@ -30,9 +31,16 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
 
     private readonly object _gate = new();
     private RouteGeneration _route = new(0, new Route(null, null, []));
+    private Route _configured = new(null, null, []);
+    private Route? _borrowed;
+    private Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? _borrowedConnect;
+    private bool _disposed;
 
     internal sealed record Route(Uri? Address, CredentialHolder? Credential, string[] Bypass)
     {
+        internal Route CopyForGeneration()
+            => Credential is null ? this : new Route(Address, Credential.CopyForGeneration(), Bypass);
+
         internal bool EquivalentTo(Route other)
             => Address == other.Address
                 && CredentialHolder.Equivalent(Credential, other.Credential)
@@ -41,13 +49,21 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
 
     internal sealed class RouteGeneration
     {
-        internal RouteGeneration(long number, Route configuration)
+        internal RouteGeneration(long number, Route configuration,
+            Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? connect = null,
+            Action<RouteGeneration>? transportFailed = null)
         {
             Number = number;
             Configuration = configuration;
+            Connect = connect;
+            _transportFailed = transportFailed;
             if (configuration.Credential is { } credential)
                 Lifetime.Register(credential);
         }
+
+        private readonly Action<RouteGeneration>? _transportFailed;
+        internal Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? Connect { get; }
+        internal void ReportTransportFailure() => _transportFailed?.Invoke(this);
 
         internal long Number { get; }
         internal Route Configuration { get; }
@@ -70,7 +86,7 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         return $"{address.Scheme}://{userInfo}{address.Authority}";
     }
 
-    /// <summary>Parses before publishing; invalid or equivalent settings leave active requests alone.</summary>
+    /// <summary>Updates only the baseline; a selected borrowed route remains active.</summary>
     public void Configure(string? url, IReadOnlyList<string>? bypass)
     {
         var configuration = string.IsNullOrWhiteSpace(url)
@@ -80,15 +96,93 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         IDisposable[] retired;
         lock (_gate)
         {
-            previous = _route;
-            if (previous.Configuration.EquivalentTo(configuration))
+            if (_disposed)
+            {
+                configuration.Credential?.Dispose();
+                throw new ObjectDisposedException(nameof(OutboundProxy));
+            }
+            if (_configured.EquivalentTo(configuration))
             {
                 configuration.Credential?.Dispose();
                 return;
             }
-            var next = new RouteGeneration(previous.Number + 1, configuration);
+            _configured.Credential?.Dispose();
+            _configured = configuration;
+            if (_borrowed is not null)
+                return;
+            (previous, retired) = ReplaceRouteLocked(configuration, null);
+        }
+        previous.Lifetime.CompleteRetirement(retired);
+    }
+
+    /// <summary>Installs an immutable borrowed TCP route; both null values restore the latest baseline.</summary>
+    public void ConfigureBorrowed(string? proxyUrl, Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? connect)
+    {
+        if ((proxyUrl is null) != (connect is null))
+            throw new ArgumentException("The borrowed proxy address and connector must be supplied or cleared together.");
+        var configuration = proxyUrl is null ? null : Parse(proxyUrl.Trim(), []);
+        RouteGeneration previous;
+        IDisposable[] retired;
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                configuration?.Credential?.Dispose();
+                throw new ObjectDisposedException(nameof(OutboundProxy));
+            }
+            if ((_borrowed is null ? configuration is null : configuration is not null && _borrowed.EquivalentTo(configuration))
+                && Equals(_borrowedConnect, connect))
+            {
+                configuration?.Credential?.Dispose();
+                return;
+            }
+            _borrowed?.Credential?.Dispose();
+            _borrowed = configuration;
+            _borrowedConnect = connect;
+            (previous, retired) = ReplaceRouteLocked(configuration ?? _configured, connect);
+        }
+        previous.Lifetime.CompleteRetirement(retired);
+    }
+
+    private (RouteGeneration Previous, IDisposable[] Retired) ReplaceRouteLocked(
+        Route configuration, Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? connect)
+    {
+        var previous = _route;
+        var next = new RouteGeneration(previous.Number + 1, configuration.CopyForGeneration(), connect,
+            connect is null ? null : TransportFailed);
+        var retired = previous.Lifetime.BeginRetirement();
+        Volatile.Write(ref _route, next);
+        return (previous, retired);
+    }
+
+    private void TransportFailed(RouteGeneration generation)
+    {
+        RouteGeneration previous;
+        IDisposable[] retired;
+        lock (_gate)
+        {
+            if (_disposed || !ReferenceEquals(_route, generation) || _borrowed is null)
+                return;
+            (previous, retired) = ReplaceRouteLocked(_borrowed, _borrowedConnect);
+        }
+        previous.Lifetime.CompleteRetirement(retired);
+    }
+
+    public void Dispose()
+    {
+        RouteGeneration previous;
+        IDisposable[] retired;
+        lock (_gate)
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            previous = _route;
             retired = previous.Lifetime.BeginRetirement();
-            Volatile.Write(ref _route, next);
+            _configured.Credential?.Dispose();
+            _borrowed?.Credential?.Dispose();
+            _borrowed = null;
+            _borrowedConnect = null;
         }
         previous.Lifetime.CompleteRetirement(retired);
     }
@@ -135,6 +229,15 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         return proxy == destination ? null : proxy;
     }
 
+    private static Uri? ProxyForConnection(Route route, IWebProxy? systemProxy, SocketsHttpConnectionContext context)
+    {
+        var request = context.InitialRequestMessage;
+        // SocketsHttpHandler uses the proxy URI for its internal CONNECT request.
+        return request.Method == HttpMethod.Connect && request.RequestUri == route.Address
+            ? route.Address
+            : EffectiveProxy(route, systemProxy, request.RequestUri!);
+    }
+
     /// <summary>An immutable route capture; its token and factories share generation ownership.</summary>
     public readonly struct RouteSnapshot
     {
@@ -153,6 +256,7 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         public long Generation => _generation.Number;
         public Uri? ProxyUri { get; }
         public CancellationToken CancellationToken => _generation.Lifetime.Token;
+        internal bool HasBorrowedTransport => _generation.Connect is not null;
 
         public SocketsHttpHandler CreateHandler(bool allowAutoRedirect)
             => CreateHandlerCore(allowAutoRedirect, DecompressionMethods.None, null, null, false);
@@ -186,6 +290,9 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         {
             ThrowIfRetired();
             var lifetime = _generation.Lifetime;
+            var generation = _generation;
+            var systemProxy = _systemProxy;
+            var proxyEndpoint = ProxyUri;
             var handler = new SocketsHttpHandler
             {
                 AllowAutoRedirect = allowAutoRedirect,
@@ -195,7 +302,10 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
                     ? new CapturedProxy(_generation, _systemProxy, ProxyUri, _credentials)
                     : ProxyUri is { } endpoint ? new CapturedProxy(endpoint, _credentials) : null,
                 ConnectCallback = (context, token) => OutboundConnectionStream.ConnectAsync(
-                    context, token, lifetime, connections, connector),
+                    context, token, generation, connections, connector,
+                    routeRedirects
+                        ? ProxyForConnection(generation.Configuration, systemProxy, context)
+                        : proxyEndpoint),
             };
             if (cookies is not null)
                 handler.CookieContainer = cookies;
@@ -291,6 +401,9 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         private readonly Uri? _systemEndpoint;
 
         internal CredentialHolder(NetworkCredential credential) => _credential = credential;
+        internal CredentialHolder CopyForGeneration()
+            => new(Copy(_credential ?? throw new ObjectDisposedException(nameof(CredentialHolder))));
+
 
         private CredentialHolder(Uri endpoint, Dictionary<string, NetworkCredential> credentials)
         {
