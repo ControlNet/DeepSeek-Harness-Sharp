@@ -103,6 +103,17 @@ public sealed class MachineConnection : IAsyncDisposable
         }
     }
 
+    /** Captures the published connection and its Host identity under the same lock. */
+    internal (HostLease Lease, HostInfo Info)? CurrentHostLease
+    {
+        get
+        {
+            lock (_gate)
+                return _connected.Task.IsCompletedSuccessfully && Info is { } info
+                    ? (_connected.Task.Result, info) : null;
+        }
+    }
+
     /** 每个读者使用共享 RemoteHost 续订语义，不保存另一份历史或去重记忆。 */
     public IAsyncEnumerable<RemoteEventInfo> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
         => _subscriptions.SubscribeAsync(sessionId, fromSeq, cancellationToken);

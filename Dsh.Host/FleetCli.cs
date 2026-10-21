@@ -27,7 +27,7 @@ internal static class FleetCli
     private static readonly HashSet<string> Flags = ["--local", "--force", "--password-stdin"];
 
     private static readonly HashSet<string> ValueOptions =
-        ["--host", "--port", "--user", "--auth", "--key", "--proxy", "--remote-path", "--remote-home", "--ssh-option", "--home", "--machine", "--endpoint-id", "--relay-url", "--ssh-port", "--activation"];
+        ["--host", "--port", "--user", "--auth", "--key", "--proxy", "--remote-path", "--remote-home", "--ssh-option", "--home", "--machine", "--proxy-layer", "--endpoint-id", "--relay-url", "--ssh-port", "--activation"];
 
     private static readonly FleetTunnelJsonContext TunnelJson = new(new JsonSerializerOptions
     {
@@ -101,6 +101,7 @@ internal static class FleetCli
                dsharp session attach <machine>/<session>   (terminal sessions; leave with Ctrl+])
                dsharp session stop <machine>/<session>
                dsharp doctor [--machine <name>]
+               dsharp doctor --proxy-layer ssh|local_outbound|remote_outbound [--machine <name>]
                dsharp remote enable [--ssh-port N] [--relay-url <url>]...   (enable this machine's receiver)
                dsharp remote info
                dsharp remote disable
@@ -519,6 +520,8 @@ internal static class FleetCli
 
     private static async Task<int> RunDoctorAsync(FleetCliContext context)
     {
+        if (context.Arguments.Value("--proxy-layer") is { } layer)
+            return await RunProxyDoctorAsync(context, layer);
         var failed = false;
         foreach (var machine in context.SelectedMachines())
         {
@@ -535,6 +538,50 @@ internal static class FleetCli
         }
 
         return failed ? 1 : 0;
+    }
+
+    private static async Task<int> RunProxyDoctorAsync(FleetCliContext context, string layerText)
+    {
+        ProxyProbeLayer? layer = layerText switch
+        {
+            "ssh" => ProxyProbeLayer.Ssh,
+            "local_outbound" => ProxyProbeLayer.LocalOutbound,
+            "remote_outbound" => ProxyProbeLayer.RemoteOutbound,
+            _ => null,
+        };
+        if (layer is null)
+            return await FailAsync("--proxy-layer must be ssh, local_outbound or remote_outbound");
+        var probe = new FleetProxyProbe(context.Options(deploy: false, startLocalHost: false));
+        if (layer == ProxyProbeLayer.LocalOutbound)
+            return await WriteProxyProbeAsync(await probe.ProbeLocalAsync(context.Home.Root,
+                HarnessSettings.Load(context.Home).Network?.OutboundProxy, Guid.NewGuid(), context.Cancellation));
+        var failed = false;
+        foreach (var machine in context.SelectedMachines())
+        {
+            var result = layer == ProxyProbeLayer.Ssh
+                ? await probe.ProbeSshAsync(machine, Guid.NewGuid(), context.Cancellation)
+                : await ProbeRemoteLayerAsync(context, probe, machine);
+            var exitCode = await WriteProxyProbeAsync(result);
+            if (exitCode == InterruptedExitCode)
+                return exitCode;
+            failed |= exitCode != 0;
+        }
+        return failed ? 1 : 0;
+    }
+
+    private static async Task<ProxyProbeResult> ProbeRemoteLayerAsync(FleetCliContext context, FleetProxyProbe probe, MachineSpec machine)
+    {
+        await using var connection = new MachineConnection(machine, context.Options(deploy: false, startLocalHost: true));
+        var pending = probe.ProbeRemoteAsync(connection, new RemoteOutboundProxyProbeRequest(), Guid.NewGuid(), context.Cancellation);
+        if (!pending.IsCompleted && !context.Cancellation.IsCancellationRequested)
+            connection.Start();
+        return await pending;
+    }
+
+    private static async Task<int> WriteProxyProbeAsync(ProxyProbeResult result)
+    {
+        await Console.Out.WriteLineAsync(JsonSerializer.Serialize(result, FleetProxyProbeJsonContext.Default.ProxyProbeResult));
+        return result.ExitCode;
     }
 
     private static async Task<int> ReportUnreachableAsync(FleetClient fleet)

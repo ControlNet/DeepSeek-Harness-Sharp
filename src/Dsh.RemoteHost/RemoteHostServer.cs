@@ -63,7 +63,7 @@ public sealed class RemoteHostServer(
         if (backend.SessionEditing is not null) capabilities.Add(SessionEditingProtocol.Capability);
         if (backend.Plugins is not null) capabilities.Add(PluginsProtocol.Capability);
         if (backend.Models is not null) capabilities.Add(ModelsProtocol.Capability);
-        if (backend.Network is not null) capabilities.Add(NetworkProtocol.Capability);
+        if (backend.Network is not null) capabilities.AddRange([NetworkProtocol.Capability, NetworkProtocol.CancellableProbeCapability]);
         if (backend.Network is IRemoteNetworkReloadBackend) capabilities.Add(NetworkProtocol.ReloadCapability);
         return capabilities;
     }
@@ -100,9 +100,28 @@ public sealed class RemoteHostServer(
         }
         finally
         {
-            await pumps.CancelAsync().ConfigureAwait(false);
-            connection.StopAll();
-            await connection.Uploads.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                await pumps.CancelAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                try
+                {
+                    connection.StopAll();
+                }
+                finally
+                {
+                    try
+                    {
+                        await connection.DisposeNetworkAsync().ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        await connection.Uploads.DisposeAsync().ConfigureAwait(false);
+                    }
+                }
+            }
         }
     }
 
@@ -129,6 +148,7 @@ public sealed class RemoteHostServer(
         private volatile bool _authenticated = !server.RequiresToken;
         private bool _stopped;
         private Task? _hostPushes;
+        private HostNetworkMethods? _network;
 
         private PendingResolver Resolver => new(_clientName ?? id, id);
 
@@ -155,6 +175,8 @@ public sealed class RemoteHostServer(
                 _subscriptions.Clear();
             }
         }
+
+        public ValueTask DisposeNetworkAsync() => _network?.DisposeAsync() ?? ValueTask.CompletedTask;
 
         /** Ownership changes run in frame order, before concurrent backend work can overtake a preceding subscribe. */
         public ValueTask<JsonElement?>? PrepareRequest(JsonRpcMessage message, CancellationToken cancellationToken)
@@ -231,7 +253,10 @@ public sealed class RemoteHostServer(
             if (backend.Models is { } models)
                 Register(ModelsProtocol.Methods, (name, message, ct) => HostModelsMethods.HandleAsync(models, name, message, ct));
             if (backend.Network is { } network)
-                Register(NetworkProtocol.Methods, (name, message, ct) => HostNetworkMethods.HandleAsync(network, name, message, ct));
+            {
+                _network = new HostNetworkMethods(network, lifetime);
+                Register(NetworkProtocol.Methods, _network.HandleAsync, _network.Prepare);
+            }
             if (backend.Network is IRemoteNetworkReloadBackend reload)
                 Register([NetworkProtocol.MethodReload], (_, message, ct) => HostNetworkMethods.ReloadAsync(reload, message, ct));
         }

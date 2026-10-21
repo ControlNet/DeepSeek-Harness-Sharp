@@ -5,6 +5,7 @@ namespace Dsh.RemoteHost;
 /** Client implementation of the optional Network domain. */
 public sealed class RemoteNetworkClient : IRemoteNetwork
 {
+    private const int ProbeCancellationAcknowledgementTimeoutSeconds = 5;
     private readonly RemoteHostClient _host;
 
     internal RemoteNetworkClient(RemoteHostClient host) => _host = host;
@@ -15,8 +16,36 @@ public sealed class RemoteNetworkClient : IRemoteNetwork
     public Task<RemoteOutboundProxyState> SetOutboundAsync(RemoteOutboundProxySetRequest request, CancellationToken cancellationToken = default)
         => _host.SendAsync(NetworkProtocol.MethodOutboundSet, Serialize(request, NetworkProtocolJsonContext.Default.RemoteOutboundProxySetRequest), NetworkProtocolJsonContext.Default.RemoteOutboundProxyState, cancellationToken);
 
-    public Task<RemoteOutboundProxyProbeResult> ProbeOutboundAsync(RemoteOutboundProxyProbeRequest request, CancellationToken cancellationToken = default)
-        => _host.SendAsync(NetworkProtocol.MethodOutboundProbe, Serialize(request, NetworkProtocolJsonContext.Default.RemoteOutboundProxyProbeRequest), NetworkProtocolJsonContext.Default.RemoteOutboundProxyProbeResult, cancellationToken);
+    public async Task<RemoteOutboundProxyProbeResult> ProbeOutboundAsync(RemoteOutboundProxyProbeRequest request, CancellationToken cancellationToken = default)
+    {
+        if (!_host.Supports(NetworkProtocol.CancellableProbeCapability))
+            return await _host.SendAsync(NetworkProtocol.MethodOutboundProbe, Serialize(request, NetworkProtocolJsonContext.Default.RemoteOutboundProxyProbeRequest), NetworkProtocolJsonContext.Default.RemoteOutboundProxyProbeResult, cancellationToken).ConfigureAwait(false);
+
+        if (request.OperationId is null)
+            request = request with { OperationId = Guid.NewGuid() };
+        try
+        {
+            return await _host.SendAsync(NetworkProtocol.MethodOutboundProbe, Serialize(request, NetworkProtocolJsonContext.Default.RemoteOutboundProxyProbeRequest), NetworkProtocolJsonContext.Default.RemoteOutboundProxyProbeResult, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(ProbeCancellationAcknowledgementTimeoutSeconds));
+            bool acknowledged;
+            try
+            {
+                acknowledged = await _host.SendAsync(NetworkProtocol.MethodOutboundProbeCancel,
+                    Serialize(new RemoteOutboundProxyProbeCancelRequest(request.OperationId.Value), NetworkProtocolJsonContext.Default.RemoteOutboundProxyProbeCancelRequest),
+                    HostProtocolJsonContext.Default.Boolean, cleanup.Token).ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                throw new IOException("The target Host did not confirm outbound probe cleanup.", error);
+            }
+            if (!acknowledged)
+                throw new IOException("The target Host did not confirm outbound probe cleanup.");
+            throw;
+        }
+    }
 
     public async Task ReloadAsync(CancellationToken cancellationToken = default)
     {

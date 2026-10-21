@@ -6,6 +6,8 @@ public sealed record RemoteOutboundProxyState(string OwnerId, string HostHome, s
 
 public sealed record RemoteOutboundProxySetRequest(string ExpectedRevision, RemoteOutboundProxySettings Settings);
 
-public sealed record RemoteOutboundProxyProbeRequest(RemoteOutboundProxySettings? Draft = null, string? ProbeUrl = null);
+public sealed record RemoteOutboundProxyProbeRequest(RemoteOutboundProxySettings? Draft = null, string? ProbeUrl = null, Guid? OperationId = null);
 
-public readonly record struct RemoteOutboundProxyProbeResult(bool Reachable, string Message);
+public sealed record RemoteOutboundProxyProbeCancelRequest(Guid OperationId);
+
+public readonly record struct RemoteOutboundProxyProbeResult(bool Reachable, string Message, string? Stage, int? HttpStatus, string? HostHome);

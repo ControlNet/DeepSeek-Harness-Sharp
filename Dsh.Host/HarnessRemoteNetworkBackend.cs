@@ -59,7 +59,7 @@ internal sealed class HarnessRemoteNetworkBackend(HarnessHome home, OutboundProx
         if (request.ProbeUrl is { } probeUrl)
             settings.ProbeUrl = probeUrl;
         var result = await OutboundProxyProbe.RunAsync(settings, cancellationToken, "远端服务器出口");
-        return new RemoteOutboundProxyProbeResult(result.Reachable, result.Message);
+        return new RemoteOutboundProxyProbeResult(result.Reachable, result.Message, result.Stage, result.HttpStatus, home.Root);
     }
 
     public async Task ReloadAsync(CancellationToken cancellationToken)
