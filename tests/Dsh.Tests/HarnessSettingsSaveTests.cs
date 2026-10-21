@@ -1,7 +1,6 @@
 using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Interaction;
-using Dsh.Llm;
 using Dsh.Runtime;
 
 namespace Dsh.Tests;
@@ -81,12 +80,35 @@ public sealed class HarnessSettingsSaveTests
             Assert.True(reloaded.Safety!.AutoApprove);
             Assert.Equal(["rm -rf"], reloaded.Safety.Blacklist);
             Assert.Equal(4100, reloaded.A2a!.Port);
+            Assert.Equal("alpha-key", reloaded.Providers["alpha"].Options!.ApiKey);
         }
         finally
         {
             TempTree.Delete(home.Root);
         }
     }
+
+    [Fact]
+    public void Load_RefusesTemplateWhenBackupExists()
+    {
+        var home = CreateHome("\n");
+        try
+        {
+            var active = Path.Combine(home.Root, "settings.yaml");
+            File.Move(active, $"{active}.imported");
+
+            var error = Assert.Throws<IOException>(() => HarnessSettings.Load(home));
+
+            Assert.Contains("backup exists", error.Message);
+            Assert.False(File.Exists(active));
+            Assert.True(File.Exists($"{active}.imported"));
+        }
+        finally
+        {
+            TempTree.Delete(home.Root);
+        }
+    }
+
 
     [Theory]
     [InlineData("\n")]
