@@ -218,6 +218,7 @@ jobs:
           if [ "$RUNNER_OS" = "macOS" ]; then
             # MCP resource tests run in each of the three required regression suites.
             ARGS+=(-parallel none
+              -reporter verbose
               -class- Dsh.Tests.Mcp.McpResourceToolsTests
               -method- Dsh.Tests.IrohReceiverEndToEndTests.TargetCli_Lan_Readiness_And_Restart_Work_Without_A_Relay)
             echo "Running: ${ARGS[*]}"
