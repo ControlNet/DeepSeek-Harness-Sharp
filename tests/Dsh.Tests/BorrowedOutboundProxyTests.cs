@@ -277,6 +277,52 @@ public sealed class BorrowedOutboundProxyTests
         }
     }
 
+    [Theory(Timeout = 90000)]
+    [InlineData(DownloadVia.Client)]
+    [InlineData(DownloadVia.Auto)]
+    public async Task LocalArchiveDownload_RejectsAnInvalidBorrowedSelection_WithoutUsingTheBaseline(string via)
+    {
+        FleetSshEndToEndTests.RequireEnvironment();
+        if (via == DownloadVia.Auto && !File.Exists("/usr/bin/curl") && !File.Exists("/usr/bin/wget"))
+            Assert.Skip("automatic remote-download coverage needs curl or wget on the loopback SSH server");
+        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var baseline = new TestForwardProxy();
+        var root = TempTree.CreateSocketDirectory("b80d");
+        using var releases = new TcpListener(IPAddress.Loopback, 0);
+        releases.Start();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        try
+        {
+            var home = new HarnessHome(root);
+            using var proxy = new OutboundProxy();
+            HarnessSettings.SaveOutboundProxy(home, new OutboundProxySettings { Url = $"http://127.0.0.1:{baseline.Port}" }, proxy);
+            HarnessSettings.SaveBorrowedOutboundMachine(home, "missing");
+            var before = await File.ReadAllTextAsync(home.SettingsFile, Ct);
+            var serving = via == DownloadVia.Auto
+                ? FleetSshEndToEndTests.ServeReleaseAsync(releases, null, cancellation.Token)
+                : Task.CompletedTask;
+            var port = ((IPEndPoint)releases.LocalEndpoint).Port;
+            var progress = new List<string>();
+            var installer = new RemoteDsharpInstaller(new SshTransport(ssh.Machine("download-target", root)));
+            var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => installer.EnsureAsync(
+                new DeploySettings { Via = via, ReleaseBaseUrl = $"http://127.0.0.1:{port}/releases" },
+                progress.Add, Ct, localHome: home));
+            Assert.Equal("The selected outbound machine does not exist.", failure.Message);
+            await serving;
+            Assert.Equal(via == DownloadVia.Auto, progress.Any(message => message.Contains("改由本地下发", StringComparison.Ordinal)));
+            Assert.False(releases.Pending(), "A rejected local archive route must never make a direct HTTP request.");
+            Assert.Empty(baseline.Requests);
+            Assert.Equal(before, await File.ReadAllTextAsync(home.SettingsFile, Ct));
+            Assert.Null((await installer.InspectAsync(Ct)).CommandPath);
+            Assert.False(File.Exists(Path.Combine(ssh.Home, ".dsharp", RuntimeInformation.RuntimeIdentifier, ".dsharp-version")));
+        }
+        finally
+        {
+            cancellation.Cancel();
+            TempTree.Delete(root);
+        }
+    }
+
     [Fact(Timeout = 90000)]
     public async Task CancellingClientDownload_ReleasesOnlyItsShortRoute_WhileAnExistingConsumerKeepsItsConnection()
     {
@@ -724,32 +770,46 @@ public sealed class BorrowedOutboundProxyTests
     }
 
     [Fact(Timeout = 90000)]
-    public async Task Selection_WriteFailureAndInvalidDraftPreserveTheExistingConsumerAndFile()
+    public async Task CandidatePublicationFailure_RetainsTheActiveGeneration_AndDisposesTheDraft()
     {
         FleetSshEndToEndTests.RequireEnvironment();
-        await using var ssh = await TestSshServer.StartAsync(Ct);
+        var cancellation = TestContext.Current.CancellationToken;
+        await using var ssh = await TestSshServer.StartAsync(cancellation);
         await using var first = new TestForwardProxy(keepAlive: true);
-        await using var second = new TestForwardProxy(keepAlive: true);
+        await using var second = new TestForwardProxy(keepAlive: true, pauseResponses: true);
         var root = TempTree.CreateSocketDirectory("b80w");
         try
         {
             var home = Configure(root, ssh, first, "A");
             new MachineStore(home).Upsert(ssh.Machine("B", root) with { OutboundTunnel = new("proxyCommand", $"http://127.0.0.1:{second.Port}") });
-            var original = await File.ReadAllTextAsync(home.SettingsFile, Ct);
+            var original = await File.ReadAllTextAsync(home.SettingsFile, cancellation);
+            var preserved = Path.Combine(root, "preserved-settings.yaml");
             using var proxy = new OutboundProxy();
             await using var route = new BorrowedOutboundRoute(home, proxy);
-            await using var lease = await route.AcquireAsync(Ct);
+            await using var lease = await route.AcquireAsync(cancellation);
             using var client = new HttpClient(proxy.CreateHandler());
-            Assert.Equal(TestForwardProxy.ProxiedBody, await client.GetStringAsync("http://example.com/before-save", Ct));
-            await Assert.ThrowsAsync<InvalidOperationException>(() => route.SelectAsync("missing", Ct));
-            Directory.CreateDirectory($"{home.SettingsFile}.tmp");
-            var failure = await Record.ExceptionAsync(() => route.SelectAsync("B", Ct));
-            Assert.True(failure is IOException or UnauthorizedAccessException);
-            Assert.True(original == await File.ReadAllTextAsync(home.SettingsFile, Ct), "A failed write must preserve the complete settings document.");
-            Assert.Equal(TestForwardProxy.ProxiedBody, await client.GetStringAsync("http://example.com/after-failed-save", Ct));
+            Assert.Equal(TestForwardProxy.ProxiedBody, await client.GetStringAsync("http://example.com/before-save", cancellation));
+            var failure = Record.ExceptionAsync(() => route.SelectAsync("B", cancellation));
+            try
+            {
+                Assert.Contains("route-validation", await second.WaitForRequestAsync(cancellation), StringComparison.Ordinal);
+                File.Move(home.SettingsFile, preserved);
+                Directory.CreateDirectory(home.SettingsFile);
+            }
+            finally
+            {
+                second.ReleaseResponse();
+            }
+            var error = await failure;
+            Assert.True(error is IOException or UnauthorizedAccessException, error?.ToString());
+            Assert.Equal(original, await File.ReadAllTextAsync(preserved, cancellation));
+            Directory.Delete(home.SettingsFile);
+            File.Move(preserved, home.SettingsFile);
+            Assert.Equal("A", HarnessSettings.Load(home).Network?.BorrowedOutboundMachine);
+            Assert.Equal(TestForwardProxy.ProxiedBody, await client.GetStringAsync("http://example.com/after-failed-save", cancellation));
             Assert.Equal(1, first.Connections);
-            Assert.Contains(second.Requests, value => value.Contains("route-validation", StringComparison.Ordinal));
-            await FleetConnectionTests.WaitForAsync(() => second.ActiveConnections == 0);
+            await second.WaitForClosedConnectionAsync(cancellation);
+            Assert.Equal(0, second.ActiveConnections);
         }
         finally
         {

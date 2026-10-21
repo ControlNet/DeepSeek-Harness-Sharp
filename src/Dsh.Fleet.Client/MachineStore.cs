@@ -19,34 +19,47 @@ public sealed class MachineStore(HarnessHome home)
             : FleetConfig.Empty;
     }
 
-    /** Settings are re-read right before writing, so a section another client changed in the meantime is not reverted. */
+    /** The current document and the fleet mutation share the settings publication transaction. */
     public void Save(FleetConfig config)
     {
         Validate(config.Machines);
-        var settings = HarnessSettings.Load(home);
-        settings.Fleet = ToSettings(config);
-        settings.Save(home);
+        HarnessSettings.Update(home, settings =>
+        {
+            settings.Fleet = ToSettings(config);
+            return true;
+        });
     }
 
     /** Adds a machine, or replaces the one with the same name. */
     public FleetConfig Upsert(MachineSpec machine)
     {
-        var config = Load();
-        var machines = config.Machines.Where(existing => !string.Equals(existing.Name, machine.Name, StringComparison.Ordinal)).Append(machine).ToList();
-        var updated = config with { Machines = machines };
-        Save(updated);
+        FleetConfig updated = FleetConfig.Empty;
+        HarnessSettings.Update(home, settings =>
+        {
+            var config = settings.Fleet is { } fleet ? FromSettings(fleet) : FleetConfig.Empty;
+            var machines = config.Machines.Where(existing => !string.Equals(existing.Name, machine.Name, StringComparison.Ordinal)).Append(machine).ToList();
+            updated = config with { Machines = machines };
+            Validate(updated.Machines);
+            settings.Fleet = ToSettings(updated);
+            return true;
+        });
         return updated;
     }
 
     /** Removes a machine; returns false when no machine has that name. */
     public bool Remove(string name)
     {
-        var config = Load();
-        var machines = config.Machines.Where(existing => !string.Equals(existing.Name, name, StringComparison.Ordinal)).ToList();
-        if (machines.Count == config.Machines.Count)
+        if (!File.Exists(FilePath))
             return false;
-        Save(config with { Machines = machines });
-        return true;
+        return HarnessSettings.Update(home, settings =>
+        {
+            var config = settings.Fleet is { } fleet ? FromSettings(fleet) : FleetConfig.Empty;
+            var machines = config.Machines.Where(existing => !string.Equals(existing.Name, name, StringComparison.Ordinal)).ToList();
+            if (machines.Count == config.Machines.Count)
+                return false;
+            settings.Fleet = ToSettings(config with { Machines = machines });
+            return true;
+        });
     }
 
     private static FleetConfig FromSettings(FleetSettings fleet)

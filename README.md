@@ -338,7 +338,7 @@ dsharp machine tunnel build use
 TUI 中使用 `/proxy via build` 选择机器，`/proxy direct` 清除选择，`/proxy reload` 重新读取当前 TUI 的配置。
 机器名中的空格可直接跟在 `/proxy via` 后面。
 CLI 与 TUI 共用 `settings.yaml` 的 `network.borrowed_outbound_machine`；默认 null 仅使用基准本机出口，不建立 SSH。
-选择前会验证机器、隧道和探测请求；验证或保存失败保留原选择和路由，已保存的无效借用选择明确失败，不暗中退回基准或另一台机器。
+选择前会验证机器、隧道和探测请求；验证或保存失败保留原选择和路由，已保存的无效借用选择在实际本机 HTTP 消费时明确失败，不暗中退回基准或另一台机器。
 基准的 `/proxy set`、`/proxy clear`、`/proxy test` 仍只操作或检查 `network.outbound_proxy`，不会解除借用选择。
 
 ```bash
@@ -349,10 +349,12 @@ dsharp machine tunnel build clear
 `direct` 只清除共享选择；随后可用 `clear` 删除已不需要的机器隧道定义。
 不要用删除隧道定义代替清除仍在使用的选择。
 共享的是同一 home 的选择，不是跨进程共享连接：各 Context 独立持有运行期租约，同一 Context 的消费者共用该代路由。
+同一 home 的配置保存协调进程间的完整读取、修改和替换，避免借用选择与基准出口等不同配置项的并发保存互相覆盖；不同 home 独立保存。
 切换、重载、最后消费者退出或卸载会关闭旧代自有连接、SSH 与 askpass，不会结束目标 Host、后台会话或 PTY，也不会重放已经发出的请求。
 本机 Host 是独立消费者，需要支持 `network.reload` 的连接客户端单独请求它重读自身文件；不会接收客户端的完整网络配置快照。
 仅提供 `network.outbound` 的旧 Host 仍可读取、保存和探测基准出口，但不支持此重载。
 Server 下载仍只使用 `fleet.deploy.serverProxy`，不启用本机借用选择。
+不需要本机下载的 SSH/远端 Host 管理不会获取本机出口租约；Client 下载或 Auto 回退本机下载时才按共享选择消费本机出口。
 
 
 ### 通过 iroh 接入没有公网 SSH 地址的机器
