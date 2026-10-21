@@ -239,7 +239,7 @@ public sealed class NetworkProxySmokeTests
     public async Task RealTuiSelection_PersistsTheSharedRoute_ForAnActualHttpFetchConsumer(string mode, string selectedMachine)
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
-        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
         await using var selected = new TestForwardProxy(forward: true);
         await using var other = new TestForwardProxy(forward: true);
         await using var baseline = new TestForwardProxy(forward: true);
@@ -294,7 +294,7 @@ public sealed class NetworkProxySmokeTests
     public async Task RealTuiModel_WebFetchAndSearch_AndLocalHostReload_UseTheSameSavedBorrowedSelection(string mode)
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
-        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
         await using var selected = new TestForwardProxy(forward: true);
         await using var other = new TestForwardProxy(forward: true);
         await using var baseline = new TestForwardProxy(forward: true);

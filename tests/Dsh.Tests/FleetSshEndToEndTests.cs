@@ -138,7 +138,7 @@ public sealed class FleetSshEndToEndTests
     {
         var executable = RequireEnvironment();
         var guard = RealHomeGuard.Capture();
-        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
         await using var targetProxy = new TestForwardProxy();
         await using var localBaseline = new TestForwardProxy();
         var targetHome = RealHostProcesses.CreateHome("fmrt");

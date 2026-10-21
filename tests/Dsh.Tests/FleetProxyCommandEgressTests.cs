@@ -65,7 +65,8 @@ public sealed class FleetProxyCommandEgressTests
             var encryptedKey = Path.Combine(root, "encrypted_client_key");
             const string passphrase = "synthetic-key-passphrase";
             File.Copy(machine.KeyPath!, encryptedKey);
-            File.SetUnixFileMode(encryptedKey, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(encryptedKey, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             await TestSshServer.RunAsync("ssh-keygen", ["-q", "-p", "-P", "", "-N", passphrase, "-f", encryptedKey],
                 TestContext.Current.CancellationToken);
 
