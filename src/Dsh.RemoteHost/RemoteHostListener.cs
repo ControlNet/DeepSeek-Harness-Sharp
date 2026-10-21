@@ -1,5 +1,4 @@
 ﻿using System.Net;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.Versioning;
 using System.Text;
@@ -16,6 +15,9 @@ public static class RemoteHostListener
 {
     private const int ProbeConnectAttempts = 10;
     private static readonly TimeSpan HostProbeTimeout = TimeSpan.FromSeconds(5);
+
+    /** 单次 TCP connect 的上限: 端口文件可能指向已退出的 host, Windows 的 SYN 重传要 ~2s, 不能让它拖住每次重试。 */
+    private static readonly TimeSpan ConnectAttemptTimeout = TimeSpan.FromMilliseconds(700);
 
     public static async Task ServeLoopbackAsync(
         RemoteHostServer server,
@@ -214,10 +216,18 @@ public static class RemoteHostListener
         await using (var file = new FileStream(portFile, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1, useAsync: true))
         using (var reader = new StreamReader(file))
             port = int.Parse((await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false)).Trim());
-        // A refused loopback connect takes about 2 s on Windows (SYN retransmits); the port file a killed host left behind made every reconnect attempt that slow.
-        if (!IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(listener => listener.Port == port))
-            throw new IOException("host daemon not listening");
-        return await TransportConnection.ConnectTcpAsync("127.0.0.1", port, cancellationToken).ConfigureAwait(false);
+        // 直接连: GetActiveTcpListeners 在部分 Windows 环境不列出刚建立/跨进程的 loopback listener(实测 host 可连但表里没有),
+        // 用它做前置判断会把正常的 host 误判成 "not listening", GUI 因此一直卡在等 host、窗口不出现。
+        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        attempt.CancelAfter(ConnectAttemptTimeout);
+        try
+        {
+            return await TransportConnection.ConnectTcpAsync("127.0.0.1", port, attempt.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new IOException("host daemon not listening", new TimeoutException("loopback connect timed out"));
+        }
     }
 
     /**
