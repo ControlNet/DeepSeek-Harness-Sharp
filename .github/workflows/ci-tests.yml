@@ -233,8 +233,11 @@ jobs:
               ARGS+=(-class- 'Dsh.Tests.Fleet*' -class- 'Dsh.Tests.Iroh*')
             fi
             echo "Running: ${ARGS[*]}"
-            "${ARGS[@]}" &
+            # The background runner's CLI children need the default SIGINT disposition.
+            set -m
+            "${ARGS[@]}" </dev/null &
             TESTPID=$!
+            set +m
             ( sleep 600; kill -9 "$TESTPID" 2>/dev/null ) &
             WATCH=$!
             set +e

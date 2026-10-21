@@ -596,7 +596,7 @@ public sealed class OutboundProxyTests
         var bin = Path.Combine(ssh.Home, ".dsharp", System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier);
         Directory.CreateDirectory(bin);
         // A real non-Host executable represents an invalid configured installation without emulating SSH or RPC replies.
-        File.CreateSymbolicLink(Path.Combine(bin, "dsharp"), "/bin/false");
+        File.CreateSymbolicLink(Path.Combine(bin, "dsharp"), OperatingSystem.IsMacOS() ? "/usr/bin/false" : "/bin/false");
         var direct = ssh.Machine($"doctor-{password}", home);
         var trusted = await FleetDoctor.CheckSshAsync(direct, new SshTransport(direct), cancellation);
         Assert.True(trusted.Outcome == DoctorOutcome.Ok, trusted.Detail);
