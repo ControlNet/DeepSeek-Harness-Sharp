@@ -38,7 +38,6 @@ public enum SessionMode
 {
     Standard,
     Plan,
-    FullAccess,
 }
 
 /** 主窗口状态: 会话目录、会话流、轨迹、输入胶囊、页面切换与统一决策入口。 */
@@ -289,11 +288,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public string ModeLabel => Mode switch
     {
         SessionMode.Plan => "计划模式",
-        SessionMode.FullAccess => "Full access",
         _ => "标准模式",
     };
 
     public string PresetLabel => PresetDefinitions.FirstOrDefault(definition => definition.Id == Preset).Label ?? Preset;
+
+    /** 只有这三页走懒加载的 ContentControl; 其他页面由各自的 Host 承载, ContentControl 必须隐藏, 否则会把枚举名画成 "Chat"/"WorkspacePage" 文本。 */
+    public bool IsLazyPage => Page is AppPage.Dashboard or AppPage.Settings or AppPage.Market;
 
     public IReadOnlyList<SettingsNavItemViewModel> SettingsSections => Preferences.Sections;
 
@@ -307,6 +308,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IsChatPage = value == AppPage.Chat;
         IsSettingsPage = value == AppPage.Settings;
         IsMarketPage = value == AppPage.Market;
+        OnPropertyChanged(nameof(IsLazyPage));
     }
 
     partial void OnTabChanged(ChatTab value) => IsTraceTab = value == ChatTab.Trace;
@@ -893,32 +895,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void SetMode(string mode)
     {
-        switch (mode)
+        if (mode == "plan")
         {
-            case "plan":
-                _ = TogglePlanModeAsync();
-                return;
-            case "full":
-                _ = ApplyApprovalPolicyAsync(ApprovalPolicy.Auto, SessionMode.FullAccess, "Full access：需要审批的工具自动放行（黑名单仍然生效）");
-                return;
-            default:
-                _ = ApplyApprovalPolicyAsync(ApprovalPolicy.Ask, SessionMode.Standard, "标准模式：需要审批时弹窗确认");
-                return;
+            _ = TogglePlanModeAsync();
+            return;
         }
-    }
 
-    [RelayCommand]
-    private void SetPermission(string permission)
-    {
-        switch (permission)
+        if (Mode == SessionMode.Plan)
         {
-            case "full":
-                SetMode("full");
-                return;
-            default:
-                SetMode("standard");
-                return;
+            _ = TogglePlanModeAsync();
+            return;
         }
+
+        Mode = SessionMode.Standard;
+        StatusText = "标准模式";
     }
 
     [RelayCommand]
@@ -963,9 +953,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task SetPreset(string id)
     {
-        var output = await _chat.RunAsync($"/preset {id}");
-        StatusText = output;
-        RefreshPreset();
+        var previous = Preset;
+        Preset = id;
+        try
+        {
+            var result = await _chat.ExecuteAsync($"/preset {id}");
+            StatusText = result.Text ?? "";
+            if (!result.Success)
+                Preset = previous;
+        }
+        catch
+        {
+            Preset = previous;
+            throw;
+        }
     }
 
     [RelayCommand]
@@ -973,9 +974,29 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (string.IsNullOrWhiteSpace(model))
             return;
-        StatusText = await _chat.RunAsync($"/model {model}");
-        RefreshModelLabels();
-        Preferences.RefreshReasoningEfforts();
+        var previousModel = Composer.ModelLabel;
+        var previousSubtitle = SessionSubtitle;
+        // 先改标签再等 Host: 点击到界面反馈之间没有网络往返, 失败时回滚。
+        Composer.ModelLabel = model;
+        SessionSubtitle = model;
+        try
+        {
+            var result = await _chat.ExecuteAsync($"/model {model}");
+            StatusText = result.Text ?? "";
+            if (result.Success)
+                Preferences.RefreshReasoningEfforts();
+            else
+            {
+                Composer.ModelLabel = previousModel;
+                SessionSubtitle = previousSubtitle;
+            }
+        }
+        catch
+        {
+            Composer.ModelLabel = previousModel;
+            SessionSubtitle = previousSubtitle;
+            throw;
+        }
     }
 
     [RelayCommand]
@@ -983,8 +1004,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (string.IsNullOrWhiteSpace(effort))
             return;
-        StatusText = await _chat.RunAsync($"/reasoning {effort}");
-        RefreshModelLabels();
+        var previous = Composer.ReasoningLabel;
+        Composer.ReasoningLabel = effort;
+        try
+        {
+            var result = await _chat.ExecuteAsync($"/reasoning {effort}");
+            StatusText = result.Text ?? "";
+            if (!result.Success)
+                Composer.ReasoningLabel = previous;
+        }
+        catch
+        {
+            Composer.ReasoningLabel = previous;
+            throw;
+        }
     }
 
     [RelayCommand]
@@ -1335,13 +1368,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var cwd = Gui.Load().DefaultWorkspace
             ?? _chat.Header.Cwd
             ?? Environment.CurrentDirectory;
+        Page = AppPage.Chat;
         try
         {
             var model = CurrentRemoteModel();
             var created = await (await _chat.ClientAsync()).CreateSessionAsync(cwd, model.Selection, model.Provider);
             await _chat.SwitchAsync(created.Id, model);
             RefreshSessions();
-            Page = AppPage.Chat;
         }
         catch (Exception error)
         {
@@ -1355,15 +1388,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var enabled = output.Contains("on", StringComparison.OrdinalIgnoreCase);
         Mode = enabled ? SessionMode.Plan : SessionMode.Standard;
         StatusText = output;
-    }
-
-    private async Task ApplyApprovalPolicyAsync(ApprovalPolicy policy, SessionMode mode, string status)
-    {
-        await (await _chat.ClientAsync()).SessionEditing.SetSessionApprovalPolicyAsync(_chat.Id.Value, policy.ToString());
-        await _chat.ReloadAsync();
-        Mode = mode;
-        RefreshPermissionLabel();
-        StatusText = status;
     }
 
     private void ShowSession()
@@ -1383,7 +1407,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ApplyEvents(_chat.Events);
         RefreshMode();
         RefreshPreset();
-        RefreshPermissionLabel();
+        RefreshModelLabels();
         SelectedSession = FindSession(_chat.Id);
         Subagents.SetRoot(_chat.Id);
         OnPropertyChanged(nameof(CurrentSessionId));
@@ -1442,19 +1466,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             return default;
         }
-    }
-
-    private void RefreshPermissionLabel()
-    {
-        var policy = _chat.Events.Select(item => item.Data).OfType<ApprovalPolicyPayload>().LastOrDefault()?.Policy
-            ?? (Enum.TryParse<ApprovalPolicy>(_chat.ApprovalPolicy, out var hostPolicy) ? hostPolicy : ApprovalPolicy.Ask);
-        Composer.PermissionLabel = policy switch
-        {
-            ApprovalPolicy.Never => "Never（自动拒绝）",
-            ApprovalPolicy.Auto => "Full access",
-            _ => "Ask（每次审批）",
-        };
-        RefreshModelLabels();
     }
 
     private void RefreshModelLabels()
@@ -1534,9 +1545,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 break;
             case ApprovalGrantedPayload granted:
                 AddTrace(sessionEvent.Seq, TraceKind.Approval, $"本会话不再询问 {granted.ToolName}");
-                break;
-            case ApprovalPolicyPayload:
-                RefreshPermissionLabel();
                 break;
             case DeliverablesPresentedPayload presented:
                 Deliverables.Observe(sessionEvent);
