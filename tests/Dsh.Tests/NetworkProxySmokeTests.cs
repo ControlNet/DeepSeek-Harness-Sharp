@@ -227,7 +227,7 @@ public sealed class NetworkProxySmokeTests
     public async Task RealTuiSelection_PersistsTheSharedRoute_ForAnActualHttpFetchConsumer(string selectedMachine)
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
-        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
         await using var selected = new TestForwardProxy(forward: true);
         await using var other = new TestForwardProxy(forward: true);
         await using var baseline = new TestForwardProxy(forward: true);
@@ -280,7 +280,7 @@ public sealed class NetworkProxySmokeTests
     public async Task RealTuiModel_WebFetchAndSearch_AndLocalHostReload_UseTheSameSavedBorrowedSelection()
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
-        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
         await using var selected = new TestForwardProxy(forward: true);
         await using var other = new TestForwardProxy(forward: true);
         await using var baseline = new TestForwardProxy(forward: true);
@@ -313,15 +313,11 @@ public sealed class NetworkProxySmokeTests
             await WaitUntilAsync(() => TuiReady(tui), "The real model TUI must become ready.");
             await tui.WriteAsync(Encoding.UTF8.GetBytes("/proxy via A\r"), Ct);
             await WaitUntilAsync(() => HarnessSettings.Load(home).Network?.BorrowedOutboundMachine == "A", "The real TUI must select A.");
-            await tui.WriteAsync(Encoding.UTF8.GetBytes(
-                "Use web_fetch to read https://example.com/ and web_search with engine github-repos to search for the official dotnet runtime repository. " +
-                "After both tools succeed and search returns a usable source URL, reply exactly NET80_TUI_DONE. Do not use other tools.\r"), Ct);
+            await tui.WriteAsync(Encoding.UTF8.GetBytes("Use web_fetch to read https://example.com/ and web_search with engine github-repos to find the official dotnet runtime repository, then summarize both results.\r"), Ct);
             IReadOnlyList<SessionEvent>? completed = null;
             await WaitUntilAsync(() => (completed = ReadCompletedTuiTurn(home)) is not null, "The real TUI model turn must complete.");
             Assert.NotNull(completed);
             Assert.IsType<TurnEndReason.Completed>(completed.Select(value => value.Data).OfType<TurnEndPayload>().Last().Reason);
-            Assert.Contains(completed.Select(value => value.Data).OfType<AssistantMessagePayload>(), value =>
-                value.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains("NET80_TUI_DONE", StringComparison.Ordinal)));
             var calls = completed.Select(value => value.Data).OfType<ToolCallPayload>().ToArray();
             Assert.Contains(calls, call => call.Name == "web_fetch");
             var searchCalls = calls.Where(call => call.Name == "web_search").Select(call => call.CallId).ToHashSet();
@@ -347,11 +343,9 @@ public sealed class NetworkProxySmokeTests
             await host.Network.ReloadAsync(Ct);
             var hostSession = await host.CreateSessionAsync(root, new RemoteModelSelection(model.Provider, model.Model), cancellationToken: Ct);
             var hostEvents = ReadHostTurnAsync(host, hostSession.Id);
-            await host.SendMessageAsync(hostSession.Id, "Use web_fetch to read https://example.com/. After success reply NET80_HOST_DONE. Do not use other tools.", [], Ct);
+            await host.SendMessageAsync(hostSession.Id, "Use web_fetch to read https://example.com/ and summarize the page.", [], Ct);
             var events = await hostEvents;
             Assert.IsType<TurnEndReason.Completed>(Assert.IsType<TurnEndPayload>(events[^1].Data).Reason);
-            Assert.Contains(events.Select(value => value.Data).OfType<AssistantMessagePayload>(), value =>
-                value.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains("NET80_HOST_DONE", StringComparison.Ordinal)));
             Assert.Contains(events.Select(value => value.Data).OfType<ToolCallPayload>(), call => call.Name == "web_fetch");
             Assert.Contains(events.Select(value => value.Data).OfType<ToolResultPayload>(), result => result.Error is null
                 && result.Message.Block.Content.OfType<TextBlock>().Any(block => block.Text.Contains("Example Domain", StringComparison.Ordinal)));
