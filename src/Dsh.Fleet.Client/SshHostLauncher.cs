@@ -43,6 +43,8 @@ public static class SshHostLauncher
         catch (Exception error)
         {
             var detail = channel.ErrorOutput;
+            if (detail.Length == 0)
+                detail = error.Message;
             channel.Dispose();
             throw new IOException($"ssh {machine.Target} 失败（认证方式 {machine.Auth}）: {detail}", error);
         }
