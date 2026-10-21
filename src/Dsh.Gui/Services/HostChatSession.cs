@@ -31,7 +31,6 @@ public sealed class HostChatSession : IDisposable
     public SessionHeader Header { get; private set; }
     public SessionId Id => Header.Id;
     public RemoteModelSelection? Selection { get; private set; }
-    public string? ApprovalPolicy { get; private set; }
     public IReadOnlyList<SessionEvent> Events => _events;
     public IReadOnlyList<RemoteCommandDescriptor> Commands { get; private set; } = [];
     public event Action? Reset;
@@ -108,21 +107,31 @@ public sealed class HostChatSession : IDisposable
     public async Task SwitchAsync(string id, HarnessModelChoice model, CancellationToken cancellationToken = default)
     {
         var navigation = ++_navigationGeneration;
-        var client = await ClientAsync(cancellationToken);
-        var info = await client.ResumeSessionAsync(id, model.Selection, model.Provider, cancellationToken);
-        var snapshot = await client.GetSessionSnapshotAsync(id, cancellationToken);
-        var commands = await client.SessionEditing.ListSessionCommandsAsync(id, cancellationToken);
-        if (navigation != _navigationGeneration || _lifetime.IsCancellationRequested)
-            return;
-        _subscription?.Cancel();
-        ++_generation;
-        Info = info;
-        Selection = model.Selection;
-        Header = DshJson.Deserialize<SessionHeader>(snapshot.HeaderJson) ?? throw new InvalidDataException("Host returned no session header");
-        ReplaceEvents(snapshot);
-        Commands = commands;
-        Reset?.Invoke();
-        Follow();
+        var client = await ClientAsync(cancellationToken).ConfigureAwait(false);
+        var info = await client.ResumeSessionAsync(id, model.Selection, model.Provider, cancellationToken).ConfigureAwait(false);
+        var snapshotTask = client.GetSessionSnapshotAsync(id, cancellationToken);
+        var commandsTask = client.SessionEditing.ListSessionCommandsAsync(id, cancellationToken);
+        await Task.WhenAll(snapshotTask, commandsTask).ConfigureAwait(false);
+        var snapshot = await snapshotTask.ConfigureAwait(false);
+        var commands = await commandsTask.ConfigureAwait(false);
+        // 反序列化放到 UI 线程外: 长会话的快照有上千个事件, 在 UI 线程上逐条 JSON 解析会直接冻结窗口。
+        var header = DshJson.Deserialize<SessionHeader>(snapshot.HeaderJson) ?? throw new InvalidDataException("Host returned no session header");
+        var events = DeserializeEvents(snapshot);
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (navigation != _navigationGeneration || _lifetime.IsCancellationRequested)
+                return;
+            _subscription?.Cancel();
+            ++_generation;
+            Info = info;
+            Selection = model.Selection;
+            Header = header;
+            _events.Clear();
+            _events.AddRange(events);
+            Commands = commands;
+            Reset?.Invoke();
+            Follow();
+        });
     }
 
     public async Task ReloadAsync(CancellationToken cancellationToken = default)
@@ -130,20 +139,59 @@ public sealed class HostChatSession : IDisposable
         var id = Info.Id;
         var generation = _generation;
         var reload = ++_reloadGeneration;
-        var snapshot = await (await ClientAsync(cancellationToken)).GetSessionSnapshotAsync(id, cancellationToken);
+        var snapshot = await (await ClientAsync(cancellationToken).ConfigureAwait(false)).GetSessionSnapshotAsync(id, cancellationToken).ConfigureAwait(false);
+        var header = DshJson.Deserialize<SessionHeader>(snapshot.HeaderJson) ?? throw new InvalidDataException("Host returned no session header");
+        var replacement = DeserializeEvents(snapshot);
+
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
             if (generation != _generation || reload != _reloadGeneration || _lifetime.IsCancellationRequested)
                 return;
-            Header = DshJson.Deserialize<SessionHeader>(snapshot.HeaderJson) ?? throw new InvalidDataException("Host returned no session header");
-            ReplaceEvents(snapshot);
-            Reset?.Invoke();
+            var titleChanged = !string.Equals(Header.Title, header.Title, StringComparison.Ordinal);
+            Header = header;
+            // 命令通常只在尾部追加事件(例如 /model、/reasoning、/preset)。全量 ReplaceEvents + Reset 会清空并重建
+            // 整个消息/视觉树, 长会话每次选择都要付一遍 O(历史) 的布局与样式分配。
+            if (titleChanged || !TryAppend(replacement, out var appended))
+            {
+                ReplaceEvents(snapshot);
+                Reset?.Invoke();
+                return;
+            }
+
+            if (appended.Count == 0)
+                return;
+            _events.AddRange(appended);
+            Received?.Invoke(appended);
         });
+    }
+
+    /** 快照只是旧事件列表的尾部追加时才返回 true; 截断/重写会话仍需整屏重建。 */
+    private bool TryAppend(List<SessionEvent> replacement, out List<SessionEvent> appended)
+    {
+        appended = [];
+        if (replacement.Count < _events.Count)
+            return false;
+        for (var index = 0; index < _events.Count; index++)
+        {
+            if (replacement[index].Seq != _events[index].Seq)
+                return false;
+        }
+
+        appended = replacement.GetRange(_events.Count, replacement.Count - _events.Count);
+        return true;
+    }
+
+    private static List<SessionEvent> DeserializeEvents(RemoteSessionSnapshot snapshot)
+    {
+        var events = new List<SessionEvent>(snapshot.Events.Count);
+        foreach (var item in snapshot.Events)
+            if (DshJson.Deserialize<SessionEvent>(item.EventJson) is { } sessionEvent)
+                events.Add(sessionEvent);
+        return events;
     }
 
     private void ReplaceEvents(RemoteSessionSnapshot snapshot)
     {
-        ApprovalPolicy = snapshot.ApprovalPolicy;
         _events.Clear();
         foreach (var item in snapshot.Events)
             if (DshJson.Deserialize<SessionEvent>(item.EventJson) is { } sessionEvent)

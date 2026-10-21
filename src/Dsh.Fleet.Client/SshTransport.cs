@@ -83,7 +83,7 @@ public sealed class SshTransport(MachineSpec machine, ISshTransportAdapter? adap
     {
         lock (sink)
         {
-            return sink.Length == 0 ? "(无 stderr 输出)" : sink.ToString().Trim();
+            return sink.ToString().Trim();
         }
     }
 

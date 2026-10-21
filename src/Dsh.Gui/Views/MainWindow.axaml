@@ -66,7 +66,6 @@
             </Button.Flyout>
           </Button>
         </Grid>
-        <views:DashboardView Grid.Row="1" DataContext="{Binding Workspace.Dashboard}" IsVisible="{Binding $parent[Window].((vm:MainViewModel)DataContext).IsDashboardPage}" />
         <ContentControl Grid.Row="1" Name="FleetSessionHost" Content="{Binding Workspace.ActiveSession}" IsVisible="{Binding IsFleetSessionPage}">
           <ContentControl.ContentTemplate>
             <DataTemplate x:DataType="vm:FleetSessionViewModel">
@@ -85,8 +84,27 @@
           </ContentControl.DataTemplates>
         </ContentControl>
         <views:ChatView Grid.Row="1" IsVisible="{Binding IsChatPage}" />
-        <views:SettingsPageView Grid.Row="1" IsVisible="{Binding IsSettingsPage}" />
-        <views:MarketPageView Grid.Row="1" IsVisible="{Binding IsMarketPage}" />
+        <ContentControl Grid.Row="1" Content="{Binding Page}" IsVisible="{Binding IsLazyPage}">
+          <ContentControl.ContentTemplate>
+            <views:PageTemplateSelector>
+              <views:PageTemplateSelector.Dashboard>
+                <DataTemplate x:CompileBindings="False">
+                  <views:DashboardView DataContext="{Binding $parent[Window].DataContext.Workspace.Dashboard}" />
+                </DataTemplate>
+              </views:PageTemplateSelector.Dashboard>
+              <views:PageTemplateSelector.Settings>
+                <DataTemplate x:CompileBindings="False">
+                  <views:SettingsPageView DataContext="{Binding $parent[Window].DataContext}" />
+                </DataTemplate>
+              </views:PageTemplateSelector.Settings>
+              <views:PageTemplateSelector.Market>
+                <DataTemplate x:CompileBindings="False">
+                  <views:MarketPageView DataContext="{Binding $parent[Window].DataContext}" />
+                </DataTemplate>
+              </views:PageTemplateSelector.Market>
+            </views:PageTemplateSelector>
+          </ContentControl.ContentTemplate>
+        </ContentControl>
         <Button Classes="Icon" Width="28" Height="28" Margin="10,12,0,0"
                 HorizontalAlignment="Left" VerticalAlignment="Top"
                 Command="{Binding ToggleSidebarCommand}"

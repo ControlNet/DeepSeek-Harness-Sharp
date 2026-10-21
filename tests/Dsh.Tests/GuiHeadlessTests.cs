@@ -44,6 +44,11 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
             Capture(window, "headless-chat");
             Assert.True(viewModel.IsChatPage);
             Assert.True(window.GetVisualDescendants().OfType<ChatView>().Single().IsVisible);
+            Assert.Empty(window.GetVisualDescendants().OfType<DashboardView>());
+            var inputBox = window.GetVisualDescendants().OfType<ChatView>().Single().FindControl<TextBox>("InputBox");
+            Assert.NotNull(inputBox);
+            Assert.True(inputBox.IsVisible);
+            Assert.True(inputBox.Bounds.Height > 0, $"input box should have a height, got {inputBox.Bounds}");
 
             viewModel.ShowSettingsCommand.Execute(null);
             await GuiTestEnvironment.WaitForAsync(viewModel.Preferences.Plugins,
@@ -54,11 +59,13 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
             Assert.True(settings.IsVisible);
             Assert.NotEmpty(settings.GetVisualDescendants());
             Assert.NotEmpty(viewModel.Preferences.Plugins);
+            Assert.Empty(window.GetVisualDescendants().OfType<DashboardView>());
 
             viewModel.ShowMarketCommand.Execute(null);
             Dispatcher.UIThread.RunJobs();
             Capture(window, "headless-market");
             Assert.True(window.GetVisualDescendants().OfType<MarketPageView>().Single().IsVisible);
+            Assert.Empty(window.GetVisualDescendants().OfType<SettingsPageView>());
 
             viewModel.ShowChatCommand.Execute(null);
             viewModel.ShowTraceCommand.Execute(null);

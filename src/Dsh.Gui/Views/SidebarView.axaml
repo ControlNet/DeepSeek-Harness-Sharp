@@ -169,7 +169,7 @@
                     <TextBlock Text="{Binding Name}" Classes="Secondary" VerticalAlignment="Center" />
                   </StackPanel>
                 </Button>
-                <ItemsControl ItemsSource="{Binding Sessions}" IsVisible="{Binding IsExpanded}" Margin="10,0,0,0">
+                <ItemsControl ItemsSource="{Binding VisibleSessions}" IsVisible="{Binding IsExpanded}" Margin="10,0,0,0">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:SessionNodeViewModel">
                       <Grid ColumnDefinitions="*,Auto">
@@ -192,32 +192,28 @@
                             </StackPanel>
                           </Grid>
                         </Button>
-                        <TextBox Grid.Column="0" Grid.ColumnSpan="2" Classes="Search" IsVisible="{Binding IsRenaming}"
-                                 Text="{Binding RenameDraft}"
-                                 KeyDown="OnRenameKeyDown" LostFocus="OnRenameLostFocus" />
+                        <ContentControl Grid.Column="0" Grid.ColumnSpan="2" Content="{Binding RenameEditor}">
+                          <ContentControl.ContentTemplate>
+                            <DataTemplate x:DataType="vm:SessionNodeViewModel">
+                              <TextBox Classes="Search" Text="{Binding RenameDraft}"
+                                       AttachedToVisualTree="OnRenameAttached"
+                                       KeyDown="OnRenameKeyDown" LostFocus="OnRenameLostFocus" />
+                            </DataTemplate>
+                          </ContentControl.ContentTemplate>
+                        </ContentControl>
                         <Button Grid.Column="1" Classes="Icon" Width="24" Height="24" ToolTip.Tip="更多"
-                                VerticalAlignment="Center" IsVisible="{Binding !IsRenaming}">
+                                VerticalAlignment="Center" IsVisible="{Binding !IsRenaming}"
+                                Click="OnSessionMenuClick">
                           <Path Classes="Icon" Width="14" Height="14" Data="{StaticResource Icon.Menu}" />
-                          <Button.Flyout>
-                            <MenuFlyout Placement="BottomEdgeAlignedRight">
-                              <MenuItem Header="打开"
-                                        Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).OpenSessionCommand}"
-                                        CommandParameter="{Binding}" />
-                              <MenuItem Header="重命名"
-                                        Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).BeginRenameCommand}"
-                                        CommandParameter="{Binding}" />
-                              <MenuItem Header="导出日志"
-                                        Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).ExportSessionLogCommand}" />
-                              <MenuItem Header="删除"
-                                        Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).DeleteSessionCommand}"
-                                        CommandParameter="{Binding}" />
-                            </MenuFlyout>
-                          </Button.Flyout>
                         </Button>
                       </Grid>
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>
+                <Button Classes="Ghost" Margin="10,0,0,0" HorizontalAlignment="Left" Padding="6,2"
+                        IsVisible="{Binding ShowToggle}" Command="{Binding ToggleShowAllCommand}">
+                  <TextBlock Text="{Binding ShowAllLabel}" Classes="Tertiary" />
+                </Button>
               </StackPanel>
             </DataTemplate>
           </ItemsControl.ItemTemplate>

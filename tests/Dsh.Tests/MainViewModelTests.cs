@@ -319,31 +319,6 @@ public sealed class MainViewModelTests
     });
 
     [Fact]
-    public async Task SetMode_AppliesSessionApprovalPolicy_AndUpdatesPermissionLabel() => await HeadlessGui.RunAsync(async () =>
-    {
-        using var environment = await GuiTestEnvironment.CreateAsync();
-        using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
-        var approval = environment.App.Ctx.Get<ApprovalService>(ApprovalService.ServiceName)!;
-        environment.Agent.Session.Append(new TurnStartPayload(1));
-
-        viewModel.SetModeCommand.Execute("full");
-        await GuiTestEnvironment.WaitForAsync(viewModel.Composer, () => viewModel.Composer.PermissionLabel == "Full access");
-        Assert.Equal(ApprovalPolicy.Auto, approval.EffectivePolicy(environment.Agent.Session));
-        Assert.Equal("Full access", viewModel.Composer.PermissionLabel);
-
-        viewModel.SetModeCommand.Execute("standard");
-        await GuiTestEnvironment.WaitForAsync(viewModel.Composer, () => viewModel.Composer.PermissionLabel == "Ask（每次审批）");
-        Assert.Equal(ApprovalPolicy.Ask, approval.EffectivePolicy(environment.Agent.Session));
-        Assert.Equal("Ask（每次审批）", viewModel.Composer.PermissionLabel);
-
-        viewModel.StatusText = "";
-        viewModel.SetModeCommand.Execute("readonly");
-        await GuiTestEnvironment.WaitForAsync(viewModel, () => viewModel.StatusText == "标准模式：需要审批时弹窗确认");
-        Assert.Equal(ApprovalPolicy.Ask, approval.EffectivePolicy(environment.Agent.Session));
-        Assert.Equal("Ask（每次审批）", viewModel.Composer.PermissionLabel);
-    });
-
-    [Fact]
     public async Task PresetLabel_FollowsPresetModeEvent() => await HeadlessGui.RunAsync(async () =>
     {
         var environment = await GuiTestEnvironment.CreateAsync();

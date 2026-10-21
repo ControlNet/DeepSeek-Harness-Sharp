@@ -2,7 +2,7 @@ namespace Dsh.RemoteHost;
 
 public sealed record RemoteCommandRequest(string SessionId, string Line);
 
-public sealed record RemoteCommandResult(bool Known, string? Text, string? FollowupPrompt);
+public sealed record RemoteCommandResult(bool Known, string? Text, string? FollowupPrompt, bool Success = false);
 
 public sealed record RemoteCommandDescriptor(string Name, string Description);
 

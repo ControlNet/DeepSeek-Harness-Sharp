@@ -176,12 +176,33 @@ jobs:
               native-cc: cl
               native-cc-alt: clang-cl
             suite: raw
+          - platform:
+              os: macos-latest
+              native-cc: clang
+              native-cc-alt: ''
+            suite: quick
     uses: ./.github/workflows/ci-tests.yml
     with:
       os: ${{ matrix.platform.os }}
       native-cc: ${{ matrix.platform.native-cc }}
       native-cc-alt: ${{ matrix.platform.native-cc-alt }}
       suite: ${{ matrix.suite }}
+      quick-cohort: all
+
+  test-macos-quick:
+    name: 测试（macos-latest，quick-${{ matrix.cohort }}）
+    needs: [changes, iroh-component]
+    if: ${{ !cancelled() && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component.result == 'success' || needs.iroh-component.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        cohort: [fleet-iroh, remainder]
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: macos-latest
+      native-cc: clang
+      suite: quick
+      quick-cohort: ${{ matrix.cohort }}
 
   build:
     name: 三入口发布验收（${{ matrix.rid }}，JIT）
@@ -318,7 +339,7 @@ jobs:
 
   result:
     name: CI 结果
-    needs: [changes, validate, iroh-component, test, build, aot]
+    needs: [changes, validate, iroh-component, test, test-macos-quick, build, aot]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

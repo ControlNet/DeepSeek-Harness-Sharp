@@ -88,14 +88,44 @@ public sealed class HarnessSettings
     private static HarnessSettings LoadSnapshot(string path, string canonicalPath, bool initialize)
     {
         var exists = File.Exists(path);
-        var text = exists ? ReadSettingsTextShared(path) : LoadTemplate();
-        if (!exists && initialize)
-            WriteAtomic(path, text);
+        string text;
+        if (exists)
+        {
+            text = ReadSettingsTextShared(path);
+        }
+        else
+        {
+            // An external import/sync step can rename settings.yaml away. Silently writing the template then destroys
+            // the user's apiKey, so refuse to initialize while a recoverable backup is present.
+            var backup = FindSettingsBackup(path);
+            if (backup is not null)
+                throw new IOException($"settings.yaml is missing but a backup exists: {backup}; refusing to overwrite user settings with the template");
+            text = LoadTemplate();
+            if (initialize)
+                WriteAtomic(path, text);
+        }
         var settings = Parse(text);
         settings.Plugins = PluginSettingsSection.ParseDocument(text);
         settings._savedDocument = text;
         settings._savedPath = canonicalPath;
         return settings;
+    }
+
+    private static string? FindSettingsBackup(string path)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (directory is null || !Directory.Exists(directory))
+            return null;
+        var name = Path.GetFileName(path);
+        return Directory.EnumerateFiles(directory, $"{name}.*")
+            .Where(file =>
+            {
+                var candidate = Path.GetFileName(file);
+                return candidate.EndsWith(".imported", StringComparison.OrdinalIgnoreCase)
+                    || candidate.StartsWith($"{name}.bak-", StringComparison.OrdinalIgnoreCase);
+            })
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .FirstOrDefault();
     }
 
     private static HarnessSettings Parse(string text)
@@ -140,8 +170,8 @@ public sealed class HarnessSettings
             .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
             .WithQuotingNecessaryStrings()
             .Build();
-        var text = serializer.Serialize(this);
         var existing = File.Exists(path) ? ReadSettingsTextShared(path) : _savedPath == canonicalPath ? _savedDocument : null;
+        var text = serializer.Serialize(this);
         if (existing is null)
         {
             WriteAtomic(path, text);

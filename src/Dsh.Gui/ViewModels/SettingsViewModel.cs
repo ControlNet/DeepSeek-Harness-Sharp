@@ -745,6 +745,9 @@ public sealed partial class SettingsViewModel : ObservableObject
             var efforts = await (await _models()).ListReasoningEffortsAsync(selection.Provider, selection.Model);
             if (selection != _model().Selection)
                 return;
+            // 每次打开浮层都会刷新候选; 列表没变时不要 Clear/Add, 否则 ItemsControl 会重建全部按钮, 造成打开卡顿。
+            if (ReasoningEfforts.SequenceEqual(efforts, StringComparer.Ordinal))
+                return;
             ReasoningEfforts.Clear();
             foreach (var effort in efforts)
                 ReasoningEfforts.Add(effort);
@@ -776,7 +779,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private void LoadVersion()
     {
         var assembly = typeof(SettingsViewModel).Assembly;
-        VersionText = RemoteHost.RemoteHostServer.ReleaseVersion;
+        VersionText = RemoteHostServer.ReleaseVersion;
         var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
         var plus = informational.IndexOf('+');
         CommitText = plus >= 0 && plus + 1 < informational.Length ? informational[(plus + 1)..] : "unknown";
