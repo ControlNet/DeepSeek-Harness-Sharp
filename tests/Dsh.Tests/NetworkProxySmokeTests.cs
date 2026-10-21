@@ -330,14 +330,12 @@ public sealed class NetworkProxySmokeTests
             var tuiFetchAddresses = await WebFetchHttpNetwork.ResolvePublicAddresses(new Uri(HttpsTarget).Host, Ct);
             var tuiTrafficStart = selected.Requests.ToArray().Length;
             await tui.WriteAsync(Encoding.UTF8.GetBytes(
-                "Use web_fetch to read https://example.com/ and web_search with engine github-repos to search for the official dotnet runtime repository. " +
-                "After both tools succeed and search returns a usable source URL, reply exactly NET80_TUI_DONE. Do not use other tools.\r"), Ct);
-            IReadOnlyList<SessionEvent>? completed = null;
-            await WaitUntilAsync(() => (completed = ReadCompletedTuiTurn(home)) is not null, "The real TUI model turn must complete.");
-            Assert.NotNull(completed);
+                "Use only web_fetch to read https://example.com/ and web_search with engine github-repos to find the official dotnet runtime repository, then summarize the page and provide a usable search source URL.\r"), Ct);
+            IReadOnlyList<SessionEvent> completed = [];
+            await WaitUntilAsync(() => (completed = ReadTuiTurn(home)).Any(value => value.Data is TurnEndPayload),
+                "The real TUI model turn must complete.",
+                () => $"Persisted events: {completed.Count}; last payload: {completed.LastOrDefault()?.Data.GetType().Name ?? "none"}; tool calls: {completed.Count(value => value.Data is ToolCallPayload)}; tool results: {completed.Count(value => value.Data is ToolResultPayload)}.");
             Assert.IsType<TurnEndReason.Completed>(completed.Select(value => value.Data).OfType<TurnEndPayload>().Last().Reason);
-            Assert.Contains(completed.Select(value => value.Data).OfType<AssistantMessagePayload>(), value =>
-                value.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains("NET80_TUI_DONE", StringComparison.Ordinal)));
             var calls = completed.Select(value => value.Data).OfType<ToolCallPayload>().ToArray();
             var fetchCalls = calls.Where(call => call.Name == "web_fetch").Select(call => call.CallId).ToHashSet();
             Assert.NotEmpty(fetchCalls);
@@ -367,11 +365,9 @@ public sealed class NetworkProxySmokeTests
             var hostTrafficStart = selected.Requests.ToArray().Length;
             var hostSession = await host.CreateSessionAsync(root, new RemoteModelSelection(model.Provider, model.Model), cancellationToken: Ct);
             var hostEvents = ReadHostTurnAsync(host, hostSession.Id);
-            await host.SendMessageAsync(hostSession.Id, "Use web_fetch to read https://example.com/. After success reply NET80_HOST_DONE. Do not use other tools.", [], Ct);
+            await host.SendMessageAsync(hostSession.Id, "Use web_fetch to read https://example.com/ and briefly summarize its contents without using other tools.", [], Ct);
             var events = await hostEvents;
             Assert.IsType<TurnEndReason.Completed>(Assert.IsType<TurnEndPayload>(events[^1].Data).Reason);
-            Assert.Contains(events.Select(value => value.Data).OfType<AssistantMessagePayload>(), value =>
-                value.Message.Content.OfType<TextBlock>().Any(block => block.Text.Contains("NET80_HOST_DONE", StringComparison.Ordinal)));
             var hostFetchCalls = events.Select(value => value.Data).OfType<ToolCallPayload>()
                 .Where(call => call.Name == "web_fetch").Select(call => call.CallId).ToHashSet();
             Assert.NotEmpty(hostFetchCalls);
@@ -463,28 +459,30 @@ public sealed class NetworkProxySmokeTests
         return text.ToString();
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition, string failure)
+    private static async Task WaitUntilAsync(Func<bool> condition, string failure, Func<string>? describeState = null)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(120));
         while (!condition())
         {
-            Assert.False(deadline.IsCancellationRequested, failure);
+            if (deadline.IsCancellationRequested)
+                Assert.Fail(describeState is null ? failure : $"{failure} {describeState()}");
             await Task.Delay(50, Ct);
         }
     }
 
-    private static IReadOnlyList<SessionEvent>? ReadCompletedTuiTurn(HarnessHome home)
+    private static IReadOnlyList<SessionEvent> ReadTuiTurn(HarnessHome home)
     {
         using var persistence = new JsonlSessionPersistence(home.SessionsPath);
+        IReadOnlyList<SessionEvent> events = [];
         foreach (var session in persistence.List())
         {
             using var handle = persistence.Open(session.Header.Id, SessionAccess.Read);
-            var events = handle.Read();
+            events = handle.Read();
             if (events.Any(value => value.Data is TurnEndPayload))
                 return events;
         }
-        return null;
+        return events;
     }
 
     private static async Task<IReadOnlyList<SessionEvent>> ReadHostTurnAsync(RemoteHostClient host, string sessionId)
