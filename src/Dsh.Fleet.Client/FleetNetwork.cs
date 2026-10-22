@@ -1,13 +1,14 @@
 using Dsh.RemoteHost;
+using Dsh.Runtime;
 
 namespace Dsh.Fleet;
 
 /** Outbound settings belong to the target Host; Fleet only borrows its existing connection. */
-public sealed class FleetNetwork(MachineConnection connection) : IRemoteNetwork
+public sealed class FleetNetwork(MachineConnection connection, Action<string>? probeReady = null) : IRemoteNetwork
 {
     public async Task<RemoteOutboundProxyState> GetOutboundAsync(CancellationToken cancellationToken = default)
     {
-        var lease = await BorrowAsync(cancellationToken).ConfigureAwait(false);
+        var (lease, _) = await BorrowAsync(cancellationToken).ConfigureAwait(false);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
         try
         {
@@ -21,7 +22,7 @@ public sealed class FleetNetwork(MachineConnection connection) : IRemoteNetwork
 
     public async Task<RemoteOutboundProxyState> SetOutboundAsync(RemoteOutboundProxySetRequest request, CancellationToken cancellationToken = default)
     {
-        var lease = await BorrowAsync(cancellationToken).ConfigureAwait(false);
+        var (lease, _) = await BorrowAsync(cancellationToken).ConfigureAwait(false);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
         try
         {
@@ -35,8 +36,11 @@ public sealed class FleetNetwork(MachineConnection connection) : IRemoteNetwork
 
     public async Task<RemoteOutboundProxyProbeResult> ProbeOutboundAsync(RemoteOutboundProxyProbeRequest request, CancellationToken cancellationToken = default)
     {
-        var lease = await BorrowAsync(cancellationToken).ConfigureAwait(false);
+        var capability = request.OperationId is null ? NetworkProtocol.Capability : NetworkProtocol.CancellableProbeCapability;
+        var (lease, home) = await BorrowAsync(cancellationToken, capability).ConfigureAwait(false);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
+        lifetime.Token.ThrowIfCancellationRequested();
+        probeReady?.Invoke(home);
         try
         {
             return await lease.Client.Network.ProbeOutboundAsync(request, lifetime.Token).ConfigureAwait(false);
@@ -49,7 +53,7 @@ public sealed class FleetNetwork(MachineConnection connection) : IRemoteNetwork
 
     public async Task ReloadAsync(CancellationToken cancellationToken = default)
     {
-        var lease = await BorrowAsync(cancellationToken, NetworkProtocol.ReloadCapability).ConfigureAwait(false);
+        var (lease, _) = await BorrowAsync(cancellationToken, NetworkProtocol.ReloadCapability).ConfigureAwait(false);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
         try
         {
@@ -61,16 +65,19 @@ public sealed class FleetNetwork(MachineConnection connection) : IRemoteNetwork
         }
     }
 
-    private async Task<HostLease> BorrowAsync(CancellationToken cancellationToken, string capability = NetworkProtocol.Capability)
+    private async Task<(HostLease Lease, string Home)> BorrowAsync(CancellationToken cancellationToken, string capability = NetworkProtocol.Capability)
     {
         await connection.WaitSettledAsync(cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
-        var lease = connection.CurrentLease
-            ?? throw new IOException($"The target Host is not connected: {connection.Detail ?? "connection unavailable"}");
+        var current = connection.CurrentHostLease
+            ?? throw new IOException(OutboundProxy.Redact(
+                $"The target Host is not connected: {connection.Detail ?? "connection unavailable"}",
+                connection.Machine.Password, connection.Machine.Proxy));
+        var lease = current.Lease;
         if (lease.Lifetime.IsCancellationRequested)
             throw new IOException("The target Host disconnected before the outbound proxy request.");
         if (!lease.Client.Supports(capability))
             throw new NotSupportedException($"The target Host does not support {capability}; upgrade the target Host to use this network operation.");
-        return lease;
+        return (lease, current.Info.HomeRoot);
     }
 }

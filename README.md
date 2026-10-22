@@ -245,6 +245,26 @@ dsharp machine proxy build clear
 
 这些命令借用 Fleet 的机器连接，不保存远端出口副本，不修改 CLI 所在机器的代理，也不自动部署或升级目标。目标 Host 必须提供 `network.outbound` 能力；旧 Host 会明确提示需要升级。连接断开时命令失败，不等待未来重连。
 
+**按层诊断网络**
+
+```bash
+dsharp doctor --proxy-layer ssh --machine build
+dsharp doctor --proxy-layer local_outbound
+dsharp doctor --proxy-layer remote_outbound --machine build
+```
+
+`ssh` 只执行真实 SSH `true`，不部署软件，也不要求目标运行 Host 或能访问 HTTP。
+`local_outbound` 只检查当前 home 的基准 `network.outbound_proxy`，不使用借用出口，也不受 `--machine` 影响；借用出口仍用下方的 `machine tunnel <name> test` 单独检查。
+`remote_outbound` 通过所选目标现有 Host 的 Network API 发起 HTTP，不配置或替代本机出口；需要支持可取消结构化探测的 Host，旧 Host 明确返回 `Unsupported`，不冒充通过。
+
+每个目标输出一行 JSON，只含所选层的结果；字段包括 `Layer`、`Outcome`、`Stage`、`Detail`、可空 `HttpStatus`、机器与 home，以及本次 `OperationId`。
+`Passed` 退出 0，`Failed`/`Unsupported` 退出 1，用户取消且所属资源完成回收后为 `Cancelled`、退出 130。
+HTTP 403/404 等目标响应只表示出口可达，不代表业务成功；HTTP 407 是 `proxy_auth` 失败。
+SSH 探测预算为 15 秒，代理 TCP 连接 5 秒、HTTP 请求 15 秒，本机合计 20 秒，远端探测 35 秒；远端取消另用最多 5 秒确认所属请求已回收，无法确认则明确失败。
+检查不保存草稿、不切换路由，也不关闭其他消费者；不自动重试，错误与修复命令会脱敏凭据。
+JSON 的 home 等身份字段仍可能包含本机路径，分享输出前需额外隐藏用户名、路径和私有地址。
+不带 `--proxy-layer` 时仍使用原来的综合 `doctor`。
+
 - GUI:启动后进入总览,按 机器 → 项目 → 会话 分组,等待你审批的会话会高亮;`Ctrl+K` 快速跳转,`Esc` 返回;铃铛是通知中心,所有机器的待审批与提问都能在这里直接回答,先答者生效。侧栏还有文件、Git、机器三页;「设置 → 远程」与机器页是同一份机器清单。
 - 审批和提问由 Host 的单一待决队列拥有；`host.pending.changed` 在订阅时及每次变更后推送完整投影，结局可附首答者审计，所有客户端据此关闭已处理的对话，不保存已解决请求的记忆缓存。等待高亮只来自真实待决请求（包括 ACP 结构化权限请求）；外部终端仅显示进程状态，不再用屏幕文本或正则猜测审批、忙碌和等待。
 - 断线后每台机器独立重连,会话事件从断点续订,终端会重新接入。
@@ -580,6 +600,7 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 - macOS 接收端嵌入本地网络用途声明，局域网接入遵循用户授权，不静默提权。
 - 使用方法与平台差异见「通过 iroh 接入没有公网 SSH 地址的机器」。
 - CLI 新增 `machine tunnel` 配置、实际 HTTP(S) 自检及共享出口的 `use`/`direct`，TUI 通过 `/proxy via`、`/proxy direct` 与 `/proxy reload` 使用同一选择；受管租约保留认证、TLS 和连接释放边界，不修改基准或远端 Host 的出口配置。
+- `doctor --proxy-layer` 分别检查 SSH、本机基准出口和目标 Host 出口，输出带阶段、HTTP 状态与操作身份的结构化结果；独立取消会确认目标探测资源释放，不影响其他消费者。
 
 </details>
 

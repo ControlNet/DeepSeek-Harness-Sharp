@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Dsh.RemoteHost;
+using Dsh.Runtime;
 
 namespace Dsh.Fleet;
 
@@ -37,7 +38,7 @@ public static class FleetDoctor
         List<DoctorCheck> checks = [];
         if (!machine.IsLocal)
         {
-            var reach = await ReachAsync(machine, transport, cancellationToken).ConfigureAwait(false);
+            var reach = await CheckSshAsync(machine, transport, cancellationToken).ConfigureAwait(false);
             checks.Add(reach);
             if (reach.Outcome == DoctorOutcome.Failed)
                 return checks;
@@ -54,15 +55,17 @@ public static class FleetDoctor
         return checks;
     }
 
-    private static async Task<DoctorCheck> ReachAsync(MachineSpec machine, IRemoteMachineTransport transport, CancellationToken cancellationToken)
+    public static async Task<DoctorCheck> CheckSshAsync(MachineSpec machine, IRemoteMachineTransport transport, CancellationToken cancellationToken)
     {
         var result = await transport.CaptureAsync("true", cancellationToken).ConfigureAwait(false);
-        if (!result.TransportFailed)
+        if (!result.TransportFailed && result.ExitCode == 0)
             return new DoctorCheck("ssh", DoctorOutcome.Ok, $"{machine.Target} accepts the connection ({machine.Auth})");
         var fix = !machine.IsIroh && machine.Auth == SshAuth.Key && machine.KeyPath is { Length: > 0 } key
             ? $"ssh-copy-id -p {machine.Port} -i {RemoteShell.Quote($"{key}.pub")} {machine.User}@{machine.Host}"
             : transport.CommandLine("true");
-        return new DoctorCheck("ssh", DoctorOutcome.Failed, result.FailureDetail, fix);
+        return new DoctorCheck("ssh", DoctorOutcome.Failed,
+            OutboundProxy.Redact(result.FailureDetail, machine.Password, machine.Proxy),
+            OutboundProxy.Redact(fix, machine.Password, machine.Proxy));
     }
 
     /** Adds the platform and dsharp checks; returns the dsharp the machine would run, or null when there is none or the platform is unsupported. */
@@ -84,14 +87,14 @@ public static class FleetDoctor
         }
         catch (Exception error) when (error is NotSupportedException or IOException)
         {
-            checks.Add(new DoctorCheck("platform", DoctorOutcome.Failed, error.Message));
+            checks.Add(new DoctorCheck("platform", DoctorOutcome.Failed, OutboundProxy.Redact(error.Message, machine.Password, machine.Proxy)));
             return null;
         }
     }
 
     private static DoctorCheck DsharpCheck(MachineSpec machine, RemoteDsharpInstaller.Installation installation)
     {
-        var deploy = $"dsharp machine deploy {machine.Name}";
+        var deploy = OutboundProxy.Redact($"dsharp machine deploy {machine.Name}", machine.Password, machine.Proxy);
         if (installation.CommandPath is not { } path)
             return new DoctorCheck("dsharp", DoctorOutcome.Failed, "dsharp is not installed", deploy);
         var current = RemoteHostServer.ReleaseVersion;
@@ -172,7 +175,7 @@ public static class FleetDoctor
         }
         catch (Exception error) when (!cancellationToken.IsCancellationRequested)
         {
-            return new DoctorCheck("connection", DoctorOutcome.Failed, error.Message, Fix(machine, transport, $"{DsharpCommand(machine, commandPath)} host serve"));
+            return new DoctorCheck("connection", DoctorOutcome.Failed, OutboundProxy.Redact(error.Message, machine.Password, machine.Proxy), Fix(machine, transport, $"{DsharpCommand(machine, commandPath)} host serve"));
         }
     }
 
@@ -182,15 +185,15 @@ public static class FleetDoctor
         var current = RemoteHostServer.ReleaseVersion;
         if (ReleaseVersions.CanReuse(info.HostVersion, current))
             return new DoctorCheck("connection", DoctorOutcome.Ok, detail);
-        var fix = machine.IsLocal ? null : $"dsharp machine deploy {machine.Name} --force";
+        var fix = machine.IsLocal ? null : OutboundProxy.Redact($"dsharp machine deploy {machine.Name} --force", machine.Password, machine.Proxy);
         return new DoctorCheck("connection", DoctorOutcome.Warning, $"{detail}; older than this client ({current}), restart it to load the new release", fix);
     }
 
     /** The repair runs on the machine with its harness home: directly for the local one, wrapped in an ssh command line for a remote one. */
     private static string Fix(MachineSpec machine, IRemoteMachineTransport transport, string command)
-        => machine.IsLocal
+        => OutboundProxy.Redact(machine.IsLocal
             ? $"{RemoteShell.HomeAssignment(machine.HarnessHome)}{command}"
-            : transport.CommandLine($"{RemoteShell.Prelude(machine)}{command}");
+            : transport.CommandLine($"{RemoteShell.Prelude(machine)}{command}"), machine.Password, machine.Proxy);
 
     private static string DsharpCommand(MachineSpec machine, string? commandPath)
         => machine.IsLocal || commandPath is null ? LocalCommand : RemoteShell.Quote(commandPath);

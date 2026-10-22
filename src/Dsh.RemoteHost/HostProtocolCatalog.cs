@@ -18,6 +18,7 @@ public static class HostProtocolCatalog
             ["PluginManagement"] = PluginsProtocol.Capability,
             ["ModelCatalog"] = ModelsProtocol.Capability,
             ["NetworkOutbound"] = NetworkProtocol.Capability,
+            ["NetworkProbeCancellation"] = NetworkProtocol.CancellableProbeCapability,
             ["NetworkReload"] = NetworkProtocol.ReloadCapability,
         });
 }
