@@ -90,7 +90,7 @@ internal sealed class HarnessHostFixture : IAsyncDisposable
         foreach (var client in _clients)
             await client.DisposeAsync();
         await StopHostAsync();
-        Environment.Dispose();
+        await Environment.DisposeAsync();
         await _ptyDaemon.DisposeAsync();
         TempTree.Delete(Root);
     }

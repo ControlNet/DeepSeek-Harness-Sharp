@@ -25,6 +25,10 @@ public enum WorkspaceDestination
 public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposable
 {
     private readonly Dictionary<(string Machine, string Session), FleetSessionViewModel> _windows = [];
+    private readonly Dictionary<FleetSessionViewModel, Task> _retirements = [];
+    private readonly SemaphoreSlim _connectionGate = new(1, 1);
+    private Task? _disposal;
+    private bool _closingSessions;
     private readonly Action<string, string, bool> _toast;
     private (string Machine, string SessionId)? _pendingOpen;
 
@@ -108,6 +112,8 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     public void OpenSession(string machine, string sessionId)
     {
         _pendingOpen = null;
+        if (_closingSessions || _disposal is not null)
+            return;
         if (_windows.TryGetValue((machine, sessionId), out var windowed))
         {
             SessionWindowFocusRequested?.Invoke(windowed);
@@ -129,6 +135,8 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     /** Moves the session into its own window; when the main window shows it, the same view moves over without attaching again. */
     public void OpenInWindow(SessionCardViewModel card)
     {
+        if (_closingSessions || _disposal is not null)
+            return;
         var key = (card.Machine, card.SessionId);
         if (_windows.TryGetValue(key, out var existing))
         {
@@ -146,10 +154,12 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
         SessionWindowRequested?.Invoke(session);
     }
 
-    public async Task SessionWindowClosedAsync(FleetSessionViewModel session)
+    public Task SessionWindowClosedAsync(FleetSessionViewModel session)
     {
-        _windows.Remove((session.Machine, session.SessionId));
-        await session.DisposeAsync();
+        var retirement = RetireSession(session);
+        if (_windows.GetValueOrDefault((session.Machine, session.SessionId)) == session)
+            _windows.Remove((session.Machine, session.SessionId));
+        return retirement;
     }
 
     /** Back to the dashboard; the session view is closed, the dashboard keeps its filter, search and scroll position. */
@@ -157,7 +167,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     public void ShowDashboard()
     {
         _pendingOpen = null;
-        _ = CloseActiveAsync();
+        CloseActive();
         PageContent = null;
         ActivePage = null;
         NavigationRequested?.Invoke(WorkspaceDestination.Dashboard);
@@ -215,33 +225,54 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
      */
     public async Task ReloadMachinesAsync()
     {
-        if (ActivePage is not null)
-            await CloseActiveAsync();
-        else if (ActiveSession is not null)
-            ShowDashboard();
-        foreach (var session in _windows.Values.ToList())
-            SessionWindowCloseRequested?.Invoke(session);
-        await Fleet.ReloadAsync();
-        Machines.AttachFleet(Fleet.Client);
+        await _connectionGate.WaitAsync();
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposal is not null, this);
+            _closingSessions = true;
+            if (ActivePage is not null)
+                CloseActive();
+            else
+                ShowDashboard();
+            await CloseSessionsAsync();
+            await Fleet.ReloadAsync();
+            Machines.AttachFleet(Fleet.Client);
+        }
+        finally
+        {
+            _closingSessions = false;
+            _connectionGate.Release();
+        }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() => new(_disposal ??= DisposeCoreAsync());
+
+    private async Task DisposeCoreAsync()
     {
-        Fleet.Changed -= OnFleetChanged;
-        PageContent = null;
-        Machines.AttachFleet(null);
-        await CloseActiveAsync();
-        foreach (var session in _windows.Values.ToList())
-            await session.DisposeAsync();
-        _windows.Clear();
-        Notifications.Dispose();
-        Dashboard.Dispose();
-        await Fleet.DisposeAsync();
+        Machines.BeginNetworkShutdown();
+        await Machines.WaitForNetworkOperationsAsync();
+        await _connectionGate.WaitAsync();
+        try
+        {
+            _closingSessions = true;
+            Fleet.Changed -= OnFleetChanged;
+            PageContent = null;
+            Machines.AttachFleet(null);
+            CloseActive();
+            await CloseSessionsAsync();
+            Notifications.Dispose();
+            Dashboard.Dispose();
+            await Fleet.DisposeAsync();
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
     }
 
     private void ShowInMain(SessionCardViewModel card)
     {
-        _ = CloseActiveAsync();
+        CloseActive();
         if (card.Machine == MachineSpec.LocalName && card.Kind == HostSessionKinds.Harness && LocalChatRequested is { } openChat)
         {
             PageContent = null;
@@ -265,12 +296,38 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
         return session;
     }
 
-    private async Task CloseActiveAsync()
+    private void CloseActive()
     {
         if (ActiveSession is not { } active)
             return;
+        RetireSession(active);
         ActiveSession = null;
-        await active.DisposeAsync();
+    }
+
+    /** Navigation releases the view immediately, but its resources stay owned until the connection can retire. */
+    private Task RetireSession(FleetSessionViewModel session)
+    {
+        foreach (var (completed, task) in _retirements)
+            if (task.IsCompletedSuccessfully)
+                _retirements.Remove(completed);
+        if (!_retirements.TryGetValue(session, out var retirement))
+        {
+            retirement = session.DisposeAsync().AsTask();
+            _retirements.Add(session, retirement);
+        }
+        return retirement;
+    }
+
+    private async Task CloseSessionsAsync()
+    {
+        foreach (var session in _windows.Values.ToList())
+        {
+            _ = RetireSession(session);
+            SessionWindowCloseRequested?.Invoke(session);
+        }
+        _windows.Clear();
+        await Task.WhenAll(_retirements.Values);
+        _retirements.Clear();
     }
 
     private async Task StopAsync(SessionCardViewModel card)

@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
 using Dsh.Core;
+using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Interaction;
 using Dsh.Llm;
@@ -42,6 +43,12 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly SettingsFacade _facade;
     private readonly Func<Task<IRemoteModels>> _models;
     private readonly Func<Task<IRemotePlugins>> _plugins;
+    private readonly FleetProxyProbe _proxyProbe;
+    private string _draftProxyUrl = "";
+    private string _draftProxyProbeUrl = "";
+    private bool _loadingNetwork;
+    private long _networkGeneration;
+    private bool _networkShutdown;
 
     public SettingsViewModel(
         Context ctx,
@@ -61,11 +68,15 @@ public sealed partial class SettingsViewModel : ObservableObject
         _facade = facade;
         _models = models;
         _plugins = plugins;
+        _proxyProbe = facade.CreateProxyProbe();
+        LocalProxyProbe.PropertyChanged += OnLocalLayerProbeStateChanged;
+        BorrowedOutboundProbe.PropertyChanged += OnLocalLayerProbeStateChanged;
         Account = new AccountPanelViewModel(_ctx.Get<IAccountService>(IAccountService.ServiceName, false));
         foreach (var section in Sections)
             section.SelectCommand = new RelayCommand<SettingsNavItemViewModel>(SelectSection);
         Sections[0].IsSelected = true;
         Reload();
+        LoadNetwork();
     }
 
     /** 主题/字号等外观项变化后由视图重新应用 App 资源。 */
@@ -608,9 +619,15 @@ public sealed partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task OpenConfigFolderAsync() => Status = await DesktopIntegration.OpenPathAsync(Path.GetDirectoryName(ConfigPath) ?? _home.Root);
 
-    /** 本机出口代理草稿: 保存写回 settings.yaml 的 network.outbound_proxy, 自检直接用草稿(不必先保存)。 */
+    public NetworkProbeViewModel LocalProxyProbe { get; } = new(ProxyProbeLayer.LocalOutbound);
+    public NetworkProbeViewModel BorrowedOutboundProbe { get; } = new(ProxyProbeLayer.LocalOutbound);
+    public ObservableCollection<string> BorrowedOutboundMachines { get; } = [];
+
     [ObservableProperty]
     private string _outboundProxyUrl = "";
+
+    [ObservableProperty]
+    private bool _isEditingOutboundProxy;
 
     [ObservableProperty]
     private string _outboundProxyBypassText = "";
@@ -619,51 +636,255 @@ public sealed partial class SettingsViewModel : ObservableObject
     private string _outboundProxyProbeUrl = "";
 
     [ObservableProperty]
-    private string _proxyCheckResult = "";
+    private string? _selectedBorrowedOutboundMachine;
+
+    [ObservableProperty]
+    private string _savedBorrowedOutboundMachine = "";
+
+    [ObservableProperty]
+    private string _networkStatus = "";
+
+    [ObservableProperty]
+    private string _borrowedOutboundStatus = "";
+
+    [ObservableProperty]
+    private bool _isChangingBorrowedOutbound;
 
     public string OutboundProxyProbePlaceholder { get; } = $"留空 = {OutboundProxySettings.DefaultProbeUrl}";
 
+    partial void OnOutboundProxyUrlChanged(string value)
+    {
+        if (_loadingNetwork)
+            return;
+        _draftProxyUrl = value;
+        LocalProxyProbe.Invalidate();
+    }
+
+    partial void OnOutboundProxyBypassTextChanged(string value) => LocalProxyProbe.Invalidate();
+    partial void OnOutboundProxyProbeUrlChanged(string value)
+    {
+        if (_loadingNetwork)
+            return;
+        _draftProxyProbeUrl = value;
+        LocalProxyProbe.Invalidate();
+    }
+    partial void OnSelectedBorrowedOutboundMachineChanged(string? value) => BorrowedOutboundProbe.Invalidate();
+
+    [RelayCommand]
+    private void EditOutboundProxy()
+    {
+        _loadingNetwork = true;
+        try
+        {
+            OutboundProxyUrl = _draftProxyUrl;
+            OutboundProxyProbeUrl = _draftProxyProbeUrl;
+            IsEditingOutboundProxy = true;
+        }
+        finally
+        {
+            _loadingNetwork = false;
+        }
+    }
+
+    private void MaskOutboundProxy()
+    {
+        _loadingNetwork = true;
+        try
+        {
+            OutboundProxyUrl = OutboundProxy.RedactUrlCredentials(_draftProxyUrl, _draftProxyUrl);
+            OutboundProxyProbeUrl = OutboundProxy.RedactUrlCredentials(_draftProxyProbeUrl, _draftProxyProbeUrl);
+            IsEditingOutboundProxy = false;
+        }
+        finally
+        {
+            _loadingNetwork = false;
+        }
+    }
+
     private OutboundProxySettings DraftOutboundProxy() => new()
     {
-        Url = string.IsNullOrWhiteSpace(OutboundProxyUrl) ? null : OutboundProxyUrl.Trim(),
+        Url = string.IsNullOrWhiteSpace(_draftProxyUrl) ? null : _draftProxyUrl.Trim(),
         Bypass = [.. OutboundProxyBypassText.Split(['\n', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        ProbeUrl = string.IsNullOrWhiteSpace(OutboundProxyProbeUrl) ? null : OutboundProxyProbeUrl.Trim(),
+        ProbeUrl = string.IsNullOrWhiteSpace(_draftProxyProbeUrl) ? null : _draftProxyProbeUrl.Trim(),
     };
 
     private void LoadNetwork()
     {
-        var proxy = _facade.Load().Network?.OutboundProxy;
-        OutboundProxyUrl = proxy?.Url ?? "";
+        DeactivateNetwork();
+        var network = _facade.Load().Network;
+        var proxy = network?.OutboundProxy;
+        _draftProxyUrl = proxy?.Url ?? "";
+        _draftProxyProbeUrl = proxy?.ProbeUrl ?? "";
+        MaskOutboundProxy();
         OutboundProxyBypassText = string.Join(Environment.NewLine, proxy?.Bypass ?? []);
-        OutboundProxyProbeUrl = proxy?.ProbeUrl ?? "";
-        ProxyCheckResult = "";
+        BorrowedOutboundMachines.Clear();
+        foreach (var machine in _facade.BorrowedOutboundMachines())
+            BorrowedOutboundMachines.Add(machine);
+        var selected = network?.BorrowedOutboundMachine;
+        if (selected is not null && !BorrowedOutboundMachines.Contains(selected))
+            BorrowedOutboundMachines.Add(selected);
+        SelectedBorrowedOutboundMachine = selected;
+        SavedBorrowedOutboundMachine = selected ?? "未借用（使用本机基准出口）";
+        NetworkStatus = "";
+        BorrowedOutboundStatus = "";
     }
 
-    [RelayCommand]
-    private void SaveNetwork()
+    [RelayCommand(IncludeCancelCommand = true)]
+    private async Task SaveNetworkAsync(CancellationToken cancellationToken)
     {
+        if (_networkShutdown)
+            return;
+        var generation = _networkGeneration;
+        var draft = DraftOutboundProxy();
+        NetworkStatus = "正在保存本机基准出口并重载同 home 本机 Host…";
         try
         {
-            _facade.UpdateOutboundProxy(DraftOutboundProxy());
-            Status = $"本机出口代理已保存并生效: {OutboundProxy.FromContext(_ctx).Describe()}";
+            await _facade.UpdateOutboundProxyAsync(draft, cancellationToken);
+            if (generation != _networkGeneration)
+                return;
+            MaskOutboundProxy();
+            NetworkStatus = "本机基准出口已保存；当前进程与已连接同 home 本机 Host 已重载。借用选择未变。";
         }
-        catch (ArgumentException error)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            Status = error.Message;
+            if (generation == _networkGeneration)
+                NetworkStatus = "操作已取消；如已写盘，不会回滚。可重新打开网络页核对当前配置。";
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (generation == _networkGeneration)
+                NetworkStatus = _facade.RedactNetworkError(OutboundProxy.RedactUrlCredentials(
+                    $"保存或重载失败：{error.Message}", draft.Url, draft.ProbeUrl));
         }
     }
 
-    [RelayCommand]
-    private async Task CheckProxyAsync()
+    [RelayCommand(CanExecute = nameof(CanRunLocalLayer))]
+    private Task CheckProxyAsync()
     {
-        ProxyCheckResult = "正在自检…";
-        ProxyCheckResult = (await OutboundProxyProbe.RunAsync(DraftOutboundProxy(), CancellationToken.None)).Message;
+        if (!CanRunLocalLayer)
+            return Task.CompletedTask;
+        var draft = DraftOutboundProxy();
+        return LocalProxyProbe.RunAsync(MachineSpec.LocalName, _home.Root,
+            (operationId, token) => _proxyProbe.ProbeLocalAsync(_home.Root, draft, operationId, token), draft.Url, draft.ProbeUrl);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRunLocalLayer), IncludeCancelCommand = true)]
+    private Task SelectBorrowedOutboundAsync(CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(SelectedBorrowedOutboundMachine))
+        {
+            BorrowedOutboundStatus = "请先选择已配置出口隧道的 SSH / iroh 机器；清除借用请使用独立清除按钮。";
+            return Task.CompletedTask;
+        }
+        return ChangeBorrowedOutboundAsync(SelectedBorrowedOutboundMachine, cancellationToken);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRunLocalLayer), IncludeCancelCommand = true)]
+    private Task ClearBorrowedOutboundAsync(CancellationToken cancellationToken)
+        => ChangeBorrowedOutboundAsync(null, cancellationToken);
+
+    private async Task ChangeBorrowedOutboundAsync(string? machine, CancellationToken cancellationToken)
+    {
+        if (!CanRunLocalLayer)
+            return;
+        IsChangingBorrowedOutbound = true;
+        var generation = _networkGeneration;
+        BorrowedOutboundProbe.Invalidate();
+        BorrowedOutboundStatus = "正在验证、保存借用选择并重载同 home 本机 Host…";
+        try
+        {
+            await _facade.SelectBorrowedOutboundAsync(machine, cancellationToken);
+            if (generation != _networkGeneration)
+                return;
+            SavedBorrowedOutboundMachine = machine ?? "未借用（使用本机基准出口）";
+            SelectedBorrowedOutboundMachine = machine;
+            BorrowedOutboundStatus = "借用选择已保存并生效；本机基准 URL、SSH 代理及远端部署代理均未修改。";
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (generation == _networkGeneration)
+                BorrowedOutboundStatus = "操作已取消；已保存的选择不会回滚，请重新打开网络页核对。";
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (generation == _networkGeneration)
+                BorrowedOutboundStatus = _facade.RedactNetworkError($"借用选择或重载失败：{error.Message}");
+        }
+        finally
+        {
+            IsChangingBorrowedOutbound = false;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRunLocalLayer))]
+    private Task ValidateBorrowedOutboundAsync()
+    {
+        if (!CanRunLocalLayer)
+            return Task.CompletedTask;
+        var machine = SelectedBorrowedOutboundMachine;
+        if (string.IsNullOrWhiteSpace(machine))
+        {
+            BorrowedOutboundStatus = "请先选择已配置出口隧道的 SSH 机器。独立验证不会保存选择。";
+            return Task.CompletedTask;
+        }
+        return BorrowedOutboundProbe.RunAsync(machine, _home.Root,
+            (operationId, token) => _facade.ProbeBorrowedOutboundAsync(machine, operationId, token));
+    }
+
+    private bool CanRunLocalLayer => !_networkShutdown && !IsChangingBorrowedOutbound
+        && !LocalProxyProbe.IsRunning && !BorrowedOutboundProbe.IsRunning;
+
+    partial void OnIsChangingBorrowedOutboundChanged(bool value) => NotifyLocalLayerCommands();
+
+    private void OnLocalLayerProbeStateChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(NetworkProbeViewModel.IsRunning))
+            return;
+        NotifyLocalLayerCommands();
+    }
+
+    private void NotifyLocalLayerCommands()
+    {
+        CheckProxyCommand.NotifyCanExecuteChanged();
+        ValidateBorrowedOutboundCommand.NotifyCanExecuteChanged();
+        SelectBorrowedOutboundCommand.NotifyCanExecuteChanged();
+        ClearBorrowedOutboundCommand.NotifyCanExecuteChanged();
+    }
+
+    public void BeginNetworkShutdown()
+    {
+        _networkShutdown = true;
+        NotifyLocalLayerCommands();
+        DeactivateNetwork();
+    }
+
+    public void DeactivateNetwork()
+    {
+        _networkGeneration++;
+        LocalProxyProbe.Invalidate();
+        BorrowedOutboundProbe.Invalidate();
+        SaveNetworkCommand.Cancel();
+        SelectBorrowedOutboundCommand.Cancel();
+        ClearBorrowedOutboundCommand.Cancel();
+        MaskOutboundProxy();
+    }
+
+    public async Task WaitForNetworkOperationsAsync()
+    {
+        await Task.WhenAll(
+            LocalProxyProbe.WaitForCompletionAsync(),
+            BorrowedOutboundProbe.WaitForCompletionAsync(),
+            SaveNetworkCommand.ExecutionTask ?? Task.CompletedTask,
+            SelectBorrowedOutboundCommand.ExecutionTask ?? Task.CompletedTask,
+            ClearBorrowedOutboundCommand.ExecutionTask ?? Task.CompletedTask);
     }
 
     private void SelectSection(SettingsNavItemViewModel? section)
     {
         if (section is null)
             return;
+        if (Section != section.Section)
+            DeactivateNetwork();
         Section = section.Section;
         foreach (var item in Sections)
             item.IsSelected = ReferenceEquals(item, section);

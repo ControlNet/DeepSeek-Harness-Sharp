@@ -27,7 +27,9 @@ public sealed partial class FleetSessionViewModel : ObservableObject, IAsyncDisp
     private readonly MachineConnection _machine;
     private readonly NotificationCenterViewModel _notifications;
     private int _shellCount;
-    private bool _disposed;
+    private readonly List<Task> _tabClosures = [];
+    private readonly CancellationTokenSource _retirement = new();
+    private Task? _disposal;
 
     public FleetSessionViewModel(FleetWorkspace fleet, FleetSessionActions actions, SessionCardViewModel card, NotificationCenterViewModel notifications)
     {
@@ -76,15 +78,32 @@ public sealed partial class FleetSessionViewModel : ObservableObject, IAsyncDisp
 
     public event Action<SessionCardViewModel>? OpenInWindowRequested;
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() => new(_disposal ??= DisposeCoreAsync());
+
+    private async Task DisposeCoreAsync()
     {
-        if (_disposed)
-            return;
-        _disposed = true;
         _fleet.Changed -= RefreshPending;
-        foreach (var tab in Tabs.ToList())
-            await tab.CloseAsync();
-        Tabs.Clear();
+        try
+        {
+            await _retirement.CancelAsync();
+            if (AddShellCommand.ExecutionTask is { } starting)
+                await starting;
+        }
+        finally
+        {
+            try
+            {
+                foreach (var tab in Tabs)
+                    _tabClosures.Add(tab.CloseAsync().AsTask());
+                await Task.WhenAll(_tabClosures);
+                Tabs.Clear();
+                _tabClosures.Clear();
+            }
+            finally
+            {
+                _retirement.Dispose();
+            }
+        }
     }
 
     partial void OnErrorChanged(string value) => OnPropertyChanged(nameof(HasError));
@@ -102,11 +121,22 @@ public sealed partial class FleetSessionViewModel : ObservableObject, IAsyncDisp
     [RelayCommand]
     private async Task AddShellAsync()
     {
+        if (_disposal is not null)
+            return;
         var terminal = new TerminalViewModel($"终端 {++_shellCount}");
         try
         {
-            var connection = await RemotePtyConnection.StartAsync(_machine, ShellRequest(), CancellationToken.None);
+            var connection = await RemotePtyConnection.StartAsync(_machine, ShellRequest(), _retirement.Token);
+            if (_retirement.IsCancellationRequested)
+            {
+                await connection.DisposeAsync();
+                return;
+            }
             terminal.AttachRemote(connection, $"{Machine} · {ProjectLabel}");
+        }
+        catch (OperationCanceledException) when (_retirement.IsCancellationRequested)
+        {
+            return;
         }
         catch (Exception error) when (error is IOException or JsonRpcException or InvalidOperationException or OperationCanceledException)
         {
@@ -121,13 +151,16 @@ public sealed partial class FleetSessionViewModel : ObservableObject, IAsyncDisp
     [RelayCommand]
     private async Task CloseTabAsync(SessionTabViewModel? tab)
     {
-        if (tab is not { IsClosable: true })
+        if (_disposal is not null || tab is not { IsClosable: true } || !Tabs.Contains(tab))
             return;
         var index = Tabs.IndexOf(tab);
+        var closing = tab.CloseAsync().AsTask();
+        _tabClosures.RemoveAll(task => task.IsCompletedSuccessfully);
+        _tabClosures.Add(closing);
         Tabs.Remove(tab);
         if (tab.IsSelected)
             SelectTab(Tabs[Math.Max(0, index - 1)]);
-        await tab.CloseAsync();
+        await closing;
     }
 
     [RelayCommand]

@@ -37,7 +37,7 @@ public class SessionTitleFromUserMessageTests
     [Fact]
     public async Task First_User_Message_Names_Session_Without_Replacing_Id()
     {
-        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateAsync();
         var id = environment.Agent.Id;
 
         environment.Agent.Session.Append(
@@ -57,7 +57,7 @@ public class SessionTitleFromUserMessageTests
     [Fact]
     public async Task Later_User_Messages_Keep_The_First_Title()
     {
-        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateAsync();
 
         environment.Agent.Session.Append(
             new UserMessagePayload(MessageFactory.CreateUserText("第一个问题")),

@@ -49,6 +49,50 @@ public sealed class SshOutboundTunnel : IAsyncDisposable
     internal Process? Process { get { lock (_gate) return _forward?.Process; } }
     internal int? LocalPort { get { lock (_gate) return _forwardPort; } }
 
+    /** Matches physical SSH routing independently of the logical proxy protocol and credentials. */
+    internal bool HasSameTransport(MachineSpec machine, Uri proxyUri)
+    {
+        lock (_gate)
+        {
+            return !_disposed && _machine is { } current
+                && current.Kind == machine.Kind && current.Host == machine.Host && current.Port == machine.Port
+                && current.User == machine.User && current.Auth == machine.Auth && current.KeyPath == machine.KeyPath
+                && current.Proxy == machine.Proxy && current.Password == machine.Password
+                && current.EndpointId == machine.EndpointId
+                && current.OutboundTunnel!.Mode == machine.OutboundTunnel!.Mode
+                && current.OutboundTunnel.LocalPort == machine.OutboundTunnel.LocalPort
+                && _proxyUri!.Port == proxyUri.Port
+                && string.Equals(_proxyUri.IdnHost, proxyUri.IdnHost, StringComparison.OrdinalIgnoreCase)
+                && (current.SshOptions ?? []).SequenceEqual(machine.SshOptions ?? [], StringComparer.Ordinal)
+                && (current.RelayUrls ?? []).SequenceEqual(machine.RelayUrls ?? [], StringComparer.Ordinal);
+        }
+    }
+
+    internal async ValueTask<bool> OwnsForwardPortAsync(int port, CancellationToken cancellationToken)
+    {
+        Task<SshProxyProcess>? starting;
+        lock (_gate)
+        {
+            if (_disposed || !_localForward || _forwardPort != port)
+                return false;
+            starting = _forwardStart;
+        }
+        if (starting is null)
+            return false;
+        try
+        {
+            await starting.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException && !cancellationToken.IsCancellationRequested
+            && (starting.IsFaulted || starting.IsCanceled))
+        {
+            return false;
+        }
+        lock (_gate)
+            return !_disposed && ReferenceEquals(_forwardStart, starting) && _forwardPort == port
+                && _forward is { } owner && !owner.FailureToken.IsCancellationRequested && !owner.Process.HasExited;
+    }
+
     public async ValueTask<Stream> ConnectAsync(DnsEndPoint endpoint, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
@@ -191,7 +235,7 @@ public sealed class SshOutboundTunnel : IAsyncDisposable
                         {
                             await forwardStart.ConfigureAwait(false);
                         }
-                        catch (Exception error) when (forwardStart.IsFaulted || error is OperationCanceledException)
+                        catch (Exception error) when (error is not OutOfMemoryException && (forwardStart.IsFaulted || error is OperationCanceledException))
                         {
                             // The starting request observes startup failure; disposal still owns cleanup.
                         }

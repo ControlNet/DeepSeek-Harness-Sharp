@@ -136,7 +136,7 @@ public sealed class GuiComponentTests
     [Fact]
     public async Task DecisionViewModel_ApprovalOutcomes_FollowTheClickedAction()
     {
-        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateAsync();
         var request = new ApprovalRequest(
             environment.Agent,
             "bash",
@@ -166,7 +166,7 @@ public sealed class GuiComponentTests
     [Fact]
     public async Task DecisionViewModel_SingleSelectReplaces_AndSubmitNeedsAnswer()
     {
-        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateAsync();
         var question = new AskUserQuestionItem(
             "q1",
             "选择策略",
@@ -191,7 +191,7 @@ public sealed class GuiComponentTests
     [Fact]
     public async Task DecisionViewModel_MultiSelectKeepsBoth_AndCustomTextCountsAsAnswer()
     {
-        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateAsync();
         var question = new AskUserQuestionItem(
             "q2",
             "选择多项",

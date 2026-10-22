@@ -75,7 +75,7 @@ public sealed class FleetRemoteProxyTests
     {
         await using var alpha = await HarnessHostFixture.CreateAsync("npa", TestContext.Current.CancellationToken);
         await using var beta = await HarnessHostFixture.CreateAsync("npb", Ct);
-        using var local = await GuiTestEnvironment.CreateAsync();
+        await using var local = await GuiTestEnvironment.CreateAsync();
         await using var alphaProxy = new TestForwardProxy();
         await using var betaProxy = new TestForwardProxy();
         await using var localProxy = new TestForwardProxy();

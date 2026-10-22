@@ -54,6 +54,28 @@ public sealed class FleetNetwork(MachineConnection connection, Action<string>? p
     public async Task ReloadAsync(CancellationToken cancellationToken = default)
     {
         var (lease, _) = await BorrowAsync(cancellationToken, NetworkProtocol.ReloadCapability).ConfigureAwait(false);
+        await ReloadLeaseAsync(lease, cancellationToken).ConfigureAwait(false);
+    }
+
+    /** Reload only a currently connected local owner; a reconnect is not authorization to change another home. */
+    public Task ReloadLocalAsync(string expectedHome, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!connection.Machine.IsLocal)
+            throw new InvalidOperationException("Only a local Host can receive a same-home outbound reload.");
+        if (connection.CurrentHostLease is not { } current)
+            return Task.CompletedTask;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (!string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(expectedHome)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(current.Info.HomeRoot)), comparison))
+            throw new InvalidOperationException("The current local Host uses a different harness home; reconnect before reloading.");
+        if (!current.Lease.Client.Supports(NetworkProtocol.ReloadCapability))
+            throw new NotSupportedException("The local Host does not support outbound reload; upgrade and reconnect it.");
+        return ReloadLeaseAsync(current.Lease, cancellationToken);
+    }
+
+    private static async Task ReloadLeaseAsync(HostLease lease, CancellationToken cancellationToken)
+    {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
         try
         {

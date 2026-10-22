@@ -1,9 +1,12 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Fleet;
 using Dsh.Fleet.Iroh;
 using Dsh.RemoteHost;
+using Dsh.Runtime;
+using Dsh.Transport;
 
 namespace Dsh.Gui.ViewModels;
 
@@ -18,6 +21,307 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     private readonly SynchronizationContext? _context = SynchronizationContext.Current;
     private CancellationTokenSource? _operation;
     private FleetClient? _fleet;
+    private readonly FleetProxyProbe _networkProbe = new(options);
+    private readonly HashSet<Task> _networkOperations = [];
+    private readonly object _networkOperationsGate = new();
+    private CancellationTokenSource? _remoteOperation;
+    private long _networkGeneration;
+    private object? _observedRemoteClient;
+    private bool _networkActive = true;
+    private bool _networkShutdown;
+    private object? _networkOwner;
+    private RemoteOutboundProxySettings? _savedRemoteSettings;
+
+    public NetworkProbeViewModel SshProbe { get; } = new(ProxyProbeLayer.Ssh);
+    public NetworkProbeViewModel RemoteProbe { get; } = new(ProxyProbeLayer.RemoteOutbound);
+
+    [ObservableProperty]
+    private RemoteOutboundProxyState? _remoteOutboundState;
+
+    [ObservableProperty]
+    private string _remoteOutboundUrl = "";
+
+    [ObservableProperty]
+    private string _remoteOutboundBypass = "";
+
+    [ObservableProperty]
+    private string _remoteOutboundProbeUrl = "";
+
+    [ObservableProperty]
+    private bool _isRemoteOutboundEditing;
+
+    [ObservableProperty]
+    private bool _remoteOutboundRequiresRefresh;
+
+    [ObservableProperty]
+    private bool _remoteOutboundBusy;
+
+    [ObservableProperty]
+    private string _remoteOutboundStatus = "Select a connected machine and read its Host settings.";
+
+    public string RemoteOutboundScope => RemoteOutboundState is { } state
+        ? $"Shared by every workspace and machine alias owned by {state.OwnerId} in Host home {state.HostHome}."
+        : "Settings belong to the selected target Host, not the local machine list.";
+
+    partial void OnRemoteOutboundStateChanged(RemoteOutboundProxyState? value)
+        => OnPropertyChanged(nameof(RemoteOutboundScope));
+
+    partial void OnRemoteOutboundUrlChanged(string value) => RemoteProbe.Invalidate();
+
+    partial void OnRemoteOutboundBypassChanged(string value) => RemoteProbe.Invalidate();
+
+    partial void OnRemoteOutboundProbeUrlChanged(string value) => RemoteProbe.Invalidate();
+
+    partial void OnIsRemoteOutboundEditingChanged(bool value) => RemoteProbe.Invalidate();
+
+    partial void OnEditorChanging(MachineEditorViewModel? value)
+    {
+        if (Editor is { } previous)
+            previous.PropertyChanged -= OnEditorPropertyChanged;
+    }
+
+    partial void OnEditorChanged(MachineEditorViewModel? value)
+    {
+        SshProbe.Invalidate();
+        if (value is not null)
+            value.PropertyChanged += OnEditorPropertyChanged;
+    }
+
+    private void OnEditorPropertyChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName is nameof(MachineEditorViewModel.Name)
+            or nameof(MachineEditorViewModel.Kind)
+            or nameof(MachineEditorViewModel.Host)
+            or nameof(MachineEditorViewModel.EndpointId)
+            or nameof(MachineEditorViewModel.RelayUrls)
+            or nameof(MachineEditorViewModel.Port)
+            or nameof(MachineEditorViewModel.User)
+            or nameof(MachineEditorViewModel.Auth)
+            or nameof(MachineEditorViewModel.KeyPath)
+            or nameof(MachineEditorViewModel.Password)
+            or nameof(MachineEditorViewModel.Proxy)
+            or nameof(MachineEditorViewModel.IsSshProxyEditing)
+            or nameof(MachineEditorViewModel.RemotePath)
+            or nameof(MachineEditorViewModel.HarnessHome)
+            or nameof(MachineEditorViewModel.SshOptions)
+            or nameof(MachineEditorViewModel.OutboundTunnelEnabled)
+            or nameof(MachineEditorViewModel.OutboundTunnelMode)
+            or nameof(MachineEditorViewModel.OutboundTunnelProxyUrl)
+            or nameof(MachineEditorViewModel.OutboundTunnelLocalPort)
+            or nameof(MachineEditorViewModel.IsOutboundTunnelEditing))
+            SshProbe.Invalidate();
+    }
+
+    public void ActivateNetwork(object? owner = null)
+    {
+        if (_networkShutdown)
+            return;
+        if (!ReferenceEquals(owner, _networkOwner))
+            InvalidateNetwork();
+        _networkOwner = owner;
+        _networkActive = true;
+        RefreshFromFleet();
+    }
+
+    public bool DeactivateNetwork(object? owner = null)
+    {
+        if (owner is not null && !ReferenceEquals(owner, _networkOwner))
+            return false;
+        _networkOwner = null;
+        _networkActive = false;
+        InvalidateNetwork();
+        return true;
+    }
+
+    public void BeginNetworkShutdown()
+    {
+        _networkShutdown = true;
+        DeactivateNetwork();
+    }
+
+    private void InvalidateNetwork()
+    {
+        _networkGeneration++;
+        _remoteOperation?.Cancel();
+        SshProbe.Invalidate();
+        RemoteProbe.Invalidate();
+        _observedRemoteClient = null;
+    }
+
+    public async Task WaitForNetworkOperationsAsync()
+    {
+        await Task.WhenAll(SshProbe.WaitForCompletionAsync(), RemoteProbe.WaitForCompletionAsync());
+        while (true)
+        {
+            Task[] operations;
+            lock (_networkOperationsGate)
+                operations = _networkOperations.ToArray();
+            if (operations.Length == 0)
+                return;
+            await Task.WhenAll(operations);
+        }
+    }
+
+    [RelayCommand]
+    private void EditRemoteOutbound()
+    {
+        if (IsRemoteOutboundEditing || _savedRemoteSettings is null)
+            return;
+        RemoteOutboundUrl = _savedRemoteSettings.Url ?? "";
+        RemoteOutboundProbeUrl = _savedRemoteSettings.ProbeUrl ?? "";
+        IsRemoteOutboundEditing = true;
+    }
+
+    [RelayCommand]
+    private Task ReadRemoteOutboundAsync() => RunRemoteOutboundAsync(write: false, clear: false, refreshDraft: true);
+
+    [RelayCommand]
+    private Task SaveRemoteOutboundAsync() => RunRemoteOutboundAsync(write: true, clear: false, refreshDraft: true);
+
+    [RelayCommand]
+    private Task ClearRemoteOutboundAsync() => RunRemoteOutboundAsync(write: true, clear: true, refreshDraft: true);
+
+    private RemoteOutboundProxySettings RemoteDraft() => new(
+        IsRemoteOutboundEditing ? MachineEditorViewModel.Optional(RemoteOutboundUrl) : _savedRemoteSettings?.Url,
+        RemoteOutboundBypass.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+        IsRemoteOutboundEditing ? MachineEditorViewModel.Optional(RemoteOutboundProbeUrl) : _savedRemoteSettings?.ProbeUrl);
+
+    private Task RunRemoteOutboundAsync(bool write, bool clear, bool refreshDraft)
+    {
+        if (_remoteOperation is not null || !_networkActive)
+            return Task.CompletedTask;
+        var task = RunRemoteOutboundCoreAsync(write, clear, refreshDraft);
+        lock (_networkOperationsGate)
+            _networkOperations.Add(task);
+        _ = RemoveNetworkOperationAsync(task);
+        return task;
+    }
+
+    private async Task RemoveNetworkOperationAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        finally
+        {
+            lock (_networkOperationsGate)
+                _networkOperations.Remove(task);
+        }
+    }
+
+    private async Task RunRemoteOutboundCoreAsync(bool write, bool clear, bool refreshDraft)
+    {
+        var generation = _networkGeneration;
+        var machine = Selected?.Name;
+        using var cancellation = new CancellationTokenSource();
+        _remoteOperation = cancellation;
+        RemoteOutboundBusy = true;
+        bool Current() => _networkActive && generation == _networkGeneration && Selected?.Name == machine;
+        try
+        {
+            var connection = SelectedConnection();
+            var network = new FleetNetwork(connection);
+            RemoteOutboundProxyState state;
+            if (write)
+            {
+                if (RemoteOutboundRequiresRefresh)
+                    throw new InvalidOperationException("The revision is stale. Explicitly read the target Host settings before saving; your draft has been retained.");
+                var revision = RemoteOutboundState?.Revision
+                    ?? throw new InvalidOperationException("Read the target Host settings before saving or clearing.");
+                state = await network.SetOutboundAsync(new(revision, clear ? new() : RemoteDraft()), cancellation.Token);
+            }
+            else
+                state = await network.GetOutboundAsync(cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (!Current())
+                return;
+            RemoteOutboundState = state;
+            if (refreshDraft || _savedRemoteSettings is null)
+            {
+                _savedRemoteSettings = state.Settings;
+                RemoteOutboundUrl = OutboundProxy.RedactUrlCredentials(state.Settings.Url ?? "", state.Settings.Url);
+                RemoteOutboundBypass = string.Join(Environment.NewLine, state.Settings.Bypass ?? []);
+                RemoteOutboundProbeUrl = OutboundProxy.RedactUrlCredentials(state.Settings.ProbeUrl ?? "", state.Settings.ProbeUrl);
+                IsRemoteOutboundEditing = false;
+                RemoteOutboundRequiresRefresh = false;
+            }
+            RemoteOutboundStatus = refreshDraft
+                ? write ? "Target Host settings saved. The local machine list was not changed." : "Target Host settings read."
+                : "Reconnected: current Host settings read; no draft was written. Explicitly read again before saving a retained draft.";
+            if (!refreshDraft && _savedRemoteSettings is not null)
+                RemoteOutboundRequiresRefresh = true;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (Current())
+            {
+                if (write)
+                    RemoteOutboundRequiresRefresh = true;
+                RemoteOutboundStatus = write
+                    ? "Target Host operation cancelled; the draft was retained. A write may already have committed. Explicitly read the target Host settings before saving again."
+                    : "Target Host operation cancelled; the draft was retained.";
+            }
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or NotSupportedException
+            or ArgumentException or JsonRpcException or UnauthorizedAccessException)
+        {
+            if (!Current())
+                return;
+            if (!write || error is JsonRpcException { Code: NetworkProtocol.RevisionConflict })
+                RemoteOutboundRequiresRefresh = true;
+            RemoteOutboundStatus = OutboundProxy.Redact(
+                $"{error.Message} The draft was retained; use Read / Refresh to load the actual target Host settings.",
+                _savedRemoteSettings?.Url, RemoteOutboundUrl, Selected?.Spec.Password, Selected?.Spec.Proxy);
+        }
+        finally
+        {
+            _remoteOperation = null;
+            RemoteOutboundBusy = false;
+            if (_networkActive && generation != _networkGeneration)
+                RefreshFromFleet();
+        }
+    }
+
+    private MachineConnection SelectedConnection()
+    {
+        var machine = Selected ?? throw new InvalidOperationException("Select a saved, connected machine first.");
+        return _fleet?.Find(machine.Name)
+            ?? throw new InvalidOperationException("The selected machine has no active Fleet connection. Connect it before reading target Host settings.");
+    }
+
+    [RelayCommand]
+    private Task ProbeSshAsync()
+    {
+        if (!_networkActive)
+            return Task.CompletedTask;
+        var editor = Editor;
+        var selected = Selected;
+        return SshProbe.RunAsync(editor?.Name ?? selected?.Name ?? "", editor?.HarnessHome ?? selected?.Spec.HarnessHome,
+            (id, token) => _networkProbe.ProbeSshAsync(
+                editor?.ToSpec() ?? selected?.Spec ?? throw new InvalidOperationException("Select a machine first."), id, token),
+            selected?.Spec.Password, selected?.Spec.Proxy, selected?.Spec.OutboundTunnel?.ProxyUrl,
+            editor?.Password, editor?.Proxy, editor?.OutboundTunnelProxyUrl);
+    }
+
+    [RelayCommand]
+    private Task ProbeRemoteAsync()
+    {
+        if (!_networkActive)
+            return Task.CompletedTask;
+        var draft = _savedRemoteSettings is null ? null : RemoteDraft();
+        return RemoteProbe.RunAsync(Selected?.Name ?? "", RemoteOutboundState?.HostHome,
+            (id, token) => _networkProbe.ProbeRemoteAsync(SelectedConnection(), new(draft), id, token),
+            _savedRemoteSettings?.Url, RemoteOutboundUrl, Selected?.Spec.Password, Selected?.Spec.Proxy);
+    }
+
+    [RelayCommand]
+    private Task CancelRemoteOutboundAsync()
+    {
+        _remoteOperation?.Cancel();
+        lock (_networkOperationsGate)
+            return Task.WhenAll(_networkOperations.ToArray());
+    }
 
     public ObservableCollection<MachineRowViewModel> Machines { get; } = [];
 
@@ -71,6 +375,8 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     {
         _fleet?.Changed -= OnFleetChanged;
         _fleet = fleet;
+        InvalidateNetwork();
+        RemoteOutboundRequiresRefresh = _savedRemoteSettings is not null;
         _fleet?.Changed += OnFleetChanged;
         RefreshFromFleet();
     }
@@ -79,8 +385,20 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     partial void OnSelectedChanged(MachineRowViewModel? value)
     {
         DoctorChecks.Clear();
+        InvalidateNetwork();
+        RemoteOutboundState = null;
+        _savedRemoteSettings = null;
+        RemoteOutboundUrl = "";
+        RemoteOutboundBypass = "";
+        RemoteOutboundProbeUrl = "";
+        IsRemoteOutboundEditing = false;
+        RemoteOutboundRequiresRefresh = false;
+        RemoteOutboundStatus = "Read the selected target Host settings before editing.";
         if (value is not null)
             Editor = value.IsImplicit ? null : MachineEditorViewModel.From(value.Spec, IrohAvailable);
+        else
+            Editor = null;
+        RefreshFromFleet();
     }
 
     [RelayCommand]
@@ -243,6 +561,25 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
         {
             if (_fleet.Find(row.Name) is { } connection)
                 row.Apply(connection.State, connection.Info, connection.Detail);
+        }
+        if (!_networkActive || Selected is not { } selected)
+            return;
+        var selectedConnection = _fleet.Find(selected.Name);
+        var current = selectedConnection?.State == MachineConnectionState.Connected ? selectedConnection.Info : null;
+        if (current is null)
+        {
+            if (_observedRemoteClient is not null)
+            {
+                InvalidateNetwork();
+                RemoteOutboundRequiresRefresh = _savedRemoteSettings is not null;
+                RemoteOutboundStatus = "Target Host disconnected. The draft was retained; reconnect only reads current settings.";
+            }
+            return;
+        }
+        if (!ReferenceEquals(current, _observedRemoteClient) && _remoteOperation is null)
+        {
+            _observedRemoteClient = current;
+            _ = RunRemoteOutboundAsync(write: false, clear: false, refreshDraft: _savedRemoteSettings is null);
         }
     }
 

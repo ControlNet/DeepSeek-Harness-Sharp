@@ -1,13 +1,18 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using AvaloniaEdit;
 using Dsh.Boot;
+using Dsh.Core;
 using Dsh.Fleet;
+using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
 using Dsh.RemoteHost;
+using Dsh.Llm;
 
 namespace Dsh.Tests;
 
@@ -108,6 +113,185 @@ public sealed class GuiViewsHeadlessTests
             TempTree.Delete(home);
         }
     });
+
+    [Theory]
+    [InlineData(1280, 900)]
+    [InlineData(960, 720)]
+    public async Task SettingsRemote_KeepsMachineSelectionAndDetailInsideTheViewport(int width, int height) => await HeadlessGui.RunAsync(async () =>
+    {
+        await using var environment = await GuiTestEnvironment.CreateAsync();
+        var preferences = new GuiSettings(environment.App.Home);
+        preferences.Save(preferences.Load() with { CloseAction = GuiSettings.CloseQuit });
+        var window = new MainWindow(environment.App, await environment.OpenChatAsync()) { Width = width, Height = height };
+        try
+        {
+            window.Show();
+            var viewModel = window.ViewModel!;
+            viewModel.ShowSettingsCommand.Execute(null);
+            var section = viewModel.Preferences.Sections.Single(item => item.Section == SettingsSection.Remote);
+            section.SelectCommand!.Execute(section);
+            Dispatcher.UIThread.RunJobs();
+            window.CaptureRenderedFrame()?.Dispose();
+            var page = window.GetVisualDescendants().OfType<SettingsPageView>().Single();
+            var machines = page.GetVisualDescendants().OfType<MachinesView>().Single();
+            Assert.True(machines.IsEffectivelyVisible);
+            AssertInsideViewport(machines, page);
+            AssertInsideViewport(machines.FindControl<ListBox>("MachineList")!, page);
+            AssertInsideViewport(machines.FindControl<ScrollViewer>("MachineDetailPane")!, page);
+        }
+        finally
+        {
+            window.Close();
+            await window.ViewModel!.DisposeAsync();
+            Dispatcher.UIThread.RunJobs();
+        }
+    });
+
+    [Fact]
+    public async Task ChatView_FollowsAppendsAndStreamingLayout_ButPreservesUserScrollUntilReturningToTail() => await HeadlessGui.RunAsync(async () =>
+    {
+        await using var environment = await GuiTestEnvironment.CreateAsync();
+        var session = environment.Agent.Session;
+        for (var index = 0; index < 14; index++)
+            session.Append(new UserMessagePayload(MessageFactory.CreateUserText($"History {index}\nSecond line\nThird line")), new SurfaceOp.Append());
+        await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
+        var chat = new ChatView { DataContext = viewModel };
+        var window = Show(chat);
+        try
+        {
+            Render();
+            var list = chat.FindControl<ListBox>("MessageList")!;
+            var scroll = Assert.IsType<ScrollViewer>(list.Scroll);
+            Assert.True(scroll.Extent.Height > scroll.Viewport.Height);
+            var wheelPoint = scroll.TranslatePoint(new Point(40, 40), window)!.Value;
+            window.MouseWheel(wheelPoint, new Vector(0, -1000));
+            Render();
+
+            var assistant = await StreamAsync(Paragraphs(0, 28) + "initial-tail", "initial-tail");
+            AssertVisible("initial-tail");
+            Assert.True(scroll.Extent.Height > 2 * scroll.Viewport.Height);
+
+            await StreamAsync("\n\n" + Paragraphs(28, 12) + "grown-tail", "grown-tail");
+            AssertVisible("grown-tail");
+
+            window.Height -= 120;
+            Render();
+            AssertVisible("grown-tail");
+
+            var layoutPosition = scroll.Offset.Y;
+            assistant.SetText($"{assistant.Text}\n\n{Paragraphs(40, 12)}layout-positioned-tail");
+            scroll.PageUp();
+            Assert.True(scroll.Offset.Y < layoutPosition);
+            window.UpdateLayout();
+            Render();
+            AssertVisible("layout-positioned-tail");
+
+            var previousOffset = scroll.Offset.Y;
+            var readingOffset = previousOffset;
+            var combinedScrollAndGrowth = false;
+            scroll.ScrollChanged += ObserveCombinedChange;
+            try
+            {
+                assistant.SetText($"{assistant.Text}\n\n{Paragraphs(40, 12)}unfollowed-tail");
+                scroll.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.PageUp });
+                readingOffset = scroll.Offset.Y;
+                window.UpdateLayout();
+                Render();
+            }
+            finally
+            {
+                scroll.ScrollChanged -= ObserveCombinedChange;
+            }
+            Assert.True(readingOffset < previousOffset, "The actual keyboard scroll command must move away from the tail.");
+            Assert.Equal(readingOffset, scroll.Offset.Y, 3);
+            Assert.True(combinedScrollAndGrowth, "PageUp movement and streamed extent growth must share a real ScrollChanged event.");
+
+            void ObserveCombinedChange(object? sender, ScrollChangedEventArgs change)
+            {
+                if (change.OffsetDelta.Y < 0 && change.ExtentDelta.Y > 0)
+                    combinedScrollAndGrowth = true;
+            }
+
+            window.MouseWheel(wheelPoint, new Vector(0, -1000));
+            Render();
+            AssertVisible("unfollowed-tail");
+            await StreamAsync("\n\n" + Paragraphs(52, 12) + "rearmed-tail", "rearmed-tail");
+            AssertVisible("rearmed-tail");
+
+            window.MouseWheel(wheelPoint, new Vector(0, 8));
+            Render();
+            readingOffset = scroll.Offset.Y;
+            await StreamAsync("\n\n" + Paragraphs(64, 12) + "wheel-unfollowed-tail", "wheel-unfollowed-tail");
+            Assert.Equal(readingOffset, scroll.Offset.Y, 3);
+
+            window.MouseWheel(wheelPoint, new Vector(0, -1000));
+            Render();
+            AssertVisible("wheel-unfollowed-tail");
+            await StreamAsync("\n\n" + Paragraphs(76, 12) + "wheel-rearmed-tail", "wheel-rearmed-tail");
+            AssertVisible("wheel-rearmed-tail");
+
+            session.Append(new AssistantMessagePayload(1, 1,
+                MessageFactory.CreateAssistantMessage([new Dsh.Llm.TextBlock(assistant.Text)], "test", "test-model")), new SurfaceOp.Append());
+            session.Append(new TurnEndPayload(1, new TurnEndReason.Completed()));
+            await GuiTestEnvironment.WaitForAsync(assistant, () => !assistant.IsStreaming);
+            session.Append(new AssistantMessagePayload(2, 1,
+                MessageFactory.CreateAssistantMessage([new Dsh.Llm.TextBlock(Paragraphs(88, 8) + "appended-tail")], "test", "test-model")), new SurfaceOp.Append());
+            await GuiTestEnvironment.WaitForAsync(viewModel.Messages,
+                () => viewModel.Messages.Any(message => message.Text.EndsWith("appended-tail", StringComparison.Ordinal)));
+            Render();
+            AssertVisible("appended-tail");
+
+            async Task<MessageViewModel> StreamAsync(string delta, string marker)
+            {
+                session.Append(new AssistantChunkPayload(1, 1, new StreamChunk.TextDelta(0, delta)));
+                await GuiTestEnvironment.WaitForAsync(viewModel.Messages,
+                    () => viewModel.Messages.Any(message => message.IsAssistant));
+                var message = viewModel.Messages.Last(message => message.IsAssistant);
+                await GuiTestEnvironment.WaitForAsync(message,
+                    () => message.Text.EndsWith(marker, StringComparison.Ordinal));
+                Render();
+                return message;
+            }
+
+            void AssertVisible(string marker)
+            {
+                var block = Assert.Single(list.GetVisualDescendants().OfType<Avalonia.Controls.TextBlock>(),
+                    block => block.Text == marker || string.Join("", block.Inlines?
+                        .OfType<Avalonia.Controls.Documents.Run>().Select(run => run.Text) ?? []) == marker);
+                Assert.True(block.IsEffectivelyVisible);
+                AssertInsideViewport(block, scroll);
+            }
+        }
+        finally
+        {
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+        }
+
+        void Render()
+        {
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+            window.CaptureRenderedFrame()?.Dispose();
+            Dispatcher.UIThread.RunJobs();
+        }
+
+        static string Paragraphs(int start, int count)
+        {
+            var text = new System.Text.StringBuilder();
+            for (var index = start; index < start + count; index++)
+                text.AppendLine($"Streaming paragraph {index}.").AppendLine();
+            return text.ToString();
+        }
+    });
+
+    private static void AssertInsideViewport(Control control, Control viewport)
+    {
+        var origin = control.TranslatePoint(default, viewport)!.Value;
+        var bounds = new Avalonia.Rect(origin, control.Bounds.Size);
+        Assert.True(bounds.Width > 0 && bounds.Height > 0 && new Avalonia.Rect(viewport.Bounds.Size).Contains(bounds),
+            $"{control.Name} must remain inside the visible settings viewport: {bounds} in {viewport.Bounds.Size}.");
+    }
 
     private static Window Show(Control view)
     {

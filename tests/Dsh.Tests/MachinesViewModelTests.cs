@@ -105,6 +105,77 @@ public sealed class MachinesViewModelTests : IDisposable
         Assert.Equal(tunnel, saved.OutboundTunnel);
     }
 
+    [Theory]
+    [InlineData(MachineKinds.Ssh, "proxyCommand", null)]
+    [InlineData(MachineKinds.Ssh, "localForward", 43210)]
+    [InlineData(MachineKinds.Iroh, "proxyCommand", null)]
+    [InlineData(MachineKinds.Iroh, "localForward", null)]
+    public async Task OutboundTunnel_ExplicitEditsPreserveEveryOtherSavedMachineField(string kind, string mode, int? localPort)
+    {
+        var original = MachineSpec.Ssh("target", "server.invalid", 2222, "fixture-user", SshAuth.Key) with
+        {
+            KeyPath = "/fixture/id_ed25519",
+            Proxy = kind == MachineKinds.Ssh ? "ssh -W %h:%p jump.invalid" : null,
+            RemotePath = "/fixture/work",
+            HarnessHome = "/fixture/host-home",
+            SshOptions = ["ConnectTimeout=5", "ServerAliveInterval=10"],
+            Kind = kind,
+            EndpointId = kind == MachineKinds.Iroh ? new string('a', 64) : null,
+            RelayUrls = ["https://relay.invalid"],
+            OutboundTunnel = new("proxyCommand", "http://fixture-user:fixture-secret@proxy.invalid:3128"),
+        };
+        var store = new MachineStore(new HarnessHome(_home));
+        store.Upsert(original);
+        var viewModel = new MachinesViewModel(store, new FleetOptions());
+        viewModel.Load("target");
+        var editor = viewModel.Editor!;
+        Assert.False(editor.IsOutboundTunnelEditing);
+        Assert.Equal("http://***@proxy.invalid:3128", editor.OutboundTunnelProxyUrl);
+
+        editor.EditOutboundTunnelCommand.Execute(null);
+        Assert.Equal(original.OutboundTunnel.ProxyUrl, editor.OutboundTunnelProxyUrl);
+        editor.OutboundTunnelMode = mode;
+        editor.OutboundTunnelProxyUrl = "socks5://new-user:new-secret@new-proxy.invalid:1080";
+        editor.OutboundTunnelLocalPort = localPort?.ToString() ?? "";
+        await viewModel.SaveCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.StatusIsError, viewModel.Status);
+        var saved = Assert.Single(store.Load().Machines);
+        Assert.Equal(new OutboundTunnelSpec(mode, "socks5://new-user:new-secret@new-proxy.invalid:1080", localPort), saved.OutboundTunnel);
+        Assert.Equal(original with { OutboundTunnel = saved.OutboundTunnel, SshOptions = saved.SshOptions, RelayUrls = saved.RelayUrls }, saved);
+        Assert.Equal(original.SshOptions, saved.SshOptions);
+        Assert.Equal(original.RelayUrls, saved.RelayUrls);
+        Assert.Equal("socks5://***@new-proxy.invalid:1080", viewModel.Editor!.OutboundTunnelProxyUrl);
+    }
+
+    [Fact]
+    public async Task MaskedTunnelAndSshCredentials_AreNeverPersistedAsPlaceholders()
+    {
+        var original = MachineSpec.Ssh("target", "server.invalid", 22, "fixture-user", SshAuth.Agent) with
+        {
+            Proxy = "http://ssh-user:ssh-secret@ssh-proxy.invalid:3128",
+            OutboundTunnel = new("localForward", "http://proxy-user:proxy-secret@proxy.invalid:3128", 43210),
+        };
+        var store = new MachineStore(new HarnessHome(_home));
+        store.Upsert(original);
+        var viewModel = new MachinesViewModel(store, new FleetOptions());
+        viewModel.Load("target");
+        Assert.Equal("http://***@ssh-proxy.invalid:3128", viewModel.Editor!.Proxy);
+        Assert.Equal("http://***@proxy.invalid:3128", viewModel.Editor.OutboundTunnelProxyUrl);
+
+        viewModel.Editor.RemotePath = "/fixture/updated";
+        await viewModel.SaveCommand.ExecuteAsync(null);
+        var saved = Assert.Single(store.Load().Machines);
+        Assert.Equal(original.Proxy, saved.Proxy);
+        Assert.Equal(original.OutboundTunnel, saved.OutboundTunnel);
+        Assert.DoesNotContain("***", File.ReadAllText(store.FilePath), StringComparison.Ordinal);
+
+        viewModel.Editor!.OutboundTunnelEnabled = false;
+        await viewModel.SaveCommand.ExecuteAsync(null);
+        Assert.Null(Assert.Single(store.Load().Machines).OutboundTunnel);
+        Assert.Equal(original.Proxy, store.Load().Machines[0].Proxy);
+    }
+
     [Fact]
     public async Task DeploySettings_AreSavedSeparately_AndSurviveSavingAMachine()
     {

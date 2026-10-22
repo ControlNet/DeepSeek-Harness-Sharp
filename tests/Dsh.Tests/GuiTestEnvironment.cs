@@ -6,6 +6,7 @@ using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Fleet;
 using Dsh.Gui.Services;
+using Dsh.Gui.ViewModels;
 using Dsh.Interaction;
 using Dsh.Host;
 using Dsh.RemoteHost;
@@ -13,7 +14,7 @@ using Dsh.RemoteHost;
 namespace Dsh.Tests;
 
 /** GUI 组件测试的最小真实环境: 真实插件组合 + 真实持久化, 不启动 UI。 */
-public sealed class GuiTestEnvironment : IDisposable
+public sealed class GuiTestEnvironment : IAsyncDisposable
 {
     private readonly string _directory;
     private bool _ownsDirectory = true;
@@ -166,10 +167,10 @@ public sealed class GuiTestEnvironment : IDisposable
         finally { source.PropertyChanged -= Changed; }
     }
 
-    public static Task WaitForAsync<T>(ObservableCollection<T> source, Func<bool> condition)
-        => WaitForAsync((INotifyCollectionChanged)source, condition);
+    public static Task WaitForAsync<T>(ObservableCollection<T> source, Func<bool> condition, Func<string>? diagnostics = null)
+        => WaitForAsync((INotifyCollectionChanged)source, condition, diagnostics);
 
-    public static async Task WaitForAsync(INotifyCollectionChanged source, Func<bool> condition)
+    public static async Task WaitForAsync(INotifyCollectionChanged source, Func<bool> condition, Func<string>? diagnostics = null)
     {
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         void Changed(object? sender, NotifyCollectionChangedEventArgs args)
@@ -183,8 +184,15 @@ public sealed class GuiTestEnvironment : IDisposable
             if (!condition())
                 await PumpAsync(completion.Task);
         }
+        catch (TimeoutException error) when (diagnostics is not null)
+        {
+            throw new TimeoutException($"Collection condition was not reached. {diagnostics()}", error);
+        }
         finally { source.CollectionChanged -= Changed; }
     }
+
+    public static string DescribeChatState(MainViewModel viewModel)
+        => $"Status: {viewModel.StatusText}; busy: {viewModel.IsBusy}; message kinds: [{string.Join(", ", viewModel.Messages.Select(message => message.Kind))}]; system messages: [{string.Join(" | ", viewModel.Messages.Where(message => message.Kind == MessageKind.System).Select(message => message.Text))}]";
 
     /** HeadlessGui keeps the dispatcher running while the real RPC/event completion is awaited. */
     public static Task PumpAsync(Task task)
@@ -220,9 +228,9 @@ public sealed class GuiTestEnvironment : IDisposable
         _listener = null;
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        Task.Run(StopHostAsync).GetAwaiter().GetResult();
+        await StopHostAsync();
         App.Dispose();
         if (!_ownsDirectory)
             return;

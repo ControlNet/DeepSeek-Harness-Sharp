@@ -12,7 +12,9 @@ namespace Dsh.WebBridge;
 /** A browser's protocol adapter, not a second host client: snapshots come from Fleet, streams use its public resumable APIs, and user commands use the current RemoteHost lease. No replay, sequence tracking, pending cache or machine reconnect loop lives here. */
 internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Func<string, string> redact, CancellationToken cancellationToken)
 {
+    private static readonly TimeSpan GracefulCloseTimeout = TimeSpan.FromSeconds(2);
     private readonly CancellationTokenSource _lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    private readonly CancellationTokenSource _connectionLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     private readonly SemaphoreSlim _writes = new(1, 1);
     private readonly Channel<byte> _changed = Channel.CreateBounded<byte>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true });
     private readonly Dictionary<string, CancellationTokenSource> _subscriptions = new(StringComparer.Ordinal);
@@ -66,6 +68,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
             machine.SessionsChanged -= Changed;
             machine.PendingChanged -= Changed;
             machine.NotificationsChanged -= NotificationsChanged;
+            _connectionLifetime.CancelAfter(GracefulCloseTimeout);
             await _lifetime.CancelAsync().ConfigureAwait(false);
             try { await view.ConfigureAwait(false); }
             catch (Exception error) when (IsConnectionEnd(error)) { }
@@ -79,11 +82,11 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
                 terminal.Dispose();
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
             {
-                using var close = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                try { await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", close.Token).ConfigureAwait(false); }
+                try { await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", _connectionLifetime.Token).ConfigureAwait(false); }
                 catch (Exception error) when (IsConnectionEnd(error)) { }
             }
             _writes.Dispose();
+            _connectionLifetime.Dispose();
             _lifetime.Dispose();
         }
     }
@@ -306,7 +309,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
             cancellationToken.ThrowIfCancellationRequested();
             // Cancelling a ManagedWebSocket send aborts the entire socket, not just this view.
             // A detached view may stop waiting for the writer, but cannot cancel an in-flight frame.
-            await socket.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, _lifetime.Token).ConfigureAwait(false);
+            await socket.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, _connectionLifetime.Token).ConfigureAwait(false);
         }
         finally { _writes.Release(); }
     }

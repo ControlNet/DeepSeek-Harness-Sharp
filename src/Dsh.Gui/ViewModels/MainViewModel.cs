@@ -41,7 +41,7 @@ public enum SessionMode
 }
 
 /** 主窗口状态: 会话目录、会话流、轨迹、输入胶囊、页面切换与统一决策入口。 */
-public sealed partial class MainViewModel : ObservableObject, IDisposable
+public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 {
     public const int TracePreviewChars = 160;
     private const int ContentSearchDebounceMs = 300;
@@ -67,6 +67,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private MessageViewModel? _openAssistant;
     private MessageViewModel? _openReasoning;
     private bool _disposed;
+    private Task? _disposal;
     private bool _updatingSuggestions;
     private bool _commandSuggestionsLoaded;
 
@@ -79,7 +80,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Subagents = new SubagentPanelViewModel(chat);
         Subagents.Changed += PopulateSubagentCards;
         Subagents.Failed += SetStatus;
-        _settings = new SettingsFacade(_ctx, app.Home);
+        _settings = new SettingsFacade(_ctx, app.Home, chat.Fleet);
         _catalog = new SessionCatalog(_ctx, chat.Fleet);
         Gui = new GuiSettings(app.Home);
         var snapshot = Gui.Load();
@@ -308,6 +309,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IsChatPage = value == AppPage.Chat;
         IsSettingsPage = value == AppPage.Settings;
         IsMarketPage = value == AppPage.Market;
+        if (value != AppPage.Settings)
+            Preferences.DeactivateNetwork();
+        if (value is not (AppPage.Settings or AppPage.WorkspacePage))
+            Workspace.Machines.DeactivateNetwork();
         OnPropertyChanged(nameof(IsLazyPage));
     }
 
@@ -1048,11 +1053,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Suggestions.Clear();
     }
 
-    public void Dispose()
+    public ValueTask DisposeAsync() => new(_disposal ??= DisposeCoreAsync());
+
+    private async Task DisposeCoreAsync()
     {
-        if (_disposed)
-            return;
         _disposed = true;
+        Preferences.BeginNetworkShutdown();
+        Workspace.Machines.BeginNetworkShutdown();
         foreach (var dialog in _pendingDialogs.Values)
             dialog?.CancelCommand.Execute(null);
         _pendingDialogs.Clear();
@@ -1070,7 +1077,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             unsubscribe();
         _unsubscribers.Clear();
         _chat.Dispose();
-        _ = Workspace.DisposeAsync().AsTask();
+        try
+        {
+            await Preferences.WaitForNetworkOperationsAsync();
+        }
+        finally
+        {
+            await Workspace.DisposeAsync();
+        }
     }
 
     /** 文件选择由视图提供(Avalonia 对话框需要 TopLevel), 未接视图时返回空。 */

@@ -1,4 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using Dsh.Runtime;
 using Dsh.Fleet;
 using Dsh.RemoteHost;
 
@@ -35,7 +37,7 @@ public sealed partial class MachineRowViewModel(MachineSpec spec, bool isImplici
         StateText = StateLabel(state);
         if (info is not null)
             (HostVersion, Platform) = (info.HostVersion, info.Platform);
-        Detail = detail;
+        Detail = detail is null ? null : OutboundProxy.Redact(detail, spec.Password, spec.Proxy, spec.OutboundTunnel?.ProxyUrl);
     }
 
     /** 重新载入清单后保留同名机器最近一次得知的状态。 */
@@ -87,7 +89,63 @@ public sealed class DoctorCheckRow(DoctorCheck check)
 public sealed partial class MachineEditorViewModel(bool allowIroh = false) : ObservableObject
 {
     private const int MaxPort = 65535;
-    private OutboundTunnelSpec? OutboundTunnel { get; init; }
+    private OutboundTunnelSpec? _savedOutboundTunnel;
+    private string? _savedSshProxy;
+
+    public static IReadOnlyList<string> OutboundTunnelModes { get; } = ["proxyCommand", "localForward"];
+
+    [ObservableProperty]
+    private bool _outboundTunnelEnabled;
+
+    [ObservableProperty]
+    private string _outboundTunnelMode = "proxyCommand";
+
+    [ObservableProperty]
+    private string _outboundTunnelProxyUrl = "";
+
+    [ObservableProperty]
+    private string _outboundTunnelLocalPort = "";
+
+    [ObservableProperty]
+    private bool _isOutboundTunnelEditing;
+
+    [ObservableProperty]
+    private bool _isSshProxyEditing;
+
+    [RelayCommand]
+    private void EditOutboundTunnel()
+    {
+        if (IsOutboundTunnelEditing)
+            return;
+        OutboundTunnelProxyUrl = _savedOutboundTunnel?.ProxyUrl ?? "";
+        IsOutboundTunnelEditing = true;
+    }
+
+    [RelayCommand]
+    private void EditSshProxy()
+    {
+        if (IsSshProxyEditing)
+            return;
+        Proxy = _savedSshProxy ?? "";
+        IsSshProxyEditing = true;
+    }
+
+    private OutboundTunnelSpec? BuildOutboundTunnel()
+    {
+        if (!OutboundTunnelEnabled)
+            return null;
+        int? localPort = null;
+        if (!string.IsNullOrWhiteSpace(OutboundTunnelLocalPort))
+        {
+            if (!int.TryParse(OutboundTunnelLocalPort.Trim(), out var port) || port is <= 0 or > MaxPort)
+                throw new ArgumentException($"Local port must be empty or an integer from 1 to {MaxPort}.");
+            localPort = port;
+        }
+        return new OutboundTunnelSpec(OutboundTunnelMode,
+            IsOutboundTunnelEditing || _savedOutboundTunnel is null
+                ? Optional(OutboundTunnelProxyUrl) ?? ""
+                : _savedOutboundTunnel.ProxyUrl, localPort);
+    }
 
     public static IReadOnlyList<string> AuthModes { get; } = [SshAuth.Agent, SshAuth.Key, SshAuth.Password];
 
@@ -170,11 +228,16 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
         Auth = spec.Auth,
         KeyPath = spec.KeyPath ?? "",
         Password = spec.Password ?? "",
-        Proxy = spec.Proxy ?? "",
+        _savedSshProxy = spec.Proxy,
+        Proxy = OutboundProxy.RedactUrlCredentials(spec.Proxy ?? "", spec.Proxy),
         RemotePath = spec.RemotePath ?? "",
         HarnessHome = spec.HarnessHome ?? "",
         SshOptions = string.Join(Environment.NewLine, spec.SshOptions ?? []),
-        OutboundTunnel = spec.OutboundTunnel,
+        _savedOutboundTunnel = spec.OutboundTunnel,
+        OutboundTunnelEnabled = spec.OutboundTunnel is not null,
+        OutboundTunnelMode = spec.OutboundTunnel?.Mode ?? "proxyCommand",
+        OutboundTunnelProxyUrl = OutboundProxy.RedactUrlCredentials(spec.OutboundTunnel?.ProxyUrl ?? "", spec.OutboundTunnel?.ProxyUrl),
+        OutboundTunnelLocalPort = spec.OutboundTunnel?.LocalPort?.ToString() ?? "",
     };
 
     /** 表单 → 机器记录; 字段不完整时抛 ArgumentException(名称规则由 MachineStore 保存时再校验)。 */
@@ -194,11 +257,11 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
             RelayUrls = relays.Length == 0 ? null : relays,
             KeyPath = IsKey ? Optional(KeyPath) : null,
             Password = IsPassword ? Password : null,
-            Proxy = IsSsh ? Optional(Proxy) : null,
+            Proxy = IsSsh ? IsSshProxyEditing || _savedSshProxy is null ? Optional(Proxy) : _savedSshProxy : null,
             RemotePath = Optional(RemotePath),
             HarnessHome = Optional(HarnessHome),
             SshOptions = options.Length == 0 ? null : options,
-            OutboundTunnel = OutboundTunnel,
+            OutboundTunnel = BuildOutboundTunnel(),
         };
     }
 
@@ -212,6 +275,20 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
  */
 public sealed partial class DeploySettingsEditorViewModel : ObservableObject
 {
+    private string? _savedServerProxy;
+
+    [ObservableProperty]
+    private bool _isServerProxyEditing;
+
+    [RelayCommand]
+    private void EditServerProxy()
+    {
+        if (IsServerProxyEditing)
+            return;
+        ServerProxy = _savedServerProxy ?? "";
+        IsServerProxyEditing = true;
+    }
+
     public static IReadOnlyList<string> ViaOptions { get; } = [DownloadVia.Auto, DownloadVia.Client, DownloadVia.Server];
 
     [ObservableProperty]
@@ -235,7 +312,8 @@ public sealed partial class DeploySettingsEditorViewModel : ObservableObject
         ReleaseBaseUrl = settings.ReleaseBaseUrl,
         ReleaseVersion = settings.ReleaseVersion,
         Via = settings.Via,
-        ServerProxy = settings.ServerProxy ?? "",
+        _savedServerProxy = settings.ServerProxy,
+        ServerProxy = OutboundProxy.RedactUrlCredentials(settings.ServerProxy ?? "", settings.ServerProxy),
     };
 
     public DeploySettings ToSettings() => new()
@@ -244,6 +322,7 @@ public sealed partial class DeploySettingsEditorViewModel : ObservableObject
         ReleaseBaseUrl = MachineEditorViewModel.Optional(ReleaseBaseUrl) ?? DeploySettings.DefaultReleaseBaseUrl,
         ReleaseVersion = MachineEditorViewModel.Optional(ReleaseVersion) ?? DeploySettings.LatestVersion,
         Via = ViaOptions.Contains(Via) ? Via : DownloadVia.Auto,
-        ServerProxy = MachineEditorViewModel.Optional(ServerProxy),
+        ServerProxy = IsServerProxyEditing || _savedServerProxy is null
+            ? MachineEditorViewModel.Optional(ServerProxy) : _savedServerProxy,
     };
 }
