@@ -89,19 +89,18 @@ public sealed class HarnessSettingsSaveTests
     }
 
     [Fact]
-    public void Load_RefusesTemplateWhenBackupExists()
+    public void Load_MissingSettings_DoesNotWriteTemplate()
     {
         var home = CreateHome("\n");
         try
         {
             var active = Path.Combine(home.Root, "settings.yaml");
-            File.Move(active, $"{active}.imported");
+            File.Delete(active);
 
-            var error = Assert.Throws<IOException>(() => HarnessSettings.Load(home));
+            var settings = HarnessSettings.Load(home);
 
-            Assert.Contains("backup exists", error.Message);
+            Assert.NotNull(settings.Plugins);
             Assert.False(File.Exists(active));
-            Assert.True(File.Exists($"{active}.imported"));
         }
         finally
         {

@@ -20,7 +20,7 @@ SQLite 是可选的系统依赖,发布包不捆绑或自动下载 SQLite 原生�
 
 ## 运行
 
-1. 配置文件:`~/.dsh/settings.yaml`(Linux)/`%USERPROFILE%\.dsh\settings.yaml`(Windows);首次运行会生成带注释的模板,插件开关与参数写在 `plugins:` 段。
+1. 配置文件:`~/.dsh/settings.yaml`(Linux)/`%USERPROFILE%\.dsh\settings.yaml`(Windows);首次运行使用带注释的模板作为默认配置,保存设置时才写入文件,不会覆盖已有配置;插件开关与参数写在 `plugins:` 段。
 2. 构建与运行:
    ```bash
    dotnet build # 只构建不运行
@@ -616,7 +616,7 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 
 ## settings.yaml 结构
 
-配置文件为 `~/.dsh/settings.yaml`;首次运行按 `src/Dsh.Boot/Profiles/Templates/settings.yaml` 生成带注释的模板(可用 `$DSH_HOME` 或 `storage.root` 指定其它 harness home 做隔离测试)。
+配置文件为 `~/.dsh/settings.yaml`;首次运行按 `src/Dsh.Boot/Profiles/Templates/settings.yaml` 使用带注释的模板作为默认配置,文件在首次保存设置时创建,不覆盖已有配置(可用 `$DSH_HOME` 或 `storage.root` 指定其它 harness home 做隔离测试)。
 `/plugins` 命令写回 `plugins:` 段时采用文本级修改(保留注释)。
 
 ```yaml
