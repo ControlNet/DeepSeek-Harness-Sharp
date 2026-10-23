@@ -19,6 +19,7 @@ public sealed class BorrowedOutboundProxyTests
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
     private const string Probe = "http://example.com/route-validation";
     private const string InvalidBaselineProxyUrl = "gopher://invalid.example:70";
+    private static readonly TimeSpan CliObservationTimeout = TimeSpan.FromSeconds(20);
 
     [Fact(Timeout = 30000)]
     public async Task CancellingTheInitialLease_DoesNotLetOwnerDisposalClearAnUnappliedSavedSelection()
@@ -482,6 +483,139 @@ public sealed class BorrowedOutboundProxyTests
         }
         finally
         {
+            TempTree.Delete(root);
+        }
+    }
+
+    [Theory(Explicit = true, Timeout = 240000)]
+    [InlineData("proxyCommand")]
+    [InlineData("localForward")]
+    public async Task RealCliTunnelTest_ConsumesPublicHttps200_AndRetiresOnlyItsIndependentTransport(string mode)
+    {
+        var executable = FleetSshEndToEndTests.RequireEnvironment();
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
+        await using var selected = new TestForwardProxy(forward: true, pauseResponses: true);
+        await using var other = new TestForwardProxy();
+        await using var baseline = new TestForwardProxy(keepAlive: true);
+        var root = TempTree.CreateSocketDirectory("b83c");
+        var remote = RealHostProcesses.CreateHome("b83h");
+        Process? owned = null;
+        try
+        {
+            var home = Configure(root, ssh, selected, "A", baseline: baseline);
+            var store = new MachineStore(home);
+            store.Upsert(ObserveSsh(ssh.Machine("A", remote), root) with
+            {
+                OutboundTunnel = new(mode, $"http://127.0.0.1:{selected.Port}"),
+            });
+            store.Upsert(ssh.Machine("B", remote) with
+            {
+                OutboundTunnel = new(mode, $"http://localhost:{other.Port}"),
+            });
+            var saved = await File.ReadAllBytesAsync(home.SettingsFile, Ct);
+            var savedBaseline = HarnessSettings.Load(home).Network!.OutboundProxy!.Url;
+
+            await using var host = await SshHostLauncher.ConnectAsync(
+                ssh.Machine("independent-host", remote), executable, "cli-tunnel-survivor", Ct);
+            var hostIdentity = LocalEndpointToken.Read(RemoteHostEndpoint.EndpointFile(remote));
+            var remoteSettings = Path.Combine(remote, "settings.yaml");
+            var savedRemote = await File.ReadAllBytesAsync(remoteSettings, Ct);
+            using var independentProxy = new OutboundProxy();
+            independentProxy.Configure(savedBaseline, []);
+            using var independent = new HttpClient(independentProxy.CreateHandler());
+            Assert.Equal(TestForwardProxy.ProxiedBody,
+                await independent.GetStringAsync("http://example.com/cli-survivor-before", Ct));
+            Assert.Equal("GET http://example.com/cli-survivor-before HTTP/1.1",
+                await baseline.WaitForRequestAsync(Ct));
+            var baselineConnections = baseline.Connections;
+
+            using var signal = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            signal.CancelAfter(CliObservationTimeout);
+            var cli = FleetCliProcess.RunAsync(executable, root,
+                "machine", "tunnel", "A", "test", "--probe-url", "https://example.com/");
+            int? listenerPort = null;
+            Task exited;
+            try
+            {
+                Assert.Equal("CONNECT example.com:443 HTTP/1.1",
+                    await selected.WaitForRequestAsync(signal.Token));
+                Assert.False(cli.IsCompleted, "The real proxy barrier must hold the independent CLI before TLS begins.");
+                var commands = await File.ReadAllLinesAsync(
+                    Path.Combine(root, "owned-ssh-commands.txt"), signal.Token);
+                var resources = await File.ReadAllLinesAsync(
+                    Path.Combine(root, "owned-ssh-resources.txt"), signal.Token);
+                Assert.True(commands.Length == 1 && resources.Length == 1,
+                    "The independent CLI must open exactly one owned SSH transport.");
+                var command = commands[0];
+                var resource = resources[0].Split('|', 2);
+                Assert.Equal(2, resource.Length);
+                Assert.False(File.Exists(resource[1]), "The authenticated CLI transport must already have removed its askpass.");
+                owned = Process.GetProcessById(int.Parse(resource[0], System.Globalization.CultureInfo.InvariantCulture));
+                Assert.False(owned.HasExited);
+                exited = owned.WaitForExitAsync(Ct);
+                if (mode == "proxyCommand")
+                    Assert.True(command.Contains($"-W 127.0.0.1:{selected.Port}", StringComparison.Ordinal),
+                        "The CLI must own the selected SSH stdio command, not a Host or Network RPC.");
+                else
+                {
+                    var arguments = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    var index = Array.IndexOf(arguments, "-L");
+                    Assert.True(index >= 0 && index + 1 < arguments.Length,
+                        "The CLI must own an actual SSH local-forward command.");
+                    var fields = arguments[index + 1].Split(':');
+                    Assert.Equal("127.0.0.1", fields[0]);
+                    Assert.Equal("127.0.0.1", fields[^2]);
+                    Assert.Equal(selected.Port, int.Parse(fields[^1], System.Globalization.CultureInfo.InvariantCulture));
+                    listenerPort = int.Parse(fields[1], System.Globalization.CultureInfo.InvariantCulture);
+                    FleetLocalForwardEgressTests.AssertOnlyLoopbackListener(listenerPort.Value);
+                }
+                Assert.Single(baseline.Requests);
+                Assert.Equal(baselineConnections, baseline.Connections);
+                Assert.Empty(other.Requests);
+            }
+            finally
+            {
+                selected.ReleaseResponse();
+            }
+
+            var result = await cli;
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(result.Output.StartsWith("HTTP 200 ", StringComparison.Ordinal),
+                "The production CLI must report the actual target HTTP 200.");
+            using var retired = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            retired.CancelAfter(CliObservationTimeout);
+            await exited.WaitAsync(retired.Token);
+            await selected.WaitForClosedConnectionAsync(retired.Token);
+            Assert.Equal(0, selected.ActiveConnections);
+            await FleetLocalForwardEgressTests.AssertOwnedSshRetiredAsync(root, mode, selected.Port);
+            if (listenerPort is { } port)
+                FleetLocalForwardEgressTests.AssertPortCanRebind(port);
+            Assert.Equal("CONNECT example.com:443 HTTP/1.1", Assert.Single(selected.Requests));
+            Assert.Empty(other.Requests);
+            Assert.Single(baseline.Requests);
+            Assert.Equal(savedBaseline, HarnessSettings.Load(home).Network?.OutboundProxy?.Url);
+            Assert.Equal("A", HarnessSettings.Load(home).Network?.BorrowedOutboundMachine);
+            var current = await File.ReadAllBytesAsync(home.SettingsFile, Ct);
+            var currentRemote = await File.ReadAllBytesAsync(remoteSettings, Ct);
+            Assert.True(saved.AsSpan().SequenceEqual(current),
+                "The independent CLI test must leave the entire local settings file unchanged.");
+            Assert.True(savedRemote.AsSpan().SequenceEqual(currentRemote),
+                "The independent CLI test must leave remote Host settings unchanged.");
+            Assert.True(await host.Client.PingAsync(Ct) > 0);
+            Assert.True(hostIdentity == LocalEndpointToken.Read(RemoteHostEndpoint.EndpointFile(remote)),
+                "CLI completion must preserve the independent remote Host identity.");
+            Assert.Equal(TestForwardProxy.ProxiedBody,
+                await independent.GetStringAsync("http://example.com/cli-survivor-after", Ct));
+            Assert.Equal("GET http://example.com/cli-survivor-after HTTP/1.1",
+                await baseline.WaitForRequestAsync(Ct));
+            Assert.Equal(baselineConnections, baseline.Connections);
+            Assert.Equal(2, baseline.Requests.Count);
+        }
+        finally
+        {
+            owned?.Dispose();
+            RealHostProcesses.KillAll(remote);
+            TempTree.Delete(remote);
             TempTree.Delete(root);
         }
     }

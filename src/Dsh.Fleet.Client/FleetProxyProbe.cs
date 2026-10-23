@@ -93,7 +93,12 @@ public sealed class FleetProxyProbe(FleetOptions options)
         }
         operation.Stage = ProxyProbeStage.Ssh;
         var check = await FleetDoctor.CheckSshAsync(machine, new SshTransport(machine, options.SshTransportAdapter), cancellationToken).ConfigureAwait(false);
-        operation.SetResult(check.Outcome == DoctorOutcome.Ok ? ProxyProbeOutcome.Passed : ProxyProbeOutcome.Failed, check.Detail);
+        var passed = check.Outcome == DoctorOutcome.Ok;
+        // Doctor details are local diagnostics and may contain raw SSH stderr or private paths.
+        operation.SetResult(passed ? ProxyProbeOutcome.Passed : ProxyProbeOutcome.Failed,
+            passed
+                ? "SSH connected and the remote connectivity command completed successfully."
+                : "SSH connection or remote connectivity command failed. Check SSH authentication, connectivity, and proxy configuration.");
     }
 
     private static async Task ProbeLocalCoreAsync(Operation operation, OutboundProxySettings? settings, CancellationToken cancellationToken)
@@ -174,13 +179,13 @@ public sealed class FleetProxyProbe(FleetOptions options)
         }
         catch (NotSupportedException error)
         {
+            operation.SetExceptionResult(ProxyProbeOutcome.Unsupported, error);
             operation.Stage = ProxyProbeStage.Configuration;
-            operation.SetResult(ProxyProbeOutcome.Unsupported, error.Message);
         }
         catch (Exception error) when (error is IOException or SocketException or HttpRequestException or JsonRpcException
             or InvalidOperationException or ArgumentException or Win32Exception or UnauthorizedAccessException)
         {
-            operation.SetResult(ProxyProbeOutcome.Failed, error.Message);
+            operation.SetExceptionResult(ProxyProbeOutcome.Failed, error);
         }
     }
 
@@ -214,6 +219,22 @@ public sealed class FleetProxyProbe(FleetOptions options)
             Outcome = outcome;
             Detail = detail;
             HttpStatus = httpStatus;
+        }
+
+        public void SetExceptionResult(ProxyProbeOutcome outcome, Exception error)
+        {
+            var detail = Layer == ProxyProbeLayer.Ssh || Stage == ProxyProbeStage.Ssh
+                ? error switch
+                {
+                    NotSupportedException => "The configured SSH transport is unsupported or its adapter is unavailable.",
+                    UnauthorizedAccessException => "SSH could not access a required local file or process. Check its access permissions.",
+                    FileNotFoundException or DirectoryNotFoundException => "A required SSH executable, identity file, or adapter file was not found.",
+                    Win32Exception => "The SSH executable or transport process could not start. Check its installation and access permissions.",
+                    ArgumentException => "SSH transport configuration is invalid. Check the machine's SSH settings.",
+                    _ => "SSH transport could not complete the probe. Check SSH authentication, connectivity, and proxy configuration.",
+                }
+                : error.Message;
+            SetResult(outcome, detail);
         }
 
         public ProxyProbeResult Result() => new(Layer, Outcome, Stage,

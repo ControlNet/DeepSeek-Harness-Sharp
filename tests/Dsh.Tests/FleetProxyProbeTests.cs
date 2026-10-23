@@ -16,6 +16,7 @@ public sealed class FleetProxyProbeTests
     private const int TestTimeoutMilliseconds = 120000;
     private const string PublicTarget = "http://1.1.1.1/layer-probe";
     private static readonly TimeSpan CancellationProofTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DeadlineTimerTolerance = TimeSpan.FromMilliseconds(100);
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
     private static FleetOptions Options => new()
     {
@@ -205,6 +206,24 @@ public sealed class FleetProxyProbeTests
     }
 
     [Fact(Timeout = TestTimeoutMilliseconds)]
+    public async Task SshMissingIdentity_ReportsFailureWithoutPublishingItsPrivatePath()
+    {
+        FleetSshEndToEndTests.RequireEnvironment();
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
+        var privatePath = Path.Combine(ssh.Root, "synthetic-private-user", "missing_ed25519");
+        var machine = ssh.Machine("missing-identity", Path.Combine(ssh.Root, "no-host")) with { KeyPath = privatePath };
+        var raw = await new SshTransport(machine).CaptureAsync("true", Ct);
+        Assert.NotEqual(0, raw.ExitCode);
+        Assert.Contains(privatePath, raw.FailureDetail, StringComparison.Ordinal);
+        var result = await new FleetProxyProbe(Options).ProbeSshAsync(machine, Guid.NewGuid(), Ct);
+        Assert.Equal((ProxyProbeLayer.Ssh, ProxyProbeOutcome.Failed, ProxyProbeStage.Ssh, 1, machine.Name),
+            (result.Layer, result.Outcome, result.Stage, result.ExitCode, result.Machine));
+        Assert.DoesNotContain(privatePath, result.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("synthetic-private-user", result.Detail, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(machine.HarnessHome));
+    }
+
+    [Fact(Timeout = TestTimeoutMilliseconds)]
     public async Task Ssh_OnlyRunsTrueWithoutHostOrDeployment_AndRejectsForcedNonzeroExit()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -372,6 +391,41 @@ public sealed class FleetProxyProbeTests
         }
     }
 
+    [Theory(Timeout = TestTimeoutMilliseconds)]
+    [InlineData(ProxyProbeLayer.Ssh)]
+    [InlineData(ProxyProbeLayer.RemoteOutbound)]
+    public async Task StartupDeadline_ReleasesItsOwnedTransportWithoutStoppingTheExistingHost(ProxyProbeLayer layer)
+    {
+        FleetSshEndToEndTests.RequireEnvironment();
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
+        await using var gate = new SshAuthenticationGate();
+        await using var host = await HarnessHostFixture.CreateAsync("pbud", Ct);
+        var observer = await host.ConnectAsync("independent-deadline-observer", Ct);
+        var target = ssh.Machine("held-deadline", host.Root);
+        var machine = gate.Wrap(target with { SshOptions = ["ConnectTimeout=0", .. target.SshOptions ?? []] });
+        var budget = layer == ProxyProbeLayer.Ssh ? FleetProxyProbe.SshTimeout : FleetProxyProbe.RemoteTimeout;
+        var service = new FleetProxyProbe(Options);
+        await using (var connection = layer == ProxyProbeLayer.RemoteOutbound ? new MachineConnection(machine, Options) : null)
+        {
+            connection?.Start();
+            var elapsed = Stopwatch.StartNew();
+            var pending = connection is null
+                ? service.ProbeSshAsync(machine, Guid.NewGuid(), Ct)
+                : service.ProbeRemoteAsync(connection, new(null), Guid.NewGuid(), Ct);
+            await gate.WaitForBlockedAuthenticationAsync(pending, Ct);
+            Assert.NotNull(gate.AskPass);
+            Assert.True(File.Exists(gate.AskPass), "The blocked authentication must own its askpass file before the deadline.");
+            var result = await pending.WaitAsync(budget + CancellationProofTimeout, Ct);
+            Assert.Equal((layer, ProxyProbeOutcome.Failed, ProxyProbeStage.Ssh, 1), (result.Layer, result.Outcome, result.Stage, result.ExitCode));
+            Assert.True(elapsed.Elapsed >= budget - DeadlineTimerTolerance, "The held transport must not fail before the production layer deadline.");
+        }
+        using var released = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        released.CancelAfter(CancellationProofTimeout);
+        await gate.WaitForClosedAsync(released.Token);
+        Assert.False(File.Exists(gate.AskPass));
+        Assert.True(await observer.PingAsync(Ct) > 0);
+    }
+
     [Fact(Timeout = TestTimeoutMilliseconds)]
     public async Task LocalTransportDeadline_IsFailedNotUserCancellation()
     {
@@ -381,7 +435,7 @@ public sealed class FleetProxyProbeTests
         {
             var pending = new FleetProxyProbe(Options).ProbeLocalAsync(root, Settings(target), Guid.NewGuid(), TestContext.Current.CancellationToken);
             await target.WaitForRequestAsync(Ct);
-            var result = await pending;
+            var result = await pending.WaitAsync(FleetProxyProbe.LocalTimeout + CancellationProofTimeout, Ct);
             Assert.Equal((ProxyProbeOutcome.Failed, ProxyProbeStage.HttpTarget, 1), (result.Outcome, result.Stage, result.ExitCode));
             await target.WaitForClosedConnectionAsync(Ct);
             await target.WaitForClosedConnectionAsync(Ct);
@@ -486,7 +540,7 @@ public sealed class FleetProxyProbeTests
     }
 
     // This wire-compatibility decorator removes only optional capability/schema fields from the real backend.
-    private sealed class LegacyProbeBackend(IRemoteHostBackend backend, bool oldSchema) : IRemoteHostBackend, IRemoteNetworkBackend
+    internal sealed class LegacyProbeBackend(IRemoteHostBackend backend, bool oldSchema) : IRemoteHostBackend, IRemoteNetworkBackend
     {
         public HostPendingDecisions Pending => backend.Pending;
         public HostSessionRegistry Sessions => backend.Sessions;

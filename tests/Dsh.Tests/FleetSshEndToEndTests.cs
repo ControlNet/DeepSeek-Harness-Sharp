@@ -569,6 +569,12 @@ internal sealed class SshAuthenticationGate : IAsyncDisposable
         await _control.GetStream().WriteAsync("continue\n"u8.ToArray(), cancellationToken);
     }
 
+    public async Task WaitForClosedAsync(CancellationToken cancellationToken)
+    {
+        Assert.NotNull(_control);
+        Assert.Equal(0, await _control.GetStream().ReadAsync(new byte[1], cancellationToken));
+    }
+
     public ValueTask DisposeAsync()
     {
         _control?.Dispose();

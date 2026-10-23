@@ -56,6 +56,7 @@
           Link="Profiles\Templates\settings.yaml"
           CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="ScheduleUpstreamFixtures.json" LogicalName="Dsh.Tests.ScheduleUpstreamFixtures.json" />
+    <None Update="NetworkGuiDriver.java" CopyToOutputDirectory="PreserveNewest" />
     <!-- Search API responses captured from the real GitHub and Stack Exchange APIs; the engine tests replay them through a local handler. -->
     <None Update="Web\ApiSamples\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
@@ -133,6 +134,19 @@
     <Copy SourceFiles="@(_McpResourceServerRuntime)"
           DestinationFiles="@(_McpResourceServerRuntime->'$(TargetDir)mcp-resource-server/%(RecursiveDir)%(Filename)%(Extension)')"
           SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- A standalone startup hook must not load the test assembly's plugin-registration module initializers into dsharp. -->
+  <Target Name="BuildNetworkGuiObserver" AfterTargets="Build"
+          Inputs="$(MSBuildProjectDirectory)/NetworkProxySmokeTests.cs;@(ReferencePath)"
+          Outputs="$(TargetDir)network-gui-observer.dll">
+    <Csc Sources="$(MSBuildProjectDirectory)/NetworkProxySmokeTests.cs"
+         References="@(ReferencePath)"
+         OutputAssembly="$(TargetDir)network-gui-observer.dll"
+         TargetType="Library" DefineConstants="NETWORK_GUI_OBSERVER"
+         Nullable="enable" LangVersion="$(LangVersion)"
+         NoStandardLib="true" NoConfig="true" Deterministic="true"
+         UseSharedCompilation="false" EmitDebugInformation="false" />
   </Target>
 
 </Project>

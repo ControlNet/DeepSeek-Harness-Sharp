@@ -85,7 +85,7 @@ public sealed class TerminalControlHeadlessTests
     {
         if (OperatingSystem.IsWindows())
             return;
-        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateAsync();
         var preferences = new GuiSettings(environment.App.Home);
         preferences.Save(preferences.Load() with { CloseAction = GuiSettings.CloseQuit });
         var window = new MainWindow(environment.App, await environment.OpenChatAsync());
@@ -141,6 +141,8 @@ public sealed class TerminalControlHeadlessTests
         finally
         {
             window.Close();
+            await window.ViewModel!.DisposeAsync();
+            Dispatcher.UIThread.RunJobs();
         }
     });
 

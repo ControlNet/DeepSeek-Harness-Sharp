@@ -7,10 +7,12 @@ using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
+using Dsh.Pty;
 using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
@@ -37,7 +39,7 @@ public sealed class GuiRemoteWorkspaceTests
     public async Task WorkspaceMenu_AndSettings_RemoteSurface() => await HeadlessGui.RunAsync(async () =>
     {
         var environment = await GuiTestEnvironment.CreateAsync();
-        using var environmentScope = environment;
+        await using var environmentScope = environment;
         new MachineStore(environment.App.Home).Save(FleetConfig.Empty with { Machines = SampleWorkspaces() });
 
         var window = new MainWindow(environment.App, await environment.OpenChatAsync());
@@ -114,7 +116,7 @@ public sealed class GuiRemoteWorkspaceTests
         await HeadlessGui.RunAsync(async () =>
         {
             var environment = await GuiTestEnvironment.CreateAsync();
-            using var environmentScope = environment;
+            await using var environmentScope = environment;
             new MachineStore(environment.App.Home).Save(FleetConfig.Empty with { Machines = [spec.ToMachine()] });
 
             var window = new MainWindow(environment.App, await environment.OpenChatAsync());
@@ -177,6 +179,152 @@ public sealed class GuiRemoteWorkspaceTests
         finally
         {
             File.Delete(tarPath);
+        }
+    }
+
+    [Fact(Timeout = 90000)]
+    public async Task SessionRetirement_CancelsPendingShellConnection_WithoutRetiringFleet()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var host = await HarnessHostFixture.CreateAsync("grsc", ct);
+        var observer = await host.ConnectAsync("shell-retirement-observer", ct);
+        var (fileName, arguments) = RemoteHostMultiClientTests.Shell;
+        var original = await observer.Pty.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments), ct);
+        var independent = await observer.Pty.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments), ct);
+        var card = new SessionCardViewModel("target",
+            Assert.Single(await observer.ListHostSessionsAsync(ct), session => session.SessionId == original));
+
+        await HeadlessGui.RunAsync(async () =>
+        {
+            await using var fleet = ShellFleet(host);
+            using var notifications = new NotificationCenterViewModel(fleet, (_, _) => null);
+            var view = new FleetSessionViewModel(fleet, new FleetSessionActions(fleet, () => default), card, notifications);
+            var machine = fleet.Find("target")!;
+            Task startup = Task.CompletedTask;
+            Task retirement = Task.CompletedTask;
+            try
+            {
+                // Only this view's Fleet link is unpublished; the independent observer already owns live PTYs.
+                Assert.Equal(MachineConnectionState.Offline, machine.State);
+                startup = view.AddShellCommand.ExecuteAsync(null);
+                Assert.False(startup.IsCompleted);
+                retirement = view.DisposeAsync().AsTask();
+                await retirement.WaitAsync(ct);
+                Assert.Equal(MachineConnectionState.Offline, machine.State);
+                Assert.True(startup.IsCompletedSuccessfully);
+            }
+            finally
+            {
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                fleet.Start();
+                await machine.WaitConnectedAsync(cleanup.Token);
+                await Task.WhenAll(startup, retirement).WaitAsync(cleanup.Token);
+                await view.DisposeAsync();
+            }
+
+            Assert.Empty(view.Tabs);
+            Assert.False(view.HasError);
+            Assert.Equal(MachineConnectionState.Connected, machine.State);
+            var sessions = await PtyDaemonClient.ListAsync(host.PtyEndpoint.SocketPath, host.PtyEndpoint.PortFile, ct);
+            Assert.Equal(new[] { original, independent }.Order(), sessions.Select(session => session.Id).Order());
+            Assert.All(sessions, session => Assert.Equal(nameof(PtySessionStatus.Running), session.Status));
+            Assert.Equal(RemoteHostServer.ReleaseVersion, (await observer.InfoAsync(ct)).HostVersion);
+        });
+    }
+
+    [Fact(Timeout = 90000)]
+    public async Task SessionRetirement_JoinsSentShellCreate_AndStopsLateOwnedPtyOnly()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        ShellCreateResponseGate? gate = null;
+        await using var host = await HarnessHostFixture.CreateAsync("grsl", ct,
+            backend => gate = new ShellCreateResponseGate(backend));
+        var observer = await host.ConnectAsync("late-shell-observer", ct);
+        var (fileName, arguments) = RemoteHostMultiClientTests.Shell;
+        var original = await observer.Pty.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments), ct);
+        var independent = await observer.Pty.StartPtyAsync(new RemotePtyStartRequest(fileName, arguments), ct);
+        var card = new SessionCardViewModel("target",
+            Assert.Single(await observer.ListHostSessionsAsync(ct), session => session.SessionId == original));
+
+        await HeadlessGui.RunAsync(async () =>
+        {
+            await using var fleet = ShellFleet(host);
+            using var notifications = new NotificationCenterViewModel(fleet, (_, _) => null);
+            fleet.Start();
+            var machine = fleet.Find("target")!;
+            var lease = await machine.WaitConnectedAsync(ct);
+            var view = new FleetSessionViewModel(fleet, new FleetSessionActions(fleet, () => default), card, notifications);
+            Task startup = Task.CompletedTask;
+            Task retirement = Task.CompletedTask;
+            string latePty;
+            try
+            {
+                gate!.HoldNext = true;
+                startup = view.AddShellCommand.ExecuteAsync(null);
+                latePty = await gate.Created.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+                retirement = view.DisposeAsync().AsTask();
+                Assert.False(retirement.IsCompleted, "A sent create must keep ownership until its real response arrives.");
+                Assert.False(lease.Lifetime.IsCancellationRequested);
+            }
+            finally
+            {
+                gate!.Release.TrySetResult();
+                await Task.WhenAll(startup, retirement).WaitAsync(TimeSpan.FromSeconds(20), ct);
+                await view.DisposeAsync();
+            }
+
+            Assert.Empty(view.Tabs);
+            Assert.False(view.HasError);
+            Assert.False(lease.Lifetime.IsCancellationRequested);
+            var sessions = await observer.ListHostSessionsAsync(ct);
+            Assert.Equal(HostSessionStatuses.Exited, Assert.Single(sessions, session => session.SessionId == latePty).Status);
+            Assert.Equal(HostSessionStatuses.Running, Assert.Single(sessions, session => session.SessionId == original).Status);
+            Assert.Equal(HostSessionStatuses.Running, Assert.Single(sessions, session => session.SessionId == independent).Status);
+            Assert.Equal(RemoteHostServer.ReleaseVersion, (await observer.InfoAsync(ct)).HostVersion);
+        });
+    }
+
+    private static FleetWorkspace ShellFleet(HarnessHostFixture host)
+    {
+        var options = FleetConnectionTests.TestOptions;
+        return new FleetWorkspace(new MachineStore(new HarnessHome(host.Root)), options,
+            () => new FleetClient([MachineSpec.Local(host.Root, "target")], options));
+    }
+
+    /** Holds the real create response after the daemon has created the PTY; all backend behavior stays real. */
+    private sealed class ShellCreateResponseGate(IRemoteHostBackend backend) : IRemoteHostBackend, IRemotePtyBackend
+    {
+        public bool HoldNext { get; set; }
+        public TaskCompletionSource<string> Created { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public HostPendingDecisions Pending => backend.Pending;
+        public HostSessionRegistry Sessions => backend.Sessions;
+        public IRemoteSessionBackend Session => backend.Session;
+        public IRemotePtyBackend Pty => this;
+        public IRemoteAgentBackend? Agent => backend.Agent;
+        public HostFileSystem? Files => backend.Files;
+        public HostGitService? Git => backend.Git;
+        public HostNotificationCenter? Notifications => backend.Notifications;
+        public IRemoteSessionEditingBackend? SessionEditing => backend.SessionEditing;
+        public IRemotePluginsBackend? Plugins => backend.Plugins;
+        public IRemoteModelsBackend? Models => backend.Models;
+        public IRemoteNetworkBackend? Network => backend.Network;
+        public Task<HostInfo> InfoAsync(CancellationToken ct) => backend.InfoAsync(ct);
+        public Task WritePtyAsync(string id, byte[] data, CancellationToken ct) => backend.Pty!.WritePtyAsync(id, data, ct);
+        public Task ResizePtyAsync(string id, int columns, int rows, CancellationToken ct) => backend.Pty!.ResizePtyAsync(id, columns, rows, ct);
+        public Task<RemoteHostStream<RemotePtyOutput>> AttachPtyAsync(string id, CancellationToken ct) => backend.Pty!.AttachPtyAsync(id, ct);
+        public Task StopPtyAsync(string id, CancellationToken ct) => backend.Pty!.StopPtyAsync(id, ct);
+        public async Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken ct)
+        {
+            var hold = HoldNext;
+            HoldNext = false;
+            var id = await backend.Pty!.StartPtyAsync(request, ct);
+            if (hold)
+            {
+                Created.TrySetResult(id);
+                await Release.Task.WaitAsync(ct);
+            }
+            return id;
         }
     }
 

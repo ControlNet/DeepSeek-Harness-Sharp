@@ -7,6 +7,7 @@ using Dsh.Core;
 using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
+using Dsh.Gui.Views;
 using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.Notifications;
@@ -264,6 +265,169 @@ public sealed class GuiWorkspaceTests
         });
     }
 
+    [Theory(Timeout = 120000)]
+    [InlineData("dashboard", false)]
+    [InlineData("window", false)]
+    [InlineData("dashboard", true)]
+    [InlineData("window", true)]
+    [InlineData("tab", true)]
+    [InlineData("navigation", false)]
+    public async Task SessionRetirement_PrecedesFleetReplacementAndDisposal(string close, bool disposeWorkspace)
+    {
+        SkipOnWindows();
+        StopPtyGate? stop = null;
+        await using var alpha = await HarnessHostFixture.CreateAsync("grta", TestContext.Current.CancellationToken,
+            backend => stop = new StopPtyGate(backend));
+        await using var beta = await HarnessHostFixture.CreateAsync("grtb", Ct);
+        var observer = await alpha.ConnectAsync("retirement-observer", Ct);
+        await HeadlessGui.RunAsync(async () =>
+        {
+            var workspace = Open(alpha, beta);
+            Task closing = Task.CompletedTask;
+            Task operation = Task.CompletedTask;
+            Task sessionDisposal = Task.CompletedTask;
+            Task repeatedDisposal = Task.CompletedTask;
+            SessionWindow? window = null;
+            try
+            {
+                await ConnectedAsync(workspace);
+                var original = await StartTerminalAsync(workspace, "alpha", Project(alpha, "retirement"),
+                    "original terminal", "echo original-ready; while read line; do echo original:$line; done");
+                var independent = await observer.Pty.StartPtyAsync(new RemotePtyStartRequest(
+                    "/bin/sh", ["-c", "echo independent-ready; while read line; do echo independent:$line; done"]), Ct);
+                await using var originalOutput = RemoteHostPtyTests.TerminalCapture.Attach(observer, original);
+                await using var independentOutput = RemoteHostPtyTests.TerminalCapture.Attach(observer, independent);
+                await originalOutput.WaitForAsync("original-ready", Arrival);
+                await independentOutput.WaitForAsync("independent-ready", Arrival);
+                await UntilAsync(() => Card(workspace, "alpha", original) is not null
+                    && Card(workspace, "alpha", independent) is not null, "real terminal cards");
+                workspace.OpenSession("alpha", original);
+                var session = workspace.ActiveSession!;
+                await session.AddShellCommand.ExecuteAsync(null);
+                var shellTab = session.Tabs[^1];
+                Assert.True(shellTab.IsClosable);
+                var shellId = Assert.Single(await observer.ListHostSessionsAsync(Ct),
+                    item => item.Kind == HostSessionKinds.Terminal && item.SessionId != independent).SessionId;
+                stop!.PtyId = shellId;
+                var previous = workspace.Fleet.Client;
+                var machine = workspace.Fleet.Find("alpha")!;
+                var lease = await machine.WaitConnectedAsync(Ct);
+
+                switch (close)
+                {
+                    case "window":
+                        workspace.OpenInWindow(session.Card);
+                        window = new SessionWindow(session);
+                        window.Closed += (_, _) => closing = workspace.SessionWindowClosedAsync(session);
+                        window.Show();
+                        window.Close();
+                        break;
+                    case "tab":
+                        closing = session.CloseTabCommand.ExecuteAsync(shellTab);
+                        break;
+                    case "navigation":
+                        workspace.OpenSession("alpha", independent);
+                        break;
+                    default:
+                        workspace.ShowDashboard();
+                        Assert.Null(workspace.ActiveSession);
+                        break;
+                }
+                await stop.Entered.Task.WaitAsync(Arrival, Ct);
+                operation = disposeWorkspace ? workspace.DisposeAsync().AsTask() : workspace.ReloadMachinesAsync();
+
+                // The backend is inside the real stop RPC; no elapsed-time assertion or scheduling race is needed.
+                Assert.Same(previous, workspace.Fleet.Client);
+                Assert.False(operation.IsCompleted, "The fleet must remain owned until its shell stop finishes.");
+                Assert.Equal(MachineConnectionState.Connected, machine.State);
+                Assert.False(lease.Lifetime.IsCancellationRequested);
+                sessionDisposal = session.DisposeAsync().AsTask();
+                Assert.False(sessionDisposal.IsCompleted, "Repeated session disposal must join the running teardown.");
+                if (disposeWorkspace)
+                {
+                    repeatedDisposal = workspace.DisposeAsync().AsTask();
+                    Assert.False(repeatedDisposal.IsCompleted, "Repeated workspace disposal must join the running teardown.");
+                }
+
+                stop.Release.TrySetResult();
+                await Task.WhenAll(closing, operation, sessionDisposal, repeatedDisposal).WaitAsync(Arrival, Ct);
+                Assert.Equal(HostSessionStatuses.Exited,
+                    (await observer.ListHostSessionsAsync(Ct)).Single(item => item.SessionId == shellId).Status);
+                Assert.Equal(RemoteHostServer.ReleaseVersion, (await observer.InfoAsync(Ct)).HostVersion);
+                await originalOutput.SendAsync("still-owned-by-host\n");
+                await independentOutput.SendAsync("still-independent\n");
+                await originalOutput.WaitForAsync("original:still-owned-by-host", Arrival);
+                await independentOutput.WaitForAsync("independent:still-independent", Arrival);
+                if (!disposeWorkspace)
+                {
+                    Assert.NotSame(previous, workspace.Fleet.Client);
+                    await ConnectedAsync(workspace);
+                }
+            }
+            finally
+            {
+                stop!.Release.TrySetResult();
+                window?.Close();
+                await Task.WhenAll(closing, operation, sessionDisposal, repeatedDisposal);
+                await workspace.DisposeAsync();
+            }
+        });
+    }
+
+    [Theory(Timeout = 120000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SessionDisposal_JoinsAnAlreadyClosingOwnedShell(bool closeTabFirst)
+    {
+        SkipOnWindows();
+        StopPtyGate? stop = null;
+        await using var alpha = await HarnessHostFixture.CreateAsync("gjna", TestContext.Current.CancellationToken,
+            backend => stop = new StopPtyGate(backend));
+        await using var beta = await HarnessHostFixture.CreateAsync("gjnb", Ct);
+        var observer = await alpha.ConnectAsync("join-observer", Ct);
+        await HeadlessGui.RunAsync(async () =>
+        {
+            var workspace = Open(alpha, beta);
+            Task first = Task.CompletedTask;
+            Task second = Task.CompletedTask;
+            try
+            {
+                await ConnectedAsync(workspace);
+                var original = await StartTerminalAsync(workspace, "alpha", Project(alpha, "join"),
+                    "original terminal", "echo join-ready; while read line; do echo joined:$line; done");
+                await UntilAsync(() => Card(workspace, "alpha", original) is not null, "original terminal card");
+                workspace.OpenSession("alpha", original);
+                var session = workspace.ActiveSession!;
+                await session.AddShellCommand.ExecuteAsync(null);
+                var shellTab = session.Tabs[^1];
+                stop!.PtyId = Assert.Single(await observer.ListHostSessionsAsync(Ct),
+                    item => item.Kind == HostSessionKinds.Terminal).SessionId;
+                first = closeTabFirst
+                    ? session.CloseTabCommand.ExecuteAsync(shellTab)
+                    : session.DisposeAsync().AsTask();
+                await stop.Entered.Task.WaitAsync(Arrival, Ct);
+
+                second = session.DisposeAsync().AsTask();
+                Assert.False(first.IsCompleted);
+                Assert.False(second.IsCompleted, "Session disposal must await an earlier tab close or disposal.");
+
+                stop.Release.TrySetResult();
+                await Task.WhenAll(first, second).WaitAsync(Arrival, Ct);
+                Assert.Empty(session.Tabs);
+                var sessions = await observer.ListHostSessionsAsync(Ct);
+                Assert.Equal(HostSessionStatuses.Exited, sessions.Single(item => item.SessionId == stop.PtyId).Status);
+                Assert.Equal(HostSessionStatuses.Running, sessions.Single(item => item.SessionId == original).Status);
+                Assert.Equal(RemoteHostServer.ReleaseVersion, (await observer.InfoAsync(Ct)).HostVersion);
+            }
+            finally
+            {
+                stop!.Release.TrySetResult();
+                await Task.WhenAll(first, second);
+                await workspace.DisposeAsync();
+            }
+        });
+    }
+
     [Fact(Timeout = 120000)]
     public async Task HarnessTranscript_RendersHostEvents_AndContinuesAfterAHostRestartWithoutDuplicates()
     {
@@ -325,7 +489,7 @@ public sealed class GuiWorkspaceTests
     [Fact]
     public async Task WorkspacePages_ShowNothingUntilRegistered_ThenOpenWithTheWorkspaceContext()
     {
-        using var gui = await GuiTestEnvironment.CreateAsync();
+        await using var gui = await GuiTestEnvironment.CreateAsync();
         await HeadlessGui.RunAsync(async () =>
         {
             var fleet = new FleetWorkspace(new MachineStore(gui.App.Home), Options, () => new FleetClient([], Options));
@@ -369,6 +533,50 @@ public sealed class GuiWorkspaceTests
         Assert.Equal("my-agent", command.Executable);
         Assert.Equal(["--name", "two words", "its", "a b", "{prompt}"], command.Arguments);
         Assert.Throws<ArgumentException>(() => NewSessionViewModel.ParseCommand("   "));
+    }
+
+    [Fact(Timeout = 30000)]
+    public async Task NewSession_OpenedBeforeConnection_EnablesTheSelectedMachineWithoutReselection_AndCancelsClosedForms()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var host = await HarnessHostFixture.CreateAsync("gnc", ct);
+        await HeadlessGui.RunAsync(async () =>
+        {
+            var fleet = new FleetWorkspace(new MachineStore(new HarnessHome(host.Root)), Options,
+                () => new FleetClient([MachineSpec.Local(host.Root, "alpha"), MachineSpec.Local(host.Root, "beta")], Options));
+            var actions = new FleetSessionActions(fleet,
+                () => new HarnessModelChoice(RemoteHostMultiClientTests.Selection, RemoteHostMultiClientTests.Spec));
+            var form = new NewSessionViewModel(fleet, actions, "alpha", host.Root);
+            var window = new NewSessionWindow(form);
+            var closedForm = new NewSessionViewModel(fleet, actions, "beta", host.Root);
+            var closedWindow = new NewSessionWindow(closedForm);
+            try
+            {
+                window.Show();
+                closedWindow.Show();
+                form.Machine = "beta";
+                Assert.Null(form.Agent);
+                Assert.False(form.StartCommand.CanExecute(null));
+                closedWindow.Close();
+                fleet.Start();
+                await UntilAsync(() => form.Agent is { IsAvailable: true } && form.StartCommand.CanExecute(null),
+                    "the selected machine's catalog after its real connection completes");
+                Assert.Equal("beta", form.Machine);
+                Assert.Empty(closedForm.Agents);
+                Assert.Null(closedForm.Agent);
+                window.Close();
+                var lease = await fleet.Find("beta")!.WaitConnectedAsync(ct);
+                Assert.True(await lease.Client.PingAsync(ct) > 0);
+                var previousMachine = await fleet.Find("alpha")!.WaitConnectedAsync(ct);
+                Assert.True(await previousMachine.Client.PingAsync(ct) > 0);
+            }
+            finally
+            {
+                closedWindow.Close();
+                window.Close();
+                await fleet.DisposeAsync();
+            }
+        });
     }
 
     /**
@@ -431,12 +639,47 @@ public sealed class GuiWorkspaceTests
             }
             finally
             {
+                form?.Dispose();
                 await workspace.DisposeAsync();
             }
         });
     }
 
     private static Geometry Icon(string key) => (Geometry)Avalonia.Controls.ResourceNodeExtensions.FindResource(Application.Current!, key)!;
+
+    /** Gates only the stop RPC while all Host and PTY behavior is delegated to the real backend. */
+    private sealed class StopPtyGate(IRemoteHostBackend backend) : IRemoteHostBackend, IRemotePtyBackend
+    {
+        public string? PtyId { get; set; }
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public HostPendingDecisions Pending => backend.Pending;
+        public HostSessionRegistry Sessions => backend.Sessions;
+        public IRemoteSessionBackend Session => backend.Session;
+        public IRemotePtyBackend Pty => this;
+        public IRemoteAgentBackend? Agent => backend.Agent;
+        public HostFileSystem? Files => backend.Files;
+        public HostGitService? Git => backend.Git;
+        public HostNotificationCenter? Notifications => backend.Notifications;
+        public IRemoteSessionEditingBackend? SessionEditing => backend.SessionEditing;
+        public IRemotePluginsBackend? Plugins => backend.Plugins;
+        public IRemoteModelsBackend? Models => backend.Models;
+        public IRemoteNetworkBackend? Network => backend.Network;
+        public Task<HostInfo> InfoAsync(CancellationToken ct) => backend.InfoAsync(ct);
+        public Task<string> StartPtyAsync(RemotePtyStartRequest request, CancellationToken ct) => backend.Pty!.StartPtyAsync(request, ct);
+        public Task WritePtyAsync(string id, byte[] data, CancellationToken ct) => backend.Pty!.WritePtyAsync(id, data, ct);
+        public Task ResizePtyAsync(string id, int columns, int rows, CancellationToken ct) => backend.Pty!.ResizePtyAsync(id, columns, rows, ct);
+        public Task<RemoteHostStream<RemotePtyOutput>> AttachPtyAsync(string id, CancellationToken ct) => backend.Pty!.AttachPtyAsync(id, ct);
+        public async Task StopPtyAsync(string id, CancellationToken ct)
+        {
+            if (id == PtyId)
+            {
+                Entered.TrySetResult();
+                await Release.Task.WaitAsync(ct);
+            }
+            await backend.Pty!.StopPtyAsync(id, ct);
+        }
+    }
 
     private static WorkspacePageEntry Page(WorkspaceViewModel workspace, string id) => workspace.Pages.Available.Single(page => page.Id == id);
 
