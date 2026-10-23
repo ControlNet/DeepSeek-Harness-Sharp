@@ -209,7 +209,7 @@ public sealed class FleetProxyProbeTests
     public async Task SshMissingIdentity_ReportsFailureWithoutPublishingItsPrivatePath()
     {
         FleetSshEndToEndTests.RequireEnvironment();
-        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
         var privatePath = Path.Combine(ssh.Root, "synthetic-private-user", "missing_ed25519");
         var machine = ssh.Machine("missing-identity", Path.Combine(ssh.Root, "no-host")) with { KeyPath = privatePath };
         var raw = await new SshTransport(machine).CaptureAsync("true", Ct);
@@ -397,7 +397,7 @@ public sealed class FleetProxyProbeTests
     public async Task StartupDeadline_ReleasesItsOwnedTransportWithoutStoppingTheExistingHost(ProxyProbeLayer layer)
     {
         FleetSshEndToEndTests.RequireEnvironment();
-        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
         await using var gate = new SshAuthenticationGate();
         await using var host = await HarnessHostFixture.CreateAsync("pbud", Ct);
         var observer = await host.ConnectAsync("independent-deadline-observer", Ct);

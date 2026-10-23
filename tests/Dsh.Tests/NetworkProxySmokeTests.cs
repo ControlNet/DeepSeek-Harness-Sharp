@@ -411,7 +411,7 @@ public sealed class NetworkProxySmokeTests
             phase = "tui-ready";
             await WaitForTuiReadyAsync(tui);
             phase = "gui-save";
-            await using (var gui = await NetworkGuiProcess.StartAsync(executable, root, SurfaceEvidence("shared-save"), Ct))
+            await using (var gui = await NetworkGuiProcess.StartAsync(executable, root, SurfaceEvidence("shared-save"), TestContext.Current.CancellationToken))
             {
                 await gui.ClickAsync("text", "设置", Ct);
                 await gui.ClickAsync("text", "网络", Ct);

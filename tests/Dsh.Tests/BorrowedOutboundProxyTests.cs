@@ -493,7 +493,7 @@ public sealed class BorrowedOutboundProxyTests
     public async Task RealCliTunnelTest_ConsumesPublicHttps200_AndRetiresOnlyItsIndependentTransport(string mode)
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
-        await using var ssh = await TestSshServer.StartAsync(Ct);
+        await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
         await using var selected = new TestForwardProxy(forward: true, pauseResponses: true);
         await using var other = new TestForwardProxy();
         await using var baseline = new TestForwardProxy(keepAlive: true);
