@@ -202,7 +202,6 @@ public sealed class GuiRemoteWorkspaceTests
             var machine = fleet.Find("target")!;
             Task startup = Task.CompletedTask;
             Task retirement = Task.CompletedTask;
-            var completedOffline = false;
             try
             {
                 // Only this view's Fleet link is unpublished; the independent observer already owns live PTYs.
@@ -210,25 +209,19 @@ public sealed class GuiRemoteWorkspaceTests
                 startup = view.AddShellCommand.ExecuteAsync(null);
                 Assert.False(startup.IsCompleted);
                 retirement = view.DisposeAsync().AsTask();
-                try
-                {
-                    await retirement.WaitAsync(TimeSpan.FromSeconds(2), ct);
-                    completedOffline = true;
-                }
-                catch (TimeoutException)
-                {
-                    // Keep the bounded result, then release the old implementation's wait before asserting.
-                }
+                await retirement.WaitAsync(ct);
+                Assert.Equal(MachineConnectionState.Offline, machine.State);
+                Assert.True(startup.IsCompletedSuccessfully);
             }
             finally
             {
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(20));
                 fleet.Start();
-                await machine.WaitConnectedAsync(ct).WaitAsync(TimeSpan.FromSeconds(20), ct);
-                await Task.WhenAll(startup, retirement).WaitAsync(TimeSpan.FromSeconds(20), ct);
+                await machine.WaitConnectedAsync(cleanup.Token);
+                await Task.WhenAll(startup, retirement).WaitAsync(cleanup.Token);
                 await view.DisposeAsync();
             }
 
-            Assert.True(completedOffline, "Retiring an offline session must not wait for its Fleet link.");
             Assert.Empty(view.Tabs);
             Assert.False(view.HasError);
             Assert.Equal(MachineConnectionState.Connected, machine.State);

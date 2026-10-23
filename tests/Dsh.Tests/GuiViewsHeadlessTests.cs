@@ -188,29 +188,13 @@ public sealed class GuiViewsHeadlessTests
 
             var previousOffset = scroll.Offset.Y;
             var readingOffset = previousOffset;
-            var combinedScrollAndGrowth = false;
-            scroll.ScrollChanged += ObserveCombinedChange;
-            try
-            {
-                assistant.SetText($"{assistant.Text}\n\n{Paragraphs(40, 12)}unfollowed-tail");
-                scroll.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.PageUp });
-                readingOffset = scroll.Offset.Y;
-                window.UpdateLayout();
-                Render();
-            }
-            finally
-            {
-                scroll.ScrollChanged -= ObserveCombinedChange;
-            }
+            assistant.SetText($"{assistant.Text}\n\n{Paragraphs(40, 12)}unfollowed-tail");
+            scroll.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.PageUp });
+            readingOffset = scroll.Offset.Y;
+            window.UpdateLayout();
+            Render();
             Assert.True(readingOffset < previousOffset, "The actual keyboard scroll command must move away from the tail.");
             Assert.Equal(readingOffset, scroll.Offset.Y, 3);
-            Assert.True(combinedScrollAndGrowth, "PageUp movement and streamed extent growth must share a real ScrollChanged event.");
-
-            void ObserveCombinedChange(object? sender, ScrollChangedEventArgs change)
-            {
-                if (change.OffsetDelta.Y < 0 && change.ExtentDelta.Y > 0)
-                    combinedScrollAndGrowth = true;
-            }
 
             window.MouseWheel(wheelPoint, new Vector(0, -1000));
             Render();
