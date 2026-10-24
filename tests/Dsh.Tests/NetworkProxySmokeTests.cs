@@ -122,7 +122,7 @@ public sealed class NetworkProxySmokeTests
             TempTree.AssertFitsMacOsSocketLimit(Path.Combine(root, "run", "host.sock"));
             var source = ssh.Machine("iroh-public-proxy", root);
             var receiver = IrohRemoteInstaller.ParseStatus(await new SshTransport(source).RunAsync(
-                $"{RemoteShell.Prelude(source)}{RemoteShell.Quote(executable)} remote enable --ssh-port {source.Port}", Ct));
+                $"{RemoteShell.Prelude(source)}{RemoteShell.Quote(executable)} iroh-remote enable --ssh-port {source.Port}", Ct));
             Assert.True(receiver.Running, "The fixture's real iroh receiver must be running.");
             var user = $"u{Guid.NewGuid():N}";
             var password = $"p{Guid.NewGuid():N}";

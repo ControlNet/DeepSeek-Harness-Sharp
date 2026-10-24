@@ -19,7 +19,7 @@ internal static class FleetCli
     private const string MachineCommand = "machine";
     private const string SessionCommand = "session";
     private const string DoctorCommand = "doctor";
-    private const string RemoteCommand = "remote";
+    private const string IrohRemoteCommand = "iroh-remote";
 
     /** The shell convention for a command stopped by Ctrl+C (128 + SIGINT). */
     private const int InterruptedExitCode = 130;
@@ -36,7 +36,7 @@ internal static class FleetCli
         AllowDuplicateProperties = false,
     });
 
-    public static bool Handles(string[] args) => args is [MachineCommand or SessionCommand or DoctorCommand or RemoteCommand, ..];
+    public static bool Handles(string[] args) => args is [MachineCommand or SessionCommand or DoctorCommand or IrohRemoteCommand, ..];
 
     /** resumeHarness opens a harness session of the local machine in this terminal's TUI. */
     public static async Task<int> RunAsync(HarnessHome home, string[] args, Func<HarnessHome, string, Task<int>> resumeHarness)
@@ -63,7 +63,7 @@ internal static class FleetCli
             {
                 MachineCommand => await RunMachineAsync(context),
                 SessionCommand => await RunSessionAsync(context),
-                RemoteCommand => await RunReceiverAsync(context),
+                IrohRemoteCommand => await RunIrohRemoteAsync(context),
                 _ => await RunDoctorAsync(context),
             };
         }
@@ -102,9 +102,9 @@ internal static class FleetCli
                dsharp session stop <machine>/<session>
                dsharp doctor [--machine <name>]
                dsharp doctor --proxy-layer ssh|local_outbound|remote_outbound [--machine <name>]
-               dsharp remote enable [--ssh-port N] [--relay-url <url>]...   (enable this machine's receiver)
-               dsharp remote info
-               dsharp remote disable
+        dsharp iroh-remote enable [--ssh-port N] [--relay-url <url>]...   (enable this machine's iroh receiver)
+        dsharp iroh-remote info
+        dsharp iroh-remote disable
         """;
 
     private static Task<int> RunMachineAsync(FleetCliContext context) => context.Arguments.Subcommand switch
@@ -416,7 +416,7 @@ internal static class FleetCli
         return 0;
     }
 
-    private static async Task<int> RunReceiverAsync(FleetCliContext context)
+    private static async Task<int> RunIrohRemoteAsync(FleetCliContext context)
     {
         var activationText = context.Arguments.Value("--activation");
         var activation = activationText is null ? (Guid?)null : Guid.TryParseExact(activationText, "N", out var id) ? id : throw new ArgumentException("Invalid receiver activation identifier.");
@@ -430,7 +430,7 @@ internal static class FleetCli
         {
             "enable" => await IrohReceiver.EnableAsync(context.Home, Port(context.Arguments, "--ssh-port"), context.Arguments.Values("--relay-url"), activation, context.Cancellation),
             "info" => await IrohReceiver.InfoAsync(context.Home, context.Cancellation),
-            _ => throw new InvalidOperationException("remote requires a subcommand (enable | info | disable)"),
+            _ => throw new InvalidOperationException("iroh-remote requires a subcommand (enable | info | disable)"),
         };
         await Console.Out.WriteLineAsync($"endpointId={status.EndpointId}");
         await Console.Out.WriteLineAsync($"running={status.Running.ToString().ToLowerInvariant()}");
@@ -745,7 +745,5 @@ internal sealed record FleetCliContext(
 
 [JsonSerializable(typeof(OutboundTunnelSpec))]
 internal partial class FleetTunnelJsonContext : JsonSerializerContext;
-
-
 
 

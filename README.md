@@ -444,7 +444,7 @@ dsh-gui
 检查 `server --help` 中确有 `--ready-file`；命令存在但不兼容时，接收端启用仍会明确失败。
 以上 `PATH` 修改仅作用于示例的执行环境及其子进程；从该环境启动 `dsh-gui` 可让 GUI 继承它，从桌面图标、Finder 或服务启动则需在对应登录/启动环境配置同一目录并重新启动应用。
 不要只修改交互式 shell 的 `PATH` 就假定桌面 GUI 或远端非交互 SSH 同样可见。
-在接收目标重复相应安装步骤，使目标本地的 `dsharp remote enable` 以及远端非交互 SSH 启动的 `dsharp` 都能通过其 `PATH` 找到兼容命令；已有 SSH 自动启用只部署接收端产品，不替目标安装原生命令。
+在接收目标重复相应安装步骤，使目标本地的 `dsharp iroh-remote enable` 以及远端非交互 SSH 启动的 `dsharp` 都能通过其 `PATH` 找到兼容命令；已有 SSH 自动启用只部署接收端产品，不替目标安装原生命令。
 
 **已有一次可达的 SSH 连接：**
 
@@ -457,19 +457,19 @@ dsharp machine test home
 GUI 中添加或选择普通 SSH 机器，然后点击「通过现有 SSH 启用 Iroh」。
 客户端单独部署接收端产品（目标端兼容原生命令须预先安装），通过真实 iroh SSH 命令验证认证与身份后才保存转换后的机器配置，不替换正在运行的 Host。
 失败或取消保留原 SSH 配置；本次新启动的接收端会回滚，已有运行中的接收端只复用、不擅自重配。
-如果 SSH 本身已经断开而无法确认回滚，错误会明确要求在目标端运行 `dsharp remote disable`，不把清理失败当作成功。
+如果 SSH 本身已经断开而无法确认回滚，错误会明确要求在目标端运行 `dsharp iroh-remote disable`，不把清理失败当作成功。
 
 **客户端完全无法 SSH 到达目标：**
 
 先通过本机操作、云控制台或其他已有方式，把包含可选接入支持的发行包放到目标机器，完成上面的兼容命令安装与 `PATH` 配置后运行：
 
 ```bash
-dsharp remote enable                         # 默认连接目标本机 127.0.0.1:22 的 sshd
-dsharp remote info                           # 显示 endpointId、运行状态和后台服务说明
-dsharp remote disable                        # 停止接入，保留身份、原有 sshd 和 Host 会话
+dsharp iroh-remote enable                         # 默认连接目标本机 127.0.0.1:22 的 sshd
+dsharp iroh-remote info                           # 显示 endpointId、运行状态和后台服务说明
+dsharp iroh-remote disable                        # 停止接入，保留身份、原有 sshd 和 Host 会话
 ```
 
-自定义 sshd 端口使用 `dsharp remote enable --ssh-port 2222`。
+自定义 sshd 端口使用 `dsharp iroh-remote enable --ssh-port 2222`。
 未检测到本机 SSH 服务时会给出对应平台的安装或启用指引，不自动提权、改防火墙或安装另一套 SSH 服务。
 在客户端选择「新增 Iroh 机器」，填写目标端显示的 Endpoint ID、SSH 用户和认证信息；命令行等价入口为：
 
@@ -483,7 +483,7 @@ SSH-over-iroh 使用独立的主机密钥别名，不借用普通 TCP SSH 的已
 私钥保存在目标 harness home 的 `iroh-receiver/identity/` 中，备份和恢复时保留整对身份文件；删除它们会改变 Endpoint ID。
 停止后重新启用会复用原身份。
 
-可在目标端 `remote enable`、客户端 `machine add` 或 `machine enable-iroh` 上重复传入 `--relay-url https://relay.example.net/`，GUI 中每行填写一个 relay URL。
+可在目标端 `iroh-remote enable`、客户端 `machine add` 或 `machine enable-iroh` 上重复传入 `--relay-url https://relay.example.net/`，GUI 中每行填写一个 relay URL。
 机器配置对应 `kind: iroh`、`endpointId` 与 `relayUrls`；未指定时使用上游默认 relay。
 双方需要可用的出站网络，无法直连时必须能访问所选 relay；公共 relay 没有本产品的可用性保证，带宽和服务限制以[上游说明](https://docs.iroh.computer/concepts/relays)为准。
 设备发现与 relay 传输不是同一配置：自定义 relay 不会替换上游 N0 发现服务；不使用公共发现时，需要局域网 mDNS 实际可用，其可用性受平台权限和网络条件限制。

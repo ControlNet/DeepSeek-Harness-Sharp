@@ -6,7 +6,7 @@ public static class IrohRemoteInstaller
     public static async Task<MachineSpec> EnableAndSaveAsync(MachineSpec machine, FleetOptions options, Action<MachineSpec> persist, Action<string>? progress, CancellationToken cancellationToken)
     {
         if (machine.Kind != MachineKinds.Ssh)
-            throw new ArgumentException("Automatic iroh setup requires a reachable normal SSH machine; use dsharp remote enable on the target for local setup.", nameof(machine));
+            throw new ArgumentException("Automatic iroh setup requires a reachable normal SSH machine; use dsharp iroh-remote enable on the target for local setup.", nameof(machine));
         MachineSpec.ValidateRelayUrls(machine.RelayUrls ?? []);
         _ = IrohSshComponent.RequireExecutable();
         progress?.Invoke("Deploying the current dsharp receiver over the existing SSH connection …");
@@ -15,8 +15,8 @@ public static class IrohRemoteInstaller
         var connection = (await transport.RunAsync("printf '%s' \"$SSH_CONNECTION\"", cancellationToken).ConfigureAwait(false))
             .Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (connection is not [_, _, _, var portText] || !int.TryParse(portText, out var sshPort) || sshPort is <= 0 or > ushort.MaxValue)
-            throw new IOException("Cannot determine the target sshd's listening port from the SSH connection; run dsharp remote enable --ssh-port on the target.");
-        var receiverCommand = $"{RemoteShell.Prelude(machine)}{RemoteShell.Quote(commandPath)} remote";
+            throw new IOException("Cannot determine the target sshd's listening port from the SSH connection; run dsharp iroh-remote enable --ssh-port on the target.");
+        var receiverCommand = $"{RemoteShell.Prelude(machine)}{RemoteShell.Quote(commandPath)} iroh-remote";
         var previous = ParseStatus(await transport.RunAsync($"{receiverCommand} info", cancellationToken).ConfigureAwait(false));
         var startingReceiver = false;
         var activation = Guid.NewGuid().ToString("N");
@@ -69,7 +69,7 @@ public static class IrohRemoteInstaller
         }
         catch (Exception rollbackFailure)
         {
-            throw new IOException($"{failure.Message} Rollback could not disable the newly started receiver: {rollbackFailure.Message}. Run dsharp remote disable on the target.", new AggregateException(failure, rollbackFailure));
+            throw new IOException($"{failure.Message} Rollback could not disable the newly started receiver: {rollbackFailure.Message}. Run dsharp iroh-remote disable on the target.", new AggregateException(failure, rollbackFailure));
         }
     }
 

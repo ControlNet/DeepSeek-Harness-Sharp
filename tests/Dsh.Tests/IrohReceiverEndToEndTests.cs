@@ -21,7 +21,7 @@ public sealed class IrohReceiverEndToEndTests
         var direct = server.Machine("receiver", root);
         string[] relays = directOnly ? ["http://127.0.0.1:9"] : [];
         var readyPath = IrohReceiver.ReadinessPath(IrohReceiver.ReceiverRoot(new HarnessHome(root)));
-        var command = $"{RemoteShell.Prelude(direct)}{RemoteShell.Quote(executable)} remote";
+        var command = $"{RemoteShell.Prelude(direct)}{RemoteShell.Quote(executable)} iroh-remote";
         var enable = $"{command} enable --ssh-port {direct.Port}{(directOnly ? " --relay-url http://127.0.0.1:9" : "")}";
         var activation = Guid.NewGuid().ToString("N");
         try

@@ -43,7 +43,7 @@ public static partial class IrohReceiver
             "systemd" => $"systemd user service {name}; survives logout/boots only when an administrator has enabled loginctl enable-linger {Environment.UserName}",
             "launchd" => $"launchd user agent {name}; starts at user login",
             "task" => $"Windows current-user scheduled task {name}; starts at user login, without elevation",
-            "detached" => $"detached receiver; does not auto-start after reboot; rerun dsharp remote enable; log: {LogPath}",
+            "detached" => $"detached receiver; does not auto-start after reboot; rerun dsharp iroh-remote enable; log: {LogPath}",
             _ => "receiver is not enabled",
         };
 

@@ -19,7 +19,7 @@ public sealed class IrohHostEndToEndTests
         var source = server.Machine("iroh-host", root);
         try
         {
-            var receiver = IrohRemoteInstaller.ParseStatus(await new SshTransport(source).RunAsync($"{RemoteShell.Prelude(source)}{RemoteShell.Quote(executable)} remote enable --ssh-port {source.Port}", ct));
+            var receiver = IrohRemoteInstaller.ParseStatus(await new SshTransport(source).RunAsync($"{RemoteShell.Prelude(source)}{RemoteShell.Quote(executable)} iroh-remote enable --ssh-port {source.Port}", ct));
             var endpoint = source with { Kind = MachineKinds.Iroh, Host = "192.0.2.1", EndpointId = receiver.EndpointId };
             var options = FleetConnectionTests.TestOptions with
             {
