@@ -27,6 +27,8 @@ public sealed class MachineStoreTests : IDisposable
                 EndpointId = new string('a', MachineSpec.IrohEndpointIdLength),
                 RelayUrls = ["https://relay.example.org/"],
                 KeyPath = "/keys/home",
+                IrohExecutablePath = "/usr/local/bin/iroh-ssh",
+                IrohArguments = "-i /keys/home",
             },
         ];
         store.Save(new FleetConfig(machines, new DeploySettings { AutoDeploy = false, Via = DownloadVia.Client, ReleaseVersion = "v0.2.0" }));
@@ -382,5 +384,4 @@ public sealed class MachineStoreTests : IDisposable
     }
 
 }
-
 

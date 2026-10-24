@@ -5,6 +5,7 @@ public interface ISshTransportAdapter
 {
     string Kind { get; }
     bool IsAvailable { get; }
+    string? FindExecutable() => null;
     SshTransportConfiguration Configure(MachineSpec machine);
 }
 

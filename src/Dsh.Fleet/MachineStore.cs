@@ -86,7 +86,9 @@ public sealed class MachineStore(HarnessHome home)
             machine.SshOptions,
             machine.EndpointId,
             machine.RelayUrls,
-            machine.OutboundTunnel is { } tunnel ? new OutboundTunnelSpec(tunnel.Mode ?? "", tunnel.ProxyUrl ?? "", tunnel.LocalPort) : null);
+            machine.OutboundTunnel is { } tunnel ? new OutboundTunnelSpec(tunnel.Mode ?? "", tunnel.ProxyUrl ?? "", tunnel.LocalPort) : null,
+            machine.IrohExecutablePath,
+            machine.IrohArguments);
 
     private static DeploySettings FromSettings(FleetDeploySettings? deploy)
     {
@@ -130,6 +132,8 @@ public sealed class MachineStore(HarnessHome home)
             SshOptions = machine.SshOptions is { Count: > 0 } options ? [.. options] : null,
             EndpointId = machine.EndpointId,
             RelayUrls = machine.RelayUrls is { Count: > 0 } relays ? [.. relays] : null,
+            IrohExecutablePath = machine.IrohExecutablePath,
+            IrohArguments = machine.IrohArguments,
             OutboundTunnel = machine.OutboundTunnel is { } tunnel
                 ? new OutboundTunnelSettings { Mode = tunnel.Mode, ProxyUrl = tunnel.ProxyUrl, LocalPort = tunnel.LocalPort }
                 : null,
@@ -162,6 +166,18 @@ public sealed class MachineStore(HarnessHome home)
         var incomplete = machines.FirstOrDefault(machine => machine.Kind == MachineKinds.Ssh && string.IsNullOrWhiteSpace(machine.Host));
         if (incomplete is not null)
             throw new InvalidOperationException($"SSH machine \"{incomplete.Name}\" has no host");
+        var noUser = machines.FirstOrDefault(machine => !machine.IsLocal && string.IsNullOrWhiteSpace(machine.User));
+        if (noUser is not null)
+            throw new InvalidOperationException($"remote machine \"{noUser.Name}\" has no SSH user");
+        var badAuth = machines.FirstOrDefault(machine => !machine.IsLocal && machine.Auth is not (SshAuth.Agent or SshAuth.Key or SshAuth.Password));
+        if (badAuth is not null)
+            throw new InvalidOperationException($"remote machine \"{badAuth.Name}\" has an invalid auth mode");
+        var noKey = machines.FirstOrDefault(machine => !machine.IsLocal && machine.Auth == SshAuth.Key && string.IsNullOrWhiteSpace(machine.KeyPath));
+        if (noKey is not null)
+            throw new InvalidOperationException($"SSH machine \"{noKey.Name}\" uses key auth without a key path");
+        var noPassword = machines.FirstOrDefault(machine => !machine.IsLocal && machine.Auth == SshAuth.Password && string.IsNullOrEmpty(machine.Password));
+        if (noPassword is not null)
+            throw new InvalidOperationException($"SSH machine \"{noPassword.Name}\" uses password auth without a password");
         foreach (var machine in machines)
         {
             machine.ValidateTransportSettings();
@@ -202,4 +218,3 @@ public sealed class MachineStore(HarnessHome home)
         return proxy;
     }
 }
-

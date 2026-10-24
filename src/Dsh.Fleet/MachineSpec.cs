@@ -45,7 +45,9 @@ public sealed record MachineSpec(
     IReadOnlyList<string>? SshOptions = null,
     string? EndpointId = null,
     IReadOnlyList<string>? RelayUrls = null,
-    OutboundTunnelSpec? OutboundTunnel = null)
+    OutboundTunnelSpec? OutboundTunnel = null,
+    string? IrohExecutablePath = null,
+    string? IrohArguments = null)
 {
     public const int DefaultSshPort = 22;
     public const int IrohEndpointIdLength = 64;
@@ -67,6 +69,12 @@ public sealed record MachineSpec(
             return;
         if (EndpointId is not { Length: IrohEndpointIdLength } endpoint || endpoint.Any(character => !char.IsAsciiHexDigit(character)))
             throw new InvalidOperationException($"iroh machine \"{Name}\" requires a {IrohEndpointIdLength}-character hexadecimal Endpoint ID");
+        if (string.IsNullOrWhiteSpace(User))
+            throw new InvalidOperationException($"iroh machine \"{Name}\" requires an SSH user");
+        if (IrohExecutablePath is { Length: > 0 } executable && (executable.Contains('\n') || executable.Contains('\r')))
+            throw new InvalidOperationException("iroh executable path must be a single line");
+        if (IrohArguments is { Length: > 0 } arguments && (arguments.Contains('\n') || arguments.Contains('\r')))
+            throw new InvalidOperationException("iroh arguments must be a single line");
         if (!string.IsNullOrEmpty(Proxy) || (SshOptions ?? []).Any(IsProxyOverride))
             throw new InvalidOperationException("iroh machines manage their transport; remove ProxyCommand, ProxyJump and Proxy settings");
     }
