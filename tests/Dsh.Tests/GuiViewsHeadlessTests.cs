@@ -52,7 +52,7 @@ public sealed class GuiViewsHeadlessTests
     });
 
     [Fact]
-    public async Task GitView_RendersOneDiffCardPerFileOfTheSelectedCommit() => await HeadlessGui.RunAsync(async () =>
+    public async Task GitView_RendersOneDiffCardPerFileOfTheSelectedCommit()
     {
         using var repo = new GitTestRepository();
         repo.Commit(("a.txt", "one\n"), ("b.txt", "two\n"));
@@ -61,16 +61,18 @@ public sealed class GuiViewsHeadlessTests
         await HarnessHostFixture.OpenProjectAsync(client, repo.Sandbox, TestContext.Current.CancellationToken);
         var viewModel = new GitViewModel(client.Git, client.Files, repo.Root, RemotePaths.StyleFor((await client.InfoAsync(TestContext.Current.CancellationToken)).Platform));
         Assert.True(await viewModel.RefreshAsync(), viewModel.Status);
-        var window = Show(new GitView { DataContext = viewModel });
+        await HeadlessGui.RunAsync(async () =>
+        {
+            var window = Show(new GitView { DataContext = viewModel });
+            viewModel.SelectedCommit = viewModel.Commits.Single();
+            await FleetConnectionTests.WaitForAsync(() => viewModel.DiffCards.Count == 2);
+            Dispatcher.UIThread.RunJobs();
+            window.CaptureRenderedFrame()?.Dispose();
 
-        viewModel.SelectedCommit = viewModel.Commits.Single();
-        await FleetConnectionTests.WaitForAsync(() => viewModel.DiffCards.Count == 2);
-        Dispatcher.UIThread.RunJobs();
-        window.CaptureRenderedFrame()?.Dispose();
-
-        Assert.Equal(["a.txt", "b.txt"], window.GetVisualDescendants().OfType<DiffView>().Select(view => view.Card!.Title));
-        window.Close();
-    });
+            Assert.Equal(["a.txt", "b.txt"], window.GetVisualDescendants().OfType<DiffView>().Select(view => view.Card!.Title));
+            window.Close();
+        });
+    }
 
     [Fact]
     public async Task MachinesView_ListsTheImplicitLocalMachineAndTheSavedOnes() => await HeadlessGui.RunAsync(async () =>

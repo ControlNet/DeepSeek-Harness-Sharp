@@ -27,10 +27,17 @@ public sealed class GuiHostChatIntegrationTests
         await using var host = await HarnessHostFixture.CreateAsync("gc", TestContext.Current.CancellationToken);
         await using var gui = await GuiTestEnvironment.CreateIsolatedAsync();
         var observer = await host.ConnectAsync("other-client", Ct);
+        await using var fleet = Fleet(host, gui);
+        var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Ct);
+        for (var attempt = 0; attempt < 100 && !chat.Commands.Any(command => command.Name == "preset"); attempt++)
+        {
+            await chat.RefreshCommandsAsync();
+            if (!chat.Commands.Any(command => command.Name == "preset"))
+                await Task.Delay(50, Ct);
+        }
+        Assert.Contains(chat.Commands, command => command.Name == "preset");
         await HeadlessGui.RunAsync(async () =>
         {
-            await using var fleet = Fleet(host, gui);
-            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Ct);
             var agents = gui.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
             var before = agents.List().Count;
             await using var viewModel = new MainViewModel(gui.App, chat);
@@ -39,13 +46,6 @@ public sealed class GuiHostChatIntegrationTests
             Assert.Contains(await observer.ListHostSessionsAsync(Ct), session => session.SessionId == id && session.Kind == HostSessionKinds.Harness);
 
             viewModel.Composer.Input = "/preset creative";
-            for (var attempt = 0; attempt < 100 && !viewModel.HasCommand("preset"); attempt++)
-            {
-                await viewModel.RefreshCommandsAsync();
-                if (!viewModel.HasCommand("preset"))
-                    await Task.Delay(50);
-            }
-            Assert.True(viewModel.HasCommand("preset"), "the host did not publish the preset command");
             await GuiTestEnvironment.PumpAsync(viewModel.SubmitCommand.ExecuteAsync(null));
             await GuiTestEnvironment.WaitForAsync(viewModel, () => viewModel.Preset == "creative");
             Assert.Equal("creative", viewModel.Preset);

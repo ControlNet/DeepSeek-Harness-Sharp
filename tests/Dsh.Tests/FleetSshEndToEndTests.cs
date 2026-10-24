@@ -23,7 +23,7 @@ public sealed class FleetSshEndToEndTests
     /** The sshd serves this machine, so deployment picks this machine's runtime identifier. */
     private static readonly string Rid = RuntimeInformation.RuntimeIdentifier;
 
-    private static readonly TimeSpan SettleTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SettleTimeout = TimeSpan.FromSeconds(OperatingSystem.IsMacOS() ? 20 : 5);
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 

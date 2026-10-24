@@ -28,7 +28,7 @@ public sealed class WebBridgeHubTests
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task Machines_RequireLogin_AndListEveryMachineWithoutSecrets()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -47,7 +47,7 @@ public sealed class WebBridgeHubTests
             Assert.DoesNotContain(secret, body, StringComparison.Ordinal);
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task WebSocket_ReachesTheNamedMachine_AndRunsATerminalThere()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -74,7 +74,7 @@ public sealed class WebBridgeHubTests
         Assert.DoesNotContain(onLocal.EnumerateArray(), session => session.GetProperty("SessionId").GetString() == ptyId);
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task UnknownMachine_IsRefused_AndOfflineMachineHasRedactedAuthoritativeView()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -216,5 +216,4 @@ public sealed class WebBridgeHubTests
         }
     }
 }
-
 

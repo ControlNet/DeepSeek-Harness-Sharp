@@ -17,6 +17,7 @@ public class TuiOverlayCpuTests
 
         var cancellationToken = TestContext.Current.CancellationToken;
         await harness.WaitForAsync("快捷键", TimeSpan.FromSeconds(5));
+        await harness.WaitForAsync("上下文", TimeSpan.FromSeconds(10));
 
         var divider = DividerColumn(harness.ReadScreen());
         Assert.True(divider > 0, "初始布局里找不到右侧栏分隔线");
