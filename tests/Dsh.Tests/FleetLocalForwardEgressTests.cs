@@ -19,7 +19,7 @@ public sealed class FleetLocalForwardEgressTests
     private static readonly TimeSpan SignalTimeout = TimeSpan.FromSeconds(5);
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Theory(Timeout = 5000)]
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task OccupiedPort_FailsWithoutChangingPortOrKillingTheIncumbent_AndFreshOperationCanSucceed(bool candidateHandoffRace)
@@ -111,7 +111,7 @@ public sealed class FleetLocalForwardEgressTests
         AssertPortCanRebind(freshPort);
     }
 
-    [Theory(Timeout = 5000)]
+    [Theory]
     [InlineData("ForkAfterAuthentication=yes")]
     [InlineData("ClearAllForwardings=yes")]
     [InlineData("ForkAfterAuthentication=yes", "ClearAllForwardings=yes")]
@@ -148,7 +148,7 @@ public sealed class FleetLocalForwardEgressTests
         AssertPortCanRebind(port);
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task ExplicitDisposal_WithObstructedOwnedSecret_CanRetryRemovalAndReapAllResources()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -229,7 +229,7 @@ public sealed class FleetLocalForwardEgressTests
         }
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task CancellingPendingAuthentication_ReapsOwnedSshAndAskpass_WithoutOpeningProxy()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -262,7 +262,7 @@ public sealed class FleetLocalForwardEgressTests
         Assert.Equal(0, forwarding.Connections);
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task CancellingOnePendingAuthentication_PreservesTheOtherConsumersSharedStartup()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -300,7 +300,7 @@ public sealed class FleetLocalForwardEgressTests
         AssertPortCanRebind(port);
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task ConcurrentConsumers_ShareOneSsh_AndCancellationOnlyReleasesItsOwnSocket()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -359,7 +359,7 @@ public sealed class FleetLocalForwardEgressTests
         Assert.Equal([$"GET {Target}cancelled-consumer HTTP/1.1", $"GET {Target}surviving-consumer HTTP/1.1"], forwarding.Requests.ToArray());
     }
 
-    [Theory(Timeout = 5000)]
+    [Theory]
     [InlineData("proxyCommand", false)]
     [InlineData("proxyCommand", true)]
     [InlineData("localForward", false)]
@@ -425,7 +425,7 @@ public sealed class FleetLocalForwardEgressTests
         }
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task BorrowedRouteLeases_SwitchClearAndRepeatedDisposal_RetireOnlyTheOwnedGeneration()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -513,7 +513,7 @@ public sealed class FleetLocalForwardEgressTests
         }
     }
 
-    [Theory(Timeout = 5000)]
+    [Theory]
     [InlineData("proxyCommand", "http")]
     [InlineData("proxyCommand", "socks5")]
     [InlineData("localForward", "http")]

@@ -29,13 +29,13 @@ public sealed class GuiHostChatIntegrationTests
         var observer = await host.ConnectAsync("other-client", Ct);
         await using var fleet = Fleet(host, gui);
         var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Ct);
-        for (var attempt = 0; attempt < 100 && !chat.Commands.Any(command => command.Name == "preset"); attempt++)
+        for (var attempt = 0; attempt < 100 && !chat.Commands.Any(command => command.Name == "goal"); attempt++)
         {
             await chat.RefreshCommandsAsync();
-            if (!chat.Commands.Any(command => command.Name == "preset"))
+            if (!chat.Commands.Any(command => command.Name == "goal"))
                 await Task.Delay(50, Ct);
         }
-        Assert.Contains(chat.Commands, command => command.Name == "preset");
+        Assert.Contains(chat.Commands, command => command.Name == "goal");
         await HeadlessGui.RunAsync(async () =>
         {
             var agents = gui.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
@@ -45,12 +45,13 @@ public sealed class GuiHostChatIntegrationTests
             Assert.Equal(before, agents.List().Count);
             Assert.Contains(await observer.ListHostSessionsAsync(Ct), session => session.SessionId == id && session.Kind == HostSessionKinds.Harness);
 
-            viewModel.Composer.Input = "/preset creative";
+            viewModel.Composer.Input = "/goal";
             await GuiTestEnvironment.PumpAsync(viewModel.SubmitCommand.ExecuteAsync(null));
-            await GuiTestEnvironment.WaitForAsync(viewModel, () => viewModel.Preset == "creative");
-            Assert.Equal("creative", viewModel.Preset);
+            await GuiTestEnvironment.WaitForAsync(viewModel,
+                () => viewModel.Messages.Any(message => message.Kind == MessageKind.System && message.Text.Contains("no current goal", StringComparison.Ordinal)));
             var snapshot = await observer.GetSessionSnapshotAsync(id, Ct);
-            Assert.Contains(snapshot.Events, item => item.Type == "preset/mode");
+            Assert.Contains(snapshot.Events, item => item.Type == "command/run");
+            Assert.Contains(snapshot.Events, item => item.Type == "command/done");
 
             var png = new byte[] { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3 };
             viewModel.AttachImage("clipboard.png", png, 3, 2);
