@@ -222,6 +222,8 @@ public sealed class WorkingDirectoryTests : IDisposable
                 Assert.Skip("Windows-only shell; this host is not Windows");
             if (tool == "wsl" && !File.Exists(Path.Combine(Environment.SystemDirectory, "wsl.exe")))
                 Assert.Skip("WSL is not installed on this Windows host");
+            if (tool == "wsl" && !ShellProbe.Wsl)
+                Assert.Skip("WSL/Linux is unavailable or unresponsive");
         }
         else if (tool.StartsWith("bash", StringComparison.Ordinal) ? !ShellProbe.Bash : !ShellProbe.Pwsh)
             Assert.Skip($"Required shell for {tool} is unavailable");

@@ -270,12 +270,18 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
     public async Task PresetChip_Click_Item_SwitchesPreset() => await HeadlessGui.RunAsync(async () =>
     {
         // 环境组合必须离开 UI 线程(Task.Run): 在 headless dispatcher 上组合会拖垮后续的窗口测试。
-        var environment = await GuiTestEnvironment.CreateAsync();
+        var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         await using var environmentScope = environment;
         var window = new MainWindow(environment.App, await environment.OpenChatAsync());
         var viewModel = window.ViewModel!;
         window.Show();
         viewModel.ShowChatCommand.Execute(null);
+        for (var attempt = 0; attempt < 50 && !viewModel.HasCommand("preset"); attempt++)
+        {
+            await viewModel.RefreshCommandsAsync();
+            await Task.Delay(100);
+        }
+        Assert.True(viewModel.HasCommand("preset"), "preset command was not registered");
         Dispatcher.UIThread.RunJobs();
         try
         {

@@ -89,16 +89,21 @@ public partial class ToolsTests
         public void Dispose() => _outer.Dispose();
 
         private Task<ToolExecutionResult> Run(object arguments)
+            => Run(arguments, requireLinux: true);
+
+        private Task<ToolExecutionResult> Run(object arguments, bool requireLinux)
         {
             if (!OperatingSystem.IsWindows())
                 Assert.Skip(WindowsOnlySkipReason);
+            if (requireLinux && !ShellProbe.Wsl)
+                Assert.Skip("WSL/Linux is unavailable or unresponsive; skipping the WSL-backed tool test");
             return _outer.Execute(WslTool.ToolName, JsonSerializer.Serialize(arguments, DshJson.Options));
         }
 
         [Fact]
         public async Task BlankDistro_IsRejected()
         {
-            var result = await Run(new { command = "echo hi", distro = "  " });
+        var result = await Run(new { command = "echo hi", distro = "  " }, requireLinux: false);
 
             Assert.True(result.IsError);
             Assert.Contains("distro", TextOf(result));

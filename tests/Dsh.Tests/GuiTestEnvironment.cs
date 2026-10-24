@@ -17,6 +17,12 @@ namespace Dsh.Tests;
 /** GUI 组件测试的最小真实环境: 真实插件组合 + 真实持久化, 不启动 UI。 */
 public sealed class GuiTestEnvironment : IAsyncDisposable
 {
+    static GuiTestEnvironment()
+    {
+        var module = typeof(Dsh.Presets.PresetController).Module;
+        System.Runtime.CompilerServices.RuntimeHelpers.RunModuleConstructor(module.ModuleHandle);
+    }
+
     private sealed class SharedApp
     {
         public SemaphoreSlim Gate { get; } = new(1, 1);
@@ -433,4 +439,3 @@ public sealed class GuiTestEnvironment : IAsyncDisposable
         TempTree.Delete(_directory);
     }
 }
-
