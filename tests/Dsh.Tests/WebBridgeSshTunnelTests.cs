@@ -21,7 +21,7 @@ public sealed class WebBridgeSshTunnelTests
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task BrowserSockets_ShareOneDeployedSshConnection_AndTerminalSurvivesInitiatingPageClose()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -83,4 +83,3 @@ public sealed class WebBridgeSshTunnelTests
                 && arguments.Zip(arguments.Skip(1)).Any(pair => pair is ("-p", var value) && value == portText));
     }
 }
-

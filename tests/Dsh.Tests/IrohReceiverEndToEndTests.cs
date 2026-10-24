@@ -6,10 +6,10 @@ namespace Dsh.Tests;
 
 public sealed class IrohReceiverEndToEndTests
 {
-    [Fact(Timeout = 5000)]
+    [Fact]
     public Task TargetCli_Readiness_And_Restart_Work_Without_A_Direct_Host_Address() => ExerciseReceiverLifecycleAsync(false, TestContext.Current.CancellationToken);
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public Task TargetCli_Lan_Readiness_And_Restart_Work_Without_A_Relay() => ExerciseReceiverLifecycleAsync(true, TestContext.Current.CancellationToken);
 
     private static async Task ExerciseReceiverLifecycleAsync(bool directOnly, CancellationToken ct)

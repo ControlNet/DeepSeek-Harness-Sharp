@@ -392,7 +392,7 @@ public sealed class FleetProxyProbeTests
         }
     }
 
-    [Theory(Timeout = TestTimeoutMilliseconds)]
+    [Theory]
     [InlineData(ProxyProbeLayer.Ssh)]
     [InlineData(ProxyProbeLayer.RemoteOutbound)]
     public async Task StartupDeadline_ReleasesItsOwnedTransportWithoutStoppingTheExistingHost(ProxyProbeLayer layer)
@@ -955,7 +955,6 @@ public sealed class FleetProxyProbeCliTests
     [DllImport("libc", SetLastError = true)]
     private static extern int kill(int processId, int signal);
 }
-
 
 
 

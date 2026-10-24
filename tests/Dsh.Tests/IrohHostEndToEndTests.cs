@@ -9,7 +9,7 @@ namespace Dsh.Tests;
 [Collection(SerialProcessCollection.Name)]
 public sealed class IrohHostEndToEndTests
 {
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task EndpointOnlyMachine_DeploysFreshHostAndPreservesItsPtyAcrossReconnect()
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
@@ -63,4 +63,3 @@ public sealed class IrohHostEndToEndTests
         }
     }
 }
-

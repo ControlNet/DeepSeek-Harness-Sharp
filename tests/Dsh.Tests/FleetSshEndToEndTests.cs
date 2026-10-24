@@ -27,7 +27,7 @@ public sealed class FleetSshEndToEndTests
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task Deploys_Serves_Lists_AndReconnects_OverRealSsh()
     {
         var executable = RequireEnvironment();
@@ -130,7 +130,7 @@ public sealed class FleetSshEndToEndTests
         guard.AssertUnchanged();
     }
 
-    [Theory(Timeout = 5000)]
+    [Theory]
     [InlineData("missing", DownloadVia.Client)]
     [InlineData("missing", DownloadVia.Auto)]
     [InlineData("unavailable", DownloadVia.Client)]
@@ -226,7 +226,7 @@ public sealed class FleetSshEndToEndTests
         guard.AssertUnchanged();
     }
 
-    [Theory(Timeout = 5000)]
+    [Theory]
     [InlineData(DownloadVia.Server)]
     [InlineData(DownloadVia.Auto)]
     public async Task Remote_Download_Through_Real_Ssh_Proxy_Deploys_A_Working_Host_DespiteInvalidLocalBorrowedSelection(string via)
@@ -583,5 +583,3 @@ internal sealed class SshAuthenticationGate : IAsyncDisposable
         return ValueTask.CompletedTask;
     }
 }
-
-

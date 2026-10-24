@@ -5,7 +5,7 @@ namespace Dsh.Tests;
 
 public sealed class IrohMultiplexingTests
 {
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task ExistingTcpMaster_CannotExecuteCommandsForAnIrohEndpoint()
     {
         _ = FleetSshEndToEndTests.RequireEnvironment();

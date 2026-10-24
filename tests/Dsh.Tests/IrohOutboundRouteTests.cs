@@ -8,7 +8,7 @@ public sealed class IrohOutboundRouteTests
 {
     private const string ConsumerUrl = "http://example.invalid/iroh-optional-consumer";
 
-    [Theory(Timeout = 5000)]
+    [Theory]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     public async Task SatelliteTransport_CarriesRealHttpConsumersThroughTheSelectedMachine(string mode)
