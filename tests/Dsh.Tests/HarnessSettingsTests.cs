@@ -78,23 +78,11 @@ public sealed class HarnessSettingsTests
 
 
     [Fact]
-    public void LoadTemplateFallsBackToMinimalTemplateWhenFileMissing()
+    public void LoadTemplateFailsWhenPublishedFileIsMissing()
     {
-        var home = Path.Combine(Path.GetTempPath(), "dsh-settings-fallback", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(home);
-        var path = Path.Combine(home, "settings.yaml");
         var missingBase = Path.Combine(Path.GetTempPath(), "dsh-no-templates", Guid.NewGuid().ToString("N"));
-        try
-        {
-            File.WriteAllText(path, HarnessSettings.LoadTemplate(missingBase));
-            var settings = HarnessSettings.Load(new HarnessHome(home));
-            Assert.Equal("deepseek-official/deepseek-v4-flash", settings.GlobalDefaultModel);
-            Assert.Equal("deepseek-official/deepseek-v4-flash", settings.CompactionModel);
-        }
-        finally
-        {
-            Directory.Delete(home, true);
-        }
+        var error = Assert.Throws<FileNotFoundException>(() => HarnessSettings.LoadTemplate(missingBase));
+        Assert.Equal(Path.Combine(missingBase, "Profiles", "Templates", "settings.yaml"), error.FileName);
     }
 
     [Fact]
