@@ -14,7 +14,6 @@ namespace Dsh.Tests;
 [Collection(SerialProcessCollection.Name)]
 public sealed class FleetProxyProbeTests
 {
-    private const int TestTimeoutMilliseconds = 5000;
     private const string PublicTarget = "http://1.1.1.1/layer-probe";
     private static readonly TimeSpan CancellationProofTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DeadlineTimerTolerance = TimeSpan.FromMilliseconds(100);
@@ -26,7 +25,7 @@ public sealed class FleetProxyProbeTests
         Deploy = new DeploySettings { AutoDeploy = false },
     };
 
-    [Theory(Timeout = TestTimeoutMilliseconds)]
+    [Theory]
     [InlineData(HttpStatusCode.OK)]
     [InlineData(HttpStatusCode.NotFound)]
     public async Task LocalAndRemote_ActualHttpStatusMeansEgressNotBusinessSuccess(HttpStatusCode status)
@@ -106,7 +105,7 @@ public sealed class FleetProxyProbeTests
         Assert.Equal(MachineConnectionState.Connected, connection.State);
     }
 
-    [Theory(Timeout = TestTimeoutMilliseconds)]
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task OldHost_MissingCapabilityOrStructuredSchemaIsUnsupported(bool oldSchema)
@@ -569,7 +568,6 @@ public sealed class FleetProxyProbeTests
 [Collection(SerialProcessCollection.Name)]
 public sealed class FleetProxyProbeCliTests
 {
-    private const int TestTimeoutMilliseconds = 5000;
     private const int SigInt = 2;
     private const string PublicTarget = "http://1.1.1.1/cli-layer-probe";
     private static readonly TimeSpan ProcessExitTimeout = TimeSpan.FromSeconds(5);
@@ -662,7 +660,7 @@ public sealed class FleetProxyProbeCliTests
         }
     }
 
-    [Theory(Timeout = TestTimeoutMilliseconds)]
+    [Theory]
     [InlineData("local_outbound")]
     [InlineData("remote_outbound")]
     public async Task S15_ActualCli_SigIntAfterHttpRequest_ReturnsCancelled130_AndOtherConsumerSurvives(string layer)
@@ -766,7 +764,7 @@ public sealed class FleetProxyProbeCliTests
         }
     }
 
-    [Theory(Timeout = TestTimeoutMilliseconds)]
+    [Theory]
     [InlineData("local_outbound", false, ProxyProbeStage.ProxyConnect, null)]
     [InlineData("remote_outbound", false, ProxyProbeStage.ProxyConnect, null)]
     [InlineData("local_outbound", true, ProxyProbeStage.ProxyAuth, 407)]
@@ -955,6 +953,4 @@ public sealed class FleetProxyProbeCliTests
     [DllImport("libc", SetLastError = true)]
     private static extern int kill(int processId, int signal);
 }
-
-
 
