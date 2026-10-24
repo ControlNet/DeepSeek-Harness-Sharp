@@ -10,6 +10,7 @@ using Microsoft.Win32.SafeHandles;
 namespace Dsh.Tests;
 
 // Descriptor-table assertions need the existing process-isolated collection; the spawn test explicitly starts its two PTYs concurrently.
+[Collection(SerialProcessCollection.Name)]
 public sealed class UnixPtyDescriptorOwnershipTests
 {
     private static readonly Type Native = typeof(PtySession).Assembly.GetType("Dsh.Pty.UnixPtyNative")!;
