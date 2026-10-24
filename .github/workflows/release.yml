@@ -63,7 +63,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        # macOS 发布暂缓；待 macOS 测试恢复稳定后再加回矩阵。
+        os: [windows-latest, ubuntu-latest]
         # 原生库(guard 与 fault probe)的 C 编译器驱动, 经 -p:DshNativeCompiler 交给 PluginGuard.props。
         # Windows 主构建用发布所用的 MSVC(cl), 再用 clang-cl 重建并重跑原生遏制回归。
         include:
@@ -71,8 +72,6 @@ jobs:
             native-cc: cl
             native-cc-alt: clang-cl
           - os: ubuntu-latest
-            native-cc: clang
-          - os: macos-latest
             native-cc: clang
     steps:
       - uses: actions/checkout@v4
@@ -228,11 +227,6 @@ jobs:
             rid: linux-x64
             flavor: aot
             archive: dsharp-linux-x64-aot.tar.gz
-            native-cc: clang
-          - os: macos-latest
-            rid: osx-arm64
-            flavor: jit
-            archive: dsharp-osx-arm64.tar.gz
             native-cc: clang
     steps:
       - uses: actions/checkout@v4
