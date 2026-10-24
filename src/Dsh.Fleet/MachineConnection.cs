@@ -23,6 +23,8 @@ public sealed class MachineConnection : IAsyncDisposable
     private TaskCompletionSource<HostLease> _connected = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private string? _commandPath;
     private Task? _loop;
+    private bool _forceRedeploy;
+    private bool _autoRedeployUsed;
 
     public MachineConnection(MachineSpec machine, FleetOptions options)
     {
@@ -183,11 +185,42 @@ public sealed class MachineConnection : IAsyncDisposable
             var commandPath = await ResolveCommandPathAsync(cancellationToken).ConfigureAwait(false);
             return await HostLink.OpenSshAsync(Machine, commandPath, _options, cancellationToken).ConfigureAwait(false);
         }
+        catch (HostProtocolMismatchException error)
+        {
+            _commandPath = null;
+            if (error.RemoteIsNewer)
+            {
+                SetState(MachineConnectionState.Offline, $"客户端协议 v{error.LocalVersion} 过旧，远端为 v{error.RemoteVersion}；请升级本机 dsharp");
+                return null;
+            }
+            if (_options.Deploy.AutoDeploy && !_autoRedeployUsed)
+            {
+                _autoRedeployUsed = true;
+                return await RedeployAndOpenAsync(cancellationToken).ConfigureAwait(false);
+            }
+            SetState(MachineConnectionState.Offline, error.Message);
+            return null;
+        }
         // A cancelled attempt can also fail with its own error: an ssh killed by the cancellation exits with 255, which surfaced from DisposeAsync.
         catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // The deployed path may be stale (removed or replaced); resolve it again on the next attempt.
             _commandPath = null;
+            SetState(MachineConnectionState.Offline, error.Message);
+            return null;
+        }
+    }
+
+    private async Task<HostLink?> RedeployAndOpenAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            _forceRedeploy = true;
+            var commandPath = await ResolveCommandPathAsync(cancellationToken).ConfigureAwait(false);
+            return await HostLink.OpenSshAsync(Machine, commandPath, _options, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
             SetState(MachineConnectionState.Offline, error.Message);
             return null;
         }
@@ -200,9 +233,11 @@ public sealed class MachineConnection : IAsyncDisposable
             return _commandPath;
         if (_options.Deploy.AutoDeploy)
         {
-            SetState(MachineConnectionState.Deploying, null);
+            var force = _forceRedeploy;
+            _forceRedeploy = false;
+            SetState(MachineConnectionState.Deploying, force ? "协议不兼容，正在重新部署…" : null);
             var deployed = await new RemoteDsharpInstaller(new SshTransport(Machine, _options.SshTransportAdapter), _options.SshTransportAdapter).EnsureAsync(
-                _options.Deploy, step => SetState(MachineConnectionState.Deploying, step), cancellationToken, _options.ArchiveFactory,
+                _options.Deploy, step => SetState(MachineConnectionState.Deploying, step), cancellationToken, _options.ArchiveFactory, force,
                 localProxy: _options.LocalProxy, localHome: _options.LocalHome).ConfigureAwait(false);
             return _commandPath = deployed.CommandPath;
         }
@@ -334,6 +369,7 @@ public sealed class MachineConnection : IAsyncDisposable
         lock (_gate)
             _connected.TrySetResult(lease);
         LinkProcess = process;
+        _autoRedeployUsed = false;
         SetState(MachineConnectionState.Connected, null);
         _settled.TrySetResult();
     }
@@ -404,4 +440,3 @@ public sealed class MachineConnection : IAsyncDisposable
         PendingChanged?.Invoke(this);
     }
 }
-

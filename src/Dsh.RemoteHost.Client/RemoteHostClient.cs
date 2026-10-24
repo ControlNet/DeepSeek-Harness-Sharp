@@ -83,9 +83,13 @@ public sealed class RemoteHostClient : IAsyncDisposable
             if (hello is null)
                 throw new IOException("host returned an invalid hello");
             if (!hello.Ok)
+            {
+                if (hello.ProtocolVersion != HostProtocol.Version)
+                    throw new HostProtocolMismatchException(HostProtocol.Version, hello.ProtocolVersion, hello.Mismatch);
                 throw new IOException($"host handshake rejected: {hello.Mismatch}");
+            }
             if (hello.ProtocolVersion != HostProtocol.Version)
-                throw new IOException($"host protocol version mismatch: expected {HostProtocol.Version}, received {hello.ProtocolVersion}");
+                throw new HostProtocolMismatchException(HostProtocol.Version, hello.ProtocolVersion);
             client.Hello = hello;
             return client;
         }
@@ -219,7 +223,6 @@ public sealed class RemoteHostClient : IAsyncDisposable
 
     public ValueTask DisposeAsync() => _peer.DisposeAsync();
 }
-
 
 
 

@@ -46,6 +46,8 @@ public static class SshHostLauncher
             if (detail.Length == 0)
                 detail = error.Message;
             channel.Dispose();
+            if (error is HostProtocolMismatchException mismatch)
+                throw new HostProtocolMismatchException(mismatch.LocalVersion, mismatch.RemoteVersion, detail);
             throw new IOException($"ssh {machine.Target} 失败（认证方式 {machine.Auth}）: {detail}", error);
         }
     }

@@ -97,10 +97,9 @@ public static class FleetDoctor
         var deploy = OutboundProxy.Redact($"dsharp machine deploy {machine.Name}", machine.Password, machine.Proxy);
         if (installation.CommandPath is not { } path)
             return new DoctorCheck("dsharp", DoctorOutcome.Failed, "dsharp is not installed", deploy);
-        var current = HostProtocol.ReleaseVersion;
-        return ReleaseVersions.CanReuse(installation.Version, current)
-            ? new DoctorCheck("dsharp", DoctorOutcome.Ok, $"{installation.Version} at {path}")
-            : new DoctorCheck("dsharp", DoctorOutcome.Warning, $"{installation.Version ?? "unknown release"} at {path} is older than this client ({current})", deploy);
+        return installation.Protocol == HostProtocol.Version
+            ? new DoctorCheck("dsharp", DoctorOutcome.Ok, $"protocol {installation.Protocol} at {path}")
+            : new DoctorCheck("dsharp", DoctorOutcome.Warning, $"protocol {installation.Protocol?.ToString() ?? "unknown"} at {path} does not match this client ({HostProtocol.Version})", deploy);
     }
 
     /** Runs the status script on the machine; a local Windows machine has no POSIX shell and reports nothing. */
@@ -182,11 +181,10 @@ public static class FleetDoctor
     private static DoctorCheck VersionCheck(MachineSpec machine, HostInfo info, TimeSpan ping)
     {
         var detail = $"host {info.HostVersion} on {info.Platform}, protocol {info.ProtocolVersion}, ping {ping.TotalMilliseconds:F0} ms";
-        var current = HostProtocol.ReleaseVersion;
-        if (ReleaseVersions.CanReuse(info.HostVersion, current))
+        if (info.ProtocolVersion == HostProtocol.Version)
             return new DoctorCheck("connection", DoctorOutcome.Ok, detail);
         var fix = machine.IsLocal ? null : OutboundProxy.Redact($"dsharp machine deploy {machine.Name} --force", machine.Password, machine.Proxy);
-        return new DoctorCheck("connection", DoctorOutcome.Warning, $"{detail}; older than this client ({current}), restart it to load the new release", fix);
+        return new DoctorCheck("connection", DoctorOutcome.Warning, $"{detail}; protocol does not match this client ({HostProtocol.Version}), redeploy or restart it to load the matching release", fix);
     }
 
     /** The repair runs on the machine with its harness home: directly for the local one, wrapped in an ssh command line for a remote one. */
@@ -198,4 +196,3 @@ public static class FleetDoctor
     private static string DsharpCommand(MachineSpec machine, string? commandPath)
         => machine.IsLocal || commandPath is null ? LocalCommand : RemoteShell.Quote(commandPath);
 }
-

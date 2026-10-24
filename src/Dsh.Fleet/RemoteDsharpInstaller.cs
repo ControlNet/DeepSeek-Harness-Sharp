@@ -7,7 +7,7 @@ namespace Dsh.Fleet;
 
 /**
  * 远端 dsharp 自动部署(仿 VS Code Remote-SSH 的 VS Code Server):
- * 远端没有 dsharp 或部署的发布版本旧于本客户端时, 取对应平台的 Release 构建解到 `~/.dsharp/RID/`, 之后按绝对路径运行。
+* 远端没有 dsharp 或部署的线协议标记与客户端不同时, 取对应平台的 Release 构建解到 `~/.dsharp/RID/`, 之后按绝对路径运行。
  * 不注册任何 PATH 命令: 客户端直接用 `~/.dsharp/RID/dsharp host --serve --stdio` 起宿主。
  * 部署只提供二进制; 首次连接通过 stdio 桥按需启动独立宿主, 不安装系统服务。
  * 只支持 POSIX 远端(Linux/macOS); Windows 远端明确报不支持。
@@ -15,11 +15,11 @@ namespace Dsh.Fleet;
 public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport, ISshTransportAdapter? adapter = null)
 {
 
-    /**
-     * 部署身份 = 本项目的发布版本(Directory.Build.props 的 Version, 经 HostProtocol.ReleaseVersion 读出), 写在 `~/.dsharp/RID/.dsharp-version`。
-     * 远端版本不旧于本客户端即复用(ReleaseVersions.CanReuse); 纯本地比较, 不联网、不看提交号。
-     */
+    /** The release marker is diagnostic only; compatibility is decided by the protocol marker. */
     private const string VersionFileName = ".dsharp-version";
+
+    /** The wire protocol marker written next to the deployed binary. */
+    private const string ProtocolFileName = ".dsharp-protocol";
 
     /** 远端没有 curl 也没有 wget 时下载脚本的退出码, auto 模式据此回退到本地下发。 */
     private const int NoDownloaderExitCode = 42;
@@ -36,8 +36,8 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport, ISs
     /** 部署结果: CommandPath 为远端 dsharp 的绝对路径(可交给启动器当 hostCommand)。 */
     public sealed record Result(string CommandPath, bool AlreadyPresent);
 
-    /** 远端现状: 平台、解析出的 harness home、找到的 dsharp(优先本工具的部署目录)及其部署版本标记。 */
-    public sealed record Installation(string Rid, string HarnessHome, string? CommandPath, string? Version);
+    /** 远端现状: 平台、解析出的 harness home、找到的 dsharp(优先本工具的部署目录)、发布版本与协议标记。 */
+    public sealed record Installation(string Rid, string HarnessHome, string? CommandPath, string? Version, int? Protocol);
 
     /**
      * 确保远端有不旧于本客户端的 dsharp: 可复用就返回其路径, 否则下载并部署对应平台构建。
@@ -54,12 +54,16 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport, ISs
     {
         var installation = await InspectAsync(cancellationToken).ConfigureAwait(false);
         var identity = HostProtocol.ReleaseVersion;
-        if (!force && installation.CommandPath is { } present && ReleaseVersions.CanReuse(installation.Version, identity))
+        if (!force && installation.CommandPath is { } present && installation.Protocol == HostProtocol.Version)
             return new Result(present, true);
 
-        progress?.Invoke(installation.CommandPath is null
-            ? $"远端缺少 dsharp, 正在部署 {identity}({installation.Rid}) …"
-            : $"远端 dsharp 版本 {installation.Version ?? "(未知)"} 需要更新到 {identity}, 重新部署 …");
+        var protocol = installation.Protocol is { } installed ? $"v{installed}" : "(未知)";
+        progress?.Invoke(
+            installation.CommandPath is null
+                ? $"远端缺少 dsharp, 正在部署 {identity}({installation.Rid}) …"
+                : force
+                    ? $"正在强制重新部署 {identity}({installation.Rid}) …"
+                    : $"远端 dsharp 协议 {protocol} 与客户端 v{HostProtocol.Version} 不匹配, 重新部署 {identity} …");
         var stop = StopHostCommand(installation.CommandPath);
         var deployed = await DeployAsync(settings, installation.Rid, stop, progress, archiveFactory, localProxy, localHome, cancellationToken).ConfigureAwait(false);
         await WriteIdentityAsync(installation.Rid, identity, cancellationToken).ConfigureAwait(false);
@@ -89,7 +93,8 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport, ISs
         if (rid.StartsWith("win-", StringComparison.Ordinal))
             throw new NotSupportedException(WindowsUnsupported);
         var values = KeyValues(await transport.RunAsync(ProbeScript(transport.Machine, rid), cancellationToken).ConfigureAwait(false));
-        return new Installation(rid, values.GetValueOrDefault("home") ?? "", NonEmpty(values, "path"), NonEmpty(values, "version"));
+        var protocol = int.TryParse(values.GetValueOrDefault("protocol"), out var parsed) ? parsed : (int?)null;
+        return new Installation(rid, values.GetValueOrDefault("home") ?? "", NonEmpty(values, "path"), NonEmpty(values, "version"), protocol);
     }
 
     /** 远端平台 → .NET RID(可按需扩展; 目前覆盖 glibc Linux / macOS / Windows)。 */
@@ -159,7 +164,7 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport, ISs
 
     private static string InstallDirectory(string rid) => $"\"$HOME/.dsharp/{rid}\"";
 
-    /** 探测脚本: 依次找本工具的部署目录、PATH、~/.local/bin; 输出 home/path/version 三个键(找不到 dsharp 时只有 home)。 */
+    /** 探测脚本: 依次找本工具的部署目录、PATH、~/.local/bin; 输出 home/path/version/protocol(找不到 dsharp 时只有 home)。 */
     private static string ProbeScript(MachineSpec machine, string rid)
         => RemoteShell.Prelude(machine)
             + RemoteShell.ResolveHome
@@ -168,7 +173,8 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport, ISs
             + "elif command -v dsharp >/dev/null 2>&1; then p=$(command -v dsharp); "
             + "elif [ -x \"$HOME/.local/bin/dsharp\" ]; then p=\"$HOME/.local/bin/dsharp\"; fi; "
             + "echo \"home=$h\"; "
-            + $"if [ -n \"$p\" ]; then echo \"path=$p\"; echo \"version=$(cat \"$(dirname \"$p\")/{VersionFileName}\" 2>/dev/null)\"; fi";
+            + $"if [ -n \"$p\" ]; then echo \"path=$p\"; echo \"version=$(cat \"$(dirname \"$p\")/{VersionFileName}\" 2>/dev/null)\"; "
+            + $"echo \"protocol=$(cat \"$(dirname \"$p\")/{ProtocolFileName}\" 2>/dev/null)\"; fi";
 
     private async Task<string> DeployAsync(
         DeploySettings settings,
@@ -211,10 +217,11 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport, ISs
         }
     }
 
-    /** 部署成功后写入版本标记: 它是「远端部署是否已过期」的唯一判据。 */
+    /** 部署成功后写入诊断用的发布标记和唯一用于兼容判断的协议标记。 */
     private Task<string> WriteIdentityAsync(string rid, string identity, CancellationToken cancellationToken)
         => transport.RunAsync(
-            $"printf '%s' '{identity.Replace("'", "", StringComparison.Ordinal)}' > \"$HOME/.dsharp/{rid}/{VersionFileName}\"",
+            $"printf '%s' '{identity.Replace("'", "", StringComparison.Ordinal)}' > \"$HOME/.dsharp/{rid}/{VersionFileName}\"; "
+            + $"printf '%s' '{HostProtocol.Version}' > \"$HOME/.dsharp/{rid}/{ProtocolFileName}\"",
             cancellationToken);
 
     /** 远端平台识别: 先 `uname`(POSIX), 失败再试 PowerShell / cmd(Windows 远端默认 shell 多为 cmd)。 */
@@ -341,4 +348,3 @@ public sealed class RemoteDsharpInstaller(IRemoteMachineTransport transport, ISs
         }
     }
 }
-
