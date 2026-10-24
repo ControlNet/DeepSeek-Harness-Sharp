@@ -47,9 +47,6 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     private string _remoteOutboundProbeUrl = "";
 
     [ObservableProperty]
-    private bool _isRemoteOutboundEditing;
-
-    [ObservableProperty]
     private bool _remoteOutboundRequiresRefresh;
 
     [ObservableProperty]
@@ -71,8 +68,6 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
 
     partial void OnRemoteOutboundProbeUrlChanged(string value) => RemoteProbe.Invalidate();
 
-    partial void OnIsRemoteOutboundEditingChanged(bool value) => RemoteProbe.Invalidate();
-
     partial void OnEditorChanging(MachineEditorViewModel? value)
     {
         if (Editor is { } previous)
@@ -92,6 +87,9 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
             or nameof(MachineEditorViewModel.Kind)
             or nameof(MachineEditorViewModel.Host)
             or nameof(MachineEditorViewModel.EndpointId)
+            or nameof(MachineEditorViewModel.IrohTarget)
+            or nameof(MachineEditorViewModel.IrohExecutablePath)
+            or nameof(MachineEditorViewModel.IrohArguments)
             or nameof(MachineEditorViewModel.RelayUrls)
             or nameof(MachineEditorViewModel.Port)
             or nameof(MachineEditorViewModel.User)
@@ -99,15 +97,13 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
             or nameof(MachineEditorViewModel.KeyPath)
             or nameof(MachineEditorViewModel.Password)
             or nameof(MachineEditorViewModel.Proxy)
-            or nameof(MachineEditorViewModel.IsSshProxyEditing)
             or nameof(MachineEditorViewModel.RemotePath)
             or nameof(MachineEditorViewModel.HarnessHome)
             or nameof(MachineEditorViewModel.SshOptions)
             or nameof(MachineEditorViewModel.OutboundTunnelEnabled)
             or nameof(MachineEditorViewModel.OutboundTunnelMode)
             or nameof(MachineEditorViewModel.OutboundTunnelProxyUrl)
-            or nameof(MachineEditorViewModel.OutboundTunnelLocalPort)
-            or nameof(MachineEditorViewModel.IsOutboundTunnelEditing))
+            or nameof(MachineEditorViewModel.OutboundTunnelLocalPort))
             SshProbe.Invalidate();
     }
 
@@ -162,16 +158,6 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     }
 
     [RelayCommand]
-    private void EditRemoteOutbound()
-    {
-        if (IsRemoteOutboundEditing || _savedRemoteSettings is null)
-            return;
-        RemoteOutboundUrl = _savedRemoteSettings.Url ?? "";
-        RemoteOutboundProbeUrl = _savedRemoteSettings.ProbeUrl ?? "";
-        IsRemoteOutboundEditing = true;
-    }
-
-    [RelayCommand]
     private Task ReadRemoteOutboundAsync() => RunRemoteOutboundAsync(write: false, clear: false, refreshDraft: true);
 
     [RelayCommand]
@@ -181,9 +167,9 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     private Task ClearRemoteOutboundAsync() => RunRemoteOutboundAsync(write: true, clear: true, refreshDraft: true);
 
     private RemoteOutboundProxySettings RemoteDraft() => new(
-        IsRemoteOutboundEditing ? MachineEditorViewModel.Optional(RemoteOutboundUrl) : _savedRemoteSettings?.Url,
+        OutboundProxy.ResolveEdited(RemoteOutboundUrl, _savedRemoteSettings?.Url),
         RemoteOutboundBypass.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
-        IsRemoteOutboundEditing ? MachineEditorViewModel.Optional(RemoteOutboundProbeUrl) : _savedRemoteSettings?.ProbeUrl);
+        OutboundProxy.ResolveEdited(RemoteOutboundProbeUrl, _savedRemoteSettings?.ProbeUrl));
 
     private Task RunRemoteOutboundAsync(bool write, bool clear, bool refreshDraft)
     {
@@ -242,7 +228,6 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
                 RemoteOutboundUrl = OutboundProxy.RedactUrlCredentials(state.Settings.Url ?? "", state.Settings.Url);
                 RemoteOutboundBypass = string.Join(Environment.NewLine, state.Settings.Bypass ?? []);
                 RemoteOutboundProbeUrl = OutboundProxy.RedactUrlCredentials(state.Settings.ProbeUrl ?? "", state.Settings.ProbeUrl);
-                IsRemoteOutboundEditing = false;
                 RemoteOutboundRequiresRefresh = false;
             }
             RemoteOutboundStatus = refreshDraft
@@ -336,6 +321,23 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     [ObservableProperty]
     private MachineEditorViewModel? _editor;
 
+    [ObservableProperty]
+    private bool _isDrafting;
+
+    [ObservableProperty]
+    private string _draftLabel = "";
+
+    [ObservableProperty]
+    private string? _draftKind;
+
+    public bool IsDraftingSsh => IsDrafting && DraftKind == MachineKinds.Ssh;
+
+    public bool IsDraftingIroh => IsDrafting && DraftKind == MachineKinds.Iroh;
+
+    public bool IsDraftingLocal => IsDrafting && DraftKind == MachineKinds.Local;
+
+    public Func<Task<string?>>? IrohFilePicker { get; set; }
+
     /** 自动部署偏好; 第一次 Load 时从清单读入, 之后只在"保存部署设置"时写回, 保存机器不会覆盖未保存的修改。 */
     [ObservableProperty]
     private DeploySettingsEditorViewModel? _deploy;
@@ -354,8 +356,7 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     public void Load(string? select = null)
     {
         var config = store.Load();
-        IrohAvailable = FleetService.IrohSetup is { IsAvailable: true }
-            || options.SshTransportAdapter is { Kind: MachineKinds.Iroh, IsAvailable: true };
+        IrohAvailable = options.SshTransportAdapter is { Kind: MachineKinds.Iroh };
         Deploy ??= DeploySettingsEditorViewModel.From(config.Deploy);
         var known = Machines.ToDictionary(row => row.Name, StringComparer.Ordinal);
         Machines.Clear();
@@ -368,6 +369,8 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
         }
         RefreshFromFleet();
         Selected = Machines.FirstOrDefault(row => row.Name == select) ?? Machines.FirstOrDefault();
+        IsDrafting = false;
+        DraftKind = null;
     }
 
     /** 显示常驻连接的实时状态(FleetClient.Changed 在后台线程触发)。 */
@@ -384,6 +387,11 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     /** 诊断结果只属于诊断时的那台机器, 换机器或新建时清掉。 */
     partial void OnSelectedChanged(MachineRowViewModel? value)
     {
+        if (value is not null)
+        {
+            IsDrafting = false;
+            DraftKind = null;
+        }
         DoctorChecks.Clear();
         InvalidateNetwork();
         RemoteOutboundState = null;
@@ -391,11 +399,10 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
         RemoteOutboundUrl = "";
         RemoteOutboundBypass = "";
         RemoteOutboundProbeUrl = "";
-        IsRemoteOutboundEditing = false;
         RemoteOutboundRequiresRefresh = false;
-        RemoteOutboundStatus = "Read the selected target Host settings before editing.";
+        RemoteOutboundStatus = "";
         if (value is not null)
-            Editor = value.IsImplicit ? null : MachineEditorViewModel.From(value.Spec, IrohAvailable);
+            Editor = value.IsImplicit ? null : MachineEditorViewModel.From(value.Spec, IrohAvailable, IrohExecutable);
         else
             Editor = null;
         RefreshFromFleet();
@@ -449,11 +456,11 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
 
     private bool CanDelete() => Selected is { IsImplicit: false };
 
-    /** 用表单当前内容(可以是尚未保存的修改)连接一次, 显示 host 版本与平台。 */
+    /** 用表单当前内容(可以是尚未保存的修改)连接一次, 显示 host 版本与平台; 协议不匹配时按当前自动部署设置升级。 */
     [RelayCommand]
     private Task TestConnectionAsync() => RunOperationAsync(async (spec, cancellationToken) =>
     {
-        var testOptions = options with { AutoReconnect = false, StartLocalHost = null, Deploy = options.Deploy with { AutoDeploy = false } };
+        var testOptions = options with { AutoReconnect = false, StartLocalHost = null };
         await using var connection = new MachineConnection(spec, testOptions);
         connection.Start();
         await connection.WaitSettledAsync(cancellationToken);
@@ -512,7 +519,37 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     private void StartNew(string kind)
     {
         Selected = null;
-        Editor = new MachineEditorViewModel(IrohAvailable) { Kind = kind };
+        IsDrafting = true;
+        DraftKind = kind;
+        DraftLabel = kind == MachineKinds.Local ? "正在新增本地 Harness Host" : "正在新增机器";
+        Editor = new MachineEditorViewModel(IrohAvailable)
+        {
+            Kind = kind,
+            IrohExecutablePath = kind == MachineKinds.Iroh ? IrohExecutable ?? "" : "",
+        };
+    }
+
+    [RelayCommand]
+    private async Task BrowseIrohExecutableAsync()
+    {
+        if (Editor is null || IrohFilePicker is null || await IrohFilePicker() is not { Length: > 0 } path)
+            return;
+        Editor.IrohExecutablePath = path;
+    }
+
+    private string? IrohExecutable => options.SshTransportAdapter is { Kind: MachineKinds.Iroh } adapter
+        ? adapter.FindExecutable()
+        : null;
+
+    partial void OnIsDraftingChanged(bool value) => NotifyDraftKind();
+
+    partial void OnDraftKindChanged(string? value) => NotifyDraftKind();
+
+    private void NotifyDraftKind()
+    {
+        OnPropertyChanged(nameof(IsDraftingSsh));
+        OnPropertyChanged(nameof(IsDraftingIroh));
+        OnPropertyChanged(nameof(IsDraftingLocal));
     }
 
     /** 改名时替换原记录且保持位置; 新名称不能与另一台机器重名。 */
@@ -521,7 +558,7 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     private FleetConfig PlanChange(MachineSpec spec, string? originalName)
     {
         var config = store.Load();
-        IrohAvailable = options.SshTransportAdapter is { Kind: MachineKinds.Iroh, IsAvailable: true };
+        IrohAvailable = options.SshTransportAdapter is { Kind: MachineKinds.Iroh };
         if (spec.IsIroh && !IrohAvailable && !config.Machines.Any(machine => machine.Name == originalName && machine.IsIroh))
             throw new InvalidOperationException("Iroh requires an installed iroh-ssh command available to this application.");
         if (spec.Name != originalName && config.Machines.Any(machine => machine.Name == spec.Name))
@@ -593,4 +630,3 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
             _context.Post(_ => action(), null);
     }
 }
-

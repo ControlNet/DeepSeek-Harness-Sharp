@@ -28,7 +28,7 @@
         </ItemsControl.ItemTemplate>
       </ItemsControl>
 
-      <ScrollViewer Grid.Column="1" Classes="Slim" Padding="8,0,20,16" IsVisible="{Binding !Preferences.IsRemoteSection}">
+      <ScrollViewer Grid.Column="1" Classes="Slim" Padding="8,0,20,16">
         <StackPanel Spacing="14">
 
           <StackPanel Spacing="12" IsVisible="{Binding Preferences.IsAppearanceSection}">
@@ -360,16 +360,18 @@
                   <Button Name="LocalProxyCancel" Classes="Ghost" Content="取消本机检查" Margin="0,0,8,8"
                           Command="{Binding Preferences.LocalProxyProbe.CancelCommand}" />
                 </WrapPanel>
-                <TextBlock Text="自检使用当前未保存的基准草稿，不会写入文件，也不代表借用出口验证。" Classes="Tertiary" TextWrapping="Wrap" />
+                <TextBlock Text="自检使用当前未保存的基准草稿，不会写入文件。" Classes="Tertiary" TextWrapping="Wrap" />
                 <StackPanel Spacing="4">
                   <TextBlock Text="{Binding Preferences.LocalProxyProbe.Label}" Classes="Secondary" />
-                  <TextBlock Text="{Binding Preferences.LocalProxyProbe.IdentityText}" Classes="Tertiary" TextWrapping="Wrap" />
-                  <WrapPanel Orientation="Horizontal">
-                    <TextBlock Text="{Binding Preferences.LocalProxyProbe.OutcomeText}" Classes="Secondary" Margin="0,0,12,4" />
-                    <TextBlock Text="{Binding Preferences.LocalProxyProbe.StageText}" Classes="Tertiary" Margin="0,0,12,4" />
-                    <TextBlock Text="{Binding Preferences.LocalProxyProbe.HttpStatusText}" Classes="Mono" Margin="0,0,12,4" />
-                  </WrapPanel>
-                  <SelectableTextBlock Name="LocalProxyResult" Text="{Binding Preferences.LocalProxyProbe.Detail}" TextWrapping="Wrap" />
+                  <StackPanel Spacing="4" IsVisible="{Binding Preferences.LocalProxyProbe.HasResult}">
+                    <TextBlock Text="{Binding Preferences.LocalProxyProbe.IdentityText}" Classes="Tertiary" TextWrapping="Wrap" />
+                    <WrapPanel Orientation="Horizontal">
+                      <TextBlock Text="{Binding Preferences.LocalProxyProbe.OutcomeText}" Classes="Secondary" Margin="0,0,12,4" />
+                      <TextBlock Text="{Binding Preferences.LocalProxyProbe.StageText}" Classes="Tertiary" Margin="0,0,12,4" />
+                      <TextBlock Text="{Binding Preferences.LocalProxyProbe.HttpStatusText}" Classes="Mono" Margin="0,0,12,4" />
+                    </WrapPanel>
+                    <SelectableTextBlock Name="LocalProxyResult" Text="{Binding Preferences.LocalProxyProbe.Detail}" TextWrapping="Wrap" />
+                  </StackPanel>
                   <SelectableTextBlock Text="{Binding Preferences.NetworkStatus}" TextWrapping="Wrap" />
                 </StackPanel>
               </StackPanel>
@@ -406,13 +408,15 @@
                 </WrapPanel>
                 <TextBlock Text="独立验证使用所选机器和已保存的探测地址，不更改当前借用选择；清除后仍保留本机基准出口配置。" Classes="Tertiary" TextWrapping="Wrap" />
                 <TextBlock Text="{Binding Preferences.BorrowedOutboundProbe.Label}" Classes="Secondary" />
-                <TextBlock Text="{Binding Preferences.BorrowedOutboundProbe.IdentityText}" Classes="Tertiary" TextWrapping="Wrap" />
-                <WrapPanel Orientation="Horizontal">
-                  <TextBlock Text="{Binding Preferences.BorrowedOutboundProbe.OutcomeText}" Classes="Secondary" Margin="0,0,12,4" />
-                  <TextBlock Text="{Binding Preferences.BorrowedOutboundProbe.StageText}" Classes="Tertiary" Margin="0,0,12,4" />
-                  <TextBlock Text="{Binding Preferences.BorrowedOutboundProbe.HttpStatusText}" Classes="Mono" Margin="0,0,12,4" />
-                </WrapPanel>
-                <SelectableTextBlock Name="BorrowedResult" Text="{Binding Preferences.BorrowedOutboundProbe.Detail}" TextWrapping="Wrap" />
+                <StackPanel Spacing="4" IsVisible="{Binding Preferences.BorrowedOutboundProbe.HasResult}">
+                  <TextBlock Text="{Binding Preferences.BorrowedOutboundProbe.IdentityText}" Classes="Tertiary" TextWrapping="Wrap" />
+                  <WrapPanel Orientation="Horizontal">
+                    <TextBlock Text="{Binding Preferences.BorrowedOutboundProbe.OutcomeText}" Classes="Secondary" Margin="0,0,12,4" />
+                    <TextBlock Text="{Binding Preferences.BorrowedOutboundProbe.StageText}" Classes="Tertiary" Margin="0,0,12,4" />
+                    <TextBlock Text="{Binding Preferences.BorrowedOutboundProbe.HttpStatusText}" Classes="Mono" Margin="0,0,12,4" />
+                  </WrapPanel>
+                  <SelectableTextBlock Name="BorrowedResult" Text="{Binding Preferences.BorrowedOutboundProbe.Detail}" TextWrapping="Wrap" />
+                </StackPanel>
                 <SelectableTextBlock Text="{Binding Preferences.BorrowedOutboundStatus}" TextWrapping="Wrap" />
               </StackPanel>
             </Border>
@@ -443,13 +447,6 @@
 
         </StackPanel>
       </ScrollViewer>
-      <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="12" Margin="8,0,20,16"
-            IsVisible="{Binding Preferences.IsRemoteSection}">
-        <TextBlock Text="远程" Classes="Title" />
-        <TextBlock Grid.Row="1" Text="机器清单与远端部署设置保存在 settings.yaml 的 fleet 段，与侧栏“机器”页、dsharp machine 和 dsharp host web 共用。" Classes="Tertiary" TextWrapping="Wrap" />
-        <views:MachinesView Grid.Row="2" DataContext="{Binding Workspace.Machines}" Margin="-12,0" />
-        <TextBlock Grid.Row="3" Text="本机下载部署包走“网络”页的本机出口代理；fleet.deploy.serverProxy 仅供远端 curl/wget 下载部署包，不设置远端机器的一般网络出口。" Classes="Tertiary" TextWrapping="Wrap" />
-      </Grid>
     </Grid>
 
     <TextBlock Grid.Row="2" Text="{Binding Preferences.Status}" Classes="Tertiary"

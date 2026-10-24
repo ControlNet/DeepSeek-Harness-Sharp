@@ -91,6 +91,7 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
     private const int MaxPort = 65535;
     private OutboundTunnelSpec? _savedOutboundTunnel;
     private string? _savedSshProxy;
+    private bool _updatingIrohTarget;
 
     public static IReadOnlyList<string> OutboundTunnelModes { get; } = ["proxyCommand", "localForward"];
 
@@ -106,30 +107,6 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
     [ObservableProperty]
     private string _outboundTunnelLocalPort = "";
 
-    [ObservableProperty]
-    private bool _isOutboundTunnelEditing;
-
-    [ObservableProperty]
-    private bool _isSshProxyEditing;
-
-    [RelayCommand]
-    private void EditOutboundTunnel()
-    {
-        if (IsOutboundTunnelEditing)
-            return;
-        OutboundTunnelProxyUrl = _savedOutboundTunnel?.ProxyUrl ?? "";
-        IsOutboundTunnelEditing = true;
-    }
-
-    [RelayCommand]
-    private void EditSshProxy()
-    {
-        if (IsSshProxyEditing)
-            return;
-        Proxy = _savedSshProxy ?? "";
-        IsSshProxyEditing = true;
-    }
-
     private OutboundTunnelSpec? BuildOutboundTunnel()
     {
         if (!OutboundTunnelEnabled)
@@ -141,10 +118,10 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
                 throw new ArgumentException($"Local port must be empty or an integer from 1 to {MaxPort}.");
             localPort = port;
         }
-        return new OutboundTunnelSpec(OutboundTunnelMode,
-            IsOutboundTunnelEditing || _savedOutboundTunnel is null
-                ? Optional(OutboundTunnelProxyUrl) ?? ""
-                : _savedOutboundTunnel.ProxyUrl, localPort);
+        return new OutboundTunnelSpec(
+            OutboundTunnelMode,
+            OutboundProxy.ResolveEdited(OutboundTunnelProxyUrl, _savedOutboundTunnel?.ProxyUrl) ?? "",
+            localPort);
     }
 
     public static IReadOnlyList<string> AuthModes { get; } = [SshAuth.Agent, SshAuth.Key, SshAuth.Password];
@@ -163,7 +140,7 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
     private string _name = "";
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsSsh), nameof(IsIroh), nameof(IsRemote))]
+    [NotifyPropertyChangedFor(nameof(IsSsh), nameof(IsIroh), nameof(IsLocal), nameof(IsRemote))]
     private string _kind = MachineKinds.Ssh;
 
     [ObservableProperty]
@@ -171,6 +148,15 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
 
     [ObservableProperty]
     private string _endpointId = "";
+
+    [ObservableProperty]
+    private string _irohTarget = "";
+
+    [ObservableProperty]
+    private string _irohExecutablePath = "";
+
+    [ObservableProperty]
+    private string _irohArguments = "";
 
     /** 自定义 relay URL, 每行一个; 留空使用 iroh 默认 relay。 */
     [ObservableProperty]
@@ -209,36 +195,45 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
 
     public bool IsIroh => Kind == MachineKinds.Iroh;
 
+    public bool IsLocal => Kind == MachineKinds.Local;
+
     public bool IsRemote => IsSsh || IsIroh;
 
     public bool IsPassword => Auth == SshAuth.Password;
 
     public bool IsKey => Auth == SshAuth.Key;
 
-    public static MachineEditorViewModel From(MachineSpec spec, bool allowIroh = false) => new(allowIroh || spec.IsIroh)
+    public static MachineEditorViewModel From(MachineSpec spec, bool allowIroh = false, string? irohExecutable = null)
     {
-        OriginalName = spec.Name,
-        Name = spec.Name,
-        Kind = spec.Kind,
-        Host = spec.Host,
-        EndpointId = spec.EndpointId ?? "",
-        RelayUrls = string.Join(Environment.NewLine, spec.RelayUrls ?? []),
-        Port = spec.Port.ToString(),
-        User = spec.User,
-        Auth = spec.Auth,
-        KeyPath = spec.KeyPath ?? "",
-        Password = spec.Password ?? "",
-        _savedSshProxy = spec.Proxy,
-        Proxy = OutboundProxy.RedactUrlCredentials(spec.Proxy ?? "", spec.Proxy),
-        RemotePath = spec.RemotePath ?? "",
-        HarnessHome = spec.HarnessHome ?? "",
-        SshOptions = string.Join(Environment.NewLine, spec.SshOptions ?? []),
-        _savedOutboundTunnel = spec.OutboundTunnel,
-        OutboundTunnelEnabled = spec.OutboundTunnel is not null,
-        OutboundTunnelMode = spec.OutboundTunnel?.Mode ?? "proxyCommand",
-        OutboundTunnelProxyUrl = OutboundProxy.RedactUrlCredentials(spec.OutboundTunnel?.ProxyUrl ?? "", spec.OutboundTunnel?.ProxyUrl),
-        OutboundTunnelLocalPort = spec.OutboundTunnel?.LocalPort?.ToString() ?? "",
-    };
+        var editor = new MachineEditorViewModel(allowIroh || spec.IsIroh)
+        {
+            OriginalName = spec.Name,
+            Name = spec.Name,
+            Kind = spec.Kind,
+            Host = spec.Host,
+            EndpointId = spec.EndpointId ?? "",
+            RelayUrls = string.Join(Environment.NewLine, spec.RelayUrls ?? []),
+            Port = spec.Port.ToString(),
+            User = spec.User,
+            Auth = spec.Auth,
+            KeyPath = spec.KeyPath ?? "",
+            Password = spec.Password ?? "",
+            _savedSshProxy = spec.Proxy,
+            Proxy = OutboundProxy.RedactUrlCredentials(spec.Proxy ?? "", spec.Proxy),
+            RemotePath = spec.RemotePath ?? "",
+            HarnessHome = spec.HarnessHome ?? "",
+            SshOptions = string.Join(Environment.NewLine, spec.SshOptions ?? []),
+            IrohExecutablePath = spec.IrohExecutablePath ?? (spec.IsIroh ? irohExecutable ?? "" : ""),
+            IrohArguments = spec.IrohArguments ?? "",
+            _savedOutboundTunnel = spec.OutboundTunnel,
+            OutboundTunnelEnabled = spec.OutboundTunnel is not null,
+            OutboundTunnelMode = spec.OutboundTunnel?.Mode ?? "proxyCommand",
+            OutboundTunnelProxyUrl = OutboundProxy.RedactUrlCredentials(spec.OutboundTunnel?.ProxyUrl ?? "", spec.OutboundTunnel?.ProxyUrl),
+            OutboundTunnelLocalPort = spec.OutboundTunnel?.LocalPort?.ToString() ?? "",
+        };
+        editor.UpdateIrohTargetFromParts();
+        return editor;
+    }
 
     /** 表单 → 机器记录; 字段不完整时抛 ArgumentException(名称规则由 MachineStore 保存时再校验)。 */
     public MachineSpec ToSpec()
@@ -246,23 +241,94 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
         var name = Name.Trim();
         if (Kind == MachineKinds.Local)
             return MachineSpec.Local(Optional(HarnessHome) ?? throw new ArgumentException("本机条目需要填写 harness home（默认的本机已经隐式存在）"), name);
+        if (string.IsNullOrWhiteSpace(User))
+            throw new ArgumentException("远端机器需要填写 SSH 用户");
+        if (Kind == MachineKinds.Ssh && string.IsNullOrWhiteSpace(Host))
+            throw new ArgumentException("SSH 机器需要填写主机");
+        if (Auth is not (SshAuth.Agent or SshAuth.Key or SshAuth.Password))
+            throw new ArgumentException("请选择有效的认证方式");
+        if (Auth == SshAuth.Key && string.IsNullOrWhiteSpace(KeyPath))
+            throw new ArgumentException("密钥认证需要填写密钥路径");
+        if (Auth == SshAuth.Password && string.IsNullOrEmpty(Password))
+            throw new ArgumentException("密码认证需要填写密码");
         if (!int.TryParse(Port.Trim(), out var port) || port is <= 0 or > MaxPort)
             throw new ArgumentException($"端口必须是 1-{MaxPort} 的整数");
+        var irohTarget = ParseIrohTarget();
         string[] options = [.. SshOptions.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0)];
         string[] relays = [.. RelayUrls.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0)];
         return MachineSpec.Ssh(name, Host.Trim(), port, User.Trim(), Auth) with
         {
             Kind = Kind,
-            EndpointId = IsIroh ? Optional(EndpointId) : null,
+            EndpointId = IsIroh ? irohTarget.Endpoint : null,
+            User = IsIroh ? irohTarget.User : User.Trim(),
             RelayUrls = relays.Length == 0 ? null : relays,
             KeyPath = IsKey ? Optional(KeyPath) : null,
             Password = IsPassword ? Password : null,
-            Proxy = IsSsh ? IsSshProxyEditing || _savedSshProxy is null ? Optional(Proxy) : _savedSshProxy : null,
+            Proxy = IsSsh ? OutboundProxy.ResolveEdited(Proxy, _savedSshProxy) : null,
             RemotePath = Optional(RemotePath),
             HarnessHome = Optional(HarnessHome),
             SshOptions = options.Length == 0 ? null : options,
             OutboundTunnel = BuildOutboundTunnel(),
+            IrohExecutablePath = IsIroh ? Optional(IrohExecutablePath) : null,
+            IrohArguments = IsIroh ? Optional(IrohArguments) : null,
         };
+    }
+
+    private (string User, string Endpoint) ParseIrohTarget()
+    {
+        if (!IsIroh)
+            return (User.Trim(), "");
+        var target = IrohTarget.Trim();
+        var at = target.IndexOf('@');
+        if (at <= 0 || at == target.Length - 1)
+            throw new ArgumentException("Iroh 远程目标必须是 user@<64 位十六进制 endpoint id>");
+        var user = target[..at].Trim();
+        var endpoint = target[(at + 1)..].Trim();
+        if (user.Length == 0)
+            throw new ArgumentException("Iroh 远程目标缺少用户");
+        if (endpoint.Length != MachineSpec.IrohEndpointIdLength || endpoint.Any(character => !char.IsAsciiHexDigit(character)))
+            throw new ArgumentException($"Iroh Endpoint ID 必须是 {MachineSpec.IrohEndpointIdLength} 位十六进制");
+        return (user, endpoint);
+    }
+
+    private void UpdateIrohTargetFromParts()
+    {
+        if (_updatingIrohTarget)
+            return;
+        _updatingIrohTarget = true;
+        try
+        {
+            IrohTarget = User.Length > 0 && EndpointId.Length > 0 ? $"{User}@{EndpointId}" : EndpointId;
+        }
+        finally
+        {
+            _updatingIrohTarget = false;
+        }
+    }
+
+    partial void OnUserChanged(string value) => UpdateIrohTargetFromParts();
+
+    partial void OnEndpointIdChanged(string value) => UpdateIrohTargetFromParts();
+
+    partial void OnKindChanged(string value) => UpdateIrohTargetFromParts();
+
+    partial void OnIrohTargetChanged(string value)
+    {
+        if (_updatingIrohTarget)
+            return;
+        var at = value.IndexOf('@');
+        if (at <= 0 || at == value.Length - 1)
+            return;
+        _updatingIrohTarget = true;
+        try
+        {
+            User = value[..at].Trim();
+            EndpointId = value[(at + 1)..].Trim();
+        }
+        finally
+        {
+            _updatingIrohTarget = false;
+        }
     }
 
     /** 空白输入表示不设置(null), 否则去掉首尾空白。 */
@@ -276,18 +342,6 @@ public sealed partial class MachineEditorViewModel(bool allowIroh = false) : Obs
 public sealed partial class DeploySettingsEditorViewModel : ObservableObject
 {
     private string? _savedServerProxy;
-
-    [ObservableProperty]
-    private bool _isServerProxyEditing;
-
-    [RelayCommand]
-    private void EditServerProxy()
-    {
-        if (IsServerProxyEditing)
-            return;
-        ServerProxy = _savedServerProxy ?? "";
-        IsServerProxyEditing = true;
-    }
 
     public static IReadOnlyList<string> ViaOptions { get; } = [DownloadVia.Auto, DownloadVia.Client, DownloadVia.Server];
 
@@ -322,7 +376,6 @@ public sealed partial class DeploySettingsEditorViewModel : ObservableObject
         ReleaseBaseUrl = MachineEditorViewModel.Optional(ReleaseBaseUrl) ?? DeploySettings.DefaultReleaseBaseUrl,
         ReleaseVersion = MachineEditorViewModel.Optional(ReleaseVersion) ?? DeploySettings.LatestVersion,
         Via = ViaOptions.Contains(Via) ? Via : DownloadVia.Auto,
-        ServerProxy = IsServerProxyEditing || _savedServerProxy is null
-            ? MachineEditorViewModel.Optional(ServerProxy) : _savedServerProxy,
+        ServerProxy = OutboundProxy.ResolveEdited(ServerProxy, _savedServerProxy),
     };
 }

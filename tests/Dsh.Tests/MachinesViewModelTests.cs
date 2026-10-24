@@ -10,6 +10,23 @@ namespace Dsh.Tests;
 [Collection(SerialProcessCollection.Name)]
 public sealed class MachinesViewModelTests : IDisposable
 {
+    [Fact]
+    public void NewMachineButtons_HighlightOnlyTheActiveDraftKind()
+    {
+        var viewModel = new MachinesViewModel(new MachineStore(new HarnessHome(_home)), FleetConnectionTests.TestOptions);
+        viewModel.Load();
+
+        viewModel.NewSshCommand.Execute(null);
+        Assert.True(viewModel.IsDraftingSsh);
+        Assert.False(viewModel.IsDraftingIroh);
+        Assert.False(viewModel.IsDraftingLocal);
+
+        viewModel.NewLocalCommand.Execute(null);
+        Assert.False(viewModel.IsDraftingSsh);
+        Assert.False(viewModel.IsDraftingIroh);
+        Assert.True(viewModel.IsDraftingLocal);
+    }
+
     private readonly string _home = TempTree.CreateDirectory("machines-vm");
     private readonly IFleetIrohSetup? _previousIrohSetup = FleetService.IrohSetup;
 
@@ -86,6 +103,22 @@ public sealed class MachinesViewModelTests : IDisposable
         Assert.Equal(machine, Assert.Single(store.Load().Machines));
     }
 
+    [Fact]
+    public void IrohEditor_AutofillsPathAndKeepsTargetAndArguments()
+    {
+        var machine = MachineSpec.Ssh("target", "bootstrap.invalid", 22, "fixture-user", SshAuth.Agent) with
+        {
+            Kind = MachineKinds.Iroh,
+            EndpointId = new string('a', MachineSpec.IrohEndpointIdLength),
+            IrohArguments = "-i ~/.ssh/id_ed25519",
+        };
+        var editor = MachineEditorViewModel.From(machine, true, "/opt/iroh-ssh");
+
+        Assert.Equal("/opt/iroh-ssh", editor.IrohExecutablePath);
+        Assert.Equal($"fixture-user@{new string('a', MachineSpec.IrohEndpointIdLength)}", editor.IrohTarget);
+        Assert.Equal("-i ~/.ssh/id_ed25519", editor.IrohArguments);
+    }
+
     [Theory]
     [InlineData(MachineKinds.Ssh)]
     [InlineData(MachineKinds.Iroh)]
@@ -138,11 +171,7 @@ public sealed class MachinesViewModelTests : IDisposable
         var viewModel = new MachinesViewModel(store, new FleetOptions());
         viewModel.Load("target");
         var editor = viewModel.Editor!;
-        Assert.False(editor.IsOutboundTunnelEditing);
         Assert.Equal("http://***@proxy.invalid:3128", editor.OutboundTunnelProxyUrl);
-
-        editor.EditOutboundTunnelCommand.Execute(null);
-        Assert.Equal(original.OutboundTunnel.ProxyUrl, editor.OutboundTunnelProxyUrl);
         editor.OutboundTunnelMode = mode;
         editor.OutboundTunnelProxyUrl = "socks5://new-user:new-secret@new-proxy.invalid:1080";
         editor.OutboundTunnelLocalPort = localPort?.ToString() ?? "";
@@ -349,4 +378,3 @@ public sealed class MachinesViewModelTests : IDisposable
         (editor.RemotePath, editor.HarnessHome, editor.SshOptions) = ("/srv/work", "~/.dsh-build", "ConnectTimeout=5\r\n\r\n ServerAliveInterval=10 \n");
     }
 }
-

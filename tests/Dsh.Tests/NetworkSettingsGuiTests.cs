@@ -44,7 +44,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
             await vm.ReadRemoteOutboundCommand.ExecuteAsync(null);
             Assert.Equal((original.OwnerId, original.HostHome, original.Revision),
                 (vm.RemoteOutboundState!.OwnerId, vm.RemoteOutboundState.HostHome, vm.RemoteOutboundState.Revision));
-            vm.EditRemoteOutboundCommand.Execute(null);
             vm.RemoteOutboundUrl = "http://proxy.example.invalid:3128";
             vm.RemoteOutboundProbeUrl = ProbeTarget;
             var hostFile = await File.ReadAllTextAsync(alpha.Environment.App.Home.SettingsFile, Ct);
@@ -52,7 +51,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
             await vm.WaitForNetworkOperationsAsync().WaitAsync(CompletionTimeout, Ct);
             Assert.Equal(hostFile, await File.ReadAllTextAsync(alpha.Environment.App.Home.SettingsFile, Ct));
             await vm.ReadRemoteOutboundCommand.ExecuteAsync(null);
-            vm.EditRemoteOutboundCommand.Execute(null);
             vm.RemoteOutboundUrl = "http://proxy.example.invalid:3128";
             vm.RemoteOutboundProbeUrl = ProbeTarget;
             await vm.SaveRemoteOutboundCommand.ExecuteAsync(null);
@@ -88,7 +86,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
         {
             await vm.ReadRemoteOutboundCommand.ExecuteAsync(null);
             var revision = vm.RemoteOutboundState!.Revision;
-            vm.EditRemoteOutboundCommand.Execute(null);
             vm.RemoteOutboundUrl = "http://draft.example.invalid:3128";
             vm.RemoteOutboundProbeUrl = ProbeTarget;
             var committed = await observer.Network.SetOutboundAsync(new(revision,
@@ -121,7 +118,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
         {
             await vm.ReadRemoteOutboundCommand.ExecuteAsync(null);
             var known = vm.RemoteOutboundState;
-            vm.EditRemoteOutboundCommand.Execute(null);
             vm.RemoteOutboundUrl = "http://unsaved.example.invalid:3128";
             vm.AttachFleet(null);
             await vm.ReadRemoteOutboundCommand.ExecuteAsync(null);
@@ -167,7 +163,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
             var state = await observer.Network.GetOutboundAsync(Ct);
             var remoteFile = await File.ReadAllTextAsync(host.Environment.App.Home.SettingsFile, Ct);
             var clientFile = await File.ReadAllTextAsync(store.FilePath, Ct);
-            vm.EditRemoteOutboundCommand.Execute(null);
             vm.RemoteOutboundUrl = $"http://{user}:{password}@127.0.0.1:{proxy.Port}";
             vm.RemoteOutboundProbeUrl = ProbeTarget;
             await vm.ProbeRemoteCommand.ExecuteAsync(null);
@@ -285,7 +280,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
         {
             await vm.WaitForNetworkOperationsAsync().WaitAsync(CompletionTimeout, Ct);
             await vm.ReadRemoteOutboundCommand.ExecuteAsync(null);
-            vm.EditRemoteOutboundCommand.Execute(null);
             vm.RemoteOutboundUrl = RemoteSettings(held).Url!;
             vm.RemoteOutboundProbeUrl = ProbeTarget;
             pending = vm.ProbeRemoteCommand.ExecuteAsync(null);
@@ -298,7 +292,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
             vm.ActivateNetwork();
             await vm.WaitForNetworkOperationsAsync().WaitAsync(CompletionTimeout, Ct);
             await vm.ReadRemoteOutboundCommand.ExecuteAsync(null);
-            vm.EditRemoteOutboundCommand.Execute(null);
             vm.RemoteOutboundUrl = RemoteSettings(next).Url!;
             vm.RemoteOutboundProbeUrl = ProbeTarget;
             await vm.ProbeRemoteCommand.ExecuteAsync(null);
@@ -407,7 +400,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
             vm.ActivateNetwork(hidden);
             vm.ActivateNetwork(visible);
             await vm.WaitForNetworkOperationsAsync().WaitAsync(CompletionTimeout, TestContext.Current.CancellationToken);
-            vm.EditRemoteOutboundCommand.Execute(null);
             vm.RemoteOutboundUrl = RemoteSettings(held).Url!;
             vm.RemoteOutboundProbeUrl = ProbeTarget;
             pending = vm.ProbeRemoteCommand.ExecuteAsync(null);
@@ -445,7 +437,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
         {
             vm.ActivateNetwork(previous);
             await vm.WaitForNetworkOperationsAsync().WaitAsync(CompletionTimeout, Ct);
-            vm.EditRemoteOutboundCommand.Execute(null);
             vm.RemoteOutboundUrl = RemoteSettings(held).Url!;
             vm.RemoteOutboundProbeUrl = ProbeTarget;
             pending = vm.ProbeRemoteCommand.ExecuteAsync(null);
@@ -519,7 +510,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
         var vm = await MachineViewModelAsync(Store(specs), fleet, "alpha");
         try
         {
-            Assert.False(vm.IsRemoteOutboundEditing);
             Assert.DoesNotContain(user, vm.RemoteOutboundUrl);
             Assert.DoesNotContain(password, vm.RemoteOutboundUrl);
             Assert.NotEqual(url, vm.RemoteOutboundUrl);
@@ -529,13 +519,9 @@ public sealed class NetworkSettingsGuiTests : IDisposable
             await vm.ProbeRemoteCommand.ExecuteAsync(null);
             Assert.Equal(404, vm.RemoteProbe.Result!.HttpStatus);
             AssertSafe(vm.RemoteProbe, user, password);
-            vm.EditRemoteOutboundCommand.Execute(null);
-            Assert.True(vm.IsRemoteOutboundEditing);
-            Assert.Equal(url, vm.RemoteOutboundUrl);
             vm.RemoteOutboundProbeUrl = ProbeTarget + "/edited";
             await vm.SaveRemoteOutboundCommand.ExecuteAsync(null);
             Assert.Equal(url, (await observer.Network.GetOutboundAsync(Ct)).Settings.Url);
-            Assert.False(vm.IsRemoteOutboundEditing);
             Assert.DoesNotContain(password, vm.RemoteOutboundUrl);
         }
         finally { await CloseAsync(vm); }
@@ -769,7 +755,6 @@ public sealed class NetworkSettingsGuiTests : IDisposable
         var settings = SettingsViewModel(host.Environment.App, observer);
         try
         {
-            machines.EditRemoteOutboundCommand.Execute(null);
             machines.RemoteOutboundUrl = RemoteSettings(remoteError).Url!;
             machines.RemoteOutboundProbeUrl = ProbeTarget;
             await machines.ProbeRemoteCommand.ExecuteAsync(null);

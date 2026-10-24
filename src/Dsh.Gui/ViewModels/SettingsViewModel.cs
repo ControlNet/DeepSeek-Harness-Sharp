@@ -25,7 +25,6 @@ public enum SettingsSection
     Plugins,
     Shortcuts,
     Network,
-    Remote,
     About,
 }
 
@@ -96,7 +95,6 @@ public sealed partial class SettingsViewModel : ObservableObject
         new(SettingsSection.Plugins, "插件与 MCP"),
         new(SettingsSection.Shortcuts, "快捷键"),
         new(SettingsSection.Network, "网络"),
-        new(SettingsSection.Remote, "远程"),
         new(SettingsSection.About, "关于"),
     ];
 
@@ -169,9 +167,6 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     private bool _isNetworkSection;
-
-    [ObservableProperty]
-    private bool _isRemoteSection;
 
     [ObservableProperty]
     private bool _isAboutSection;
@@ -892,7 +887,6 @@ public sealed partial class SettingsViewModel : ObservableObject
         IsPluginsSection = Section == SettingsSection.Plugins;
         IsShortcutsSection = Section == SettingsSection.Shortcuts;
         IsNetworkSection = Section == SettingsSection.Network;
-        IsRemoteSection = Section == SettingsSection.Remote;
         IsAboutSection = Section == SettingsSection.About;
         if (Section == SettingsSection.Model)
             LoadHarnessSettings();

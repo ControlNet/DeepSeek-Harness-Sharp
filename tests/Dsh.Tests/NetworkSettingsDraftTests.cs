@@ -45,8 +45,6 @@ public sealed class NetworkSettingsDraftTests : IDisposable
         try
         {
             Assert.DoesNotContain("draft-secret", vm.RemoteOutboundUrl);
-            if (property != nameof(MachinesViewModel.RemoteOutboundBypass))
-                vm.EditRemoteOutboundCommand.Execute(null);
             var file = await File.ReadAllTextAsync(host.Environment.App.Home.SettingsFile, Ct);
             pending = vm.ProbeRemoteCommand.ExecuteAsync(null);
             await proxy.WaitForRequestAsync(Ct);
@@ -76,7 +74,6 @@ public sealed class NetworkSettingsDraftTests : IDisposable
 
             if (property == nameof(MachinesViewModel.RemoteOutboundBypass))
             {
-                Assert.False(vm.IsRemoteOutboundEditing);
                 await vm.SaveRemoteOutboundCommand.ExecuteAsync(null);
                 var committed = await observer.Network.GetOutboundAsync(Ct);
                 Assert.Equal(saved.Settings.Url, committed.Settings.Url);
@@ -162,7 +159,6 @@ public sealed class NetworkSettingsDraftTests : IDisposable
         try
         {
             var revision = vm.RemoteOutboundState!.Revision;
-            vm.EditRemoteOutboundCommand.Execute(null);
             vm.RemoteOutboundUrl = "http://draft.example.invalid:3128";
             vm.RemoteOutboundBypass = "draft.invalid";
             vm.RemoteOutboundProbeUrl = ProbeTarget;
@@ -186,7 +182,6 @@ public sealed class NetworkSettingsDraftTests : IDisposable
             await Task.WhenAll(pending, cancelling).WaitAsync(CompletionTimeout, Ct);
 
             Assert.False(vm.RemoteOutboundBusy);
-            Assert.True(vm.IsRemoteOutboundEditing);
             Assert.Equal(revision, vm.RemoteOutboundState.Revision);
             Assert.Equal("http://draft.example.invalid:3128", vm.RemoteOutboundUrl);
             Assert.Equal("draft.invalid", vm.RemoteOutboundBypass);
@@ -198,15 +193,12 @@ public sealed class NetworkSettingsDraftTests : IDisposable
                 Assert.True(vm.RemoteOutboundRequiresRefresh);
                 vm.RemoteOutboundUrl = "http://next.example.invalid:3128";
                 await vm.SaveRemoteOutboundCommand.ExecuteAsync(null);
-                Assert.True(vm.IsRemoteOutboundEditing);
                 Assert.Equal("http://next.example.invalid:3128", vm.RemoteOutboundUrl);
                 Assert.Equal(committed.Revision, (await observer.Network.GetOutboundAsync(Ct)).Revision);
                 await vm.ReadRemoteOutboundCommand.ExecuteAsync(null);
                 Assert.False(vm.RemoteOutboundRequiresRefresh);
-                Assert.False(vm.IsRemoteOutboundEditing);
                 Assert.Equal(committed.Revision, vm.RemoteOutboundState.Revision);
-                vm.EditRemoteOutboundCommand.Execute(null);
-                vm.RemoteOutboundUrl = "http://next.example.invalid:3128";
+                    vm.RemoteOutboundUrl = "http://next.example.invalid:3128";
                 await vm.SaveRemoteOutboundCommand.ExecuteAsync(null);
                 Assert.Equal("http://next.example.invalid:3128", (await observer.Network.GetOutboundAsync(Ct)).Settings.Url);
             }
@@ -315,5 +307,4 @@ public sealed class NetworkSettingsDraftTests : IDisposable
         public void Dispose() => Resume();
     }
 }
-
 

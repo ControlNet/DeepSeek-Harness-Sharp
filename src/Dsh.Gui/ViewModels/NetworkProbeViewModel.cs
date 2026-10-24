@@ -28,12 +28,12 @@ public sealed partial class NetworkProbeViewModel(ProxyProbeLayer layer) : Obser
     };
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(OutcomeText), nameof(IsPassed))]
+    [NotifyPropertyChangedFor(nameof(OutcomeText), nameof(IsPassed), nameof(HasResult))]
     [NotifyCanExecuteChangedFor(nameof(CancelCommand))]
     private bool _isRunning;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(OutcomeText), nameof(StageText), nameof(HttpStatusText), nameof(IdentityText), nameof(Detail), nameof(IsPassed))]
+    [NotifyPropertyChangedFor(nameof(OutcomeText), nameof(StageText), nameof(HttpStatusText), nameof(IdentityText), nameof(Detail), nameof(IsPassed), nameof(HasResult))]
     private ProxyProbeResult? _result;
 
     public string OutcomeText => IsRunning ? "检查中…" : Result?.Outcome switch
@@ -42,7 +42,7 @@ public sealed partial class NetworkProbeViewModel(ProxyProbeLayer layer) : Obser
         ProxyProbeOutcome.Failed => "失败",
         ProxyProbeOutcome.Cancelled => "已取消",
         ProxyProbeOutcome.Unsupported => "不支持",
-        _ => "未检查",
+        _ => "",
     };
 
     public string StageText => Result?.Stage switch
@@ -65,6 +65,8 @@ public sealed partial class NetworkProbeViewModel(ProxyProbeLayer layer) : Obser
     public string Detail => Result?.Detail ?? "";
 
     public bool IsPassed => !IsRunning && Result?.Outcome == ProxyProbeOutcome.Passed;
+
+    public bool HasResult => IsRunning || Result is not null;
 
     public Task RunAsync(string machine, string? home, Func<Guid, CancellationToken, Task<ProxyProbeResult>> probe,
         params string?[] secrets)

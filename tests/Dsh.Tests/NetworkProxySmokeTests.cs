@@ -524,12 +524,12 @@ public sealed class NetworkProxySmokeTests
             // Leaving the page cancels a real accepted request, rather than merely hiding its status.
             await gui.ClickAsync("id", "LocalProxyProbe", Ct);
             await paused.WaitForRequestAsync(Ct);
-            await gui.ClickAsync("text", "远程", Ct);
+            await gui.ClickAsync("text", "机器", Ct);
             await WaitForProbeDisconnectAsync(paused);
             await gui.ClickAsync("label", "A", Ct);
             await gui.ClickAsync("id", "SshProbe", Ct);
             await AssertGuiProbeAsync(gui, "SshProbe", ProxyProbeOutcome.Passed);
-            await gui.ClickAsync("text", "编辑 SSH 连接代理", Ct);
+
             await gui.TextAsync("id", "SshProxy", "false", Ct);
             await gui.ClickAsync("id", "SshProbe", Ct);
             await AssertGuiProbeAsync(gui, "SshProbe", ProxyProbeOutcome.Failed, ProxyProbeStage.Ssh);
@@ -545,7 +545,7 @@ public sealed class NetworkProxySmokeTests
             await gui.ClickAsync("id", "RemoteRead", Ct);
             await gui.FindAsync("id", "RemoteHome", Ct, aRoot);
             var remoteSaved = await File.ReadAllTextAsync(new HarnessHome(aRoot).SettingsFile, Ct);
-            await gui.ClickAsync("id", "EditRemoteProxy", Ct);
+
             await gui.TextAsync("id", "RemoteProxyUrl", $"http://127.0.0.1:{authentication.Port}", Ct);
             await gui.ClickAsync("id", "RemoteProbe", Ct);
             await AssertGuiProbeAsync(gui, "RemoteProbe", ProxyProbeOutcome.Failed, ProxyProbeStage.ProxyAuth, 407);
@@ -589,7 +589,7 @@ public sealed class NetworkProxySmokeTests
             {
                 await gui.ClickAsync("text", "外观", Ct);
                 await gui.ClickAsync("id", "Theme" + theme, Ct);
-                await gui.ClickAsync("text", "远程", Ct);
+                await gui.ClickAsync("text", "机器", Ct);
                 await gui.ClickAsync("label", "B", Ct);
                 foreach (var size in new[] { (1280, 900), (960, 720) })
                 {
@@ -604,7 +604,7 @@ public sealed class NetworkProxySmokeTests
                     await gui.ClickAsync("id", "LocalProxyProbe", Ct);
                     await AssertGuiProbeAsync(gui, "LocalProxyProbe", ProxyProbeOutcome.Failed, ProxyProbeStage.ProxyConnect);
                     await gui.ScreenshotAsync($"network-{theme.ToLowerInvariant()}-{size.Item1}x{size.Item2}.png", Ct);
-                    await gui.ClickAsync("text", "远程", Ct);
+                    await gui.ClickAsync("text", "机器", Ct);
                 }
             }
             await gui.ExitAsync(Ct);
@@ -747,7 +747,7 @@ public sealed class NetworkProxySmokeTests
                 var guiShell = await AddGuiOwnedShellAsync(gui, aHost, Path.Combine(aRoot, "restored"), mode);
                 await AssertIndependentHostTurnAsync(localHost, home, model, aProxy, providerHost, localTraffic);
                 await gui.ClickAsync("text", "设置", Ct);
-                await gui.ClickAsync("text", "远程", Ct);
+                await gui.ClickAsync("text", "机器", Ct);
                 await gui.ClickAsync("label", "A", Ct);
                 await gui.FindAsync("fleet-baseline", "", Ct);
                 await gui.ClickAsync("text", "保存", Ct); // The production machine-save callback reloads FleetWorkspace.
@@ -957,7 +957,7 @@ public sealed class NetworkProxySmokeTests
     private static async Task SetGuiRemoteProxyAsync(NetworkGuiProcess gui, string machine, string home, string proxy, string probe = HttpsTarget)
     {
         await ReadGuiRemoteProxyAsync(gui, machine, home);
-        await gui.ClickAsync("id", "EditRemoteProxy", Ct);
+
         await gui.TextAsync("id", "RemoteProxyUrl", proxy, Ct);
         await gui.TextAsync("id", "RemoteProbeUrl", probe, Ct);
         await gui.ClickAsync("id", "RemoteSave", Ct);
@@ -966,7 +966,7 @@ public sealed class NetworkProxySmokeTests
 
     private static async Task ReadGuiRemoteProxyAsync(NetworkGuiProcess gui, string machine, string home)
     {
-        await gui.ClickAsync("text", "远程", Ct);
+        await gui.ClickAsync("text", "机器", Ct);
         await gui.ClickAsync("label", machine, Ct);
         await gui.ClickAsync("id", "RemoteRead", Ct);
         await gui.FindAsync("id", "RemoteHome", Ct, home);

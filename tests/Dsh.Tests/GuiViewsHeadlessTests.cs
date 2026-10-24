@@ -94,15 +94,22 @@ public sealed class GuiViewsHeadlessTests
 
             Assert.Equal(["local", "build", "iroh-build"], rows);
             Assert.True(hostBox.IsEffectivelyVisible);
+            Assert.False(window.GetVisualDescendants().OfType<SelectableTextBlock>().Single(block => block.Name == "RemoteOwner").IsVisible);
+
+            viewModel.NewLocalCommand.Execute(null);
+            Dispatcher.UIThread.RunJobs();
+            var newLocal = window.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "新增本地 Harness Host"));
+            var newSsh = window.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "新增 SSH 机器"));
+            Assert.Contains("Primary", newLocal.Classes);
+            Assert.DoesNotContain("Primary", newSsh.Classes);
 
             viewModel.Selected = viewModel.Machines.Single(machine => machine.Name == "iroh-build");
             Dispatcher.UIThread.RunJobs();
-            var endpointBox = window.GetVisualDescendants().OfType<TextBox>().Single(box => box.Text == new string('a', 64));
+            var endpointBox = window.GetVisualDescendants().OfType<TextBox>().Single(box => box.Text == $"dev@{new string('a', 64)}");
             Assert.False(hostBox.IsEffectivelyVisible);
             Assert.True(endpointBox.IsEffectivelyVisible);
-            Assert.True(window.GetVisualDescendants().OfType<TextBox>().Single(box => box.Text == "dev").IsEffectivelyVisible);
-            Assert.True(window.GetVisualDescendants().OfType<ComboBox>().Single(box => Equals(box.SelectedItem, SshAuth.Agent)).IsEffectivelyVisible);
-            endpointBox.Text = new string('b', 64);
+            Assert.True(window.GetVisualDescendants().OfType<ComboBox>().Single(box => Equals(box.SelectedItem, SshAuth.Agent) && box.IsEffectivelyVisible).IsEffectivelyVisible);
+            endpointBox.Text = $"dev@{new string('b', 64)}";
             await viewModel.SaveCommand.ExecuteAsync(null);
             Assert.False(viewModel.StatusIsError, viewModel.Status);
             var saved = Assert.Single(store.Load().Machines, machine => machine.Name == "iroh-build");
@@ -118,7 +125,7 @@ public sealed class GuiViewsHeadlessTests
     [Theory]
     [InlineData(1280, 900)]
     [InlineData(960, 720)]
-    public async Task SettingsRemote_KeepsMachineSelectionAndDetailInsideTheViewport(int width, int height) => await HeadlessGui.RunAsync(async () =>
+    public async Task MachinesPage_KeepsMachineSelectionAndDetailInsideTheViewport(int width, int height) => await HeadlessGui.RunAsync(async () =>
     {
         await using var environment = await GuiTestEnvironment.CreateAsync();
         var preferences = new GuiSettings(environment.App.Home);
@@ -128,17 +135,14 @@ public sealed class GuiViewsHeadlessTests
         {
             window.Show();
             var viewModel = window.ViewModel!;
-            viewModel.ShowSettingsCommand.Execute(null);
-            var section = viewModel.Preferences.Sections.Single(item => item.Section == SettingsSection.Remote);
-            section.SelectCommand!.Execute(section);
+            viewModel.Workspace.OpenPage(viewModel.Workspace.Pages.Available.Single(page => page.Id == WorkspacePages.Machines));
             Dispatcher.UIThread.RunJobs();
             window.CaptureRenderedFrame()?.Dispose();
-            var page = window.GetVisualDescendants().OfType<SettingsPageView>().Single();
-            var machines = page.GetVisualDescendants().OfType<MachinesView>().Single();
+            var machines = window.GetVisualDescendants().OfType<MachinesView>().Single();
             Assert.True(machines.IsEffectivelyVisible);
-            AssertInsideViewport(machines, page);
-            AssertInsideViewport(machines.FindControl<ListBox>("MachineList")!, page);
-            AssertInsideViewport(machines.FindControl<ScrollViewer>("MachineDetailPane")!, page);
+            AssertInsideViewport(machines, window);
+            AssertInsideViewport(machines.FindControl<ListBox>("MachineList")!, window);
+            AssertInsideViewport(machines.FindControl<ScrollViewer>("MachineDetailPane")!, window);
         }
         finally
         {
@@ -286,4 +290,3 @@ public sealed class GuiViewsHeadlessTests
         return window;
     }
 }
-

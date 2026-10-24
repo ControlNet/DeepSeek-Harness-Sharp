@@ -31,11 +31,11 @@ public sealed class GuiRemoteWorkspaceTests
 
     private static IReadOnlyList<MachineSpec> SampleWorkspaces() =>
     [
-        MachineSpec.Ssh("实验室 GPU", "gpu-box.internal", 22, "dev", SshAuth.Password) with { RemotePath = "~/dsh-deploy" },
+        MachineSpec.Ssh("实验室 GPU", "gpu-box.internal", 22, "dev", SshAuth.Password) with { RemotePath = "~/dsh-deploy", Password = "fixture-password" },
         MachineSpec.Ssh("构建机", "build-box.internal", 22, "builder", SshAuth.Key) with { KeyPath = "~/.ssh/id_ed25519" },
     ];
 
-    /** 工作区菜单只管本地新会话的默认目录(最近工作区 + 打开新工作区…); 机器在工作台里统一显示; 设置页“远程”页签是机器管理, 保存后工作台按新清单重连。 */
+    /** 工作区菜单只管本地新会话的默认目录(最近工作区 + 打开新工作区…); 机器在工作台里统一显示; “机器”页是机器管理, 保存后工作台按新清单重连。 */
     [Fact]
     public async Task WorkspaceMenu_AndSettings_RemoteSurface() => await HeadlessGui.RunAsync(async () =>
     {
@@ -67,13 +67,9 @@ public sealed class GuiRemoteWorkspaceTests
         // 保存的 SSH 机器出现在工作台的机器分组里(这里不可达, 只验证分组存在)。
         Assert.All(SampleWorkspaces(), machine => Assert.Contains(viewModel.Workspace.Dashboard.Machines, group => group.Name == machine.Name));
 
-        // 设置页“远程”页签承载机器管理: 列出隐式本机与保存的机器, 编辑后保存进 settings.yaml。
-        viewModel.ShowSettingsCommand.Execute(null);
+        // “机器”页承载机器管理: 列出隐式本机与保存的机器, 编辑后保存进 settings.yaml。
+        viewModel.Workspace.OpenPage(viewModel.Workspace.Pages.Available.Single(page => page.Id == WorkspacePages.Machines));
         Dispatcher.UIThread.RunJobs();
-        var remoteSection = viewModel.Preferences.Sections.First(section => section.Section == SettingsSection.Remote);
-        remoteSection.SelectCommand!.Execute(remoteSection);
-        Dispatcher.UIThread.RunJobs();
-        Assert.True(viewModel.Preferences.IsRemoteSection);
         var machines = viewModel.Workspace.Machines;
         Assert.Equal([MachineSpec.LocalName, .. SampleWorkspaces().Select(machine => machine.Name)], machines.Machines.Select(row => row.Name));
         var machinesView = Assert.Single(window.GetVisualDescendants().OfType<MachinesView>(), view => view.IsEffectivelyVisible);
@@ -97,8 +93,6 @@ public sealed class GuiRemoteWorkspaceTests
         Assert.Contains(new MachineStore(environment.App.Home).Load().Machines, workspace => workspace.Name == "改名后的工作区");
         await GuiTestEnvironment.WaitForAsync(viewModel.Workspace.Fleet,
             () => viewModel.Workspace.Fleet.Find("改名后的工作区") is not null);
-        Assert.True(viewModel.Preferences.IsRemoteSection);
-
         window.Close();
         Dispatcher.UIThread.RunJobs();
     });
@@ -223,5 +217,3 @@ private static Spec? LoadSpec()
         public MachineSpec ToMachine() => MachineSpec.Ssh(Name, Host, Port, User, Auth) with { RemotePath = RemotePath, Password = Password };
     }
 }
-
-
