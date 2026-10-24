@@ -54,4 +54,3 @@ internal static class HeadlessGui
         return completion.Task;
     }
 }
-

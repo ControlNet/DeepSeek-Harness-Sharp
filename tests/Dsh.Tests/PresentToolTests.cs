@@ -150,7 +150,7 @@ public sealed class PresentToolTests
     [Fact]
     public async Task Deliverables_SurviveRestartAndResume_AndListThroughCommand()
     {
-        await using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         var session = environment.Agent.Session;
         var sessionId = session.Id;
         var expected = await CreateFile(session, "budget.xlsx");
@@ -238,4 +238,3 @@ public sealed class PresentToolTests
     private static string TextOf(ToolExecutionResult result)
         => string.Concat(result.Content.OfType<TextBlock>().Select(block => block.Text));
 }
-

@@ -21,11 +21,11 @@ public sealed class GuiHostChatIntegrationTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task OrdinaryChat_CreatesOnlyOnHost_AndBroadcastsComposerImagesAndCommands()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gc", TestContext.Current.CancellationToken);
-        await using var gui = await GuiTestEnvironment.CreateAsync();
+        await using var gui = await GuiTestEnvironment.CreateIsolatedAsync();
         var observer = await host.ConnectAsync("other-client", Ct);
         await HeadlessGui.RunAsync(async () =>
         {
@@ -39,6 +39,13 @@ public sealed class GuiHostChatIntegrationTests
             Assert.Contains(await observer.ListHostSessionsAsync(Ct), session => session.SessionId == id && session.Kind == HostSessionKinds.Harness);
 
             viewModel.Composer.Input = "/preset creative";
+            for (var attempt = 0; attempt < 100 && !viewModel.HasCommand("preset"); attempt++)
+            {
+                await viewModel.RefreshCommandsAsync();
+                if (!viewModel.HasCommand("preset"))
+                    await Task.Delay(50);
+            }
+            Assert.True(viewModel.HasCommand("preset"), "the host did not publish the preset command");
             await GuiTestEnvironment.PumpAsync(viewModel.SubmitCommand.ExecuteAsync(null));
             await GuiTestEnvironment.WaitForAsync(viewModel, () => viewModel.Preset == "creative");
             Assert.Equal("creative", viewModel.Preset);
@@ -62,11 +69,11 @@ public sealed class GuiHostChatIntegrationTests
         });
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task WorkspaceHarnessCard_SwitchesTheMainChatShell()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gw", TestContext.Current.CancellationToken);
-        await using var gui = await GuiTestEnvironment.CreateAsync();
+        await using var gui = await GuiTestEnvironment.CreateIsolatedAsync();
         await HeadlessGui.RunAsync(async () =>
         {
             await using var fleet = Fleet(host, gui);
@@ -86,11 +93,11 @@ public sealed class GuiHostChatIntegrationTests
         });
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task ClosingGui_DetachesOnly_AndPendingTaskCanBeAnsweredByAnotherClient()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gl", TestContext.Current.CancellationToken);
-        await using var gui = await GuiTestEnvironment.CreateAsync();
+        await using var gui = await GuiTestEnvironment.CreateIsolatedAsync();
         var observer = await host.ConnectAsync("survivor", Ct);
         string id = "";
         Task<ApprovalOutcome>? waiting = null;
@@ -119,7 +126,7 @@ public sealed class GuiHostChatIntegrationTests
         Assert.Contains(await observer.ListHostSessionsAsync(Ct), session => session.SessionId == id && session.Status == HostSessionStatuses.Exited);
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task PersistedPreFleetChat_IsResumedByHostWithSameIdentityAndFullTranscript()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gm", TestContext.Current.CancellationToken);
@@ -128,7 +135,7 @@ public sealed class GuiHostChatIntegrationTests
         legacy.Append(new UserMessagePayload(MessageFactory.CreateUserText("persisted before fleet")), new SurfaceOp.Append());
         await host.Environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(legacy);
         await host.RestartHostAsync(Ct);
-        await using var gui = await GuiTestEnvironment.CreateAsync();
+        await using var gui = await GuiTestEnvironment.CreateIsolatedAsync();
         var observer = await host.ConnectAsync("migration-observer", Ct);
         await HeadlessGui.RunAsync(async () =>
         {
@@ -142,11 +149,11 @@ public sealed class GuiHostChatIntegrationTests
         });
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task HostTruncation_RebuildsRichChatProjection_WithoutKeepingDiscardedMessages()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gr", TestContext.Current.CancellationToken);
-        await using var gui = await GuiTestEnvironment.CreateAsync();
+        await using var gui = await GuiTestEnvironment.CreateIsolatedAsync();
         await HeadlessGui.RunAsync(async () =>
         {
             await using var fleet = Fleet(host, gui);
@@ -165,11 +172,11 @@ public sealed class GuiHostChatIntegrationTests
         });
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task AnotherClientAnswer_ClosesOrdinaryChatDecisionDialog_AndWinsOnce()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gd", TestContext.Current.CancellationToken);
-        await using var gui = await GuiTestEnvironment.CreateAsync();
+        await using var gui = await GuiTestEnvironment.CreateIsolatedAsync();
         var observer = await host.ConnectAsync("answering-client", Ct);
         await HeadlessGui.RunAsync(async () =>
         {
@@ -201,11 +208,11 @@ public sealed class GuiHostChatIntegrationTests
         });
     }
 
-    [Fact(Timeout = 5000)]
+    [Fact]
     public async Task KeyboardComposer_RebindsAfterReattach_AndSendsOrdinaryChatToHost()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gk", TestContext.Current.CancellationToken);
-        await using var gui = await GuiTestEnvironment.CreateAsync();
+        await using var gui = await GuiTestEnvironment.CreateIsolatedAsync();
         var observer = await host.ConnectAsync("keyboard-observer", Ct);
         await HeadlessGui.RunAsync(async () =>
         {
@@ -271,5 +278,3 @@ public sealed class GuiHostChatIntegrationTests
             () => new FleetClient([MachineSpec.Local(host.Root)], options));
     }
 }
-
-

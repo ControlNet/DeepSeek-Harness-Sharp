@@ -188,12 +188,13 @@ public sealed class GuiTestEnvironment : IAsyncDisposable
     /** 模拟"重启应用": 旧实例关闭, 用同一个 home 重新组合, 并新建一个会话(旧会话不再 live)。 */
     public async Task<GuiTestEnvironment> RestartAsync() => await Task.Run(async () =>
     {
+        if (_shared is not null)
+            throw new InvalidOperationException("RestartAsync requires an isolated GUI environment.");
         await StopHostAsync();
         _agentHandle?.Dispose();
         if (Agent is IDisposable disposable)
             disposable.Dispose();
-        if (_shared is null)
-            App.Dispose();
+        App.Dispose();
         _ownsDirectory = false;
         var homePath = _directory;
         var app = await ConfigBoot.Compose(new HarnessOptions(HarnessHome.Resolve(homePath), _directory));
