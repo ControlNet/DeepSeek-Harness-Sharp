@@ -196,8 +196,7 @@ public sealed class SubagentViewModelTests
         await store.Flush(child);
         store.Release(child.Id);
         var chat = await environment.OpenChatAsync();
-        await (await chat.ClientAsync()).ResumeSessionAsync(child.Id.Value,
-            new RemoteModelSelection("test", "test-model"), null, TestContext.Current.CancellationToken);
+        await (await chat.ClientAsync()).ResumeSessionAsync(child.Id.Value, TestContext.Current.CancellationToken);
         var live = (AgentLoopAgent)environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(child.Id)!;
         await live.WhenIdle();
         child = live.Session;
@@ -251,8 +250,7 @@ public sealed class SubagentViewModelTests
         // The refresh owner must still reload live child events after the initial card snapshot.
         store.Release(child.Id);
         var chat = await environment.OpenChatAsync();
-        await (await chat.ClientAsync()).ResumeSessionAsync(child.Id.Value,
-            new RemoteModelSelection("test", "test-model"), null, TestContext.Current.CancellationToken);
+        await (await chat.ClientAsync()).ResumeSessionAsync(child.Id.Value, TestContext.Current.CancellationToken);
         var live = (AgentLoopAgent)environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(child.Id)!;
         await live.WhenIdle();
         var callId = ToolCallId.Create("call-inline-live");

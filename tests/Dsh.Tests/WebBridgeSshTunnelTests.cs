@@ -17,11 +17,11 @@ public sealed class WebBridgeSshTunnelTests
 {
     private const string RemoteMachine = "e2e";
 
-    private static readonly TimeSpan DeployTimeout = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan DeployTimeout = TimeSpan.FromSeconds(5);
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = 360000)]
+    [Fact(Timeout = 5000)]
     public async Task BrowserSockets_ShareOneDeployedSshConnection_AndTerminalSurvivesInitiatingPageClose()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -83,3 +83,4 @@ public sealed class WebBridgeSshTunnelTests
                 && arguments.Zip(arguments.Skip(1)).Any(pair => pair is ("-p", var value) && value == portText));
     }
 }
+

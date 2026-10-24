@@ -7,12 +7,13 @@ using Dsh.Tui;
 namespace Dsh.Tests;
 
 /** Sandbox switch and plugins."<package>".permissions: parsing, typed read model and the /plugins write-back. */
+[Collection(GuiSerialCollection.CollectionName)]
 public sealed class PluginPermissionTests
 {
     private const string Todo = "@deepseek-ai/dsh-tool-todo";
     private const string OuterComment = "# keep: comment above the plugins block";
     private const string TrailingComment = "# keep: comment after the plugins block";
-    private static readonly TimeSpan SubmitTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan SubmitTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
 
     private static readonly string SettingsWithComments = $"""
@@ -184,3 +185,4 @@ public sealed class PluginPermissionTests
     private static void Press(ChatWindow chat, ConsoleKey key)
         => chat.HandleKey(new ConsoleKeyInfo('\0', key, false, false, false));
 }
+

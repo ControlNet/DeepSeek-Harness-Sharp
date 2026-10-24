@@ -18,7 +18,7 @@ namespace Dsh.Tests;
 [Collection(GuiSerialCollection.CollectionName)]
 public sealed class TerminalControlHeadlessTests
 {
-    private static readonly TimeSpan OutputTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan OutputTimeout = TimeSpan.FromSeconds(5);
     private static readonly string ScreenshotDirectory = Path.GetFullPath(
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "artifacts020", "gui-screenshots"));
 
@@ -158,7 +158,7 @@ public sealed class TerminalControlHeadlessTests
         var viewModel = new TerminalViewModel("本地终端");
         var window = new TerminalWindow(viewModel);
         window.Show();
-        await viewModel.StartOnMachineAsync(machine, host.Root, TestContext.Current.CancellationToken);
+        await viewModel.StartOnMachineAsync(machine, host.Root, cancellationToken: TestContext.Current.CancellationToken);
         Dispatcher.UIThread.RunJobs();
 
         Assert.Matches(@"· \d+x\d+$", viewModel.Status);
@@ -236,3 +236,4 @@ public sealed class TerminalControlHeadlessTests
         frame?.Save(Path.Combine(ScreenshotDirectory, $"{name}.png"), PngBitmapEncoderOptions.Default);
     }
 }
+

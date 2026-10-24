@@ -20,9 +20,8 @@ namespace Dsh.Tests;
 public sealed class GuiHostChatIntegrationTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
-    private static readonly HarnessModelChoice Model = new(new RemoteModelSelection("test", "test-model"), null);
 
-    [Fact(Timeout = 120000)]
+    [Fact(Timeout = 5000)]
     public async Task OrdinaryChat_CreatesOnlyOnHost_AndBroadcastsComposerImagesAndCommands()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gc", TestContext.Current.CancellationToken);
@@ -31,7 +30,7 @@ public sealed class GuiHostChatIntegrationTests
         await HeadlessGui.RunAsync(async () =>
         {
             await using var fleet = Fleet(host, gui);
-            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Model, Ct);
+            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Ct);
             var agents = gui.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!;
             var before = agents.List().Count;
             await using var viewModel = new MainViewModel(gui.App, chat);
@@ -41,9 +40,10 @@ public sealed class GuiHostChatIntegrationTests
 
             viewModel.Composer.Input = "/preset creative";
             await GuiTestEnvironment.PumpAsync(viewModel.SubmitCommand.ExecuteAsync(null));
+            await GuiTestEnvironment.WaitForAsync(viewModel, () => viewModel.Preset == "creative");
             Assert.Equal("creative", viewModel.Preset);
             var snapshot = await observer.GetSessionSnapshotAsync(id, Ct);
-            Assert.Contains(snapshot.Events, item => DshJson.Deserialize<SessionEvent>(item.EventJson)?.Type == "preset/mode");
+            Assert.Contains(snapshot.Events, item => item.Type == "preset/mode");
 
             var png = new byte[] { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3 };
             viewModel.AttachImage("clipboard.png", png, 3, 2);
@@ -55,14 +55,38 @@ public sealed class GuiHostChatIntegrationTests
             Assert.Single(viewModel.Messages, message => message.Kind == MessageKind.User && message.Text.Contains("ordinary local chat", StringComparison.Ordinal));
             Assert.Empty(viewModel.Attachments);
             snapshot = await observer.GetSessionSnapshotAsync(id, Ct);
-            var user = Assert.Single(snapshot.Events.Select(item => DshJson.Deserialize<SessionEvent>(item.EventJson)?.Data)
+            var user = Assert.Single(snapshot.Events.Select(item => item.Data)
                 .OfType<UserMessagePayload>(), item => item.Message.Content.OfType<Dsh.Llm.TextBlock>().Any(text => text.Text == "ordinary local chat"));
             Assert.Contains(user.Message.Content, block => block is ImageBlock { Attachment.Width: 3, Attachment.Height: 2 });
             Assert.Equal(before, agents.List().Count);
         });
     }
 
-    [Fact(Timeout = 120000)]
+    [Fact(Timeout = 5000)]
+    public async Task WorkspaceHarnessCard_SwitchesTheMainChatShell()
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("gw", TestContext.Current.CancellationToken);
+        await using var gui = await GuiTestEnvironment.CreateAsync();
+        await HeadlessGui.RunAsync(async () =>
+        {
+            await using var fleet = Fleet(host, gui);
+            var chat = await HostChatSession.OpenAsync(fleet, host.Root, null, Ct);
+            await using var viewModel = new MainViewModel(gui.App, chat);
+            var started = await viewModel.Workspace.Actions.StartAsync(
+                "local",
+                new RemoteAgentStartRequest(HostAgentKinds.Dsharp, host.Root, Title: "main-chat-route"),
+                Ct);
+            await GuiTestEnvironment.WaitForAsync(viewModel.Workspace.Dashboard,
+                () => viewModel.Workspace.Dashboard.Find("local", started.SessionId) is not null);
+
+            viewModel.Workspace.OpenSession("local", started.SessionId);
+            await GuiTestEnvironment.WaitForAsync(viewModel,
+                () => viewModel.CurrentSessionId.Value == started.SessionId && viewModel.Page == AppPage.Chat);
+            Assert.Null(viewModel.Workspace.ActiveSession);
+        });
+    }
+
+    [Fact(Timeout = 5000)]
     public async Task ClosingGui_DetachesOnly_AndPendingTaskCanBeAnsweredByAnotherClient()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gl", TestContext.Current.CancellationToken);
@@ -73,7 +97,7 @@ public sealed class GuiHostChatIntegrationTests
         await HeadlessGui.RunAsync(async () =>
         {
             await using var fleet = Fleet(host, gui);
-            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Model, Ct);
+            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Ct);
             await using (var viewModel = new MainViewModel(gui.App, chat))
             {
                 id = viewModel.CurrentSessionId.Value;
@@ -89,13 +113,13 @@ public sealed class GuiHostChatIntegrationTests
         Assert.False(waiting.IsCompleted);
         var request = Assert.Single((await observer.ListPendingAsync(Ct)).Approvals, item => item.SessionId == id);
         Assert.True(await observer.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct));
-        Assert.Equal(ApprovalOutcome.AllowedOnce, await waiting.WaitAsync(TimeSpan.FromSeconds(20), Ct));
+        Assert.Equal(ApprovalOutcome.AllowedOnce, await waiting.WaitAsync(TimeSpan.FromSeconds(5), Ct));
         Assert.Contains(await observer.ListHostSessionsAsync(Ct), session => session.SessionId == id && session.Status != HostSessionStatuses.Exited);
         await observer.Agent.StopAgentAsync(id, Ct);
         Assert.Contains(await observer.ListHostSessionsAsync(Ct), session => session.SessionId == id && session.Status == HostSessionStatuses.Exited);
     }
 
-    [Fact(Timeout = 120000)]
+    [Fact(Timeout = 5000)]
     public async Task PersistedPreFleetChat_IsResumedByHostWithSameIdentityAndFullTranscript()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gm", TestContext.Current.CancellationToken);
@@ -109,7 +133,7 @@ public sealed class GuiHostChatIntegrationTests
         await HeadlessGui.RunAsync(async () =>
         {
             await using var fleet = Fleet(host, gui);
-            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, id, Model, Ct);
+            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, id, Ct);
             await using var viewModel = new MainViewModel(gui.App, chat);
             Assert.Equal(id, viewModel.CurrentSessionId.Value);
             Assert.Contains(viewModel.Messages, message => message.Kind == MessageKind.User && message.Text == "persisted before fleet");
@@ -118,7 +142,7 @@ public sealed class GuiHostChatIntegrationTests
         });
     }
 
-    [Fact(Timeout = 120000)]
+    [Fact(Timeout = 5000)]
     public async Task HostTruncation_RebuildsRichChatProjection_WithoutKeepingDiscardedMessages()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gr", TestContext.Current.CancellationToken);
@@ -126,7 +150,7 @@ public sealed class GuiHostChatIntegrationTests
         await HeadlessGui.RunAsync(async () =>
         {
             await using var fleet = Fleet(host, gui);
-            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Model, Ct);
+            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Ct);
             await using var viewModel = new MainViewModel(gui.App, chat);
             var agent = host.Environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(viewModel.CurrentSessionId)!;
             var keepCount = agent.Session.Seq;
@@ -141,7 +165,7 @@ public sealed class GuiHostChatIntegrationTests
         });
     }
 
-    [Fact(Timeout = 120000)]
+    [Fact(Timeout = 5000)]
     public async Task AnotherClientAnswer_ClosesOrdinaryChatDecisionDialog_AndWinsOnce()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gd", TestContext.Current.CancellationToken);
@@ -150,7 +174,7 @@ public sealed class GuiHostChatIntegrationTests
         await HeadlessGui.RunAsync(async () =>
         {
             await using var fleet = Fleet(host, gui);
-            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Model, Ct);
+            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Ct);
             await using var viewModel = new MainViewModel(gui.App, chat);
             var shown = new TaskCompletionSource<DecisionViewModel>(TaskCreationOptions.RunContinuationsAsynchronously);
             var closed = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -162,13 +186,13 @@ public sealed class GuiHostChatIntegrationTests
             };
             var agent = host.Environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(viewModel.CurrentSessionId)!;
             var waiting = RemoteHostMultiClientTests.RaiseApprovalAsync(host, agent, "bash");
-            var dialog = await GuiTestEnvironment.PumpAsync(shown.Task.WaitAsync(TimeSpan.FromSeconds(20), Ct));
+            var dialog = await GuiTestEnvironment.PumpAsync(shown.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct));
             Assert.True(dialog.IsApproval);
             var pending = await RemoteHostMultiClientTests.NextAsync(observer.PendingChangesAsync(Ct), change => change.Pending.Approvals.Any(item => item.SessionId == viewModel.CurrentSessionId.Value));
             var request = Assert.Single(pending.Pending.Approvals, item => item.SessionId == viewModel.CurrentSessionId.Value);
             Assert.True(await observer.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct));
-            Assert.Equal(ApprovalOutcome.Cancelled, await GuiTestEnvironment.PumpAsync(closed.Task.WaitAsync(TimeSpan.FromSeconds(20), Ct)));
-            Assert.Equal(ApprovalOutcome.AllowedOnce, await waiting.WaitAsync(TimeSpan.FromSeconds(20), Ct));
+            Assert.Equal(ApprovalOutcome.Cancelled, await GuiTestEnvironment.PumpAsync(closed.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct)));
+            Assert.Equal(ApprovalOutcome.AllowedOnce, await waiting.WaitAsync(TimeSpan.FromSeconds(5), Ct));
             Assert.False(await observer.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct));
             var change = await RemoteHostMultiClientTests.NextAsync(observer.PendingChangesAsync(Ct), item => item.Resolution?.RequestId == request.RequestId);
             Assert.Empty(change.Pending.Approvals);
@@ -177,7 +201,7 @@ public sealed class GuiHostChatIntegrationTests
         });
     }
 
-    [Fact(Timeout = 120000)]
+    [Fact(Timeout = 5000)]
     public async Task KeyboardComposer_RebindsAfterReattach_AndSendsOrdinaryChatToHost()
     {
         await using var host = await HarnessHostFixture.CreateAsync("gk", TestContext.Current.CancellationToken);
@@ -186,7 +210,7 @@ public sealed class GuiHostChatIntegrationTests
         await HeadlessGui.RunAsync(async () =>
         {
             await using var fleet = Fleet(host, gui);
-            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Model, Ct);
+            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Ct);
             var preferences = new GuiSettings(gui.App.Home);
             preferences.Save(preferences.Load() with { CloseAction = GuiSettings.CloseQuit });
             var window = new MainWindow(gui.App, chat);
@@ -218,7 +242,7 @@ public sealed class GuiHostChatIntegrationTests
                     () => viewModel.Messages.Any(message => message.Kind == MessageKind.User && message.Text == "typed through the ordinary composer"),
                     () => GuiTestEnvironment.DescribeChatState(viewModel));
                 var snapshot = await observer.GetSessionSnapshotAsync(viewModel.CurrentSessionId.Value, Ct);
-                Assert.Contains(snapshot.Events, item => DshJson.Deserialize<SessionEvent>(item.EventJson)?.Data is UserMessagePayload user
+                Assert.Contains(snapshot.Events, item => item.Data is UserMessagePayload user
                     && user.Message.Content.OfType<Dsh.Llm.TextBlock>().Any(block => block.Text == "typed through the ordinary composer"));
                 // Schedule close ahead of the queued sticky scroll without reentering message projection.
                 viewModel.MessagesChanged += () =>
@@ -247,3 +271,5 @@ public sealed class GuiHostChatIntegrationTests
             () => new FleetClient([MachineSpec.Local(host.Root)], options));
     }
 }
+
+

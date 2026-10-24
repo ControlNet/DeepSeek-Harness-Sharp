@@ -41,15 +41,16 @@ namespace Dsh.Tests
 
 #if !NETWORK_GUI_OBSERVER
 /** Explicit real-network and real-surface acceptance using this worktree's production executable. */
+[Collection(SerialProcessCollection.Name)]
 public sealed class NetworkProxySmokeTests
 {
     private const string HttpTarget = "http://example.com/";
     private const string HttpsTarget = "https://example.com/";
     private const string TlsMachineName = "tls-proxy";
-    private const int SharedSettingsTimeoutMilliseconds = 180000;
+    private const int SharedSettingsTimeoutMilliseconds = 5000;
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Theory(Explicit = true, Timeout = 90000)]
+    [Theory(Explicit = true, Timeout = 5000)]
     [InlineData("proxyCommand", "http", HttpTarget, 1)]
     [InlineData("proxyCommand", "http", HttpsTarget, 1)]
     [InlineData("proxyCommand", "http", HttpsTarget, 2)]
@@ -107,7 +108,7 @@ public sealed class NetworkProxySmokeTests
         }
     }
 
-    [Theory(Explicit = true, Timeout = 240000)]
+    [Theory(Explicit = true, Timeout = 5000)]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     public async Task IrohBorrowedProxy_ForwardsPublicHttpAndTlsThroughTheBuiltInProxyCommand(string mode)
@@ -172,7 +173,7 @@ public sealed class NetworkProxySmokeTests
         }
     }
 
-    [Theory(Explicit = true, Timeout = 120000)]
+    [Theory(Explicit = true, Timeout = 5000)]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     public async Task HttpsBorrowedProxy_PreservesLocalhostCertificateIdentityInAnIsolatedProcess(string mode)
@@ -224,7 +225,7 @@ public sealed class NetworkProxySmokeTests
     }
 
     // SSL_CERT_FILE is an existing process-local technical acceptance input, not a product configuration variable.
-    [Fact(Explicit = true, Timeout = 90000)]
+    [Fact(Explicit = true, Timeout = 5000)]
     public async Task HttpsBorrowedProxy_ChildUsesFixtureTrustAndSavedMachine()
     {
         var certificateFile = Environment.GetEnvironmentVariable("SSL_CERT_FILE");
@@ -259,7 +260,7 @@ public sealed class NetworkProxySmokeTests
         OwnerOnlyFiles.Write(Path.Combine(root, "ssh-command-evidence.txt"), string.Join(Environment.NewLine, commands));
     }
 
-    [Theory(Explicit = true, Timeout = 240000)]
+    [Theory(Explicit = true, Timeout = 5000)]
     [InlineData("proxyCommand", "A")]
     [InlineData("proxyCommand", "A with spaces")]
     [InlineData("localForward", "A")]
@@ -315,7 +316,7 @@ public sealed class NetworkProxySmokeTests
         }
     }
 
-    [Theory(Explicit = true, Timeout = 360000)]
+    [Theory(Explicit = true, Timeout = 5000)]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     [Trait("Category", "LlmSmoke")]
@@ -333,7 +334,7 @@ public sealed class NetworkProxySmokeTests
             var (model, providerHost) = PrepareModelHome(home);
             PrepareTuiHome(root, ssh, selected, other, baseline, mode);
             using var hostProcess = RealHostProcesses.StartHost(executable, root);
-            await using var host = await RemoteHostClient.ConnectAsync(await RemoteHostListener.ConnectAsync(root, Ct,
+            await using var host = await RemoteHostClient.ConnectAsync(await RemoteHostConnector.ConnectAsync(root, Ct,
                 startupLifetime: hostProcess.WaitForExitAsync(Ct)), null, "borrowed-route-acceptance", Ct);
             using var terminal = new PtyHost();
             var tui = await StartTuiAsync(terminal, executable, root);
@@ -351,7 +352,7 @@ public sealed class NetworkProxySmokeTests
             await host.Network.ReloadAsync(Ct);
             var hostFetchAddresses = await WebFetchHttpNetwork.ResolvePublicAddresses(new Uri(HttpsTarget).Host, Ct);
             var hostTrafficStart = selected.Requests.ToArray().Length;
-            var hostSession = await host.CreateSessionAsync(root, new RemoteModelSelection(model.Provider, model.Model), cancellationToken: Ct);
+        var hostSession = await host.CreateSessionAsync(root, cancellationToken: Ct);
             var hostEvents = ReadHostTurnAsync(host, hostSession.Id);
             await host.SendMessageAsync(hostSession.Id, "Use web_fetch to read https://example.com/ and briefly summarize its contents without using other tools.", [], Ct);
             var events = await hostEvents;
@@ -449,7 +450,7 @@ public sealed class NetworkProxySmokeTests
             phase = "gui-reread";
             await using (var gui = await NetworkGuiProcess.StartAsync(executable, root, SurfaceEvidence("shared-read"), Ct))
             {
-                await using var host = await RemoteHostClient.ConnectAsync(await RemoteHostListener.ConnectAsync(root, Ct),
+                await using var host = await RemoteHostClient.ConnectAsync(await RemoteHostConnector.ConnectAsync(root, Ct),
                     null, "shared-settings-reader", Ct);
                 await gui.ClickAsync("text", "设置", Ct);
                 await gui.ClickAsync("text", "网络", Ct);
@@ -468,7 +469,7 @@ public sealed class NetworkProxySmokeTests
         }
     }
 
-    [Fact(Explicit = true, Timeout = 600000)]
+    [Fact(Explicit = true, Timeout = 5000)]
     [Trait("Category", "OnlyGpu")]
     public async Task RealGuiSettings_ThreeLayers_DraftCancellationAndMachineIsolation_AtBothSizesAndThemes()
     {
@@ -619,7 +620,7 @@ public sealed class NetworkProxySmokeTests
         }
     }
 
-    [Theory(Explicit = true, Timeout = 1200000)]
+    [Theory(Explicit = true, Timeout = 5000)]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     [Trait("Category", "OnlyGpu")]
@@ -779,7 +780,7 @@ public sealed class NetworkProxySmokeTests
         }
     }
 
-    [Fact(Explicit = true, Timeout = 600000)]
+    [Fact(Explicit = true, Timeout = 5000)]
     [Trait("Category", "LlmSmoke")]
     public async Task RealSshTuiModel_RemoteAAndB_CompleteWebFetchAndSearchThroughTheirOwnHostSettings()
     {
@@ -944,7 +945,7 @@ public sealed class NetworkProxySmokeTests
             (_, rid, token) => FleetSshEndToEndTests.BuildArchiveAsync(executable, rid, ssh.Root, token));
 
     private static async Task<RemoteHostClient> ConnectSurfaceHostAsync(string root, Process process)
-        => await RemoteHostClient.ConnectAsync(await RemoteHostListener.ConnectAsync(root, Ct,
+        => await RemoteHostClient.ConnectAsync(await RemoteHostConnector.ConnectAsync(root, Ct,
             startupLifetime: process.WaitForExitAsync(Ct)), null, "network-real-surface", Ct);
 
     private static string SurfaceEvidence(string name)
@@ -1108,7 +1109,7 @@ public sealed class NetworkProxySmokeTests
     {
         Assert.True(await host.PingAsync(Ct) > 0, "GUI reload/exit must leave its independent local Host alive.");
         var addresses = await WebFetchHttpNetwork.ResolvePublicAddresses("example.com", Ct);
-        var session = await host.CreateSessionAsync(home.Root, new(model.Provider, model.Model), cancellationToken: Ct);
+        var session = await host.CreateSessionAsync(home.Root, cancellationToken: Ct);
         var turn = ReadHostTurnAsync(host, session.Id);
         await host.SendMessageAsync(session.Id, ModelWebPrompt, [], Ct);
         await AssertModelWebTurnAsync(await turn, proxy.Requests.ToArray()[routeTrafficStart..], providerHost, addresses, home);
@@ -1144,14 +1145,14 @@ public sealed class NetworkProxySmokeTests
                 session => session.SessionId == target.Pty && session.Status == HostSessionStatuses.Running);
             await using var capture = RemoteHostPtyTests.TerminalCapture.Attach(target.Host, target.Pty);
             await capture.SendAsync("printf 'SURVIVOR-%s\\n' \"$((6*7))\"\n");
-            await capture.WaitForAsync("SURVIVOR-42", TimeSpan.FromSeconds(20));
+            await capture.WaitForAsync("SURVIVOR-42", TimeSpan.FromSeconds(5));
         }
     }
 
     private static async Task AssertSurfaceSshRetiredAsync(string root, string mode)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
         var commands = await File.ReadAllLinesAsync(Path.Combine(root, "owned-ssh-commands.txt"), deadline.Token);
         Assert.NotEmpty(commands);
         var ports = new HashSet<int>();
@@ -1193,7 +1194,7 @@ public sealed class NetworkProxySmokeTests
 
     private static async Task EndSurfaceHostAsync(Process host)
     {
-        using var signal = Process.Start(new ProcessStartInfo("kill", ["-TERM", host.Id.ToString(CultureInfo.InvariantCulture)])
+        using var signal = TestProcessScope.Start(new ProcessStartInfo("kill", ["-TERM", host.Id.ToString(CultureInfo.InvariantCulture)])
         {
             UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
         }) ?? throw new IOException("Could not terminate the owned independent Host.");
@@ -1203,7 +1204,7 @@ public sealed class NetworkProxySmokeTests
         await output;
         await errors;
         Assert.Equal(0, signal.ExitCode);
-        await host.WaitForExitAsync(Ct).WaitAsync(TimeSpan.FromSeconds(20), Ct);
+        await host.WaitForExitAsync(Ct).WaitAsync(TimeSpan.FromSeconds(5), Ct);
         Assert.Equal(0, host.ExitCode);
     }
 
@@ -1245,7 +1246,7 @@ public sealed class NetworkProxySmokeTests
                 }
             }
             RealHostProcesses.KillAll(root);
-            await Task.WhenAll(processes.Select(process => process.WaitForExitAsync())).WaitAsync(TimeSpan.FromSeconds(20));
+            await Task.WhenAll(processes.Select(process => process.WaitForExitAsync())).WaitAsync(TimeSpan.FromSeconds(5));
             TempTree.Delete(root);
             Assert.False(Directory.Exists(root), "The owned test home must be absent after all its processes have exited.");
         }
@@ -1264,7 +1265,7 @@ public sealed class NetworkProxySmokeTests
         watcher.EnableRaisingEvents = true;
         if (File.Exists(path))
             created.TrySetResult();
-        await created.Task.WaitAsync(TimeSpan.FromSeconds(30), Ct);
+        await created.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
     }
 
     private static void AssertPinnedFetchTraffic(IEnumerable<string> traffic, IReadOnlyList<PublicAddress> targetAddresses)
@@ -1334,7 +1335,7 @@ public sealed class NetworkProxySmokeTests
     private static async Task WaitUntilAsync(Func<bool> condition, string failure, Func<string>? describeState = null)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        deadline.CancelAfter(TimeSpan.FromSeconds(120));
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
         while (!condition())
         {
             if (deadline.IsCancellationRequested)
@@ -1374,11 +1375,12 @@ public sealed class NetworkProxySmokeTests
     private static async Task<IReadOnlyList<SessionEvent>> ReadHostTurnAsync(RemoteHostClient host, string sessionId)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        deadline.CancelAfter(TimeSpan.FromSeconds(120));
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
         var events = new List<SessionEvent>();
         await foreach (var item in host.SubscribeAsync(sessionId, 0, deadline.Token))
         {
-            var value = DshJson.Deserialize<SessionEvent>(item.EventJson)!;
+            if (item.Event is not { } value)
+                continue;
             events.Add(value);
             if (value.Data is TurnEndPayload)
                 return events;
@@ -1484,7 +1486,7 @@ internal static class NetworkGuiObservation
             using var connection = new NamedPipeClientStream(".", pipe, PipeDirection.InOut, PipeOptions.Asynchronous);
             await connection.ConnectAsync(30000);
             // Never initialize the dispatcher before the production AppBuilder has selected its platform.
-            await firstWindow.Task.WaitAsync(TimeSpan.FromSeconds(40));
+            await firstWindow.Task.WaitAsync(TimeSpan.FromSeconds(5));
             firstOpened.Dispose();
             using var input = new StreamReader(connection, Encoding.UTF8, leaveOpen: true);
             using var output = new StreamWriter(connection, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
@@ -1509,7 +1511,7 @@ internal static class NetworkGuiObservation
                 }
                 if (kind == "fleet-reloaded")
                 {
-                    using var retirement = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+                    using var retirement = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                     await reload.WaitAsync(retirement.Token);
                     await Dispatcher.UIThread.InvokeAsync(reload.ValidateReplacement);
                     reload.Dispose();
@@ -1524,7 +1526,7 @@ internal static class NetworkGuiObservation
                     kind = parts[0];
                     selector = parts[1];
                 }
-                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 var ready = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
                 var watched = new HashSet<Window>();
                 var controls = new HashSet<Control>();
@@ -1594,8 +1596,8 @@ internal static class NetworkGuiObservation
                                     && control.DataContext is MessageViewModel { Kind: MessageKind.System, IsStreaming: false } message
                                     && text == (message.ShowPreview ? message.Preview : message.Text)
                                     && text.Contains(selector, StringComparison.Ordinal)
-                                    && control.GetVisualAncestors().OfType<SessionTranscriptView>().FirstOrDefault()?.DataContext is SessionTranscriptViewModel transcript
-                                    && ReferenceEquals(message, transcript.Messages.LastOrDefault()),
+                                    && (control.GetVisualAncestors().OfType<ChatView>().FirstOrDefault()?.DataContext as MainViewModel)?.Messages.LastOrDefault() is { } last
+                                    && ReferenceEquals(message, last),
                                 "owned-terminal" => control is TerminalControl && text.Length > 0,
                                 "terminal-screen" => control is TerminalControl && text.Contains(selector, StringComparison.Ordinal),
                                 "probe" => control.Name == selector && probe is { IsRunning: false, Result: not null }
@@ -1814,8 +1816,7 @@ internal static class NetworkGuiObservation
             || markdown.DataContext is not MessageViewModel { IsAssistant: true, IsStreaming: false } message
             || !message.Text.Contains(citation, StringComparison.Ordinal) || markdown.Text != message.Text)
             return false;
-        var messages = (markdown.GetVisualAncestors().OfType<ChatView>().FirstOrDefault()?.DataContext as MainViewModel)?.Messages
-            ?? (markdown.GetVisualAncestors().OfType<SessionTranscriptView>().FirstOrDefault()?.DataContext as SessionTranscriptViewModel)?.Messages;
+        var messages = (markdown.GetVisualAncestors().OfType<ChatView>().FirstOrDefault()?.DataContext as MainViewModel)?.Messages;
         if (messages is null || !ReferenceEquals(message, messages.LastOrDefault(value => value.IsAssistant)))
             return false;
         return ReferenceEquals(control, markdown.GetVisualDescendants().OfType<UiTextBlock>()
@@ -1877,7 +1878,7 @@ internal sealed class NetworkGuiProcess : IAsyncDisposable
     public static async Task<NetworkGuiProcess> StartAsync(string executable, string home, string evidence, CancellationToken token)
     {
         using var startup = CancellationTokenSource.CreateLinkedTokenSource(token);
-        startup.CancelAfter(TimeSpan.FromSeconds(45));
+        startup.CancelAfter(TimeSpan.FromSeconds(5));
         token = startup.Token;
         Assert.True(OperatingSystem.IsLinux(), "The real GUI gate requires an isolated Linux X11 namespace.");
         var mounts = File.ReadLines("/proc/self/mountinfo").Select(line => line.Split(' ')).Where(fields => fields.Length > 4).ToArray();
@@ -1895,7 +1896,7 @@ internal sealed class NetworkGuiProcess : IAsyncDisposable
         Directory.CreateDirectory(evidence);
         var classes = Path.Combine(evidence, "java");
         Directory.CreateDirectory(classes);
-        using (var compiler = Process.Start(Info("javac", home, null,
+        using (var compiler = TestProcessScope.Start(Info("javac", home, null,
             "-d", classes, Path.Combine(AppContext.BaseDirectory, "NetworkGuiDriver.java")))! )
         {
             try
@@ -1914,7 +1915,7 @@ internal sealed class NetworkGuiProcess : IAsyncDisposable
                 await compiler.WaitForExitAsync();
             }
         }
-        var display = Process.Start(Info("Xvfb", home, null, "-displayfd", "1", "-screen", "0", $"{DisplayWidth}x{DisplayHeight}x24",
+        var display = TestProcessScope.Start(Info("Xvfb", home, null, "-displayfd", "1", "-screen", "0", $"{DisplayWidth}x{DisplayHeight}x24",
             "-nolisten", "tcp", "-dpi", "96", "-terminate")) ?? throw new IOException("Xvfb could not start.");
         Process? gui = null;
         Process? robot = null;
@@ -1927,7 +1928,7 @@ internal sealed class NetworkGuiProcess : IAsyncDisposable
             Assert.True(int.TryParse(number, out displayNumber), "Xvfb must signal its allocated display through -displayfd.");
             var selectedDisplay = $":{number}";
             const string windowManagerReady = "DSH_NETWORK_GUI_WM_READY";
-            windowManager = Process.Start(Info("openbox", home, selectedDisplay, "--sm-disable",
+            windowManager = TestProcessScope.Start(Info("openbox", home, selectedDisplay, "--sm-disable",
                 "--startup", $"/bin/sh -c 'echo {windowManagerReady}'"))
                 ?? throw new IOException("The owned window manager could not start.");
             string? announcement;
@@ -1942,8 +1943,8 @@ internal sealed class NetworkGuiProcess : IAsyncDisposable
             var launch = Info(executable, home, selectedDisplay, "gui");
             launch.Environment["DOTNET_STARTUP_HOOKS"] = Path.Combine(AppContext.BaseDirectory, "network-gui-observer.dll");
             launch.Environment["DSH_NETWORK_GUI_OBSERVER"] = pipeName;
-            gui = Process.Start(launch) ?? throw new IOException("The real dsharp GUI could not start.");
-            robot = Process.Start(Info("java", home, selectedDisplay, "-cp", classes, "NetworkGuiDriver", selectedDisplay, evidence))
+            gui = TestProcessScope.Start(launch) ?? throw new IOException("The real dsharp GUI could not start.");
+            robot = TestProcessScope.Start(Info("java", home, selectedDisplay, "-cp", classes, "NetworkGuiDriver", selectedDisplay, evidence))
                 ?? throw new IOException("The isolated Java Robot could not start.");
             Assert.Equal("READY", await robot.StandardOutput.ReadLineAsync(token));
             await pipe.WaitForConnectionAsync(token);
@@ -1967,7 +1968,7 @@ internal sealed class NetworkGuiProcess : IAsyncDisposable
     public async Task<NetworkGuiNode> FindAsync(string kind, string selector, CancellationToken token, string contains = "")
     {
         await _requests.WriteLineAsync($"{kind}\t{NetworkGuiNode.Encode(selector)}\t{NetworkGuiNode.Encode(contains)}");
-        var line = await _observations.ReadLineAsync(token).AsTask().WaitAsync(TimeSpan.FromSeconds(50), token);
+        var line = await _observations.ReadLineAsync(token).AsTask().WaitAsync(TimeSpan.FromSeconds(5), token);
         if (line is null || line.StartsWith("ERROR\t", StringComparison.Ordinal))
             await InputAsync(token, "SHOT", "observer-failure.png", "0", "0",
                 DisplayWidth.ToString(CultureInfo.InvariantCulture), DisplayHeight.ToString(CultureInfo.InvariantCulture));
@@ -2128,3 +2129,5 @@ public static class StartupHook
     }
 }
 #endif
+
+

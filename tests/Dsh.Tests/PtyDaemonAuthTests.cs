@@ -14,7 +14,7 @@ public sealed class PtyDaemonAuthTests
     private const UnixFileMode OwnerAll = OwnerReadWrite | UnixFileMode.UserExecute;
     private const int OversizedLineBytes = 2 * 1024 * 1024;
 
-    [Fact(Timeout = 30000)]
+    [Fact(Timeout = 5000)]
     public async Task Start_RestrictsSocketTokenAndDirectoryToOwner()
     {
         if (OperatingSystem.IsWindows())
@@ -37,7 +37,7 @@ public sealed class PtyDaemonAuthTests
         }
     }
 
-    [Theory(Timeout = 30000)]
+    [Theory(Timeout = 5000)]
     [InlineData(null)]
     [InlineData("not-the-token")]
     public async Task Request_WithoutMatchingToken_IsRejectedAndNothingStarts(string? token)
@@ -60,7 +60,7 @@ public sealed class PtyDaemonAuthTests
         });
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact(Timeout = 5000)]
     public async Task MalformedLine_GetsErrorReply_AndDaemonKeepsServing()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -73,7 +73,7 @@ public sealed class PtyDaemonAuthTests
         });
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact(Timeout = 5000)]
     public async Task OversizedLine_IsRefused_AndDaemonKeepsServing()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

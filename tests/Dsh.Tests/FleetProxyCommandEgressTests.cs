@@ -8,15 +8,16 @@ using Dsh.Transport;
 
 namespace Dsh.Tests;
 
+[Collection(SerialProcessCollection.Name)]
 public sealed class FleetProxyCommandEgressTests
 {
     private const string Credential = "synthetic-user:synthetic-secret";
     private const string ReplacementCredential = "replacement-user:replacement-secret";
     private const string Target = "http://example.com/";
-    private static readonly TimeSpan SignalTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan SignalTimeout = TimeSpan.FromSeconds(5);
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Theory(Timeout = 60000)]
+    [Theory(Timeout = 5000)]
     [InlineData("proxyCommand", false)]
     [InlineData("proxyCommand", true)]
     [InlineData("localForward", false)]
@@ -46,7 +47,7 @@ public sealed class FleetProxyCommandEgressTests
         Assert.Equal(0, remoteProxy.ActiveConnections);
     }
 
-    [Theory(Timeout = 120000)]
+    [Theory(Timeout = 5000)]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     public async Task JumpAuthentication_DoesNotDeleteAskPassBeforeTheTargetsEncryptedKeyPrompt(string mode)
@@ -169,7 +170,7 @@ public sealed class FleetProxyCommandEgressTests
         }
     }
 
-    [Theory(Timeout = 60000)]
+    [Theory(Timeout = 5000)]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     public async Task BaselineChangesAndInvalidBorrowedUpdates_DoNotInterruptTheBorrowedRequest(string mode)
@@ -200,7 +201,7 @@ public sealed class FleetProxyCommandEgressTests
         Assert.Single(remoteProxy.Requests);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Timeout = 5000)]
     public async Task LastClosedSocket_DoesNotLoseTheSharedSshFailure()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -246,7 +247,7 @@ public sealed class FleetProxyCommandEgressTests
         FleetLocalForwardEgressTests.AssertPortCanRebind(finalPort);
     }
 
-    [Theory(Timeout = 60000)]
+    [Theory(Timeout = 5000)]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     public async Task KillingTheOwnedSsh_AbortsWithoutReplay_AndOnlyANewRequestRebuilds(string mode)
@@ -297,7 +298,7 @@ public sealed class FleetProxyCommandEgressTests
         Assert.NotEqual(originalRoute.Generation, outbound.CaptureRoute(new Uri(Target)).Generation);
     }
 
-    [Theory(Timeout = 180000)]
+    [Theory(Timeout = 5000)]
     [InlineData("proxyCommand", false)]
     [InlineData("proxyCommand", true)]
     [InlineData("localForward", false)]
@@ -432,7 +433,7 @@ public sealed class FleetProxyCommandEgressTests
         }
     }
 
-    [Theory(Timeout = 60000)]
+    [Theory(Timeout = 5000)]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     public async Task ChangingCredentialsAtTheSameProxyEndpoint_RetiresTheOldAuthenticatedPool(string mode)
@@ -465,7 +466,7 @@ public sealed class FleetProxyCommandEgressTests
         Assert.Equal(1, remoteProxy.ActiveConnections);
     }
 
-    [Theory(Timeout = 60000)]
+    [Theory(Timeout = 5000)]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     public async Task CancellingOneRequest_DoesNotRetireAnotherConsumersRoute(string mode)
@@ -495,7 +496,7 @@ public sealed class FleetProxyCommandEgressTests
         Assert.Equal([$"GET {Target}cancelled HTTP/1.1", $"GET {Target}surviving HTTP/1.1"], remoteProxy.Requests.ToArray());
     }
 
-    [Theory(Timeout = 60000)]
+    [Theory(Timeout = 5000)]
     [InlineData("proxyCommand")]
     [InlineData("localForward")]
     public async Task BypassIsDirect_AndForcedHttp3FailsWithoutOpeningSsh(string mode)
@@ -527,3 +528,4 @@ public sealed class FleetProxyCommandEgressTests
                 $"{(socks ? "socks5" : "http")}://{(authenticated ? $"{Credential}@" : "")}localhost:{proxy.Port}"),
         };
 }
+

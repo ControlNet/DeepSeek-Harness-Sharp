@@ -57,7 +57,7 @@ public sealed class RemoteDsharpInstallerTests
 
 
     /** 真实 shell: 只停“旧二进制路径 + host serve”的进程, 同机另一个 dsharp 的宿主与执行脚本的 shell 都不受影响。 */
-    [Fact(Timeout = 30000)]
+    [Fact(Timeout = 5000)]
     public async Task Stop_Command_Stops_Only_The_Host_Of_That_Binary()
     {
         if (OperatingSystem.IsWindows())
@@ -71,11 +71,11 @@ public sealed class RemoteDsharpInstallerTests
         {
             var old = FakeHostBinary(Path.Combine(root, "old"));
             var other = FakeHostBinary(Path.Combine(root, "other"));
-            using var oldHost = Process.Start(old, ["host", "serve"]);
-            using var otherHost = Process.Start(other, ["host", "serve"]);
+            using var oldHost = TestProcessScope.Start(old, ["host", "serve"]);
+            using var otherHost = TestProcessScope.Start(other, ["host", "serve"]);
             await Task.Delay(200, TestContext.Current.CancellationToken);
 
-            using var shell = Process.Start("/bin/sh", ["-c", RemoteDsharpInstaller.StopHostCommand(old) + "echo done"]);
+            using var shell = TestProcessScope.Start("/bin/sh", ["-c", RemoteDsharpInstaller.StopHostCommand(old) + "echo done"]);
             await shell.WaitForExitAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(0, shell.ExitCode);

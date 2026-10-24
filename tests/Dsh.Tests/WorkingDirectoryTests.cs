@@ -415,7 +415,7 @@ public sealed class WorkingDirectoryTests : IDisposable
         };
         foreach (var argument in arguments)
             info.ArgumentList.Add(argument);
-        using var process = Process.Start(info)!;
+        using var process = TestProcessScope.Start(info)!;
         var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         var error = await process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
         await process.WaitForExitAsync(TestContext.Current.CancellationToken);

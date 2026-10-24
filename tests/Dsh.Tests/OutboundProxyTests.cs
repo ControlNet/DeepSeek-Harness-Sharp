@@ -575,7 +575,7 @@ public sealed class OutboundProxyTests
         Assert.Contains("safe detail", result);
     }
 
-    [Fact(Timeout = 120000)]
+    [Fact(Timeout = 5000)]
     public async Task Doctor_RealSshMisconfiguredInstallation_RedactsRepairCommands()
     {
         FleetSshEndToEndTests.RequireEnvironment();

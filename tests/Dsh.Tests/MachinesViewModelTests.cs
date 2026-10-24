@@ -7,11 +7,20 @@ using Dsh.RemoteHost;
 namespace Dsh.Tests;
 
 /** 机器管理页的视图模型: 经真实 MachineStore(settings.yaml 的 fleet 段)增删改机器与部署设置, 对真实 host 测试连接与诊断。 */
+[Collection(SerialProcessCollection.Name)]
 public sealed class MachinesViewModelTests : IDisposable
 {
     private readonly string _home = TempTree.CreateDirectory("machines-vm");
+    private readonly IFleetIrohSetup? _previousIrohSetup = FleetService.IrohSetup;
 
-    public void Dispose() => TempTree.Delete(_home);
+    public MachinesViewModelTests()
+        => FleetService.IrohSetup = null;
+
+    public void Dispose()
+    {
+        FleetService.IrohSetup = _previousIrohSetup;
+        TempTree.Delete(_home);
+    }
 
     [Fact]
     public async Task Machines_AreAddedRenamedAndDeleted_AndEveryFieldRoundTripsThroughTheStore()
@@ -254,7 +263,7 @@ public sealed class MachinesViewModelTests : IDisposable
         Assert.Equal("not-an-endpoint", viewModel.Editor.EndpointId);
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact(Timeout = 5000)]
     public async Task FailedSshBootstrap_DoesNotPersistOrSwitchTheEditor()
     {
         using var port = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
@@ -280,7 +289,7 @@ public sealed class MachinesViewModelTests : IDisposable
         Assert.False(viewModel.Busy);
     }
 
-    [Theory(Timeout = 10000)]
+    [Theory(Timeout = 5000)]
     [InlineData("local")]
     [InlineData("box/child")]
     [InlineData("taken")]
@@ -303,7 +312,7 @@ public sealed class MachinesViewModelTests : IDisposable
         Assert.True(viewModel.Editor.IsSsh);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Timeout = 5000)]
     public async Task TestConnection_ShowsHostVersionAndPlatform_AndDoctorListsTheChecks()
     {
         await using var host = await HarnessHostFixture.CreateAsync("mvt", TestContext.Current.CancellationToken);
@@ -325,8 +334,8 @@ public sealed class MachinesViewModelTests : IDisposable
         (viewModel.Editor!.Name, viewModel.Editor.HarnessHome) = ("nowhere", Path.Combine(_home, "no-host"));
         await viewModel.TestConnectionCommand.ExecuteAsync(null);
 
-        Assert.Equal(("已连接", RemoteHostServer.ReleaseVersion, true, (string?)null), tested);
-        Assert.Contains(viewModel.OperationLog, line => line.StartsWith($"alpha: host {RemoteHostServer.ReleaseVersion}", StringComparison.Ordinal));
+        Assert.Equal(("已连接", HostProtocol.ReleaseVersion, true, (string?)null), tested);
+        Assert.Contains(viewModel.OperationLog, line => line.StartsWith($"alpha: host {HostProtocol.ReleaseVersion}", StringComparison.Ordinal));
         Assert.Equal(DoctorOutcome.Ok, checks["platform"]);
         Assert.Equal(DoctorOutcome.Ok, checks["connection"]);
         Assert.True(viewModel.StatusIsError, viewModel.Status);
@@ -340,3 +349,4 @@ public sealed class MachinesViewModelTests : IDisposable
         (editor.RemotePath, editor.HarnessHome, editor.SshOptions) = ("/srv/work", "~/.dsh-build", "ConnectTimeout=5\r\n\r\n ServerAliveInterval=10 \n");
     }
 }
+

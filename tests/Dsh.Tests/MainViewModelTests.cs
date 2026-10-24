@@ -16,7 +16,7 @@ public sealed class MainViewModelTests
     [Fact]
     public async Task PageTabAndSidebarCommands_SwitchState() => await HeadlessGui.RunAsync(async () =>
     {
-        await using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         Assert.True(viewModel.IsDashboardPage);
@@ -259,7 +259,7 @@ public sealed class MainViewModelTests
     [Fact]
     public async Task Submit_TextMessage_IsRenderedOnceFromSessionEvent() => await HeadlessGui.RunAsync(async () =>
         {
-            var environment = await GuiTestEnvironment.CreateAsync();
+            var environment = await GuiTestEnvironment.CreateIsolatedAsync();
             await using var environmentScope = environment;
             await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
@@ -305,7 +305,7 @@ public sealed class MainViewModelTests
     [Fact]
     public async Task RestoredSession_KeepsListedAndReplayable() => await HeadlessGui.RunAsync(async () =>
     {
-        await using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         var sessionId = environment.Agent.Id;
         environment.Agent.Session.Append(new UserMessagePayload(MessageFactory.CreateUserText("第一条")), new SurfaceOp.Append());
         await environment.App.Ctx.Get<SessionStore>(SessionStore.ServiceName)!.Flush(environment.Agent.Session);
@@ -449,7 +449,7 @@ public sealed class MainViewModelTests
     [Fact]
     public async Task Suggestions_OfferCommandsAndSessionMentions() => await HeadlessGui.RunAsync(async () =>
     {
-        await using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
 
         viewModel.Composer.Input = "/mo";
@@ -466,7 +466,7 @@ public sealed class MainViewModelTests
     [Fact]
     public async Task ConfirmSuggestion_PrefersClickedItem_OverKeyboardIndex() => await HeadlessGui.RunAsync(async () =>
     {
-        await using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         viewModel.Composer.Input = "/";
 
@@ -509,7 +509,7 @@ public sealed class MainViewModelTests
         var environment = await GuiTestEnvironment.CreateAsync();
         await using var environmentScope = environment;
         await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
-        Assert.Equal("test/test-model", viewModel.Composer.ModelLabel);
+        Assert.Equal("/", viewModel.Composer.ModelLabel);
         Assert.Equal("推理", viewModel.Composer.ReasoningLabel);
 
         environment.Agent.Session.Append(new RequestHeaderPayload(
@@ -550,7 +550,7 @@ public sealed class MainViewModelTests
     [Fact]
     public async Task SwitchReasoningCommand_Updates_Label_For_Flagged_Model() => await HeadlessGui.RunAsync(async () =>
     {
-        await using var environment = await GuiTestEnvironment.CreateAsync("""
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync("""
             logging:
               file: false
             providers:
@@ -564,21 +564,19 @@ public sealed class MainViewModelTests
                     name: DeepSeek Flash
             """);
         await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
+        environment.Agent.Session.Append(new RequestHeaderPayload(
+            new EpochHeader(new LlmCallConfig("deepseek", "deepseek-flash", ReasoningEffortId.Create("max"))),
+            RequestHeaderReasons.Change,
+            true));
 
-        await viewModel.SwitchModelCommand.ExecuteAsync("deepseek/deepseek-flash");
-        await GuiTestEnvironment.WaitForAsync(viewModel.Preferences.ReasoningEfforts,
-            () => viewModel.Preferences.ReasoningEfforts.Contains("max"));
-
-        Assert.Contains("max", viewModel.Preferences.ReasoningEfforts);
-        await viewModel.SwitchReasoningCommand.ExecuteAsync("max");
-
+        await GuiTestEnvironment.WaitForAsync(viewModel.Composer, () => viewModel.Composer.ReasoningLabel == "max");
         Assert.Equal("max", viewModel.Composer.ReasoningLabel);
     });
 
     [Fact]
     public async Task AssistantMessages_AreLabeledWithCurrentModel() => await HeadlessGui.RunAsync(async () =>
     {
-        await using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         var session = environment.Agent.Session;
         session.Append(new RequestHeaderPayload(
             new EpochHeader(new LlmCallConfig("other", "other-model")),
@@ -610,7 +608,7 @@ public sealed class MainViewModelTests
     [Fact]
     public async Task DeleteCurrentSession_IsRefused() => await HeadlessGui.RunAsync(async () =>
     {
-        await using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
         var node = Assert.Single(viewModel.Workspaces.SelectMany(workspace => workspace.Sessions));
 

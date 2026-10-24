@@ -6,9 +6,10 @@ using Dsh.Transport;
 
 namespace Dsh.Tests;
 
+[Collection(SerialProcessCollection.Name)]
 public sealed class IrohHostEndToEndTests
 {
-    [Fact(Timeout = 240000)]
+    [Fact(Timeout = 5000)]
     public async Task EndpointOnlyMachine_DeploysFreshHostAndPreservesItsPtyAcrossReconnect()
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
@@ -39,7 +40,7 @@ public sealed class IrohHostEndToEndTests
             await using (var capture = RemoteHostPtyTests.TerminalCapture.Attach(first.Client, session))
             {
                 await capture.SendAsync("printf '%s\\n' \"$$\" > original.pid; echo original-$((6*7))\n");
-                await capture.WaitForAsync("original-42", TimeSpan.FromSeconds(20));
+                await capture.WaitForAsync("original-42", TimeSpan.FromSeconds(5));
             }
             var process = connection.LinkProcess!;
             process.Kill();
@@ -49,7 +50,7 @@ public sealed class IrohHostEndToEndTests
             await using (var capture = RemoteHostPtyTests.TerminalCapture.Attach(reconnected.Client, session))
             {
                 await capture.SendAsync("printf '%s\\n' \"$$\" > resumed.pid; echo resumed-$((8*9))\n");
-                await capture.WaitForAsync("resumed-72", TimeSpan.FromSeconds(20));
+                await capture.WaitForAsync("resumed-72", TimeSpan.FromSeconds(5));
             }
             Assert.Equal(await File.ReadAllTextAsync(Path.Combine(root, "original.pid"), ct), await File.ReadAllTextAsync(Path.Combine(root, "resumed.pid"), ct));
             Assert.Equal(identity, LocalEndpointToken.Read(RemoteHostEndpoint.EndpointFile(root)));
@@ -62,3 +63,4 @@ public sealed class IrohHostEndToEndTests
         }
     }
 }
+

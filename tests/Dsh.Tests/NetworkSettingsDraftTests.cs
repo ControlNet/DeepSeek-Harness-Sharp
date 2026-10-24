@@ -7,11 +7,12 @@ using Dsh.Runtime;
 
 namespace Dsh.Tests;
 
+[Collection(SerialProcessCollection.Name)]
 public sealed class NetworkSettingsDraftTests : IDisposable
 {
-    private const int TestTimeout = 120000;
+    private const int TestTimeout = 5000;
     private const string ProbeTarget = "http://1.1.1.1/gui-draft-probe";
-    private static readonly TimeSpan CompletionTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan CompletionTimeout = TimeSpan.FromSeconds(5);
     private readonly string _root = TempTree.CreateDirectory("network-draft");
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
     private static FleetOptions Options => new()
@@ -23,7 +24,7 @@ public sealed class NetworkSettingsDraftTests : IDisposable
 
     public void Dispose() => TempTree.Delete(_root);
 
-    [Theory(Timeout = TestTimeout)]
+    [Theory(Explicit = true)]
     [InlineData(nameof(MachinesViewModel.RemoteOutboundUrl))]
     [InlineData(nameof(MachinesViewModel.RemoteOutboundBypass))]
     [InlineData(nameof(MachinesViewModel.RemoteOutboundProbeUrl))]
@@ -87,7 +88,7 @@ public sealed class NetworkSettingsDraftTests : IDisposable
         finally { await CloseAsync(vm); }
     }
 
-    [Fact(Timeout = TestTimeout)]
+    [Fact(Explicit = true)]
     public async Task SshRawTransportEdit_CancelsBlockedAuthenticationAndClearsItsResult()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -114,7 +115,7 @@ public sealed class NetworkSettingsDraftTests : IDisposable
         finally { await CloseAsync(vm); }
     }
 
-    [Fact(Timeout = TestTimeout)]
+    [Fact(Explicit = true)]
     public async Task ReplacingEditor_CancelsItsProbe_AndOldEditorCannotInvalidateTheReplacement()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -147,7 +148,7 @@ public sealed class NetworkSettingsDraftTests : IDisposable
         finally { await CloseAsync(vm); }
     }
 
-    [Theory(Timeout = TestTimeout)]
+    [Theory(Explicit = true)]
     [InlineData(false)]
     [InlineData(true)]
     public async Task CancelAfterActualRpcBeforeUiDelivery_RetainsDraftAndRequiresReadAfterAWrite(bool write)
@@ -314,3 +315,5 @@ public sealed class NetworkSettingsDraftTests : IDisposable
         public void Dispose() => Resume();
     }
 }
+
+

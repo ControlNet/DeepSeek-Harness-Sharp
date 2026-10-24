@@ -6,6 +6,7 @@ using Dsh.Llm;
 namespace Dsh.Tests;
 
 /** GUI 里可独立验证的组件: 审批提示、消息折叠、token 统计、统一决策窗口。 */
+[Collection(GuiSerialCollection.CollectionName)]
 public sealed class GuiComponentTests
 {
     /** Just above TokenStatsViewModel's 0.1 s floor for a measurable request. */
@@ -247,3 +248,4 @@ public sealed class GuiComponentTests
         public void Advance(TimeSpan duration) => _now += duration.Ticks;
     }
 }
+

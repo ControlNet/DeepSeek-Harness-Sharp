@@ -17,6 +17,7 @@ using Dsh.Llm;
 namespace Dsh.Tests;
 
 /** 三个独立视图在真实渲染的 headless 窗口里接真实 host: 编辑器与视图模型的文本同步、diff 卡片渲染、机器列表。 */
+[Collection(GuiSerialCollection.CollectionName)]
 public sealed class GuiViewsHeadlessTests
 {
     private const double WindowWidth = 1280;
@@ -285,3 +286,4 @@ public sealed class GuiViewsHeadlessTests
         return window;
     }
 }
+

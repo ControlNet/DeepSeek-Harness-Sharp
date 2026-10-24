@@ -10,6 +10,7 @@ using Dsh.Runtime.Events;
 namespace Dsh.Tests;
 
 /** present 工具与交付物清单: 真实插件组合 + 真实 JSONL 持久化, 测试只组装文件与参数并断言会话事件。 */
+[Collection(GuiSerialCollection.CollectionName)]
 public sealed class PresentToolTests
 {
     private const string ToolName = "present";
@@ -237,3 +238,4 @@ public sealed class PresentToolTests
     private static string TextOf(ToolExecutionResult result)
         => string.Concat(result.Content.OfType<TextBlock>().Select(block => block.Text));
 }
+

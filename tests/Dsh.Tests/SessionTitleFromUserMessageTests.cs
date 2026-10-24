@@ -4,6 +4,7 @@ using Dsh.Llm;
 
 namespace Dsh.Tests;
 
+[Collection(GuiSerialCollection.CollectionName)]
 public class SessionTitleFromUserMessageTests
 {
     [Fact]
@@ -70,3 +71,4 @@ public class SessionTitleFromUserMessageTests
         Assert.Equal("第一个问题", environment.Agent.Session.Header.Title);
     }
 }
+

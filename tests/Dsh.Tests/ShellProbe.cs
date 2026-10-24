@@ -19,7 +19,7 @@ internal static class ShellProbe
         Process? process = null;
         try
         {
-            process = Process.Start(new ProcessStartInfo(executable, arguments)
+            process = TestProcessScope.Start(new ProcessStartInfo(executable, arguments)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

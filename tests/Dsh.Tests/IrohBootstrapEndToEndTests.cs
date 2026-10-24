@@ -6,7 +6,7 @@ namespace Dsh.Tests;
 
 public sealed class IrohBootstrapEndToEndTests
 {
-    [Theory(Timeout = 180000)]
+    [Theory(Timeout = 5000)]
     [InlineData(false)]
     [InlineData(true)]
     public async Task RejectedIrohHostKey_PreservesSshConfiguration_AndPreexistingReceiver(bool preexistingReceiver)

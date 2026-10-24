@@ -9,11 +9,12 @@ using Dsh.Runtime;
 
 namespace Dsh.Tests;
 
+[Collection(SerialProcessCollection.Name)]
 public sealed class NetworkSettingsGuiTests : IDisposable
 {
-    private const int TestTimeout = 120000;
+    private const int TestTimeout = 5000;
     private const string ProbeTarget = "http://1.1.1.1/gui-component-probe";
-    private static readonly TimeSpan CompletionTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan CompletionTimeout = TimeSpan.FromSeconds(5);
     private readonly string _root = TempTree.CreateDirectory("network-gui");
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
     private static FleetOptions Options => new()
@@ -713,10 +714,10 @@ public sealed class NetworkSettingsGuiTests : IDisposable
     }
 
     private static SettingsViewModel SettingsViewModel(HarnessApp app, RemoteHostClient client, FleetWorkspace? workspace = null)
-        => new(app.Ctx, app.Home, () => new HarnessModelChoice(null, null),
+        => new(app.Ctx, app.Home,
             _ => throw new InvalidOperationException("Network settings must not execute session commands."),
             new GuiSettings(app.Home), new SettingsFacade(app.Ctx, app.Home, workspace),
-            () => Task.FromResult(client.Models), () => Task.FromResult(client.Plugins));
+            () => Task.FromResult(client.Plugins));
 
     private static void SelectSection(SettingsViewModel vm, SettingsSection section)
     {

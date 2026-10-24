@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Text;
 using System.Net.Sockets;
 using Dsh.A2A;
@@ -191,7 +191,7 @@ public sealed class A2aTests
 
         var response = await client.SendMessageAsync(
             new SendMessageRequest { Message = UserMessage(chunked ? new string('x', 8 * 1024) : "hi") }, cancellationToken)
-            .WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
+            .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
         var taskId = response.Task!.Id;
         var task = await WaitTerminalAsync(client, taskId, cancellationToken);
 

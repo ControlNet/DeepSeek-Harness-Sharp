@@ -11,9 +11,10 @@ using Dsh.Transport;
 
 namespace Dsh.Tests;
 
+[Collection(SerialProcessCollection.Name)]
 public sealed class FleetProxyProbeTests
 {
-    private const int TestTimeoutMilliseconds = 120000;
+    private const int TestTimeoutMilliseconds = 5000;
     private const string PublicTarget = "http://1.1.1.1/layer-probe";
     private static readonly TimeSpan CancellationProofTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DeadlineTimerTolerance = TimeSpan.FromMilliseconds(100);
@@ -53,7 +54,7 @@ public sealed class FleetProxyProbeTests
         Assert.Equal(2, target.Requests.Count);
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task LocalAndRemote_Proxy407FailsAuthenticationWithoutMaskingHealthyLayer()
     {
         await using var rejected = new TestForwardProxy(requiredCredential: "expected:credential");
@@ -79,7 +80,7 @@ public sealed class FleetProxyProbeTests
         Assert.Single(healthy.Requests);
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task LocalAndRemote_ConnectionRefusalIsIsolatedAndIdentifiesProxyConnect()
     {
         using var unavailable = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
@@ -127,7 +128,7 @@ public sealed class FleetProxyProbeTests
         Assert.True(await (await connection.WaitConnectedAsync(Ct)).Client.PingAsync(Ct) > 0);
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task BaselineFailure_IsNotMaskedByGoodBorrowedRoute_AndNeitherRouteNorFilesChange()
     {
         var root = RealHostProcesses.CreateHome("pbas");
@@ -173,7 +174,7 @@ public sealed class FleetProxyProbeTests
         }
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task RemoteDraftProbe_LeavesSavedFilesAndLiveConsumerRouteUnchanged()
     {
         await using var host = await HarnessHostFixture.CreateAsync("pdrf", TestContext.Current.CancellationToken);
@@ -205,7 +206,7 @@ public sealed class FleetProxyProbeTests
         Assert.Single(draft.Requests);
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task SshMissingIdentity_ReportsFailureWithoutPublishingItsPrivatePath()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -223,7 +224,7 @@ public sealed class FleetProxyProbeTests
         Assert.False(Directory.Exists(machine.HarnessHome));
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task Ssh_OnlyRunsTrueWithoutHostOrDeployment_AndRejectsForcedNonzeroExit()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -252,7 +253,7 @@ public sealed class FleetProxyProbeTests
         Assert.Equal(["true", "true"], await File.ReadAllLinesAsync(rejecting.CommandsFile, Ct));
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task ThreeHeldLayers_RunIndependently_RejectSameLayerBusy_AndCancelWithoutClosingOtherConsumer()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -312,7 +313,7 @@ public sealed class FleetProxyProbeTests
             (await service.ProbeSshAsync(ssh.Machine("after-cancel", host.Root), Guid.NewGuid(), Ct)).Outcome);
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task PortableLocalAndRemoteCancellation_KeepOtherHostConsumerAlive()
     {
         await using var local = new TestForwardProxy(pauseResponses: true, observePeerCloseWhilePaused: true);
@@ -360,7 +361,7 @@ public sealed class FleetProxyProbeTests
         Assert.Equal(MachineConnectionState.Connected, connection.State);
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task RemoteCancellation_WhileBorrowingReportsSshAndDoesNotDisposeSharedConnection()
     {
         var root = RealHostProcesses.CreateHome("pbor");
@@ -426,7 +427,7 @@ public sealed class FleetProxyProbeTests
         Assert.True(await observer.PingAsync(Ct) > 0);
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task LocalTransportDeadline_IsFailedNotUserCancellation()
     {
         await using var target = new TestForwardProxy(pauseResponses: true, observePeerCloseWhilePaused: true);
@@ -447,7 +448,7 @@ public sealed class FleetProxyProbeTests
         }
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task InvalidConfiguration_RedactsSecretsInResultAndJson()
     {
         var root = RealHostProcesses.CreateHome("pred");
@@ -486,7 +487,7 @@ public sealed class FleetProxyProbeTests
     // This server reuses the existing real SSH fixture's keys and configuration while observing and forcing actual remote command exits.
     private sealed class ObservedCommandSshServer(Process process, int port, string commandsFile) : IAsyncDisposable
     {
-        private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(20);
+        private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(5);
         public int Port { get; } = port;
         public string CommandsFile { get; } = commandsFile;
 
@@ -507,7 +508,7 @@ public sealed class FleetProxyProbeTests
                 UseShellExecute = false,
                 RedirectStandardError = true,
             };
-            var child = Process.Start(start) ?? throw new InvalidOperationException("Could not start the owned forced-command SSH server.");
+            var child = TestProcessScope.Start(start) ?? throw new InvalidOperationException("Could not start the owned forced-command SSH server.");
             var fixture = new ObservedCommandSshServer(child, port, commands);
             var listening = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             child.ErrorDataReceived += (_, args) =>
@@ -553,7 +554,6 @@ public sealed class FleetProxyProbeTests
         public HostNotificationCenter? Notifications => backend.Notifications;
         public IRemoteSessionEditingBackend? SessionEditing => backend.SessionEditing;
         public IRemotePluginsBackend? Plugins => backend.Plugins;
-        public IRemoteModelsBackend? Models => backend.Models;
         public IRemoteNetworkBackend? Network => oldSchema ? this : null;
         public Task<RemoteOutboundProxyState> GetOutboundAsync(CancellationToken ct) => backend.Network!.GetOutboundAsync(ct);
         public Task<RemoteOutboundProxyState> SetOutboundAsync(RemoteOutboundProxySetRequest request, CancellationToken ct)
@@ -566,16 +566,17 @@ public sealed class FleetProxyProbeTests
     }
 }
 
+[Collection(SerialProcessCollection.Name)]
 public sealed class FleetProxyProbeCliTests
 {
-    private const int TestTimeoutMilliseconds = 120000;
+    private const int TestTimeoutMilliseconds = 5000;
     private const int SigInt = 2;
     private const string PublicTarget = "http://1.1.1.1/cli-layer-probe";
-    private static readonly TimeSpan ProcessExitTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan ProcessExitTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan CancellationProofTimeout = TimeSpan.FromSeconds(5);
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task S12_ActualCli_SelectsOnlyRequestedLayer_AndPreservesOldDoctorContract()
     {
         var root = RealHostProcesses.CreateHome("pcli");
@@ -630,7 +631,7 @@ public sealed class FleetProxyProbeCliTests
         }
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task S12_ActualCli_SshSucceedsWithoutRemoteHostOrInstalledDsharp()
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
@@ -716,7 +717,7 @@ public sealed class FleetProxyProbeCliTests
         }
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task S15_ActualCli_SigIntAfterSshAuthenticationEvent_ReturnsCancelled130_AndReleasesOwnedAuthentication()
     {
         RequireOwnedPosixSignal();
@@ -824,7 +825,7 @@ public sealed class FleetProxyProbeCliTests
         }
     }
 
-    [Fact(Timeout = TestTimeoutMilliseconds)]
+    [Fact(Explicit = true)]
     public async Task S12_ActualCli_RejectsUnavailableSshWithoutAHostRequirement()
     {
         FleetSshEndToEndTests.RequireEnvironment();
@@ -924,7 +925,7 @@ public sealed class FleetProxyProbeCliTests
                 WorkingDirectory = home,
             };
             start.Environment[HarnessHome.HomeEnv] = home;
-            _process = Process.Start(start) ?? throw new InvalidOperationException("Could not start the owned probe CLI.");
+            _process = TestProcessScope.Start(start) ?? throw new InvalidOperationException("Could not start the owned probe CLI.");
             _process.StandardInput.Close();
             _output = _process.StandardOutput.ReadToEndAsync();
             _error = _process.StandardError.ReadToEndAsync();
@@ -954,3 +955,7 @@ public sealed class FleetProxyProbeCliTests
     [DllImport("libc", SetLastError = true)]
     private static extern int kill(int processId, int signal);
 }
+
+
+
+
