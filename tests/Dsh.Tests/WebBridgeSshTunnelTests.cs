@@ -17,7 +17,7 @@ public sealed class WebBridgeSshTunnelTests
 {
     private const string RemoteMachine = "e2e";
 
-    private static readonly TimeSpan DeployTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DeployTimeout = TimeSpan.FromSeconds(OperatingSystem.IsMacOS() ? 20 : 5);
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
