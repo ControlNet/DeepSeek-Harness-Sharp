@@ -30,5 +30,8 @@
     <ProjectReference Include="..\src\Dsh.Plugins.Generator\Dsh.Plugins.Generator.csproj"
                       ReferenceOutputAssembly="false" PrivateAssets="all" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="HarnessRemoteModelsBackend.cs" />
+  </ItemGroup>
 
 </Project>

@@ -398,8 +398,8 @@ internal static class FleetCli
             deploy, step => Console.Error.WriteLine(step), context.Cancellation, force: context.Arguments.Has("--force"),
             localHome: context.Home);
         await Console.Out.WriteLineAsync(result.AlreadyPresent
-            ? $"{machine.Name}: {result.CommandPath} is already at {RemoteHostServer.ReleaseVersion} or newer (use --force to redeploy)"
-            : $"{machine.Name}: deployed {RemoteHostServer.ReleaseVersion} to {result.CommandPath}");
+            ? $"{machine.Name}: {result.CommandPath} is already at {HostProtocol.ReleaseVersion} or newer (use --force to redeploy)"
+            : $"{machine.Name}: deployed {HostProtocol.ReleaseVersion} to {result.CommandPath}");
         return 0;
     }
 
@@ -453,7 +453,7 @@ internal static class FleetCli
         var rows = fleet.Sessions()
             .Select(item => new[]
             {
-                item.Machine, item.Session.SessionId, item.Session.Kind, item.Session.AgentKind ?? "-", item.Session.Status,
+                item.Machine, item.Session.SessionId, item.Session.Kind ?? "-", item.Session.AgentKind ?? "-", item.Session.Status,
                 Math.Max(item.Session.PendingCount, pending.GetValueOrDefault((item.Machine, item.Session.SessionId))).ToString(),
                 item.Session.ProjectPath ?? "-",
             })
@@ -479,7 +479,7 @@ internal static class FleetCli
         return await context.ResumeHarness(context.HomeOf(connection.Machine), session.SessionId);
     }
 
-    private static async Task<int> AttachTerminalAsync(IRemotePty pty, MachineSpec machine, RemoteHostSession session, CancellationToken cancellationToken)
+    private static async Task<int> AttachTerminalAsync(RemotePtyClient pty, MachineSpec machine, RemoteSessionSummary session, CancellationToken cancellationToken)
     {
         await Console.Out.WriteLineAsync($"dsharp: attaching to {machine.Name}/{session.SessionId}; leave with {ConsoleTunnel.DetachKeyName} (the session keeps running)");
         await ConsoleTunnel.RunAsync(
@@ -709,7 +709,7 @@ internal sealed record FleetCliContext(
     }
 
     /** Resolves `<machine>/<session>` on a connected machine; the caller owns the returned connection. */
-    public async Task<(MachineConnection Connection, RemoteHostSession Session)> FindSessionAsync()
+    public async Task<(MachineConnection Connection, RemoteSessionSummary Session)> FindSessionAsync()
     {
         var target = Arguments.Operand ?? throw new InvalidOperationException("a target <machine>/<session> is required (see dsharp session list)");
         var cut = target.IndexOf('/');
@@ -745,3 +745,7 @@ internal sealed record FleetCliContext(
 
 [JsonSerializable(typeof(OutboundTunnelSpec))]
 internal partial class FleetTunnelJsonContext : JsonSerializerContext;
+
+
+
+
