@@ -269,7 +269,7 @@ public sealed record RemotePtyAttachRequest(string PtyId, string SubscriptionId)
 
 public readonly record struct RemotePtyFrame(string SubscriptionId, RemotePtyOutput Output);
 
-/** 起 PTY: Cwd/Title 为空时取远端家目录与命令行; 尺寸为空时用 daemon 默认值。 */
+/** 起 PTY: Cwd/Title 为空时取远端工作区目录与命令行; 尺寸为空时用 daemon 默认值。 */
 public sealed record RemotePtyStartRequest(
     string FileName,
     IReadOnlyList<string> Arguments,
