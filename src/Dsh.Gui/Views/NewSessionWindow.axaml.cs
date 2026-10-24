@@ -30,6 +30,7 @@ public sealed partial class NewSessionWindow : Window
 
     private void OnCompleted(NewSessionViewModel form) => Close();
 
-    private async Task<string?> BrowseAsync(IRemoteFiles files, string? initial)
+    private async Task<string?> BrowseAsync(RemoteFilesClient files, string? initial)
         => await new RemoteFolderPickerWindow(files, initial).ShowDialog<string?>(this);
 }
+

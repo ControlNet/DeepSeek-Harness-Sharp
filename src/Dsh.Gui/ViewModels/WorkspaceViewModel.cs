@@ -32,11 +32,11 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     private readonly Action<string, string, bool> _toast;
     private (string Machine, string SessionId)? _pendingOpen;
 
-    public WorkspaceViewModel(FleetWorkspace fleet, Func<HarnessModelChoice> harnessModel, Action<string, string, bool> toast)
+    public WorkspaceViewModel(FleetWorkspace fleet, Action<string, string, bool> toast)
     {
         Fleet = fleet;
         _toast = toast;
-        Actions = new FleetSessionActions(fleet, harnessModel);
+        Actions = new FleetSessionActions(fleet);
         Dashboard = new DashboardViewModel(fleet);
         Notifications = new NotificationCenterViewModel(fleet, (machine, session) => Dashboard.Find(machine, session)?.Title) { Toast = toast };
         Palette = new CommandPaletteViewModel(() => Dashboard.AllCards);
@@ -103,8 +103,8 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     /** Questions are answered in the decision dialog that the main window shows. */
     public event Func<DecisionViewModel, Task<object?>>? DecisionRequested;
 
-    /** The main chat shell can handle local harness cards with its full composer and trace UI. */
-    public event Action<string>? LocalChatRequested;
+    /** The main chat shell handles harness/ACP cards on any machine with its full composer and trace UI. */
+    public event Action<string, string>? ChatRequested;
 
     public void Start() => Fleet.Start();
 
@@ -137,6 +137,11 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     {
         if (_closingSessions || _disposal is not null)
             return;
+        if (card.Kind is HostSessionKinds.Harness or HostSessionKinds.Acp)
+        {
+            ShowInMain(card);
+            return;
+        }
         var key = (card.Machine, card.SessionId);
         if (_windows.TryGetValue(key, out var existing))
         {
@@ -179,7 +184,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
         if (entry is null)
             return;
         _pendingOpen = null;
-        var context = new WorkspacePageContext(Fleet, ActiveSession?.Machine, ActiveSession?.Card.ProjectPath);
+        var context = new WorkspacePageContext(ActiveSession?.Machine, ActiveSession?.Card.ProjectPath);
         PageContent = entry.Create(context);
         ActivePage = entry;
         NavigationRequested?.Invoke(WorkspaceDestination.Page);
@@ -273,11 +278,11 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     private void ShowInMain(SessionCardViewModel card)
     {
         CloseActive();
-        if (card.Machine == MachineSpec.LocalName && card.Kind == HostSessionKinds.Harness && LocalChatRequested is { } openChat)
+        if (card.Kind is HostSessionKinds.Harness or HostSessionKinds.Acp && ChatRequested is { } openChat)
         {
             PageContent = null;
             ActivePage = null;
-            openChat(card.SessionId);
+            openChat(card.Machine, card.SessionId);
             return;
         }
         ActiveSession = CreateSession(card);
@@ -288,7 +293,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
 
     private FleetSessionViewModel CreateSession(SessionCardViewModel card)
     {
-        var session = new FleetSessionViewModel(Fleet, Actions, card, Notifications);
+            var session = new FleetSessionViewModel(Fleet, card, Notifications);
         session.BackRequested += _ => ShowDashboard();
         session.StopRequested += item => _ = StopAsync(item);
         session.ResumeRequested += item => _ = ResumeAsync(item);

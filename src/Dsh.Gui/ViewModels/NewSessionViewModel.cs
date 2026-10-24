@@ -125,12 +125,12 @@ public sealed partial class NewSessionViewModel : ObservableObject, IDisposable
 
     public bool IsNewWorktree => Worktree == NewSessionWorktree.New;
 
-    public RemoteHostSession? Started { get; private set; }
+    public RemoteSessionSummary? Started { get; private set; }
 
     public event Action<NewSessionViewModel>? Completed;
 
     /** The view shows the remote folder picker for the machine's files domain and returns the chosen directory. */
-    public event Func<IRemoteFiles, string?, Task<string?>>? BrowseRequested;
+    public event Func<RemoteFilesClient, string?, Task<string?>>? BrowseRequested;
 
     partial void OnMachineChanged(string? value)
     {
@@ -319,3 +319,5 @@ public sealed partial class NewSessionViewModel : ObservableObject, IDisposable
         return words.Count > 0 ? new RemoteAgentCommand(words[0], words[1..]) : throw new ArgumentException("the command is empty");
     }
 }
+
+

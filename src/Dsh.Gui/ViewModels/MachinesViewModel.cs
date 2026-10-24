@@ -3,7 +3,6 @@ using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Fleet;
-using Dsh.Fleet.Iroh;
 using Dsh.RemoteHost;
 using Dsh.Runtime;
 using Dsh.Transport;
@@ -355,7 +354,8 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
     public void Load(string? select = null)
     {
         var config = store.Load();
-        IrohAvailable = options.SshTransportAdapter is { Kind: MachineKinds.Iroh, IsAvailable: true };
+        IrohAvailable = FleetService.IrohSetup is { IsAvailable: true }
+            || options.SshTransportAdapter is { Kind: MachineKinds.Iroh, IsAvailable: true };
         Deploy ??= DeploySettingsEditorViewModel.From(config.Deploy);
         var known = Machines.ToDictionary(row => row.Name, StringComparer.Ordinal);
         Machines.Clear();
@@ -472,8 +472,8 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
         var result = await new RemoteDsharpInstaller(new SshTransport(spec, options.SshTransportAdapter), options.SshTransportAdapter).EnsureAsync(Deploy?.ToSettings() ?? store.Load().Deploy, Log, cancellationToken, options.ArchiveFactory, ForceDeploy, options.LocalProxy,
             options.LocalHome ?? new Dsh.Boot.HarnessHome(Path.GetDirectoryName(store.FilePath)!));
         Log(result.AlreadyPresent
-            ? $"{spec.Name}: {result.CommandPath} 已是 {RemoteHostServer.ReleaseVersion} 或更新的版本（勾选“强制重新部署”可覆盖）"
-            : $"{spec.Name}: 已部署 {RemoteHostServer.ReleaseVersion} 到 {result.CommandPath}");
+            ? $"{spec.Name}: {result.CommandPath} 已是 {HostProtocol.ReleaseVersion} 或更新的版本（勾选“强制重新部署”可覆盖）"
+            : $"{spec.Name}: 已部署 {HostProtocol.ReleaseVersion} 到 {result.CommandPath}");
     });
 
     /** 经当前普通 SSH 配置启用目标端 iroh, 实测隧道可用后才保存转换后的清单。 */
@@ -487,7 +487,9 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
             if (spec.Kind != MachineKinds.Ssh)
                 throw new InvalidOperationException("请先选择或填写一台可通过普通 SSH 连接的机器");
             MachineStore.Validate(PlanChange(spec, originalName).Machines);
-            var converted = await IrohRemoteInstaller.EnableAndSaveAsync(spec, installOptions, converted => Persist(converted, originalName), Log, cancellationToken);
+            var setup = FleetService.IrohSetup
+                ?? throw new InvalidOperationException("iroh 插件未加载");
+            var converted = await setup.EnableAndSaveAsync(spec, installOptions, converted => Persist(converted, originalName), Log, cancellationToken);
             Load(converted.Name);
             Report($"已启用 {converted.Name} 的 SSH-over-iroh（{converted.EndpointId}）");
             MachinesChanged?.Invoke();
@@ -591,3 +593,4 @@ public sealed partial class MachinesViewModel(MachineStore store, FleetOptions o
             _context.Post(_ => action(), null);
     }
 }
+

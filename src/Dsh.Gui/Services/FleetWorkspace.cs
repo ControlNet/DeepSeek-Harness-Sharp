@@ -1,7 +1,6 @@
 using Avalonia.Threading;
 using Dsh.Boot;
 using Dsh.Fleet;
-using Dsh.Fleet.Iroh;
 using Dsh.Runtime;
 using Dsh.RemoteHost;
 
@@ -52,7 +51,7 @@ public sealed class FleetWorkspace : IAsyncDisposable
         {
             ClientName = GuiSettings.RemoteClientName,
             LocalHome = home,
-            SshTransportAdapter = new IrohSshTransport(),
+            SshTransportAdapter = FleetService.DefaultSshTransportAdapter,
             StartLocalHost = startLocalHost is null ? null : (machine, token) => startLocalHost(machine.HarnessHome ?? home.Root, token),
         };
         return new FleetWorkspace(store, options, () =>

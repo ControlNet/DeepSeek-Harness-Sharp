@@ -37,12 +37,10 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private readonly Context _ctx;
     private readonly HarnessHome _home;
-    private readonly Func<HarnessModelChoice> _model;
     private readonly Func<string, Task<string>> _run;
     private readonly GuiSettings _gui;
     private readonly SettingsFacade _facade;
-    private readonly Func<Task<IRemoteModels>> _models;
-    private readonly Func<Task<IRemotePlugins>> _plugins;
+    private readonly Func<Task<RemotePluginsClient>> _plugins;
     private readonly FleetProxyProbe _proxyProbe;
     private string _draftProxyUrl = "";
     private string _draftProxyProbeUrl = "";
@@ -53,20 +51,16 @@ public sealed partial class SettingsViewModel : ObservableObject
     public SettingsViewModel(
         Context ctx,
         HarnessHome home,
-        Func<HarnessModelChoice> model,
         Func<string, Task<string>> run,
         GuiSettings gui,
         SettingsFacade facade,
-        Func<Task<IRemoteModels>> models,
-        Func<Task<IRemotePlugins>> plugins)
+        Func<Task<RemotePluginsClient>> plugins)
     {
         _ctx = ctx;
         _home = home;
-        _model = model;
         _run = run;
         _gui = gui;
         _facade = facade;
-        _models = models;
         _plugins = plugins;
         _proxyProbe = facade.CreateProxyProbe();
         LocalProxyProbe.PropertyChanged += OnLocalLayerProbeStateChanged;
@@ -472,7 +466,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         IsWorking = true;
         try
         {
-            var models = await (await _models()).ListProviderModelsAsync(provider);
+            var runtime = _ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false);
+            var models = runtime?.ListModels(provider) ?? [];
             Status = models.Count > 0
                 ? $"Provider {provider} 可用: {models.Count} 个模型（{string.Join(", ", models.Take(3))}…）"
                 : $"Provider {provider} 未返回模型，检查 baseUrl/apiKey 与适配器是否加载";
@@ -956,19 +951,20 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private void LoadReasoningEfforts() => _ = LoadReasoningEffortsAsync();
 
-    private async Task LoadReasoningEffortsAsync()
+    private Task LoadReasoningEffortsAsync()
     {
-        var selection = _model().Selection;
-        if (selection is null)
-            return;
+        var route = HarnessSettings.Load(_home).ResolveDefaultModel();
+        if (route is null)
+            return Task.CompletedTask;
         try
         {
-            var efforts = await (await _models()).ListReasoningEffortsAsync(selection.Provider, selection.Model);
-            if (selection != _model().Selection)
-                return;
+            var runtime = _ctx.Get<LlmRuntime>(LlmRuntime.ServiceName, false);
+            IReadOnlyList<string> efforts = runtime is null
+                ? []
+                : [.. runtime.ResolveModelInfo(route.Value.Provider, route.Value.Model).Reasoning?.Efforts.Select(effort => effort.Id.Value) ?? []];
             // 每次打开浮层都会刷新候选; 列表没变时不要 Clear/Add, 否则 ItemsControl 会重建全部按钮, 造成打开卡顿。
             if (ReasoningEfforts.SequenceEqual(efforts, StringComparer.Ordinal))
-                return;
+                return Task.CompletedTask;
             ReasoningEfforts.Clear();
             foreach (var effort in efforts)
                 ReasoningEfforts.Add(effort);
@@ -977,6 +973,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             Status = $"推理选项读取失败: {error.Message}";
         }
+        return Task.CompletedTask;
     }
 
     private void LoadPluginRows() => _ = LoadPluginRowsAsync();
@@ -1000,7 +997,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private void LoadVersion()
     {
         var assembly = typeof(SettingsViewModel).Assembly;
-        VersionText = RemoteHostServer.ReleaseVersion;
+        VersionText = HostProtocol.ReleaseVersion;
         var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
         var plus = informational.IndexOf('+');
         CommitText = plus >= 0 && plus + 1 < informational.Length ? informational[(plus + 1)..] : "unknown";

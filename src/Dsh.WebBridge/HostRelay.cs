@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Dsh.Fleet;
+using Dsh.Llm;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 
@@ -256,7 +257,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
         try
         {
             await foreach (var item in machine.SubscribeAsync(sessionId, from, cancellationToken).ConfigureAwait(false))
-                await NotifyAsync(HostProtocol.NotificationEvent, new WebSessionEvent(item.SessionId, item.EventJson, item.Reset, viewId), WebBridgeJsonContext.Default.WebSessionEvent, cancellationToken).ConfigureAwait(false);
+                await NotifyAsync(HostProtocol.NotificationEvent, new WebSessionEvent(item.SessionId, item.Event is { } sessionEvent ? DshJson.Serialize(sessionEvent) : "", item.Reset, viewId), WebBridgeJsonContext.Default.WebSessionEvent, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception error) when (IsConnectionEnd(error) || error is JsonRpcException)
         {
@@ -364,7 +365,7 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
     }
 }
 
-internal sealed record WebMachineView(string State, string? Detail, HostHelloResponse? Hello, HostInfo? Info, IReadOnlyList<RemoteHostSession> Sessions, RemotePendingList Pending, RemoteNotifyPage? Notifications);
+internal sealed record WebMachineView(string State, string? Detail, HostHelloResponse? Hello, HostInfo? Info, IReadOnlyList<RemoteSessionSummary> Sessions, RemotePendingList Pending, RemoteNotifyPage? Notifications);
 internal sealed record WebTerminalOutput(string PtyId, string Base64, bool Eof, bool Snapshot, string ViewId);
 internal sealed record WebSessionEvent(string SessionId, string EventJson, bool Reset, string ViewId);
 internal sealed record WebStreamError(string Kind, string ViewId, string Message);

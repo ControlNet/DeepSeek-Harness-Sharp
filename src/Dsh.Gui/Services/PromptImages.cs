@@ -17,7 +17,7 @@ public static partial class PromptImages
     public static partial Regex PathPattern();
 
     public static async Task<(string Text, IReadOnlyList<RemoteImageBlock> Images)> ExtractRemoteAsync(
-        IRemoteFiles files, string cwd, RemotePathStyle style, string text, CancellationToken cancellationToken)
+        RemoteFilesClient files, string cwd, RemotePathStyle style, string text, CancellationToken cancellationToken)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var images = new List<RemoteImageBlock>();
@@ -36,7 +36,7 @@ public static partial class PromptImages
     }
 
     private static async Task AddReferencedAsync(
-        IRemoteFiles files, string cwd, RemotePathStyle style, string file, HashSet<string> seen, List<RemoteImageBlock> images, CancellationToken cancellationToken)
+        RemoteFilesClient files, string cwd, RemotePathStyle style, string file, HashSet<string> seen, List<RemoteImageBlock> images, CancellationToken cancellationToken)
     {
         if (ImageAttachments.MediaTypeForExtension(RemotePaths.Extension(file, style)) is not null)
             return;
@@ -52,7 +52,7 @@ public static partial class PromptImages
     }
 
     /** UTF-8 content of a remote text file; null when it is too large, contains NUL or cannot be read. */
-    private static async Task<string?> ReadTextAsync(IRemoteFiles files, string path, CancellationToken cancellationToken)
+    private static async Task<string?> ReadTextAsync(RemoteFilesClient files, string path, CancellationToken cancellationToken)
     {
         try
         {
@@ -70,7 +70,7 @@ public static partial class PromptImages
 
     /** Tries the candidate paths in order; the first readable image is attached (media type by extension). */
     private static async Task<bool> TryAddAsync(
-        IRemoteFiles files, IReadOnlyList<string> candidates, RemotePathStyle style, HashSet<string> seen, List<RemoteImageBlock> images, CancellationToken cancellationToken)
+        RemoteFilesClient files, IReadOnlyList<string> candidates, RemotePathStyle style, HashSet<string> seen, List<RemoteImageBlock> images, CancellationToken cancellationToken)
     {
         if (images.Count >= TextFileImageReferences.MaxImages)
             return false;

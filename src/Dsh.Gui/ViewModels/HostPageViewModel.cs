@@ -16,13 +16,13 @@ public sealed partial class HostPageViewModel : ObservableObject, IDisposable
 {
     private readonly FleetWorkspace _fleet;
     private readonly string _capability;
-    private readonly Func<IRemoteHost, string, string, RemotePathStyle, Task<OperationViewModel>> _build;
+    private readonly Func<RemoteHostClient, string, string, RemotePathStyle, Task<OperationViewModel>> _build;
     private CancellationTokenSource? _run;
     private MachineConnection? _connection;
 
     /** build receives the connected client, machine, path and the connection's already-known path style. */
     public HostPageViewModel(
-        FleetWorkspace fleet, string title, string capability, string machine, string path, Func<IRemoteHost, string, string, RemotePathStyle, Task<OperationViewModel>> build)
+        FleetWorkspace fleet, string title, string capability, string machine, string path, Func<RemoteHostClient, string, string, RemotePathStyle, Task<OperationViewModel>> build)
     {
         (_fleet, _capability, _build, Title) = (fleet, capability, build, title);
         _machine = machine;
@@ -138,3 +138,4 @@ public sealed partial class HostPageViewModel : ObservableObject, IDisposable
         Machine = machine;
     }
 }
+
