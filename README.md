@@ -633,6 +633,17 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 </details>
 
 <details>
+<summary><b>0.3.0</b> — 远程宿主拆分、Iroh 传输与 GUI 工作区</summary>
+
+- **远程宿主**:拆分 Host 客户端/服务端契约, SSH 与 Iroh 作为可选传输;远端自动部署按协议版本标记,旧协议自动重新部署。
+- **Iroh**:新增显式 Iroh 传输与机器配置;目标端接收器命令改名为 `dsharp iroh-remote enable|info|disable`,仅新增 Iroh 机器时显示设置说明。
+- **网络**:SSH local-forward、proxy-command 与 borrowed route;分层代理探测和可取消的超时;设置页与 CLI 共用网络配置。
+- **GUI**:远端会话进入共享聊天/终端界面;会话列表可直接继续、重命名、删除;新增 Git 页面(仓库选择、提交 diff);机器编辑、目录选择与探测结果整理;自由输入问答选项。
+- **安全**:提示词引用的文本文件不再自动解析图片路径;图片改用 `read_image` 工具读取,避免大量图片拖垮上下文。
+- **设置**:`settings.yaml` 模板成为唯一来源,删除内置精简模板回退。
+</details>
+
+<details>
 <summary><b>0.2.0</b> — Vulkan 渲染后端、可配置主题、设置面统一</summary>
 
 - **Vulkan 渲染后端**:TUI 新增可插拔 GPU 宿主抽象与 Vulkan 后端,按 DRM 卡的 PCI 槽位选设备;裸控制台可经 SDL KMS/DRM 直接驱动;无 root 即可安装 Vulkan loader;OpenGL 后端拆分到独立模块。
