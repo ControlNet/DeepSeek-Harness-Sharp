@@ -2,6 +2,7 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Dsh.Boot;
 using Dsh.Fleet;
 using Dsh.Gui.Services;
 using Dsh.RemoteHost;
@@ -30,14 +31,24 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     private Task? _disposal;
     private bool _closingSessions;
     private readonly Action<string, string, bool> _toast;
+    private readonly Func<WorkspacePageContext>? _pageContext;
     private (string Machine, string SessionId)? _pendingOpen;
 
-    public WorkspaceViewModel(FleetWorkspace fleet, Action<string, string, bool> toast)
+    public WorkspaceViewModel(
+        FleetWorkspace fleet,
+        Action<string, string, bool> toast,
+        GuiSettings? gui = null,
+        HarnessHome? home = null,
+        Func<(string Machine, string SessionId)>? current = null,
+        Func<WorkspacePageContext>? pageContext = null)
     {
         Fleet = fleet;
         _toast = toast;
+        _pageContext = pageContext;
         Actions = new FleetSessionActions(fleet);
-        Dashboard = new DashboardViewModel(fleet);
+        SessionActions = new SessionActions(fleet, home ?? fleet.Options.LocalHome ?? new HarnessHome(Environment.CurrentDirectory), current);
+        Dashboard = new DashboardViewModel(fleet, gui, SessionActions, current);
+        Dashboard.ActionReported += toast;
         Notifications = new NotificationCenterViewModel(fleet, (machine, session) => Dashboard.Find(machine, session)?.Title) { Toast = toast };
         Palette = new CommandPaletteViewModel(() => Dashboard.AllCards);
         Machines = new MachinesViewModel(fleet.Store, fleet.Options);
@@ -59,6 +70,8 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
 
     public FleetSessionActions Actions { get; }
 
+    public SessionActions SessionActions { get; }
+
     public DashboardViewModel Dashboard { get; }
 
     public NotificationCenterViewModel Notifications { get; }
@@ -67,7 +80,14 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
 
     public WorkspacePages Pages { get; } = new();
 
-    /** Machine management, shared by its workspace page and the settings page's remote section. */
+    /** Opens the folder picker used by path-based host pages (Git). */
+    public Func<Task<string?>>? FolderPicker { get; set; }
+
+    private string? GitWorkspaceMachine { get; set; }
+
+    private string? GitWorkspacePath { get; set; }
+
+    /** Machine management, shared by its workspace page and the machine page navigation. */
     public MachinesViewModel Machines { get; }
 
     [ObservableProperty]
@@ -184,7 +204,9 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
         if (entry is null)
             return;
         _pendingOpen = null;
-        var context = new WorkspacePageContext(ActiveSession?.Machine, ActiveSession?.Card.ProjectPath);
+        var context = _pageContext?.Invoke() ?? new WorkspacePageContext(ActiveSession?.Machine, ActiveSession?.Card.ProjectPath);
+        if (entry.Id == WorkspacePages.Git && GitWorkspacePath is { Length: > 0 } explicitGitPath)
+            context = new(GitWorkspaceMachine ?? context.Machine, explicitGitPath);
         PageContent = entry.Create(context);
         ActivePage = entry;
         NavigationRequested?.Invoke(WorkspaceDestination.Page);
@@ -212,7 +234,9 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
                 git.NewSessionRequested += worktree => NewSession(machine, worktree.Path);
                 await git.RefreshAsync();
                 return git;
-            })));
+            },
+            folderPicker: () => FolderPicker?.Invoke() ?? Task.FromResult<string?>(null),
+            pathSelected: (machine, path) => (GitWorkspaceMachine, GitWorkspacePath) = (machine, path))));
         Pages.Register(new WorkspacePageEntry(WorkspacePages.Machines, "机器", machinesIcon, _ => Machines));
     }
 

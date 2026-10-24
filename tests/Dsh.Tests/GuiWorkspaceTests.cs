@@ -23,6 +23,40 @@ namespace Dsh.Tests;
 [Collection(GuiSerialCollection.CollectionName)]
 public sealed class GuiWorkspaceTests
 {
+    [Fact]
+    public async Task RecentCards_MixMachines_AndProjectFoldSurvivesRefresh()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var alpha = await HarnessHostFixture.CreateAsync("gwr", ct);
+        await using var beta = await HarnessHostFixture.CreateAsync("gws", ct);
+        var appProject = Project(alpha, "app");
+        var serviceProject = Project(beta, "service");
+        await HeadlessGui.RunAsync(async () =>
+        {
+            var workspace = Open(alpha, beta);
+            try
+            {
+                await ConnectedAsync(workspace);
+                var local = (await workspace.Actions.StartAsync("alpha", Harness(appProject, "本地会话"), ct)).SessionId;
+                var remote = (await workspace.Actions.StartAsync("beta", Harness(serviceProject, "远程会话"), ct)).SessionId;
+                var dashboard = workspace.Dashboard;
+                await UntilAsync(() => dashboard.RecentCards.Count == 2, "recent cards");
+
+                Assert.Contains(dashboard.RecentCards, card => card.SessionId == local && card.Machine == "alpha");
+                Assert.Contains(dashboard.RecentCards, card => card.SessionId == remote && card.Machine == "beta");
+                var project = dashboard.Machines.Single(machine => machine.Name == "alpha").Projects.Single();
+                project.ToggleCommand.Execute(null);
+                Assert.False(project.IsExpanded);
+                dashboard.Refresh();
+                Assert.False(project.IsExpanded);
+            }
+            finally
+            {
+                await workspace.DisposeAsync();
+            }
+        });
+    }
+
     private static readonly TimeSpan Arrival = TimeSpan.FromSeconds(5);
 
     /** Fast heartbeat and backoff, so a stopped host is noticed and the reconnect happens within the test. */
@@ -63,6 +97,14 @@ public sealed class GuiWorkspaceTests
                 Assert.Equal(new[] { waiting, busy }.Order(), alphaProjects.Sessions.Select(card => card.SessionId).Order());
                 Assert.Equal(serviceProject, Assert.Single(dashboard.Machines[1].Projects).ProjectPath);
                 Assert.Equal((3, 1, 1, 0), (dashboard.SessionCount, dashboard.AttentionCount, dashboard.RunningCount, dashboard.OfflineMachineCount));
+                Assert.Equal(3, dashboard.RecentCards.Count);
+                Assert.All(dashboard.RecentCards, card => Assert.Contains(card.SessionId, new[] { waiting, busy, done }));
+                alphaProjects.ToggleCommand.Execute(null);
+                Assert.False(alphaProjects.IsExpanded);
+                dashboard.Refresh();
+                Assert.False(alphaProjects.IsExpanded);
+                alphaProjects.ToggleCommand.Execute(null);
+                Assert.True(alphaProjects.IsExpanded);
                 Assert.Equal("等待你处理", Card(workspace, "alpha", waiting)!.StatusLabel);
 
                 dashboard.ShowAttentionCommand.Execute(null);
@@ -487,4 +529,3 @@ private static WorkspacePageEntry Page(WorkspaceViewModel workspace, string id) 
         }
     }
 }
-

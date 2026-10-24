@@ -50,6 +50,8 @@ public sealed partial class MainWindow : Window
         ViewModel.TerminalRequested += ShowTerminal;
         ViewModel.FilePicker = PickAsync;
         ViewModel.Preferences.PluginFilePicker = PickPluginLibraryAsync;
+        ViewModel.Workspace.Machines.IrohFilePicker = PickIrohExecutableAsync;
+        ViewModel.Workspace.FolderPicker = async () => (await PickAsync(false, true)).FirstOrDefault();
         ViewModel.Preferences.Applied += ApplyAppearance;
         ViewModel.Preferences.Preview += ApplyPreview;
         AddHandler(KeyDownEvent, OnWorkspaceKeyDown, RoutingStrategies.Bubble);
@@ -461,6 +463,19 @@ public sealed partial class MainWindow : Window
             AllowMultiple = false,
             Title = "选择插件",
             FileTypeFilter = [PluginLibraries, FilePickerFileTypes.All],
+        });
+        return files.Select(file => file.TryGetLocalPath()).FirstOrDefault(path => path is not null);
+    }
+
+    private async Task<string?> PickIrohExecutableAsync()
+    {
+        if (StorageProvider is not { } storage)
+            return null;
+        var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            AllowMultiple = false,
+            Title = "选择 iroh-ssh",
+            FileTypeFilter = [FilePickerFileTypes.All],
         });
         return files.Select(file => file.TryGetLocalPath()).FirstOrDefault(path => path is not null);
     }

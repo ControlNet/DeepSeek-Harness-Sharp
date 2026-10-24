@@ -113,7 +113,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     private WorkspaceViewModel CreateWorkspace(FleetWorkspace fleet)
     {
-        var workspace = new WorkspaceViewModel(fleet, ShowToast);
+        var workspace = new WorkspaceViewModel(
+            fleet,
+            ShowToast,
+            Gui,
+            Home,
+            () => (_chat.Machine, _chat.Id.Value),
+            () => new WorkspacePageContext(_chat.Machine, CurrentWorkspace));
         workspace.NavigationRequested += destination => Page = destination switch
         {
             WorkspaceDestination.Session => AppPage.FleetSession,
@@ -292,6 +298,10 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     };
 
     public string PresetLabel => PresetDefinitions.FirstOrDefault(definition => definition.Id == Preset).Label ?? Preset;
+
+    public bool HasCommand(string name) => _chat.Commands.Any(command => string.Equals(command.Name, name, StringComparison.Ordinal));
+
+    public Task RefreshCommandsAsync() => _chat.RefreshCommandsAsync();
 
     /** 只有这三页走懒加载的 ContentControl; 其他页面由各自的 Host 承载, ContentControl 必须隐藏, 否则会把枚举名画成 "Chat"/"WorkspacePage" 文本。 */
     public bool IsLazyPage => Page is AppPage.Dashboard or AppPage.Settings or AppPage.Market;

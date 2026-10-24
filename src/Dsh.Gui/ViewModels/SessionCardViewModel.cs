@@ -76,6 +76,22 @@ public sealed partial class SessionCardViewModel(string machine, RemoteSessionSu
     /** Text the quick switcher matches against: title, agent, project, machine and id. */
     public string SearchText => $"{Title} {AgentLabel} {Session.ProjectPath} {Machine} {SessionId}";
 
+    [ObservableProperty]
+    private bool _isCurrent;
+
+    [ObservableProperty]
+    private bool _isRenaming;
+
+    [ObservableProperty]
+    private string _renameDraft = "";
+
+    public SessionCardViewModel? RenameEditor => IsRenaming ? this : null;
+
+    partial void OnIsRenamingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(RenameEditor));
+    }
+
     public void Update(RemoteSessionSummary session, MachineConnectionState machineState)
     {
         Session = session;
@@ -87,5 +103,3 @@ public sealed partial class SessionCardViewModel(string machine, RemoteSessionSu
 
     partial void OnMachineStateChanged(MachineConnectionState value) => OnPropertyChanged(string.Empty);
 }
-
-
