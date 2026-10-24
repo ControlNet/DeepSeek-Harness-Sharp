@@ -82,7 +82,7 @@
     <Project Path="templates/managed-plugin/DshPluginTemplate.csproj" />
   </Folder>
   <Project Path="DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj" />
-  <Project Path="DshGuiHost/DshGuiHost.csproj" />
+  <Project Path="Dsh.GuiHost/Dsh.GuiHost.csproj" />
   <Project Path="Dsh.Host/Dsh.Host.csproj" />
   <Project Path="Dsh.WebHost/Dsh.WebHost.csproj" />
 </Solution>

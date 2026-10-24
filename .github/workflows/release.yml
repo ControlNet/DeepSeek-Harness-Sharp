@@ -284,7 +284,7 @@ jobs:
             -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none \
             --nologo -v m
           # GUI 启动器一并发布并叠加进主产物。
-          dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r "$RID" "${PUBLISH_ARGS[@]}" \
+          dotnet publish Dsh.GuiHost/Dsh.GuiHost.csproj -c Release -r "$RID" "${PUBLISH_ARGS[@]}" \
             -p:Version="$VERSION" -p:DebugSymbols=false -p:DebugType=none --nologo -v m
           # The Web entry keeps its runtime closure in a separate optional asset.
           dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r "$RID" "${PUBLISH_ARGS[@]}" \
@@ -296,9 +296,9 @@ jobs:
           pwsh -NoProfile -File scripts/smoke-web-host.ps1 \
             -WebPublishDir "$WEB_PUB" \
             -TuiPublishDir "DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish" \
-            -GuiPublishDir "DshGuiHost/bin/Release/net10.0/$RID/publish"
+            -GuiPublishDir "Dsh.GuiHost/bin/Release/net10.0/$RID/publish"
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
-          GUI_PUB="DshGuiHost/bin/Release/net10.0/$RID/publish"
+          GUI_PUB="Dsh.GuiHost/bin/Release/net10.0/$RID/publish"
           test -d "$PUB"
           test -d "$GUI_PUB"
           cp -R "$GUI_PUB"/. "$PUB"/
@@ -422,7 +422,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'WebHost archive extraction failed' }
             ./scripts/smoke-web-host.ps1 -WebPublishDir $verify `
               -TuiPublishDir "DeepSeek-Harness-Sharp/bin/Release/net10.0/$env:RID/publish" `
-              -GuiPublishDir "DshGuiHost/bin/Release/net10.0/$env:RID/publish"
+              -GuiPublishDir "Dsh.GuiHost/bin/Release/net10.0/$env:RID/publish"
           } finally { Remove-Item $verify -Recurse -Force }
 
       - uses: actions/upload-artifact@v4

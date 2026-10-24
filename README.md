@@ -156,14 +156,14 @@ GUI 是内置插件 `@deepseek-ai/dsh-gui`,与 TUI 共用同一份配置、会�
 原有 `sessions/` 历史会话可直接打开，恢复时由 Host 接管，不会另建一份 GUI 私有会话。
 
 ```bash
-# 构建 GUI 启动器(独立于 CLI/TUI 宿主;产物在 DshGuiHost/bin/<Debug|Release>/net10.0/)
-dotnet build DshGuiHost/DshGuiHost.csproj
+# 构建 GUI 启动器(独立于 CLI/TUI 宿主;产物在 Dsh.GuiHost/bin/<Debug|Release>/net10.0/)
+dotnet build Dsh.GuiHost/Dsh.GuiHost.csproj
 # 根目录的 dotnet build 会经 DeepSeek-Harness-Sharp.slnx 一并构建它
 
 # Windows: 双击 dsh-gui.exe(Windows 子系统,不会出现控制台黑框),或从命令行启动
-DshGuiHost\bin\Debug\net10.0\dsh-gui.exe
+Dsh.GuiHost\bin\Debug\net10.0\dsh-gui.exe
 # Linux/macOS: 运行同一工程的产物
-DshGuiHost/bin/Debug/net10.0/dsh-gui
+Dsh.GuiHost/bin/Debug/net10.0/dsh-gui
 # 从控制台宿主进入 GUI(会占用当前控制台)
 DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui
 # 直接打开某个历史会话
@@ -560,14 +560,14 @@ systemctl --user disable --now dsharp-host.service
 ### Web 入口与独立宿主
 
 TUI、GUI、Web 是同一产品的三个入口，共用 Host/Fleet 和会话数据；各自的宿主与发布目录用于隔离运行时依赖。
-发布项目分别是 `DeepSeek-Harness-Sharp`（`dsharp`）、`DshGuiHost`（`dsh-gui`）和 `Dsh.WebHost`（`dsharp-web`）。只有最后一个引入 `Microsoft.AspNetCore.App`：ASP.NET Core 的 HTTP/WebSocket、Cookie 认证和嵌入资源服务不会沿引用图进入 TUI/GUI。Web 的 Host/Origin 校验继续防止 DNS rebinding 与 CSRF，Cookie 为 HttpOnly/SameSite=Strict，令牌及 Cookie 密钥随进程重启失效。
+发布项目分别是 `DeepSeek-Harness-Sharp`（`dsharp`）、`Dsh.GuiHost`（`dsh-gui`）和 `Dsh.WebHost`（`dsharp-web`）。只有最后一个引入 `Microsoft.AspNetCore.App`：ASP.NET Core 的 HTTP/WebSocket、Cookie 认证和嵌入资源服务不会沿引用图进入 TUI/GUI。Web 的 Host/Origin 校验继续防止 DNS rebinding 与 CSRF，Cookie 为 HttpOnly/SameSite=Strict，令牌及 Cookie 密钥随进程重启失效。
 登录页面及同源协议资源在登录前即可加载，但不包含访问令牌、机器清单或会话数据；后者仍需登录后才能读取。更新 WebHost 后重新加载页面即可使用随服务生成的同版本协议定义。
 
 ```bash
 # 源码运行：WebHost 编译、激活 WebBridge 插件，再启动监听
 dotnet run --project Dsh.WebHost/Dsh.WebHost.csproj -- --port 8780
 # 独立发布（默认 JIT + partial trim + 自包含）
-dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r linux-x64
+dotnet publish Dsh.GuiHost/Dsh.GuiHost.csproj -c Release -r linux-x64
 dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r linux-x64
 # 不裁剪的 JIT / NativeAOT 档使用同一个入口
 dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r linux-x64 -p:PublishTrimmed=false
@@ -592,7 +592,7 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 ./scripts/smoke-web-host.ps1 `
   -WebPublishDir Dsh.WebHost/bin/Release/net10.0/linux-x64/publish `
   -TuiPublishDir DeepSeek-Harness-Sharp/bin/Release/net10.0/linux-x64/publish `
-  -GuiPublishDir DshGuiHost/bin/Release/net10.0/linux-x64/publish
+  -GuiPublishDir Dsh.GuiHost/bin/Release/net10.0/linux-x64/publish
 ```
 ## 各版本新增功能
 
