@@ -8,6 +8,7 @@ using AvaloniaEdit;
 using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Fleet;
+using Dsh.Fleet.Iroh;
 using Dsh.Gui.Services;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
@@ -84,7 +85,7 @@ public sealed class GuiViewsHeadlessTests
                 Kind = MachineKinds.Iroh,
                 EndpointId = new string('a', MachineSpec.IrohEndpointIdLength),
             });
-            var viewModel = new MachinesViewModel(store, new FleetOptions());
+            var viewModel = new MachinesViewModel(store, new FleetOptions { SshTransportAdapter = new IrohSshTransport() });
             viewModel.Load("build");
             var window = Show(new MachinesView { DataContext = viewModel });
             await Task.Yield();
@@ -114,6 +115,11 @@ public sealed class GuiViewsHeadlessTests
             Assert.False(viewModel.StatusIsError, viewModel.Status);
             var saved = Assert.Single(store.Load().Machines, machine => machine.Name == "iroh-build");
             Assert.Equal((MachineKinds.Iroh, "bootstrap.internal", new string('b', MachineSpec.IrohEndpointIdLength)), (saved.Kind, saved.Host, saved.EndpointId));
+            var irohHelp = window.GetVisualDescendants().OfType<Expander>().Single(expander => Equals(expander.Header, "目标端本地设置 Iroh"));
+            Assert.False(irohHelp.IsVisible);
+            viewModel.NewIrohCommand.Execute(null);
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(irohHelp.IsVisible);
             window.Close();
         }
         finally

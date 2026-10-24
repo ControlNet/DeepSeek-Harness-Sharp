@@ -279,11 +279,17 @@
         </StackPanel>
 
         <Expander Header="目标端本地设置 Iroh">
+          <Expander.IsVisible>
+            <MultiBinding Converter="{x:Static BoolConverters.And}">
+              <Binding Path="Editor.IsNew" FallbackValue="False" />
+              <Binding Path="Editor.IsIroh" FallbackValue="False" />
+            </MultiBinding>
+          </Expander.IsVisible>
           <StackPanel Spacing="6">
             <TextBlock Classes="Secondary" TextWrapping="Wrap" Text="目标端需已有可用的 SSH 服务。若无法从此客户端通过普通 SSH 引导，请在目标端终端运行以下命令，再将输出的 Endpoint ID 填入“新增 Iroh 机器”。" />
-            <SelectableTextBlock Text="dsharp remote enable" FontFamily="{DynamicResource Font.Mono}" />
+            <SelectableTextBlock Text="dsharp iroh-remote enable" FontFamily="{DynamicResource Font.Mono}" />
             <TextBlock Classes="Tertiary" TextWrapping="Wrap" Text="SSH 不是默认 22 端口时追加 --ssh-port N；自定义 relay 时追加 --relay-url URL（可重复），客户端需填写相同的 Relay URLs。SSH 用户、密码或密钥认证方式不变。" />
-            <SelectableTextBlock Text="dsharp remote info&#10;dsharp remote disable" FontFamily="{DynamicResource Font.Mono}" />
+            <SelectableTextBlock Text="dsharp iroh-remote info&#10;dsharp iroh-remote disable" FontFamily="{DynamicResource Font.Mono}" />
             <TextBlock Classes="Tertiary" TextWrapping="Wrap" Text="info 查看接收端状态与 ID；disable 关闭 Iroh 接收端，不停止 SSH 服务或 dsharp Host。普通 SSH 可达时可直接使用上方“通过现有 SSH 启用 Iroh”，仅验证隧道成功后才保存连接类型。" />
           </StackPanel>
         </Expander>
