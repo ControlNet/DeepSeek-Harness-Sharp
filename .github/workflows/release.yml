@@ -113,7 +113,7 @@ jobs:
           check_os() {
             local prefix="测试（$1"
             gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" \
-              --jq --arg prefix "$prefix" '
+              | jq -r --arg prefix "$prefix" '
                 [.jobs[] | select(.name | startswith($prefix))] as $jobs
                 | if ($jobs | length) == 0 then "missing"
                   elif any($jobs[]; .conclusion != "success" and .conclusion != "skipped") then "failed"
