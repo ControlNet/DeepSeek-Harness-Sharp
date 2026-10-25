@@ -77,9 +77,11 @@ jobs:
           esac
           git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
           SHA=$(git rev-parse "$TAG^{commit}")
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "requested=$REQUESTED" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$TAG"
+            echo "sha=$SHA"
+            echo "requested=$REQUESTED"
+          } >> "$GITHUB_OUTPUT"
           echo "tag=$TAG sha=$SHA requested=$REQUESTED"
 
   gate:
@@ -143,9 +145,11 @@ jobs:
             fi
           done
 
-          echo "windows=${STATES[windows]}" >> "$GITHUB_OUTPUT"
-          echo "linux=${STATES[linux]}" >> "$GITHUB_OUTPUT"
-          echo "macos=${STATES[macos]}" >> "$GITHUB_OUTPUT"
+          {
+            echo "windows=${STATES[windows]}"
+            echo "linux=${STATES[linux]}"
+            echo "macos=${STATES[macos]}"
+          } >> "$GITHUB_OUTPUT"
           if [ "${STATES[windows]}" = false ] && [ "${STATES[linux]}" = false ] && [ "${STATES[macos]}" = false ]; then
             echo "::error::没有请求的平台通过 CI 测试"
             exit 1
