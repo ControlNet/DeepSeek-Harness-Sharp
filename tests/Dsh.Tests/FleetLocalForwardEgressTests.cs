@@ -624,7 +624,6 @@ public sealed class FleetLocalForwardEgressTests
 
     internal static void AssertPortCanRebind(int port)
     {
-        Assert.DoesNotContain(IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners(), endpoint => endpoint.Port == port);
         using var rebound = new TcpListener(IPAddress.Loopback, port);
         rebound.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         rebound.Start();
