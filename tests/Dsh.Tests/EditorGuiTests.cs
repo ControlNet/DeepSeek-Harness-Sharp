@@ -380,7 +380,7 @@ public sealed class EditorGuiTests
                 var button = view.FindControl<Button>("OpenSelectedEditor")!;
                 Assert.True(button.Focus());
                 window.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null);
-                await FleetConnectionTests.WaitForAsync(() => File.Exists(remoteFixture.Output));
+                await vm.OpenCommand.ExecutionTask!;
                 Assert.False(File.Exists(localFixture.Output));
                 Assert.Equal("remote-two", remote.GetBinding(remoteRoot, "session")?.Editor.Value);
                 var reopened = new EditorOpenWithViewModel(local, _ => Task.FromResult<IEditorService>(remote), remoteRoot, "fixture-remote", "session");
