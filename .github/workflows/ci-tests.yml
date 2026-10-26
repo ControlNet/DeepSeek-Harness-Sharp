@@ -195,6 +195,10 @@ jobs:
             -class Dsh.Tests.TuiRawModeEndToEndTests \
             -trait- "Category=LlmSmoke" -failSkips
 
+      - name: Prepare managed-stack diagnostics for macOS quick
+        if: inputs.suite == 'quick' && runner.os == 'macOS'
+        shell: bash
+        run: dotnet tool install dotnet-stack --version 10.0.750501 --tool-path .artifacts/ci-diagnostics
       - name: Run quick tests (excluding GpuStress / OnlyGpu / LlmSmoke / RenderBench)
         if: inputs.suite == 'quick'
         shell: bash
@@ -240,10 +244,19 @@ jobs:
             set +m
             ( sleep 600; kill -9 "$TESTPID" 2>/dev/null ) &
             WATCH=$!
+            (
+              sleep 540 &
+              DELAY=$!
+              trap 'kill "$DELAY" 2>/dev/null || true; exit 0' TERM INT
+              wait "$DELAY"
+              exec /usr/bin/perl -e 'alarm 20; exec @ARGV' .artifacts/ci-diagnostics/dotnet-stack report --process-id "$TESTPID"
+            ) &
+            DIAGNOSTIC_WATCH=$!
             set +e
             wait "$TESTPID"
             CODE=$?
             kill "$WATCH" 2>/dev/null || true
+            kill "$DIAGNOSTIC_WATCH" 2>/dev/null || true
             exit $CODE
           fi
           if command -v timeout >/dev/null 2>&1; then
