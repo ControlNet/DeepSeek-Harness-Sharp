@@ -1,8 +1,8 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
-using Dsh.Core;
 using Dsh.Interaction;
 
 namespace Dsh.Gui.Views;
@@ -15,6 +15,10 @@ public sealed class DiffView : UserControl
 
     public static readonly StyledProperty<bool> IsCardExpandedProperty =
         AvaloniaProperty.Register<DiffView, bool>(nameof(IsCardExpanded), defaultValue: true);
+
+    /** 在卡片展开态改变前冒泡, 供消息列表固定卡片位置。 */
+    public static readonly RoutedEvent<RoutedEventArgs> CardToggleRequestedEvent =
+        RoutedEvent.Register<DiffView, RoutedEventArgs>("CardToggleRequested", RoutingStrategies.Bubble);
 
     private const double BodyFontSize = 12.5;
     private const double CaptionFontSize = 11;
@@ -102,9 +106,13 @@ public sealed class DiffView : UserControl
             Margin = new Thickness(0, 0, 4, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        toggle.Click += (_, _) => IsCardExpanded = !IsCardExpanded;
+        toggle.Click += (_, _) =>
+        {
+            RaiseEvent(new RoutedEventArgs(CardToggleRequestedEvent, this));
+            IsCardExpanded = !IsCardExpanded;
+        };
         panel.Children.Add(toggle);
-        panel.Children.Add(new TextBlock { Text = card.Title, FontSize = BodyFontSize, FontWeight = FontWeight.SemiBold });
+        panel.Children.Add(new SelectableTextBlock { Text = card.Title, FontSize = BodyFontSize, FontWeight = FontWeight.SemiBold });
         if (card.Added > 0)
             panel.Children.Add(new TextBlock { Text = $"+{card.Added}", FontSize = CaptionFontSize, Foreground = AddedBrush, VerticalAlignment = VerticalAlignment.Center });
         if (card.Removed > 0)
@@ -126,7 +134,7 @@ public sealed class DiffView : UserControl
         };
         grid.Children.Add(NumberBlock(line.OldLine, numberWidth, 0));
         grid.Children.Add(NumberBlock(line.NewLine, numberWidth, 1));
-        var text = new TextBlock
+        var text = new SelectableTextBlock
         {
             Text = line.Text.Length == 0 ? " " : line.Text,
             FontFamily = _monoFont,
@@ -169,4 +177,3 @@ public sealed class DiffView : UserControl
         return digits * CharWidthGuess;
     }
 }
-

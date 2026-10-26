@@ -202,9 +202,10 @@
               <StackPanel Spacing="3">
                 <TextBlock Text="{Binding Role}" Classes="Tertiary" IsVisible="{Binding HasRole}" />
 
-                <TextBlock Text="{Binding Preview}" Classes="Secondary" IsVisible="{Binding ShowPreview}" />
+                <SelectableTextBlock Text="{Binding Preview}" Classes="Secondary" IsVisible="{Binding ShowPreview}" />
                 <Button Classes="Ghost" Padding="2,0" HorizontalAlignment="Left"
                         IsVisible="{Binding IsFoldable}"
+                        Click="OnMessageFoldClick"
                         Command="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).ToggleMessageFoldCommand}"
                         CommandParameter="{Binding}">
                   <TextBlock Text="{Binding FoldLabel}" Classes="Tertiary" />
@@ -216,8 +217,8 @@
                       <DataTemplate x:DataType="vm:MessageViewModel">
                         <Grid ColumnDefinitions="Auto,*" Margin="0,1">
                           <TextBlock Text="{Binding Role}" Classes="Tertiary" Margin="0,0,6,0" />
-                          <TextBlock Grid.Column="1" Text="{Binding Preview}" Classes="Secondary"
-                                     TextTrimming="CharacterEllipsis" />
+                          <SelectableTextBlock Grid.Column="1" Text="{Binding Preview}" Classes="Secondary"
+                                               TextTrimming="CharacterEllipsis" />
                         </Grid>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
@@ -233,9 +234,9 @@
                 <views:MarkdownView Text="{Binding Text}" IsVisible="{Binding ShowMarkdown}" />
                 <views:DiffView Card="{Binding Diff}" IsVisible="{Binding ShowDiff}"
                                 IsCardExpanded="{Binding IsDiffExpanded, Mode=TwoWay}" />
-                <TextBlock Text="{Binding Text}" Classes="Body" IsVisible="{Binding ShowPlainBody}" />
-                <TextBlock Text="{Binding Detail}" Classes="Body" IsVisible="{Binding ShowDetail}"
-                           FontFamily="{DynamicResource Font.Mono}" />
+                <SelectableTextBlock Text="{Binding Text}" Classes="Body" IsVisible="{Binding ShowPlainBody}" />
+                <SelectableTextBlock Text="{Binding Detail}" Classes="Body" IsVisible="{Binding ShowDetail}"
+                                     FontFamily="{DynamicResource Font.Mono}" />
 
                 <StackPanel Orientation="Horizontal" Spacing="4" IsVisible="{Binding ShowActions}">
                   <Button Classes="Icon" Width="26" Height="26" ToolTip.Tip="复制"
@@ -291,12 +292,13 @@
                     <TextBlock Text="{Binding Title}" Classes="Secondary" TextTrimming="CharacterEllipsis" />
                   </Button>
                   <Button Grid.Column="3" Classes="Icon" Width="22" Height="22" IsVisible="{Binding HasDetail}"
+                          Click="OnTraceExpandClick"
                           Command="{Binding ToggleExpandCommand}">
                     <TextBlock Text="{Binding ExpandLabel}" Classes="Tertiary" />
                   </Button>
                 </Grid>
-                <TextBlock Text="{Binding Detail}" Classes="Tertiary" Margin="0,2,0,0" TextWrapping="Wrap"
-                           IsVisible="{Binding IsExpanded}" />
+                <SelectableTextBlock Text="{Binding Detail}" Classes="Tertiary" Margin="0,2,0,0" TextWrapping="Wrap"
+                                     IsVisible="{Binding IsExpanded}" />
               </StackPanel>
             </Border>
           </DataTemplate>
