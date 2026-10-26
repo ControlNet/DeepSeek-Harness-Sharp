@@ -108,6 +108,7 @@ public static class EditTool
         {
             await File.WriteAllTextAsync(tempPath, written, new UTF8Encoding(false, false), exec.Signal);
             File.Move(tempPath, target, true);
+            exec.RecordFileChange(target);
         }
         finally
         {

@@ -19,6 +19,7 @@ namespace Dsh.Core;
 [JsonSerializable(typeof(AssistantMessagePayload))]
 [JsonSerializable(typeof(ToolCallPayload))]
 [JsonSerializable(typeof(ToolResultPayload))]
+[JsonSerializable(typeof(FileChangedPayload))]
 [JsonSerializable(typeof(RequestHeaderPayload))]
 [JsonSerializable(typeof(RequestContextPayload))]
 [JsonSerializable(typeof(SessionEndSeedPayload))]

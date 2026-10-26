@@ -112,6 +112,9 @@ public sealed class ToolRunContext : ToolExecution
     internal Func<ToolExecution, ToolExecutionResult, IReadOnlyList<ContentBlock>?>? CapturedFinalizer { get; set; }
 
     public void ConcludeTurn() => ConcludedRequested = true;
+
+    /** Call only after successfully committing a file mutation, never for write intent or directories. */
+    public void RecordFileChange(string absolutePath) => Agent?.Session.Append(new FileChangedPayload(absolutePath));
 }
 
 public abstract record ScheduledToolPreparation

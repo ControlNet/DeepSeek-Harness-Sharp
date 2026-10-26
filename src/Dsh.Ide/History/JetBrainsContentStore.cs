@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using K4os.Compression.LZ4;
 using Microsoft.Win32.SafeHandles;
 
-namespace Dsh.IdeHistory;
+namespace Dsh.Ide.History;
 
 public sealed class JetBrainsContentStore : IDisposable
 {

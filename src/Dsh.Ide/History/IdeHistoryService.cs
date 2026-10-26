@@ -1,0 +1,131 @@
+using System.Security.Cryptography;
+using Dsh.Runtime;
+
+namespace Dsh.Ide.History;
+
+public sealed record IdeHistoryOptions
+{
+    public const int DefaultTimelineLimit = 50;
+    public const int DefaultWindowSeconds = 60;
+    public static readonly IReadOnlyList<string> AllProviders = ["vscode", "jetbrains", "zed"];
+    public IReadOnlyList<string> Providers { get; init; } = AllProviders;
+    public bool Timeline { get; init; }
+    [global::Dsh.Plugins.DshPluginSettings(Name = "timeline_limit")]
+    public int TimelineLimit { get; init; } = DefaultTimelineLimit;
+    [global::Dsh.Plugins.DshPluginSettings(Name = "window_seconds")]
+    public int WindowSeconds { get; init; } = DefaultWindowSeconds;
+
+    /** Nested history wins per key; legacy flat and camel-case keys remain readable for one release. */
+    public static IdeHistoryOptions From(object? config)
+    {
+        if (config is not IDictionary<string, object?> map)
+            return new();
+        var nested = map.TryGetValue("history", out var history) ? history as IDictionary<string, object?> : null;
+        object? Value(string key, string? alias = null)
+            => nested is not null && (nested.TryGetValue(key, out var value) || alias is not null && nested.TryGetValue(alias, out value))
+                ? value : map.TryGetValue(key, out value) || alias is not null && map.TryGetValue(alias, out value) ? value : null;
+        return new IdeHistoryOptions
+        {
+            Providers = Value("providers") is { } providers ? ReadProviders(providers) : AllProviders,
+            Timeline = Value("timeline") is true,
+            TimelineLimit = ReadNumber(Value("timeline_limit", "timelineLimit"), DefaultTimelineLimit, 1, 500),
+            WindowSeconds = ReadNumber(Value("window_seconds", "windowSeconds"), DefaultWindowSeconds, 0, 3600),
+        };
+    }
+
+    private static IReadOnlyList<string> ReadProviders(object? value) => value switch
+    {
+        IEnumerable<object?> list => [.. list.OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase)],
+        string single => [single],
+        _ => [],
+    };
+
+    private static int ReadNumber(object? value, int fallback, int minimum, int maximum)
+        => (int)Math.Clamp(value switch { int number => number, long number => number, double number when double.IsFinite(number) => number, _ => fallback }, minimum, maximum);
+}
+
+public sealed class IdeHistoryService(Context ctx, IdeHistoryRegistry registry, IdeHistoryOptions options)
+    : Service(ctx, IIdeHistoryService.ServiceName), IIdeHistoryService, IIdeHistoryTimeline, IIdeHistoryRestore
+{
+    private const int CandidateMultiplier = 4;
+    private static readonly StringComparer PathComparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+    private static readonly IEqualityComparer<(string Path, string Digest)> TimelineIdentityComparer =
+        EqualityComparer<(string Path, string Digest)>.Create(
+            static (left, right) => PathComparer.Equals(left.Path, right.Path) && left.Digest == right.Digest,
+            static entry => HashCode.Combine(PathComparer.GetHashCode(entry.Path), StringComparer.Ordinal.GetHashCode(entry.Digest)));
+    private static readonly IReadOnlyList<(IdeWorkspaceKind Kind, string Keyword)> Sources =
+    [
+        (IdeWorkspaceKind.VsCode, "vscode"),
+        (IdeWorkspaceKind.JetBrains, "jetbrains"),
+        (IdeWorkspaceKind.Zed, "zed"),
+    ];
+
+    public bool TimelineEnabled => options.Timeline;
+    public IdeWorkspaceKind WorkspaceKind(string? workspaceRoot) => WorkspaceIdeDetector.Detect(workspaceRoot);
+
+    public IReadOnlyList<IdeHistoryEntry> Query(string? workspaceRoot, long? from, long? to, string? path = null)
+    {
+        var kind = WorkspaceKind(workspaceRoot);
+        if (string.IsNullOrWhiteSpace(workspaceRoot) || kind == IdeWorkspaceKind.None)
+            return [];
+        return [.. registry.Query(path ?? workspaceRoot, null, options.TimelineLimit * CandidateMultiplier,
+                provider => IsEnabled(kind, provider), from, to)
+            .Where(item => HistoryRestore.IsWithinWorkspace(workspaceRoot, item.Entry.Path))
+            .OrderByDescending(item => item.Entry.Timestamp)
+            .ThenBy(item => ProviderOrder(item.Provider.Name))
+            .Select(item => item.Entry)
+            .Take(options.TimelineLimit)];
+    }
+
+    public IdeHistoryContent? Read(IdeHistoryEntry entry) => registry.Read(entry);
+
+    /** Content decoding, deduplication and HEAD checks occur only when a timeline is requested. */
+    public IReadOnlyList<IdeHistoryMoment> QueryTimeline(string workspaceRoot, long? from = null, long? to = null)
+    {
+        var entries = Query(workspaceRoot, from, to);
+        var head = GitHeadSnapshot.Read(workspaceRoot, entries.Select(entry => entry.Path).Distinct(PathComparer).ToArray());
+        var seen = new HashSet<(string Path, string Digest)>(TimelineIdentityComparer);
+        var unique = new List<IdeHistoryEntry>();
+        foreach (var entry in entries.OrderBy(entry => ProviderOrder(entry.Provider)).ThenByDescending(entry => entry.Timestamp))
+        {
+            var content = Read(entry);
+            // Search filters are permissive; timeline identity must preserve native filenames.
+            var path = Path.GetFullPath(entry.Path);
+            var digest = content is null ? $"unavailable:{entry.Provider}:{entry.Timestamp}:{entry.ContentId}" : Convert.ToHexString(SHA256.HashData(content.Bytes));
+            if (seen.Add((path, digest)))
+                unique.Add(entry with { MatchesGitHead = content is null ? null : head.Matches(entry.Path, content.Bytes) });
+        }
+        var moments = new List<IdeHistoryMoment>();
+        foreach (var entry in unique.OrderByDescending(entry => entry.Timestamp).ThenBy(entry => ProviderOrder(entry.Provider)))
+        {
+            if (moments.Count == 0 || moments[^1].Timestamp - entry.Timestamp > options.WindowSeconds * 1000L)
+                moments.Add(new IdeHistoryMoment(entry.Timestamp, [entry]));
+            else
+                moments[^1] = moments[^1] with { Entries = [.. moments[^1].Entries, entry] };
+        }
+        return moments;
+    }
+
+    public IdeRestorePreview PreviewRestore(string workspaceRoot, IdeHistoryEntry entry)
+        => HistoryRestore.Preview(workspaceRoot, entry, Read(entry)
+            ?? throw new InvalidOperationException("History revision content is unavailable."));
+
+    public IdeRestoreResult Restore(IdeRestorePreview preview, bool confirmModified)
+    {
+        var paths = DshPaths.FromContext(Ctx) ?? throw new InvalidOperationException("DSH storage is not configured.");
+        return HistoryRestore.Restore(preview, Path.Combine(paths.CheckpointsPath, "ide-backups"), confirmModified);
+    }
+
+    private int ProviderOrder(string name)
+    {
+        for (var index = 0; index < options.Providers.Count; index++)
+            if (name.Contains(options.Providers[index], StringComparison.OrdinalIgnoreCase))
+                return index;
+        return int.MaxValue;
+    }
+
+    private bool IsEnabled(IdeWorkspaceKind kind, string providerName)
+        => Sources.Any(source => kind.HasFlag(source.Kind)
+            && providerName.Contains(source.Keyword, StringComparison.OrdinalIgnoreCase)
+            && options.Providers.Any(name => name.Equals(source.Keyword, StringComparison.OrdinalIgnoreCase)));
+}

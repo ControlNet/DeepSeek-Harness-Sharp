@@ -88,7 +88,7 @@ public sealed class SettingsFacade(Context ctx, HarnessHome home, FleetWorkspace
     public void SavePluginParameters(string package, IReadOnlyDictionary<string, object?> parameters)
     {
         var settings = Load();
-        var existing = settings.Plugins.GetValueOrDefault(package);
+        var existing = PluginSettingsSection.Resolve(settings.Plugins, package);
         var merged = new Dictionary<string, object?>(existing?.Parameters ?? [], StringComparer.Ordinal);
         foreach (var (key, value) in parameters)
             merged[key] = value;

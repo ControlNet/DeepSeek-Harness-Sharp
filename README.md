@@ -149,6 +149,60 @@ SQLite 是可选的系统依赖,发布包不捆绑或自动下载 SQLite 原生�
    - 两者分别对应插件 `@deepseek-ai/dsh-tool-working-directory` 与 `@deepseek-ai/dsh-tool-worktree`,可用 `/plugins disable` 关闭。
 14. A2A 宿主默认只监听回环地址；自动端口由实际 HTTP 监听器直接绑定并持有，连接时使用宿主报告的 `Endpoint`。指定端口已被占用时直接报错，不暗中换端口或重试；对非回环地址开放时必须配置认证令牌。关闭宿主会释放监听端口。
 
+## 编辑器与 IDE
+
+内置插件 `@deepseek-ai/dsh-ide` 统一提供外部编辑器启动、文件定位、差异审阅、历史查询和客户端桥接。
+GUI 的「设置 → IDE 与编辑器」可以调整编辑器顺序、动作模板和触发规则；「打开方式」可选择编辑器、本地或远端目标，并记住当前工作区的选择。
+列表顺序决定匹配和回退顺序，`/ide why` 显示实际选择原因，`/ide doctor` 检查安装、显示环境与终端宿主。
+
+以下命令在 DSH 会话中输入：
+
+```text
+/ide list
+/ide doctor
+/ide open README.md --line 1 --column 1 --pick
+/ide open --changed
+/ide diff --git --pick
+/ide diff --checkpoint --pick
+/ide status
+/ide why
+```
+
+`--changed` 打开上一已完成回合实际写入的文件；Git 审阅对比当前工作树与 HEAD，checkpoint 审阅对比当前会话上一回合前的快照。
+`--editor vscode` 可明确选择已配置的编辑器，`--print` 或 `--dry-run` 可检查启动参数而不运行编辑器；带空格的路径需加引号。
+Vim、Neovim 和终端 Emacs 使用 DSH 自己的 PTY，TUI 中退出编辑器并关闭终端面板后可继续原会话。
+图形编辑器默认不发送焦点请求（`focus: never`），编辑器自身与桌面窗口策略仍可能影响窗口激活。
+
+在全局 `settings.yaml` 的 `plugins` 中配置有序列表，例如：
+
+```yaml
+plugins:
+  "@deepseek-ai/dsh-ide":
+    editors:
+      - id: rider
+      - id: vscode
+      - id: nvim
+    default_editor: auto
+    focus: never
+    reuse_window: auto
+    history:
+      timeline: true
+      timeline_limit: 50
+      window_seconds: 60
+```
+
+内置描述符覆盖常见 VS Code 系、JetBrains IDE、Zed、Eclipse、Code::Blocks、Vim/Neovim、Emacs、Sublime Text 和 Visual Studio，实际支持的定位、差异及窗口选项以 `/ide list` 和检测结果为准。
+自定义编辑器的 `command`、参数数组、环境及动作模板只能由全局配置定义；工作区只能引用编辑器 ID 和偏好，不能定义可执行命令。
+旧包名 `@deepseek-ai/dsh-ide-history` 及旧平铺历史参数保留一个版本的读取兼容，保存使用新包名和 `history` 层级；同一参数以嵌套历史配置为准。
+`ide_history` 模型工具继续提供只读历史查询；历史时间线可按内容去重并标记与 HEAD 的关系，恢复须先预览差异，确认后备份当前文件，再检查预览后的并发修改。
+
+触发规则按声明顺序执行，可按事件、工作区、文件类型及宿主编辑器过滤；`stop` 控制后续规则是否继续，手动操作与模型工具使用同一派发链路。
+远端客户端映射由全局 `client_mappings` 配置，每项必须指定与 Fleet 机器名一致的 `machine`，再配置对应源根及本地镜像或受支持的 Remote-SSH URI；不同机器的同名目录不会共用映射。
+桥接仅接受已认证连接协商的能力，不接受远端提供可执行命令或环境；具体失败不会静默改用另一个目标。
+
+`/ide lsp neovim`、`/ide lsp vscode`、`/ide lsp helix` 生成客户端配置，实际 stdio 服务入口为 `dsharp ide-lsp`。
+`/ide bridge` 的命令帮助说明认证扩展协议的端点与令牌文件参数；配置助手不读取或输出令牌内容，也不附带安装 IDE 扩展。
+
 ## 图形界面
 
 GUI 是内置插件 `@deepseek-ai/dsh-gui`,与 TUI 共用同一份配置、会话与命令实现(`/` 命令、`@` 引用、审批、`ask_user_question` 都走 harness 的同一条链路)。

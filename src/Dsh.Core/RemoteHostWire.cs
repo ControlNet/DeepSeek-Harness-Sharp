@@ -276,7 +276,8 @@ public sealed record RemotePtyStartRequest(
     string? Cwd = null,
     int? Columns = null,
     int? Rows = null,
-    string? Title = null);
+    string? Title = null,
+    IReadOnlyDictionary<string, string>? Environment = null);
 
 public sealed record RemotePtyResize(string PtyId, int Columns, int Rows);
 

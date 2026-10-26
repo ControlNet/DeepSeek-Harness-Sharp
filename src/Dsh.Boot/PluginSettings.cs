@@ -107,6 +107,13 @@ public static class PluginSettingsSection
 {
     public const string PluginsKey = "plugins";
 
+    /** The canonical entry wins when both spellings exist; persisted source keys remain untouched. */
+    public static PluginSetting? Resolve(IReadOnlyDictionary<string, PluginSetting> plugins, string name)
+        => plugins.GetValueOrDefault(PluginPackageNames.Canonical(name))
+            ?? (PluginPackageNames.Canonical(name) == PluginPackageNames.Ide
+                ? plugins.GetValueOrDefault(PluginPackageNames.LegacyIdeHistory)
+                : null);
+
     public static Dictionary<string, PluginSetting> ParseDocument(string yaml)
     {
         var root = YamlConfig.LoadMapping(yaml);

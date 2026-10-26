@@ -158,6 +158,8 @@ public static class HarnessEntrypoint
                         return await BootCli.RunTuiDaemonAsync();
                     return await RunEntrypointAsync(harnessHome, "tui", resumeSessionId, gpu, shell, gpuScreenshot, gpuCard, gpuCapturePlan);
                 }
+            case "ide-lsp":
+                return await RunEntrypointAsync(harnessHome, "ide-lsp");
             case "gui":
                 // 组合插件之前先摘掉自己的控制台
                 ConsoleWindow.DetachIfOwned();
@@ -338,6 +340,7 @@ public static class HarnessEntrypoint
                    dsharp attach <pty-id> [--gpu]   (等价 dsharp tui attach <pty-id>)
                    dsharp tui --session <id> [--gpu]   (恢复 harness 会话; --gpu 开独立窗口)
                    dsharp gui [--session <id>]
+                   dsharp ide-lsp   (启动标准 stdio LSP 服务；配置可由 /ide lsp 生成)
                    dsharp web [--port N] [--print-token]   (启动独立安装的 dsharp-web，不在本进程加载 Web 框架)
                    dsharp headless "task"
                    dsharp host serve [--stdio] [--token <t>]   (后台工作区宿主: --stdio 通过 ssh 桥接, 不安装系统服务)

@@ -1,6 +1,6 @@
 using Dsh.Core;
 
-namespace Dsh.IdeHistory;
+namespace Dsh.Ide.History;
 
 /**
  * 工作区门控(§3): 从 cwd 向上找 IDE 项目标记, 只有命中的 IDE 才启用对应 provider 的工作区级查询;
@@ -39,7 +39,10 @@ public static class WorkspaceIdeDetector
             || File.Exists(Path.Combine(directory.FullName, ".vscode", "settings.json"))
             || directory.EnumerateFiles("*.code-workspace").Any())
             kind |= IdeWorkspaceKind.VsCode;
-        if (Directory.Exists(Path.Combine(directory.FullName, ".idea")) || directory.EnumerateFiles("*.iml").Any())
+        if (Directory.Exists(Path.Combine(directory.FullName, ".idea"))
+            || directory.EnumerateFiles("*.iml").Any()
+            || directory.EnumerateFiles("*.sln").Any()
+            || directory.EnumerateFiles("*.slnx").Any())
             kind |= IdeWorkspaceKind.JetBrains;
         if (Directory.Exists(Path.Combine(directory.FullName, ".zed")))
             kind |= IdeWorkspaceKind.Zed;

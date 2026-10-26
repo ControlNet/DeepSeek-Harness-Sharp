@@ -68,6 +68,12 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private MessageViewModel? _openReasoning;
     private bool _disposed;
     private Task? _disposal;
+    private readonly EffectHandle _editorTerminalRegistration;
+    private readonly GuiEditorTerminalHost _editorTerminalHost;
+    private readonly GuiEditorClientBinding _editorClientBinding;
+
+    [ObservableProperty]
+    private EditorOpenWithViewModel? _editorPicker;
     private bool _updatingSuggestions;
     private bool _commandSuggestionsLoaded;
 
@@ -102,6 +108,18 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         RefreshTraceFilters();
         RefreshSessions();
         Workspace = CreateWorkspace(chat.Fleet);
+        Workspace.CreateEditorPicker = CreateEditorPicker;
+        _editorTerminalHost = new GuiEditorTerminalHost(chat.Fleet, async terminal =>
+        {
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (TerminalRequested is null) throw new InvalidOperationException("No terminal panel is attached.");
+                TerminalRequested(terminal);
+            });
+        });
+        _editorTerminalRegistration = _ctx.Provide("editorTerminalHost", _editorTerminalHost);
+        _editorClientBinding = new GuiEditorClientBinding(_ctx.Get<IEditorService>(IEditorService.ServiceName, false),
+            _ctx.Get<Func<string, EditorRequest, EditorRequest>>("editorClientRequestMapper", false));
         chat.Fleet.Changed += OnFleetChanged;
         chat.Reset += ShowSession;
         chat.Received += ApplyEvents;
@@ -469,6 +487,31 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    private EditorOpenWithViewModel CreateEditorPicker(string machine, string workspace)
+    {
+        var sessionId = Workspace.ActiveSession is { } active && active.Machine == machine
+            ? active.SessionId : machine == _chat.Machine ? _chat.Id.Value : null;
+        var turn = machine == _chat.Machine && sessionId == _chat.Id.Value
+            ? (_chat.Events.LastOrDefault(item => item.Data is TurnStartPayload)?.Data as TurnStartPayload)?.Turn
+                .ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : null;
+        return new(_ctx.Get<IEditorService>(IEditorService.ServiceName, false), async cancellationToken =>
+        {
+            var connection = _chat.Fleet.Find(machine) ?? throw new InvalidOperationException("The editor host is unavailable.");
+            var lease = await connection.WaitConnectedAsync(cancellationToken);
+            var service = new RemoteEditorService(lease.Client.Editor);
+            await service.RefreshAsync(workspace, cancellationToken, sessionId);
+            return service;
+        }, workspace, machine, sessionId, turn);
+    }
+
+    [RelayCommand]
+    private async Task PrepareEditorPickerAsync()
+    {
+        EditorPicker = CreateEditorPicker(Workspace.ActiveSession?.Machine ?? _chat.Machine,
+            Workspace.ActiveSession?.Card.ProjectPath ?? _chat.Header.Cwd ?? Home.Root);
+        await EditorPicker.RefreshAsync();
+    }
     /** 在当前会话/选中会话的机器上打开终端: 本地与远端共用同一套 TerminalViewModel。 */
     [RelayCommand]
     private void OpenTerminal() => _ = OpenTerminalAsync();
@@ -1079,6 +1122,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private async Task DisposeCoreAsync()
     {
         _disposed = true;
+        await _editorTerminalRegistration.DisposeAsync();
+        await _editorTerminalHost.DisposeAsync();
+        await _editorClientBinding.DisposeAsync();
         Preferences.BeginNetworkShutdown();
         Workspace.Machines.BeginNetworkShutdown();
         foreach (var dialog in _pendingDialogs.Values)
@@ -1269,6 +1315,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         RefreshSessions();
         Subagents.Refresh();
         _chat.RefreshConnection();
+        _ = _editorClientBinding.UpdateAsync(_chat.Fleet.Find(_chat.Machine), _chat.Id.Value, _chat.Header.Cwd ?? Home.Root);
         RefreshPendingDialogs();
     }
 
@@ -1411,6 +1458,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private void ShowSession()
     {
         UpdateCurrentWorkspace();
+        _ = _editorClientBinding.UpdateAsync(_chat.Fleet.Find(_chat.Machine), _chat.Id.Value, _chat.Header.Cwd ?? Home.Root);
         _renderedSeq = 0;
         _openAssistant = null;
         _openReasoning = null;

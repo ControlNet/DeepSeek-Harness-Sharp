@@ -3,7 +3,7 @@ using System.Globalization;
 using System.Text;
 using Dsh.Core;
 
-namespace Dsh.IdeHistory;
+namespace Dsh.Ide.History;
 
 public sealed class JetBrainsLocalHistoryProvider : IIdeHistoryProvider
 {

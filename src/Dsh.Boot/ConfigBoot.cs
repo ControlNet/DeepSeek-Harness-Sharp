@@ -103,7 +103,7 @@ public static class ConfigBoot
         var entries = new List<PluginEntry>();
         foreach (var name in host.Catalog.PackageNames.OrderBy(name => name, StringComparer.Ordinal))
         {
-            var setting = plugins.GetValueOrDefault(name);
+            var setting = PluginSettingsSection.Resolve(plugins, name);
             if (setting is { Enabled: false })
                 continue;
             if (!host.Catalog.TryCreateDefinition(name, out var definition))
@@ -115,7 +115,7 @@ public static class ConfigBoot
         }
         foreach (var name in plugins.Keys)
         {
-            if (!host.Catalog.PackageNames.Contains(name, StringComparer.Ordinal))
+            if (!host.Catalog.PackageNames.Contains(PluginPackageNames.Canonical(name), StringComparer.Ordinal))
                 ctx.LoggerFor("loader").Error("%s", $"plugin not found: {name}");
         }
         return entries;

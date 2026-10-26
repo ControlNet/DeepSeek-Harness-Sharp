@@ -93,9 +93,9 @@ sandbox:
 # 快照恢复点 @deepseek-ai/dsh-checkpoints 默认关闭,改 true 开启;参数:max_points、keep_days。
 # TOON 编码面 @deepseek-ai/dsh-toon 默认关闭(实验性:工具结果/调用改用 TOON 文本,输出侧会缓冲流式渲染);
 # 参数:output(默认 true)、input(逗号分隔的工具名白名单,这些工具的结果以 TOON 进上下文)。
-# IDE 本地历史 @deepseek-ai/dsh-ide-history: 只有工作区带对应标记(.vscode/*.code-workspace、.idea/*.iml、.zed)时才查该来源;
-# 参数:providers(默认 [vscode, jetbrains, zed])、timeline(是否把 IDE 历史并进 /timestamp 时间线供 jump/revert/fork,默认 false,避免自动保存噪声)、
-#       timeline_limit(开启后合并的条目上限,默认 50)。
+# Dsh.IDE @deepseek-ai/dsh-ide includes gated local history (.vscode/*.code-workspace, .idea/*.iml, .zed).
+# history: providers (default [vscode, jetbrains, zed]), timeline (default false), timeline_limit (default 50), window_seconds (default 60).
+# The old @deepseek-ai/dsh-ide-history package and flat history keys remain readable for one release; canonical settings win if both packages exist.
 # TUI @deepseek-ai/dsh-tui: 参数 highlightColor/arrowColor/dividerColor/statusColor/errorColor 可配色(取 "#rrggbb" 真彩或 16 色名如 BrightCyan;
 # arrowColor 缺省跟随 highlightColor, 其余缺省不留痕; 示例见下)。sidebarWidth/inputHeight/gpuBackend 亦在此配。
 # keys 改快捷键:动作名: 按键串(修饰键 Ctrl/Alt 用 + 连接, 多键序列用空格分隔, 如 "Ctrl+X W");未写的动作用默认键位,TUI 内 /keys 列出全部动作与当前绑定;
@@ -114,9 +114,13 @@ plugins:
   "@deepseek-ai/dsh-toon": false
   "@deepseek-ai/dsh-checkpoints": false
   # 下面几段是示例, 默认不打开:
-  # "@deepseek-ai/dsh-ide-history":
-  #   timeline: true    # 支持IDE(JetBrains/VSCode)历史记录进入timestamp fork/revert/jump时间线，默认为false
-  #   timeline_limit: 30
+  # "@deepseek-ai/dsh-ide":
+  #   history:
+  #     timeline: true
+  #     timeline_limit: 30
+  #     window_seconds: 60
+  # /timestamp history revert first shows a preview; repeat with --confirm to write the selected revision.
+  # Original bytes and absence metadata are retained under the DSH checkpoints/ide-backups storage partition.
   # "@acme/foo":
   #   enabled: true
   #   permissions:
@@ -260,10 +264,21 @@ plugins:
 #   defaultMaxGoalRounds:  # 轮数
 #   blockedAfterConsecutiveRounds:  # 轮数
 #
-# @deepseek-ai/dsh-ide-history:
-#   providers:  # 列表
-#   timeline:  # 是否把 IDE 历史并进 `/timestamp` 时间线(供 jump/revert/fork)
-#   timelineLimit:
+# @deepseek-ai/dsh-ide:
+#   editors:  # 列表
+#   default_editor: "auto"
+#   strict_match:
+#   reuse_window:
+#   focus:
+#   fallback:
+#   allow_outside_workspace:
+#   history:  # 映射(见子项)
+#     providers:  # 列表
+#     timeline:
+#     timeline_limit:
+#     window_seconds:
+#   triggers:  # 列表
+#   client_mappings:  # 列表
 #
 # @deepseek-ai/dsh-jobs-local:
 #   maxConcurrentJobsPerOwner:

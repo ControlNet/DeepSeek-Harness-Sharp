@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Core;
 
-namespace Dsh.IdeHistory;
+namespace Dsh.Ide.History;
 
 public sealed class VsCodeLocalHistoryProvider : IIdeHistoryProvider
 {
