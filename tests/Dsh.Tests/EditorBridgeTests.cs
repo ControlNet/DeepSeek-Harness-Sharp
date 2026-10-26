@@ -113,7 +113,7 @@ public sealed class EditorBridgeTests
     public async Task HostStatusExplainsTheLatestClientSelectionAndThenTheLocalSelection()
     {
         using var fixture = new EditorLauncherTests.FakeEditorFixture();
-        await using var core = await RemoteHostCapabilityTests.FakeBackend.CreateAsync(Ct);
+        await using var core = await RemoteHostCapabilityTests.FakeBackend.CreateAsync(TestContext.Current.CancellationToken);
         using var clients = new EditorClientDispatcher();
         var desktop = fixture.Service(fixture.Profile("desktop"));
         var host = fixture.Service(fixture.Profile("host"));
