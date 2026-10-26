@@ -110,6 +110,41 @@ public sealed class EditorBridgeTests
     }
 
     [Fact(Timeout = 10000)]
+    public async Task HostStatusExplainsTheLatestClientSelectionAndThenTheLocalSelection()
+    {
+        using var fixture = new EditorLauncherTests.FakeEditorFixture();
+        await using var core = await RemoteHostCapabilityTests.FakeBackend.CreateAsync(Ct);
+        using var clients = new EditorClientDispatcher();
+        var desktop = fixture.Service(fixture.Profile("desktop"));
+        var host = fixture.Service(fixture.Profile("host"));
+        var bridge = new EditorBridgeService(host, clients, new EditorExecutionContext { IsRemoteHost = true });
+        var server = new RemoteHostServer(new("editor-test-token"), new Backend(core, new EditorBackend(bridge, clients, core.Files.Policy)));
+        await using var connection = await Connection.CreateAsync(server, Ct);
+        await using var registration = await connection.Client.Editor.RegisterClientAsync(desktop, Ct,
+            request => request with { WorkspaceRoot = fixture.Root, Path = fixture.Root });
+        await connection.Client.Editor.SelectForSessionAsync("decision-session", Ct);
+        var request = new EditorRequest
+        {
+            WorkspaceRoot = core.Root, Path = core.Root, SessionId = "decision-session",
+            Editor = "desktop", Action = EditorAction.OpenWorkspace,
+        };
+        var remote = await connection.Client.Editor.OpenAsync(request, Ct);
+        Assert.True(remote.Success, remote.Message);
+        var selected = Assert.IsType<EditorDecision>((await connection.Client.Editor.StatusAsync(core.Root, Ct)).LastDecision);
+        Assert.Equal(["desktop"], selected.CandidateOrder);
+        Assert.Collection(selected.Steps, step =>
+        {
+            Assert.Equal("desktop", step.Editor.Value);
+            Assert.Equal("explicit", step.Source);
+            Assert.Equal(EditorErrorCode.None, step.Error);
+        });
+        var local = await connection.Client.Editor.OpenAsync(request with { Editor = "host", ExecutionTarget = EditorExecutionTarget.Local }, Ct);
+        Assert.True(local.Success, local.Message);
+        var localSelection = Assert.IsType<EditorDecision>((await connection.Client.Editor.StatusAsync(core.Root, Ct)).LastDecision);
+        Assert.Equal(["host"], localSelection.CandidateOrder);
+    }
+
+    [Fact(Timeout = 10000)]
     public async Task CancellationRoundTripsAndAcknowledgesClientRetirement()
     {
         await using var core = await RemoteHostCapabilityTests.FakeBackend.CreateAsync(TestContext.Current.CancellationToken);
@@ -348,15 +383,8 @@ public sealed class EditorBridgeTests
     }
 
     [Fact]
-    public async Task GeneratedLspConfigurationUsesARealStandardFramedService()
+    public async Task StandardFramedLspInitializesAndShutsDown()
     {
-        var config = EditorIntegrationConfiguration.GenerateLsp("vscode", "dsharp");
-        using var settings = JsonDocument.Parse(config);
-        Assert.Equal("ide-lsp", settings.RootElement.GetProperty("serverOptions").GetProperty("args")[0].GetString());
-        Assert.Contains("vim.lsp.enable('dsh')", EditorIntegrationConfiguration.GenerateLsp("neovim"));
-        using var extension = JsonDocument.Parse(EditorIntegrationConfiguration.GenerateExtension("test-host-endpoint", "token-file"));
-        Assert.Equal(EditorProtocol.MethodClientOpen, extension.RootElement.GetProperty("clientOpenMethod").GetString());
-        Assert.DoesNotContain("editor-test-token", extension.RootElement.ToString(), StringComparison.Ordinal);
         using var input = new MemoryStream();
         foreach (var json in new[] { "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}", "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}" })
         {

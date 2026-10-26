@@ -113,7 +113,67 @@ public sealed class EditorWorkflowTests
         Assert.Equal([Path.Combine(fixture.Repository.Root, "source.cs"), "42", "7", fixture.Repository.Root, "fixture"], File.ReadAllLines(fixture.Editor.Output));
     }
 
-    private static async Task<Fixture> CreateFixtureAsync(string action, string on = "manual")
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Model_Print_And_DryRun_Keep_Global_Environment_Private_While_Actual_Launch_Uses_It(bool dryRun)
+    {
+        const string canary = "synthetic-private-editor-environment-canary";
+        using var fixture = await CreateFixtureAsync("open_file", environmentValue: canary);
+        fixture.Repository.Write("source.cs", "source");
+        var handle = await fixture.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Create(new CreateAgentOptions(Cwd: fixture.Repository.Root), TestContext.Current.CancellationToken);
+        using var lease = handle.Dispose;
+        var tools = fixture.App.Ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!;
+        var preview = await tools.Execute(new ToolExecutionInput
+        {
+            Name = "ide", CallId = ToolCallId.Create(Guid.NewGuid().ToString("N")), Agent = handle.Agent,
+            Arguments = JsonSerializer.SerializeToElement(new { action = "open", path = "source.cs", editor = "selected", print = !dryRun, dry_run = dryRun }),
+            Signal = TestContext.Current.CancellationToken,
+        });
+        var previewResult = JsonSerializer.Deserialize<EditorResult>(Assert.IsType<ToolExecutionResult.Success>(preview).Value, ResultOptions)!;
+        Assert.True(previewResult.Success, previewResult.Message);
+        Assert.True(previewResult.Printed);
+        Assert.Contains("source.cs", previewResult.PrintableCommand);
+        Assert.DoesNotContain(canary, string.Join('\n', preview.Content.OfType<TextBlock>().Select(block => block.Text)), StringComparison.Ordinal);
+        Assert.False(File.Exists(fixture.Editor.Output));
+        var opened = await tools.Execute(new ToolExecutionInput
+        {
+            Name = "ide", CallId = ToolCallId.Create(Guid.NewGuid().ToString("N")), Agent = handle.Agent,
+            Arguments = JsonSerializer.SerializeToElement(new { action = "open", path = "source.cs", editor = "selected" }),
+            Signal = TestContext.Current.CancellationToken,
+        });
+        var openedResult = JsonSerializer.Deserialize<EditorResult>(Assert.IsType<ToolExecutionResult.Success>(opened).Value, ResultOptions)!;
+        Assert.True(openedResult.Success, openedResult.Message);
+        Assert.Equal(canary, File.ReadAllLines(fixture.Editor.Output)[^1]);
+    }
+
+    [Fact]
+    public async Task Model_Reveal_Cannot_Select_A_Workspace_Program_Through_Os_Default()
+    {
+        using var fixture = await CreateFixtureAsync("open_file", "test.failure", fallback: "os-default");
+        fixture.Repository.Write("untrusted.cmd", "@echo off\r\nexit /b 0\r\n");
+        var handle = await fixture.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Create(new CreateAgentOptions(Cwd: fixture.Repository.Root), TestContext.Current.CancellationToken);
+        using var lease = handle.Dispose;
+        var tools = fixture.App.Ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!;
+        var executed = await tools.Execute(new ToolExecutionInput
+        {
+            Name = "ide", CallId = ToolCallId.Create(Guid.NewGuid().ToString("N")), Agent = handle.Agent,
+            Arguments = JsonSerializer.SerializeToElement(new { action = "reveal", path = "untrusted.cmd", dry_run = true }),
+            Signal = TestContext.Current.CancellationToken,
+        });
+        var result = JsonSerializer.Deserialize<EditorResult>(Assert.IsType<ToolExecutionResult.Success>(executed).Value, ResultOptions)!;
+        Assert.False(result.Success);
+        Assert.Equal(EditorErrorCode.NOT_FOUND, result.Error);
+        Assert.Null(result.PrintableCommand);
+        var commands = fixture.App.Ctx.Get<CommandsService>(CommandsService.ServiceName)!;
+        var user = await commands.Execute(handle.Agent, "/ide reveal untrusted.cmd --print", TestContext.Current.CancellationToken);
+        var userResult = JsonSerializer.Deserialize<EditorResult>(Assert.IsType<CommandResult.Success>(user!.Result).Text!, ResultOptions)!;
+        Assert.True(userResult.Success, userResult.Message);
+        Assert.True(userResult.Printed);
+        Assert.Contains("untrusted.cmd", userResult.PrintableCommand);
+    }
+
+    private static async Task<Fixture> CreateFixtureAsync(string action, string on = "manual", string environmentValue = "fixture", string fallback = "none")
     {
         var repository = new GitTestRepository();
         var editor = new EditorLauncherTests.FakeEditorFixture();
@@ -124,6 +184,7 @@ public sealed class EditorWorkflowTests
         File.WriteAllText(Path.Combine(homePath, "settings.yaml"), $$"""
             plugins:
               "@deepseek-ai/dsh-ide":
+                fallback: {{fallback}}
                 editors:
                   - id: global
                     kind: terminal
@@ -134,7 +195,7 @@ public sealed class EditorWorkflowTests
                       open_diff: ["{left}", "{right}"]
                     env:
                       DSH_FAKE_EDITOR_OUTPUT: {{globalOutput}}
-                      DSH_FAKE_EDITOR_VALUE: fixture
+                      DSH_FAKE_EDITOR_VALUE: {{JsonSerializer.Serialize(environmentValue)}}
                   - id: selected
                     kind: terminal
                     command: {{command}}
@@ -144,7 +205,7 @@ public sealed class EditorWorkflowTests
                       open_diff: ["{left}", "{right}"]
                     env:
                       DSH_FAKE_EDITOR_OUTPUT: {{selectedOutput}}
-                      DSH_FAKE_EDITOR_VALUE: fixture
+                      DSH_FAKE_EDITOR_VALUE: {{JsonSerializer.Serialize(environmentValue)}}
                 triggers:
                   - id: configured
                     on: {{on}}

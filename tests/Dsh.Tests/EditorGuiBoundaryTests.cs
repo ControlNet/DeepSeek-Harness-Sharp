@@ -119,6 +119,105 @@ public sealed class EditorGuiBoundaryTests
     });
 
     [Fact]
+    public async Task Shared_Root_Editors_Keep_Gui_Ptys_In_Their_Owning_View_Across_Close_And_Reopen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var host = await HarnessHostFixture.CreateAsync("el", ct);
+        var command = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/sh";
+        var arguments = OperatingSystem.IsWindows() ? """["/d", "/q"]""" : "[]";
+        await using var gui = await GuiTestEnvironment.CreateIsolatedAsync($$"""
+            logging:
+              file: false
+            plugins:
+              "@deepseek-ai/dsh-ide":
+                focus: never
+                editors:
+                  - id: lifecycle-shell
+                    kind: terminal
+                    command: "{{command}}"
+                    actions:
+                      open_workspace: {{arguments}}
+            """);
+        using var tui = new Dsh.Tui.ChatWindow(gui.App.Ctx, gui.Agent, gui.App.Home);
+        tui.RegisterPaneTools();
+        await HeadlessGui.RunAsync(() => ExerciseSharedGuiHostsAsync(host, gui, tui, ct));
+    }
+
+    private static async Task ExerciseSharedGuiHostsAsync(HarnessHostFixture host, GuiTestEnvironment gui, Dsh.Tui.ChatWindow tui, CancellationToken ct)
+    {
+        var views = new List<MainViewModel>();
+        var panels = new List<(MainViewModel Owner, TerminalViewModel Terminal, TerminalWindow Window)>();
+        try
+        {
+            var first = await OpenViewAsync();
+            var second = await OpenViewAsync();
+            await first.EditorPicker!.OpenAsync();
+            var firstPanel = Assert.Single(panels);
+            Assert.Same(first, firstPanel.Owner);
+            Assert.NotNull(firstPanel.Terminal.Session);
+            Assert.True(firstPanel.Window.IsVisible);
+            Assert.False(firstPanel.Window.ShowActivated);
+            await second.EditorPicker!.OpenAsync();
+            Assert.Equal(2, panels.Count);
+            var secondPanel = panels[1];
+            Assert.Same(second, secondPanel.Owner);
+            Assert.NotNull(secondPanel.Terminal.Session);
+            Assert.NotEqual(firstPanel.Terminal.PtyId, secondPanel.Terminal.PtyId);
+            Assert.Equal(1, tui.PaneCount);
+
+            var firstPty = firstPanel.Terminal.PtyId!;
+            await first.DisposeAsync();
+            await FleetConnectionTests.WaitForAsync(() => host.Backend.Sessions.Get(firstPty)?.Status == HostSessionStatuses.Exited);
+            Assert.False(secondPanel.Terminal.Completion.IsCompleted);
+            var reopened = await OpenViewAsync();
+            await reopened.EditorPicker!.OpenAsync();
+            Assert.Equal(3, panels.Count);
+            Assert.Same(reopened, panels[2].Owner);
+            Assert.NotNull(panels[2].Terminal.Session);
+            Assert.False(panels[2].Terminal.ActivateOnOpen);
+            Assert.Equal(1, tui.PaneCount);
+
+            var tuiLaunch = gui.App.Ctx.Get<IEditorService>(IEditorService.ServiceName)!.LaunchAsync(new()
+            {
+                WorkspaceRoot = gui.App.Home.Root, Path = gui.App.Home.Root, Editor = "lifecycle-shell",
+                Action = EditorAction.OpenWorkspace, ExecutionTarget = EditorExecutionTarget.Local,
+            }, ct).AsTask();
+            await FleetConnectionTests.WaitForAsync(() => { tui.DrainUi(); return tuiLaunch.IsCompleted; });
+            var result = await tuiLaunch;
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("DSH-PTY", result.TerminalHost);
+            Assert.Equal(2, tui.PaneCount);
+            Assert.Equal(0, tui.FocusedPaneId);
+            Assert.Equal(3, panels.Count);
+        }
+        finally
+        {
+            foreach (var view in views) await view.DisposeAsync();
+            foreach (var panel in panels) panel.Window.Close();
+        }
+
+        async Task<MainViewModel> OpenViewAsync()
+        {
+            var options = FleetConnectionTests.TestOptions;
+            var fleet = new FleetWorkspace(new MachineStore(gui.App.Home), options,
+                () => new FleetClient([MachineSpec.Local(host.Root)], options));
+            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, host.Environment.Agent.Id.Value, ct);
+            var view = new MainViewModel(gui.App, chat);
+            views.Add(view);
+            view.TerminalRequested += terminal =>
+            {
+                var window = new TerminalWindow(terminal);
+                window.Closed += async (_, _) => await terminal.DisposeAsync();
+                panels.Add((view, terminal, window));
+                window.Show();
+            };
+            await view.PrepareEditorPickerCommand.ExecuteAsync(null);
+            view.EditorPicker!.SelectedEditor = Assert.Single(view.EditorPicker.Editors, editor => editor.Id == "lifecycle-shell");
+            return view;
+        }
+    }
+
+    [Fact]
     public async Task Remote_Picker_Reads_The_Exact_Session_Binding_And_Redetects_Through_The_Host() => await HeadlessGui.RunAsync(async () =>
     {
         var ct = TestContext.Current.CancellationToken;

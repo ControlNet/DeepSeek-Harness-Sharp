@@ -109,7 +109,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
     private async Task<string> DetachAsync(string package, bool force)
     {
         var (weak, leaked) = await UnloadAsync(package, force, reclaim: IsManaged(package), removeRegistration: true);
-        Persist(package, existing => Toggled(existing, enabled: false));
+        Persist(package, _ => new PluginSetting { Enabled = false });
         if (leaked)
             _leaked.Add(package);
         if (weak is null)

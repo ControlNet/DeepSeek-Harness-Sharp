@@ -129,7 +129,7 @@ public sealed class EditorLauncher(IEditorCatalog catalog, EditorOptions? option
                 Decision = new(request.TriggerId, candidates.Select(c => c.Id).ToArray(), steps.ToArray()),
             });
         }
-        if (!explicitChoice && request.RemoteUri is null && options.Fallback == EditorFallback.OsDefault && !options.StrictMatch)
+        if (request.AllowOsDefault && !explicitChoice && request.RemoteUri is null && options.Fallback == EditorFallback.OsDefault && !options.StrictMatch)
         {
             var fallback = await LaunchOsDefault(request, workspace, ct).ConfigureAwait(false);
             return Complete(fallback with { Decision = new(request.TriggerId, candidates.Select(c => c.Id).ToArray(), steps.ToArray()) });

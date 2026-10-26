@@ -41,13 +41,15 @@ public sealed class Plugin(string packageName) : IDshPlugin, IDshEntrypoint
     private static void ConfigureEditors(Context ctx, EditorOptions options, DshPaths paths)
     {
         var catalog = new EditorCatalog(options.Editors);
+        var execution = new EditorExecutionContext();
+        ctx.Provide(EditorExecutionContext.ServiceName, execution);
         var terminal = new DelegateTerminalHost("DSH-PTY",
-            command => ctx.Get<ITerminalHost>("editorTerminalHost", false)?.IsAvailable(command) == true,
-            (command, signal) => ctx.Get<ITerminalHost>("editorTerminalHost", false) is { } host ? host.LaunchAsync(command, signal) : ValueTask.FromResult(new EditorExecutionResult(false, EditorErrorCode.NO_TERMINAL_HOST)));
+            command => (execution.TerminalHost ?? ctx.Get<ITerminalHost>("editorTerminalHost", false))?.IsAvailable(command) == true,
+            (command, signal) => (execution.TerminalHost ?? ctx.Get<ITerminalHost>("editorTerminalHost", false)) is { } host ? host.LaunchAsync(command, signal) : ValueTask.FromResult(new EditorExecutionResult(false, EditorErrorCode.NO_TERMINAL_HOST)));
         var reviews = new EditorReviewService(ctx, Path.Combine(paths.CachePath, "ide-review"));
         var launcher = new EditorLauncher(catalog, options, new EditorExecutor([terminal]), [reviews.SnapshotRoot],
             () => PluginSettingsSection.Resolve(HarnessSettings.Load(new(paths.Root)).Plugins, Ide)?.Permissions?.Write != false);
-        var editors = RegisterBridge(ctx, launcher, options.ClientMappings);
+        var editors = RegisterBridge(ctx, launcher, options.ClientMappings, execution);
         if (options.Triggers.Count > 0)
         {
             var triggers = new EditorTriggerService(ctx, editors, options.Triggers);
@@ -62,13 +64,11 @@ public sealed class Plugin(string packageName) : IDshPlugin, IDshEntrypoint
         ctx.Effect(() => IdeTool.Register(ctx, editors));
     }
 
-    private static IEditorService RegisterBridge(Context ctx, IEditorService launcher, IReadOnlyList<EditorPathMapping> mappings)
+    private static IEditorService RegisterBridge(Context ctx, IEditorService launcher, IReadOnlyList<EditorPathMapping> mappings, EditorExecutionContext execution)
     {
         var clients = new EditorClientDispatcher();
-        var execution = new EditorExecutionContext();
         var mapper = new EditorPathMapper(mappings);
         ctx.Provide(IEditorClientDispatcher.ServiceName, clients);
-        ctx.Provide(EditorExecutionContext.ServiceName, execution);
         ctx.Provide("editorClientRequestMapper", (Func<string, EditorRequest, EditorRequest>)mapper.Map);
         ctx.Effect(() => clients);
         return new EditorBridgeService(launcher, clients, execution);

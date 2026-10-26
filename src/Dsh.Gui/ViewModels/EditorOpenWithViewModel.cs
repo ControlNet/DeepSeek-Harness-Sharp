@@ -113,6 +113,7 @@ public sealed partial class EditorOpenWithViewModel : ObservableObject
         {
             WorkspaceRoot = root, Path = path, Action = IsDirectory ? EditorAction.OpenWorkspace : EditorAction.OpenFile,
             Editor = SelectedEditor?.Id, RememberSelection = RememberSelection, SessionId = _session, TurnId = _turn,
+            AllowOsDefault = true,
             MachineId = Destination == "remote" ? _machine : null, ExecutionTarget = EditorExecutionTarget.Local,
         };
     }

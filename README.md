@@ -171,6 +171,7 @@ GUI 的「设置 → IDE 与编辑器」可以调整编辑器顺序、动作模�
 `--changed` 打开上一已完成回合实际写入的文件；Git 审阅对比当前工作树与 HEAD，checkpoint 审阅对比当前会话上一回合前的快照。
 `--editor vscode` 可明确选择已配置的编辑器，`--print` 或 `--dry-run` 可检查启动参数而不运行编辑器；带空格的路径需加引号。
 Vim、Neovim 和终端 Emacs 使用 DSH 自己的 PTY，TUI 中退出编辑器并关闭终端面板后可继续原会话。
+GUI 的终端编辑器在发起请求的窗口中打开；多个 GUI 窗口与 TUI 可以共享应用，关闭一个 GUI 只回收其拥有的编辑器 PTY，重新打开后仍路由到新窗口。
 图形编辑器默认不发送焦点请求（`focus: never`），编辑器自身与桌面窗口策略仍可能影响窗口激活。
 
 在全局 `settings.yaml` 的 `plugins` 中配置有序列表，例如：
@@ -191,8 +192,11 @@ plugins:
       window_seconds: 60
 ```
 
-内置描述符覆盖常见 VS Code 系、JetBrains IDE、Zed、Eclipse、Code::Blocks、Vim/Neovim、Emacs、Sublime Text 和 Visual Studio，实际支持的定位、差异及窗口选项以 `/ide list` 和检测结果为准。
+内置描述符提供常见 VS Code 系、JetBrains IDE、Zed、Eclipse、Code::Blocks、Vim/Neovim、Emacs、Sublime Text 和 Visual Studio 的启动模板。
+`/ide list` 展示检测结果与声明的能力；检测到安装不等于逐项能力实测通过，不同编辑器版本的定位、差异及窗口行为仍须在实际应用中确认。
 自定义编辑器的 `command`、参数数组、环境及动作模板只能由全局配置定义；工作区只能引用编辑器 ID 和偏好，不能定义可执行命令。
+打印和 dry-run 命令保留工作目录及参数，但省略全局编辑器环境覆盖值，避免把它们带入模型或诊断输出；实际启动仍应用这些环境覆盖值。
+`fallback: os-default` 仅供用户显式执行的编辑器命令或 GUI 打开操作使用，模型工具与自动触发只使用受信任的全局编辑器配置。
 旧包名 `@deepseek-ai/dsh-ide-history` 及旧平铺历史参数保留一个版本的读取兼容，保存使用新包名和 `history` 层级；同一参数以嵌套历史配置为准。
 `ide_history` 模型工具继续提供只读历史查询；历史时间线可按内容去重并标记与 HEAD 的关系，恢复须先预览差异，确认后备份当前文件，再检查预览后的并发修改。
 

@@ -68,7 +68,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private MessageViewModel? _openReasoning;
     private bool _disposed;
     private Task? _disposal;
-    private readonly EffectHandle _editorTerminalRegistration;
+    private readonly IEditorService? _editors;
     private readonly GuiEditorTerminalHost _editorTerminalHost;
     private readonly GuiEditorClientBinding _editorClientBinding;
 
@@ -117,8 +117,10 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 TerminalRequested(terminal);
             });
         });
-        _editorTerminalRegistration = _ctx.Provide("editorTerminalHost", _editorTerminalHost);
-        _editorClientBinding = new GuiEditorClientBinding(_ctx.Get<IEditorService>(IEditorService.ServiceName, false),
+        var editors = _ctx.Get<IEditorService>(IEditorService.ServiceName, false);
+        _editors = editors is null ? null
+            : _ctx.Get<EditorExecutionContext>(EditorExecutionContext.ServiceName, false)!.BindTerminal(editors, _editorTerminalHost);
+        _editorClientBinding = new GuiEditorClientBinding(_editors,
             _ctx.Get<Func<string, EditorRequest, EditorRequest>>("editorClientRequestMapper", false));
         chat.Fleet.Changed += OnFleetChanged;
         chat.Reset += ShowSession;
@@ -495,7 +497,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             ? (_chat.Events.LastOrDefault(item => item.Data is TurnStartPayload)?.Data as TurnStartPayload)?.Turn
                 .ToString(System.Globalization.CultureInfo.InvariantCulture)
             : null;
-        return new(_ctx.Get<IEditorService>(IEditorService.ServiceName, false), async cancellationToken =>
+        return new(_editors, async cancellationToken =>
         {
             var connection = _chat.Fleet.Find(machine) ?? throw new InvalidOperationException("The editor host is unavailable.");
             var lease = await connection.WaitConnectedAsync(cancellationToken);
@@ -1122,7 +1124,6 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private async Task DisposeCoreAsync()
     {
         _disposed = true;
-        await _editorTerminalRegistration.DisposeAsync();
         await _editorTerminalHost.DisposeAsync();
         await _editorClientBinding.DisposeAsync();
         Preferences.BeginNetworkShutdown();

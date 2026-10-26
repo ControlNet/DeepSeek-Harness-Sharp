@@ -73,13 +73,19 @@ public static class EditorTemplates
             SessionId = request.SessionId, MachineId = request.MachineId, RemoteUri = request.RemoteUri, IsBundle = installation.IsBundle,
         };
     }
-    public static string Printable(EditorLaunchCommand command)
+    public static string Printable(EditorLaunchCommand command) => ShellCommand(command, includeEnvironment: false);
+    internal static string TerminalScript(EditorLaunchCommand command) => ShellCommand(command, includeEnvironment: true);
+    private static string ShellCommand(EditorLaunchCommand command, bool includeEnvironment)
     {
         var parts = new[] { command.Executable }.Concat(command.Arguments);
         var invocation = string.Join(" ", parts.Select(part => OperatingSystem.IsWindows() ? QuotePowerShell(part) : QuotePosix(part)));
         if (OperatingSystem.IsWindows())
-            return $"Set-Location -LiteralPath {QuotePowerShell(command.WorkingDirectory)}; {string.Join(" ", command.Environment.Select(p => $"[Environment]::SetEnvironmentVariable({QuotePowerShell(p.Key)}, {QuotePowerShell(p.Value)}, 'Process');"))} & {invocation}";
-        return $"cd {QuotePosix(command.WorkingDirectory)} && env {string.Join(" ", command.Environment.Select(p => QuotePosix($"{p.Key}={p.Value}")))} {invocation}";
+        {
+            var environment = includeEnvironment ? string.Join(" ", command.Environment.Select(p => $"[Environment]::SetEnvironmentVariable({QuotePowerShell(p.Key)}, {QuotePowerShell(p.Value)}, 'Process');")) : "";
+            return $"Set-Location -LiteralPath {QuotePowerShell(command.WorkingDirectory)}; {environment} & {invocation}";
+        }
+        var prefix = includeEnvironment ? $"env {string.Join(" ", command.Environment.Select(p => QuotePosix($"{p.Key}={p.Value}")))} " : "";
+        return $"cd {QuotePosix(command.WorkingDirectory)} && {prefix}{invocation}";
     }
     public static string QuotePosix(string value) => $"'{value.Replace("'", "'\\''")}'";
     public static string QuotePowerShell(string value) => $"'{value.Replace("'", "''")}'";

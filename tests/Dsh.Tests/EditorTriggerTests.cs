@@ -69,7 +69,7 @@ public sealed class EditorTriggerTests
         var available = false;
         var profile = fixture.Profile("editor");
         var terminal = new DelegateTerminalHost("late-pty", _ => available, (command, signal) => EditorProcess.StartAsync(command with { WaitForExit = true }, signal));
-        var service = new EditorLauncher(new EditorCatalog([profile]), new() { Editors = [profile] }, new EditorExecutor([terminal]));
+        var service = new EditorLauncher(new EditorCatalog([profile]), new() { Editors = [profile] }, new EditorExecutor([terminal, new PrintTerminalHost()]));
         var rule = new EditorTrigger { Id = "start", On = "session.start", Action = EditorAction.OpenWorkspace, Once = EditorTriggerOnce.Workspace };
         var engine = new EditorTriggerEngine(service, [rule]);
         var context = new EditorTriggerContext("session.start", new() { WorkspaceRoot = fixture.Root, SessionId = "session" });

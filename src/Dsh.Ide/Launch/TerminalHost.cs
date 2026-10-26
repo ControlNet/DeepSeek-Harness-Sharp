@@ -41,7 +41,7 @@ public sealed class SystemTerminalHost : ITerminalHost
         System.Diagnostics.ProcessStartInfo? prepared = null;
         if (OperatingSystem.IsMacOS())
         {
-            var scriptCommand = EditorTemplates.Printable(command);
+            var scriptCommand = EditorTemplates.TerminalScript(command);
             var literal = scriptCommand.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
             args = ["-e", $"tell application \"Terminal\" to do script \"{literal}\""];
         }

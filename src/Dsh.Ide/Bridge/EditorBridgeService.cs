@@ -6,7 +6,11 @@ namespace Dsh.Ide.Bridge;
 public sealed class EditorBridgeService(IEditorService local, IEditorClientDispatcher clients, EditorExecutionContext? executionContext = null) : IEditorService
 {
     public IEditorCatalog Catalog => local.Catalog;
-    public EditorDecision? LastDecision => local.LastDecision;
+    public EditorDecision? LastDecision
+    {
+        get => Volatile.Read(ref field) ?? local.LastDecision;
+        private set => Volatile.Write(ref field, value);
+    }
     public EditorWorkspace InspectWorkspace(string root) => local.InspectWorkspace(root);
     public EditorBinding? GetBinding(string root, string? sessionId = null) => local.GetBinding(root, sessionId);
     public void Bind(EditorBinding binding) => local.Bind(binding);
@@ -18,12 +22,19 @@ public sealed class EditorBridgeService(IEditorService local, IEditorClientDispa
         if (request.ExecutionTarget == EditorExecutionTarget.Automatic)
             request = request with { ExecutionTarget = executionContext?.IsRemoteHost == true ? EditorExecutionTarget.Client : EditorExecutionTarget.Local };
         if (request.ExecutionTarget != EditorExecutionTarget.Client || request.Print)
-            return await local.LaunchAsync(request, cancellationToken).ConfigureAwait(false);
+        {
+            var localResult = await local.LaunchAsync(request, cancellationToken).ConfigureAwait(false);
+            LastDecision = localResult.Decision;
+            return localResult;
+        }
         var result = await clients.LaunchAsync(request, cancellationToken).ConfigureAwait(false);
-        if (result.Error != EditorErrorCode.CLIENT_UNAVAILABLE)
-            return result;
-        // A copyable host-side command remains available on SSH even without a desktop client.
-        var printed = await local.LaunchAsync(request with { Print = true, ExecutionTarget = EditorExecutionTarget.Print }, cancellationToken).ConfigureAwait(false);
-        return printed.Success ? printed with { Message = result.Message + " " + printed.Message } : result with { PrintableCommand = printed.PrintableCommand };
+        if (result.Error == EditorErrorCode.CLIENT_UNAVAILABLE)
+        {
+            // A copyable host-side command remains available on SSH even without a desktop client.
+            var printed = await local.LaunchAsync(request with { Print = true, ExecutionTarget = EditorExecutionTarget.Print }, cancellationToken).ConfigureAwait(false);
+            result = printed.Success ? printed with { Message = result.Message + " " + printed.Message } : result with { PrintableCommand = printed.PrintableCommand };
+        }
+        LastDecision = result.Decision;
+        return result;
     }
 }

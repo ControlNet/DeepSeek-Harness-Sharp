@@ -82,7 +82,7 @@ public static class IdeCommand
 
     private static async Task<CommandResult> OpenAsync(Context ctx, IEditorService editors, EditorCommandInput input, CommandInvocation invocation, string workspace)
     {
-        var request = input.Request(workspace, invocation.Agent.Id.Value, EditorSessionContext.TurnId(ctx, invocation.Agent.Session));
+        var request = input.Request(workspace, invocation.Agent.Id.Value, EditorSessionContext.TurnId(ctx, invocation.Agent.Session)) with { AllowOsDefault = true };
         if (input.Pick)
             request = request with { Editor = await PickAsync(ctx, editors, invocation).ConfigureAwait(false) };
         var paths = input.Changed ? EditorChangeSet.PreviousTurnFiles(invocation.Agent.Session) : [request.Path!];

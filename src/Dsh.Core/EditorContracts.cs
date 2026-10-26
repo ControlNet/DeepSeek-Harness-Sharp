@@ -77,6 +77,7 @@ public sealed record EditorRequest
     public string? HostEditor { get; init; }
     public bool DryRun { get; init; }
     public bool Print { get; init; }
+    public bool AllowOsDefault { get; init; }
     public bool RememberSelection { get; init; }
     public EditorFocus? Focus { get; init; }
     public EditorReuseWindow? ReuseWindow { get; init; }

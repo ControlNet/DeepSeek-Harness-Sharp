@@ -1,5 +1,6 @@
 using Dsh.Runtime;
 using Dsh.Core;
+using Dsh.Interaction;
 using Dsh.Plugins;
 
 [assembly: DshPlugin(Dsh.Presets.Plugin.Presets)]
@@ -12,7 +13,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
 
     public string[] Inject => packageName switch
     {
-        Presets => [ToolRuntime.ServiceName, SystemPrompt.ServiceName],
+        Presets => [ToolRuntime.ServiceName, SystemPrompt.ServiceName, CommandsService.ServiceName],
         _ => throw new InvalidOperationException($"Unknown DSH package '{packageName}'."),
     };
 
