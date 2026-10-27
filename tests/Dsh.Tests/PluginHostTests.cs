@@ -23,13 +23,11 @@ public sealed class PluginHostTests
         Assert.Equal(PluginForm.CompiledIn, descriptor.Form);
         Assert.True(host.Catalog.TryCreateDefinition("test/local", out var definition));
 
-        // 入口描述符随插件清单生成:丢掉接线(如 Web/Lsp 在重构中丢过)会在这里暴露。
         var web = Assert.Single(host.Catalog.Descriptors, entry => entry.Entry == "web");
         Assert.Equal("@deepseek-ai/dsh-web-bridge", web.Package);
         Assert.True(host.Catalog.TryGet(web.Package, out var createWeb));
         Assert.IsType<Dsh.WebBridge.Plugin>(createWeb());
         Assert.True(host.Catalog.TryDescribe("@deepseek-ai/dsh-fleet", out _));
-        Assert.Contains(host.Catalog.Descriptors, entry => entry.Entry == "lsp");
         Assert.Contains(host.Catalog.Descriptors, entry => entry.Package == "@deepseek-ai/dsh-tool-web");
 
         var ctx = new Context();

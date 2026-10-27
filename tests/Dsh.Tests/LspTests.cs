@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Dsh.Lsp;
 using Dsh.Sdk;
@@ -39,6 +40,25 @@ public sealed class LspTests
         var result = document.RootElement.GetProperty("result");
         Assert.Equal("plaintext", result.GetProperty("contents").GetProperty("kind").GetString());
         await transport.StopAsync();
+    }
+
+    [Fact]
+    public async Task StandardFramedLspInitializesAndShutsDown()
+    {
+        using var input = new MemoryStream();
+        foreach (var json in new[] { "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}", "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}" })
+        {
+            var bytes = Encoding.UTF8.GetBytes(json);
+            input.Write(Encoding.ASCII.GetBytes("Content-Length: " + bytes.Length + "\r\n\r\n"));
+            input.Write(bytes);
+        }
+        input.Position = 0;
+        using var output = new MemoryStream();
+        Assert.Equal(0, await new LspServer().RunStdioAsync(input, output, TestContext.Current.CancellationToken));
+        var wire = Encoding.UTF8.GetString(output.ToArray());
+        Assert.Contains("Content-Length:", wire, StringComparison.Ordinal);
+        Assert.Contains("\"hoverProvider\":true", wire, StringComparison.Ordinal);
+        Assert.Contains("\"id\":2,\"result\":null", wire, StringComparison.Ordinal);
     }
 
 }

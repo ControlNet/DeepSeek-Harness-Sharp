@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Dsh.Core;
 
 namespace Dsh.Lsp;
 
@@ -11,8 +12,11 @@ public static class LspMethods
     public const string TextDocumentHover = "textDocument/hover";
 }
 
-public sealed class LspServer
+public sealed class LspServer : ILspService
 {
+    public Task<int> RunStdioAsync(Stream input, Stream output, CancellationToken cancellationToken = default)
+        => LspStdioTransport.RunAsync(input, output, HandleRequestAsync, cancellationToken);
+
     public Task<object?> HandleRequestAsync(string method, JsonElement? parameters)
     {
         return method switch

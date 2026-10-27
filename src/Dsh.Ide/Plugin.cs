@@ -14,8 +14,7 @@ using Dsh.Ide.Bridge;
 
 namespace Dsh.Ide;
 
-[DshEntrypoint("ide-lsp")]
-public sealed class Plugin(string packageName) : IDshPlugin, IDshEntrypoint
+public sealed class Plugin(string packageName) : IDshPlugin
 {
     internal const string Ide = "@deepseek-ai/dsh-ide";
 
@@ -34,9 +33,6 @@ public sealed class Plugin(string packageName) : IDshPlugin, IDshEntrypoint
         ConfigureEditors(ctx, options, paths);
         return IdeHistoryTool.Register(ctx, registry);
     }
-
-    public Task<int> RunAsync(HarnessApp app, PluginEntrypointOptions options, CancellationToken cancellationToken)
-        => EditorLspEntrypoint.RunAsync(cancellationToken);
 
     private static void ConfigureEditors(Context ctx, EditorOptions options, DshPaths paths)
     {

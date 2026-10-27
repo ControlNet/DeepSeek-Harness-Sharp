@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Json;
 using Dsh.Core;
 using Dsh.Ide.Bridge;
-using Dsh.Lsp;
 using Dsh.RemoteHost;
 using Dsh.Transport;
 
@@ -380,25 +379,6 @@ public sealed class EditorBridgeTests
             }
         }
         finally { TempTree.Delete(root); TempTree.Delete(outside); }
-    }
-
-    [Fact]
-    public async Task StandardFramedLspInitializesAndShutsDown()
-    {
-        using var input = new MemoryStream();
-        foreach (var json in new[] { "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}", "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}" })
-        {
-            var bytes = Encoding.UTF8.GetBytes(json);
-            input.Write(Encoding.ASCII.GetBytes("Content-Length: " + bytes.Length + "\r\n\r\n"));
-            input.Write(bytes);
-        }
-        input.Position = 0;
-        using var output = new MemoryStream();
-        Assert.Equal(0, await EditorLspTransport.RunAsync(input, output, new LspServer().HandleRequestAsync, Ct));
-        var wire = Encoding.UTF8.GetString(output.ToArray());
-        Assert.Contains("Content-Length:", wire, StringComparison.Ordinal);
-        Assert.Contains("\"hoverProvider\":true", wire, StringComparison.Ordinal);
-        Assert.Contains("\"id\":2,\"result\":null", wire, StringComparison.Ordinal);
     }
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);

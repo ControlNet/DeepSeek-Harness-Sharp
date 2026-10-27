@@ -43,7 +43,7 @@ public static class EditorIntegrationConfiguration
         if (client.Equals("neovim", StringComparison.OrdinalIgnoreCase) || client.Equals("nvim", StringComparison.OrdinalIgnoreCase))
         {
             var quoted = JsonString(executable);
-            return "vim.lsp.config('dsh', { cmd = { " + quoted + ", 'ide-lsp' }, filetypes = { 'c', 'cpp', 'cs', 'go', 'java', 'javascript', 'lua', 'python', 'rust', 'typescript' }, root_markers = { '.git', '.dsh' } })\nvim.lsp.enable('dsh')\n";
+            return $"vim.lsp.config('dsh', {{ cmd = {{ {quoted}, 'host', 'serve', '--stdio', '--lsp' }}, filetypes = {{ 'c', 'cpp', 'cs', 'go', 'java', 'javascript', 'lua', 'python', 'rust', 'typescript' }}, root_markers = {{ '.git', '.dsh' }} }})\nvim.lsp.enable('dsh')\n";
         }
         if (client.Equals("vscode", StringComparison.OrdinalIgnoreCase))
         {
@@ -54,7 +54,10 @@ public static class EditorIntegrationConfiguration
                 writer.WritePropertyName("serverOptions");
                 writer.WriteStartObject();
                 writer.WriteString("command", executable);
-                writer.WritePropertyName("args"); writer.WriteStartArray(); writer.WriteStringValue("ide-lsp"); writer.WriteEndArray();
+                writer.WritePropertyName("args"); writer.WriteStartArray();
+                writer.WriteStringValue("host"); writer.WriteStringValue("serve");
+                writer.WriteStringValue("--stdio"); writer.WriteStringValue("--lsp");
+                writer.WriteEndArray();
                 writer.WriteEndObject();
                 writer.WritePropertyName("clientOptions"); writer.WriteStartObject();
                 writer.WritePropertyName("documentSelector"); writer.WriteStartArray();
@@ -63,7 +66,7 @@ public static class EditorIntegrationConfiguration
             });
         }
         if (client.Equals("helix", StringComparison.OrdinalIgnoreCase))
-            return "[language-server.dsh]\ncommand = " + JsonString(executable) + "\nargs = [\"ide-lsp\"]\n\n[[language]]\nname = \"c-sharp\"\nlanguage-servers = [\"dsh\"]\n";
+            return $"[language-server.dsh]\ncommand = {JsonString(executable)}\nargs = [\"host\", \"serve\", \"--stdio\", \"--lsp\"]\n\n[[language]]\nname = \"c-sharp\"\nlanguage-servers = [\"dsh\"]\n";
         throw new ArgumentException("Supported LSP configuration clients: neovim, vscode, helix.");
     }
 

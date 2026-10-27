@@ -204,7 +204,7 @@ plugins:
 远端客户端映射由全局 `client_mappings` 配置，每项必须指定与 Fleet 机器名一致的 `machine`，再配置对应源根及本地镜像或受支持的 Remote-SSH URI；不同机器的同名目录不会共用映射。
 桥接仅接受已认证连接协商的能力，不接受远端提供可执行命令或环境；具体失败不会静默改用另一个目标。
 
-`/ide lsp neovim`、`/ide lsp vscode`、`/ide lsp helix` 生成客户端配置，实际 stdio 服务入口为 `dsharp ide-lsp`。
+`/ide lsp neovim`、`/ide lsp vscode`、`/ide lsp helix` 生成客户端配置，LSP 由 `Dsh.Lsp` 插件提供，通过既有 `dsharp host serve --stdio --lsp` 服务命令使用标准 stdio 协议。
 `/ide bridge` 的命令帮助说明认证扩展协议的端点与令牌文件参数；配置助手不读取或输出令牌内容，也不附带安装 IDE 扩展。
 
 ## 图形界面

@@ -3,10 +3,10 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
-namespace Dsh.Ide.Bridge;
+namespace Dsh.Lsp;
 
 /// <summary>Standard Content-Length stdio framing for the existing independent Dsh.Lsp service.</summary>
-public static class EditorLspTransport
+internal static class LspStdioTransport
 {
     private const int MaxHeaderBytes = 8192;
     private const int MaxContentBytes = 16 * 1024 * 1024;

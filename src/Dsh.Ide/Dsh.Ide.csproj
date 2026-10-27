@@ -16,7 +16,6 @@
   <ItemGroup>
     <ProjectReference Include="..\Dsh.Core\Dsh.Core.csproj" />
     <ProjectReference Include="..\Dsh.Interaction\Dsh.Interaction.csproj" />
-    <ProjectReference Include="..\Dsh.Lsp\Dsh.Lsp.csproj" />
   </ItemGroup>
 
 </Project>
