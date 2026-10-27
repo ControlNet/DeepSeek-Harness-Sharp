@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using Dsh.Runtime;
+using Dsh.Core;
+using Dsh.Boot;
 
 namespace Dsh.Ide.History;
 
@@ -7,8 +9,8 @@ public sealed record IdeHistoryOptions
 {
     public const int DefaultTimelineLimit = 50;
     public const int DefaultWindowSeconds = 60;
-    public static readonly IReadOnlyList<string> AllProviders = ["vscode", "jetbrains", "zed"];
-    public IReadOnlyList<string> Providers { get; init; } = AllProviders;
+    public IReadOnlyList<string> Providers { get; init; } = [];
+    public IReadOnlyDictionary<string, IdeHistoryDiscovery> Discovery { get; init; } = new Dictionary<string, IdeHistoryDiscovery>();
     public bool Timeline { get; init; }
     [global::Dsh.Plugins.DshPluginSettings(Name = "timeline_limit")]
     public int TimelineLimit { get; init; } = DefaultTimelineLimit;
@@ -17,16 +19,21 @@ public sealed record IdeHistoryOptions
 
     /** Nested history wins per key; legacy flat and camel-case keys remain readable for one release. */
     public static IdeHistoryOptions From(object? config)
+        => From(config, PluginSettingsSection.DefaultParameter(Plugin.Ide, "history"));
+
+    internal static IdeHistoryOptions From(object? config, object? defaultHistory)
     {
-        if (config is not IDictionary<string, object?> map)
-            return new();
-        var nested = map.TryGetValue("history", out var history) ? history as IDictionary<string, object?> : null;
+        var map = ConfigMap.Read(config);
+        var nested = map.TryGetValue("history", out var history) ? ConfigMap.Read(history) : null;
+        var defaults = defaultHistory as IReadOnlyDictionary<string, object?> ?? ConfigMap.Read(defaultHistory);
         object? Value(string key, string? alias = null)
             => nested is not null && (nested.TryGetValue(key, out var value) || alias is not null && nested.TryGetValue(alias, out value))
-                ? value : map.TryGetValue(key, out value) || alias is not null && map.TryGetValue(alias, out value) ? value : null;
+                ? value : map.TryGetValue(key, out value) || alias is not null && map.TryGetValue(alias, out value)
+                    ? value : defaults.GetValueOrDefault(key);
         return new IdeHistoryOptions
         {
-            Providers = Value("providers") is { } providers ? ReadProviders(providers) : AllProviders,
+            Providers = ReadProviders(Value("providers")),
+            Discovery = ConfigMap.Read(Value("discovery")).ToDictionary(pair => pair.Key, pair => IdeHistoryDiscovery.From(pair.Value), StringComparer.Ordinal),
             Timeline = Value("timeline") is true,
             TimelineLimit = ReadNumber(Value("timeline_limit", "timelineLimit"), DefaultTimelineLimit, 1, 500),
             WindowSeconds = ReadNumber(Value("window_seconds", "windowSeconds"), DefaultWindowSeconds, 0, 3600),
@@ -53,15 +60,10 @@ public sealed class IdeHistoryService(Context ctx, IdeHistoryRegistry registry, 
         EqualityComparer<(string Path, string Digest)>.Create(
             static (left, right) => PathComparer.Equals(left.Path, right.Path) && left.Digest == right.Digest,
             static entry => HashCode.Combine(PathComparer.GetHashCode(entry.Path), StringComparer.Ordinal.GetHashCode(entry.Digest)));
-    private static readonly IReadOnlyList<(IdeWorkspaceKind Kind, string Keyword)> Sources =
-    [
-        (IdeWorkspaceKind.VsCode, "vscode"),
-        (IdeWorkspaceKind.JetBrains, "jetbrains"),
-        (IdeWorkspaceKind.Zed, "zed"),
-    ];
 
     public bool TimelineEnabled => options.Timeline;
-    public IdeWorkspaceKind WorkspaceKind(string? workspaceRoot) => WorkspaceIdeDetector.Detect(workspaceRoot);
+    public IdeWorkspaceKind WorkspaceKind(string? workspaceRoot)
+        => WorkspaceIdeDetector.Detect(workspaceRoot, Ctx.Get<IEditorCatalog>(IEditorCatalog.ServiceName, false)?.Descriptors ?? []);
 
     public IReadOnlyList<IdeHistoryEntry> Query(string? workspaceRoot, long? from, long? to, string? path = null)
     {
@@ -125,7 +127,7 @@ public sealed class IdeHistoryService(Context ctx, IdeHistoryRegistry registry, 
     }
 
     private bool IsEnabled(IdeWorkspaceKind kind, string providerName)
-        => Sources.Any(source => kind.HasFlag(source.Kind)
-            && providerName.Contains(source.Keyword, StringComparison.OrdinalIgnoreCase)
-            && options.Providers.Any(name => name.Equals(source.Keyword, StringComparison.OrdinalIgnoreCase)));
+        => options.Providers.Any(name => Enum.TryParse<IdeWorkspaceKind>(name, true, out var provider)
+            && provider != IdeWorkspaceKind.None && kind.HasFlag(provider)
+            && providerName.Contains(name, StringComparison.OrdinalIgnoreCase));
 }

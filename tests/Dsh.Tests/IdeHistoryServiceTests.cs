@@ -1,6 +1,9 @@
 using Dsh.Ide.History;
 using Dsh.Runtime;
 using Dsh.Core;
+using Dsh.Ide;
+using Dsh.Ide.Catalog;
+using static Dsh.Tests.IdeHistoryTestContext;
 
 namespace Dsh.Tests;
 
@@ -24,34 +27,26 @@ public sealed class IdeHistoryServiceTests
     }
 
     [Fact]
-    public void Detector_FindsMarkers_And_NoneWithoutThem()
+    public void Detector_Finds_Configured_Markers_In_Ancestors_And_Combines_Providers()
     {
+        // Synthetic descriptors exercise marker gates without claiming an installed history reader.
+        EditorDescriptor[] descriptors =
+        [
+            new() { Id = "custom-code-history", Command = "custom-code-history", HistoryProvider = IdeWorkspaceKind.VsCode, When = new() { Workspace = [".custom-code-history"] } },
+            new() { Id = "custom-project-history", Command = "custom-project-history", HistoryProvider = IdeWorkspaceKind.JetBrains, When = new() { Workspace = ["*.project-history"] } },
+        ];
         var root = TempTree.CreateDirectory("workspace-detect");
         try
         {
-            var plain = Path.Combine(root, "plain");
-            Directory.CreateDirectory(plain);
-            // 项目里没有 .vscode/.zed(仓库根有 .git, 检索在此收口, 不继承 C:\Users\k6789 之类上层目录的标记)。
-            var plainKind = WorkspaceIdeDetector.Detect(plain);
-            Assert.False(plainKind.HasFlag(IdeWorkspaceKind.VsCode));
-            Assert.False(plainKind.HasFlag(IdeWorkspaceKind.Zed));
-
-            var vscode = Path.Combine(root, "vscode");
-            Directory.CreateDirectory(Path.Combine(vscode, ".vscode"));
-            Assert.True(WorkspaceIdeDetector.Detect(vscode).HasFlag(IdeWorkspaceKind.VsCode));
-
-            var jetbrains = Path.Combine(root, "jetbrains");
-            Directory.CreateDirectory(Path.Combine(jetbrains, ".idea"));
-            Assert.True(WorkspaceIdeDetector.Detect(jetbrains).HasFlag(IdeWorkspaceKind.JetBrains));
-
-            var zed = Path.Combine(root, "zed");
-            Directory.CreateDirectory(Path.Combine(zed, ".zed"));
-            Assert.True(WorkspaceIdeDetector.Detect(zed).HasFlag(IdeWorkspaceKind.Zed));
-
-            // 标记在父目录、cwd 在子目录时也要认出来(向上查找)。
-            var child = Path.Combine(vscode, "src", "deep");
+            Directory.CreateDirectory(Path.Combine(root, ".git"));
+            Assert.Equal(IdeWorkspaceKind.None, WorkspaceIdeDetector.Detect(root, descriptors));
+            var workspace = Path.Combine(root, "project");
+            Directory.CreateDirectory(Path.Combine(workspace, ".custom-code-history"));
+            var child = Path.Combine(workspace, "src", "deep");
             Directory.CreateDirectory(child);
-            Assert.True(WorkspaceIdeDetector.Detect(child).HasFlag(IdeWorkspaceKind.VsCode));
+            Assert.Equal(IdeWorkspaceKind.VsCode, WorkspaceIdeDetector.Detect(child, descriptors));
+            File.WriteAllText(Path.Combine(workspace, "team.project-history"), "");
+            Assert.Equal(IdeWorkspaceKind.VsCode | IdeWorkspaceKind.JetBrains, WorkspaceIdeDetector.Detect(child, descriptors));
         }
         finally
         {
@@ -72,9 +67,9 @@ public sealed class IdeHistoryServiceTests
             var home = Path.Combine(root, "user-home");
             WriteSyntheticVsCodeStore(home, target, ("v1.txt", 1780000001000, "first version"), ("v2.txt", 1780000002000, "second version"));
 
-            var ctx = new Context();
+            var ctx = CreateHistoryContext();
             var registry = IdeHistoryRegistry.CreateDefault(home);
-            var service = new IdeHistoryService(ctx, registry, new IdeHistoryOptions());
+            var service = new IdeHistoryService(ctx, registry, IdeHistoryOptions.From(null));
 
             Assert.True(service.WorkspaceKind(workspace).HasFlag(IdeWorkspaceKind.VsCode));
             var entries = service.Query(workspace, from: null, to: null);
@@ -92,7 +87,7 @@ public sealed class IdeHistoryServiceTests
             Assert.Empty(service.Query(Path.Combine(root, "no-markers"), from: null, to: null));
 
             // providers 配置把 vscode 摘掉后, 同一条历史不再返回。
-            var jetbrainsOnly = new IdeHistoryService(new Context(), registry, IdeHistoryOptions.From(
+            var jetbrainsOnly = new IdeHistoryService(CreateHistoryContext(), registry, IdeHistoryOptions.From(
                 new Dictionary<string, object?>(StringComparer.Ordinal) { ["providers"] = new object?[] { "jetbrains" } }));
             Assert.Empty(jetbrainsOnly.Query(workspace, from: null, to: null));
         }
@@ -103,29 +98,72 @@ public sealed class IdeHistoryServiceTests
     }
 
     [Fact]
-    public void Options_Parse_Providers_And_TimelineLimit()
+    public void Query_UsesConfiguredEditorMarkers_WithoutRestoringRemovedDefaults()
     {
-        var defaults = IdeHistoryOptions.From(null);
-        Assert.Equal(IdeHistoryOptions.DefaultTimelineLimit, defaults.TimelineLimit);
-        Assert.Equal(["vscode", "jetbrains", "zed"], defaults.Providers);
-
-        var configured = IdeHistoryOptions.From(new Dictionary<string, object?>(StringComparer.Ordinal)
+        using var repo = new GitTestRepository();
+        repo.Write("source.txt", "working");
+        var target = Path.Combine(repo.Root, "source.txt");
+        var marker = Directory.CreateDirectory(Path.Combine(repo.Root, ".configured-history"));
+        var home = Path.Combine(repo.Sandbox, "editor-data");
+        WriteSyntheticVsCodeStore(home, target, ("revision", 1780000000000, "configured revision"));
+        var options = EditorOptions.From(new Dictionary<string, object?>
         {
-            ["providers"] = new object?[] { "vscode" },
-            ["timeline_limit"] = 7L,
-            ["timeline"] = true,
+            ["editors"] = new object?[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["id"] = "configured-history",
+                    ["command"] = "unused-history-editor",
+                    ["history_provider"] = "vscode",
+                    ["when"] = new Dictionary<string, object?> { ["workspace"] = new[] { ".configured-history" } },
+                },
+            },
+            ["history"] = new Dictionary<string, object?> { ["providers"] = new[] { "vscode" } },
         });
-        Assert.Equal(["vscode"], configured.Providers);
-        Assert.Equal(7, configured.TimelineLimit);
-        Assert.True(configured.Timeline);
+        var ctx = new Context();
+        ctx.Provide(IEditorCatalog.ServiceName, new EditorCatalog(options.Editors));
+        var service = new IdeHistoryService(ctx, IdeHistoryRegistry.CreateDefault(home), options.History);
 
-        // 时间线默认关(IDE 噪声), 只在显式 timeline: true 时才并进 /timestamp。
-        Assert.False(defaults.Timeline);
-        Assert.False(IdeHistoryOptions.From(new Dictionary<string, object?>(StringComparer.Ordinal) { ["timeline"] = false }).Timeline);
-        Assert.False(new IdeHistoryService(new Context(), IdeHistoryRegistry.CreateDefault(), defaults).TimelineEnabled);
+        var entry = Assert.Single(service.Query(repo.Root, null, null));
+        Assert.Equal("configured revision", service.Read(entry)!.Text);
+        marker.Delete();
+        Directory.CreateDirectory(Path.Combine(repo.Root, ".vscode"));
+        Assert.Empty(service.Query(repo.Root, null, null));
+    }
 
-        // 上限被夹到合理区间。
-        Assert.Equal(500, IdeHistoryOptions.From(new Dictionary<string, object?>(StringComparer.Ordinal) { ["timeline_limit"] = 9999L }).TimelineLimit);
+    [Fact]
+    public void Query_Uses_Configured_History_Roots_And_Store_Paths()
+    {
+        using var repo = new GitTestRepository();
+        Directory.CreateDirectory(Path.Combine(repo.Root, ".vscode"));
+        repo.Write("source.txt", "working copy");
+        var target = Path.Combine(repo.Root, "source.txt");
+        var home = Path.Combine(repo.Root, "editor-data");
+        WriteSyntheticVsCodeStore(home, target, ("revision", 1780000000000, "configured store"));
+        var configuredRoot = Path.Combine(home, "configured-user");
+        Directory.CreateDirectory(configuredRoot);
+        Directory.Move(Path.Combine(home, ".config", "Code", "User", "History"), Path.Combine(configuredRoot, "revisions"));
+        var options = IdeHistoryOptions.From(new Dictionary<string, object?>
+        {
+            ["providers"] = new[] { "vscode" },
+            ["discovery"] = new Dictionary<string, object?>
+            {
+                ["vscode"] = new Dictionary<string, object?>
+                {
+                    ["roots"] = new Dictionary<string, object?> { ["windows"] = new[] { configuredRoot }, ["macos"] = new[] { configuredRoot }, ["linux"] = new[] { configuredRoot } },
+                    ["store_paths"] = new[] { "revisions" },
+                },
+            },
+        });
+        var service = new IdeHistoryService(CreateHistoryContext(), IdeHistoryRegistry.CreateDefault(home, options: options), options);
+        Assert.Equal("configured store", service.Read(Assert.Single(service.Query(repo.Root, null, null)))!.Text);
+    }
+
+    [Fact]
+    public void History_Entry_Limit_Is_Bounded()
+    {
+        Assert.Equal(1, IdeHistoryOptions.From(new Dictionary<string, object?> { ["timeline_limit"] = 0 }).TimelineLimit);
+        Assert.Equal(500, IdeHistoryOptions.From(new Dictionary<string, object?> { ["timeline_limit"] = 9999 }).TimelineLimit);
     }
 
     [Fact]
@@ -163,8 +201,8 @@ public sealed class IdeHistoryServiceTests
         WriteSyntheticVsCodeStore(home, first,
             ("old", start, "old\n"), ("same-1", start + 120000, "head\n"), ("same-2", start + 121000, "head\n"));
         WriteSyntheticVsCodeStore(home, second, ("second", start + 121500, "second\n"));
-        var service = new IdeHistoryService(new Context(), IdeHistoryRegistry.CreateDefault(home, Path.Combine(home, "no-jb")),
-            new IdeHistoryOptions { Timeline = true });
+        var service = new IdeHistoryService(CreateHistoryContext(), IdeHistoryRegistry.CreateDefault(home, Path.Combine(home, "no-jb")),
+            IdeHistoryOptions.From(null) with { Timeline = true });
 
         var moments = service.QueryTimeline(repo.Root);
 
@@ -192,8 +230,8 @@ public sealed class IdeHistoryServiceTests
         var second = Path.Combine(repo.Root, secondName);
         WriteSyntheticVsCodeStore(home, first, ("first", 1780000000000, "same\n"));
         WriteSyntheticVsCodeStore(home, second, ("second", 1780000001000, "same\n"));
-        var service = new IdeHistoryService(new Context(), IdeHistoryRegistry.CreateDefault(home, Path.Combine(home, "no-jb")),
-            new IdeHistoryOptions { Timeline = true });
+        var service = new IdeHistoryService(CreateHistoryContext(), IdeHistoryRegistry.CreateDefault(home, Path.Combine(home, "no-jb")),
+            IdeHistoryOptions.From(null) with { Timeline = true });
 
         var moment = Assert.Single(service.QueryTimeline(repo.Root));
 
@@ -216,8 +254,8 @@ public sealed class IdeHistoryServiceTests
         var target = Path.Combine(repo.Root, name);
         WriteSyntheticVsCodeStore(home, target,
             ("old", 1780000000000, "directory head\n"), ("head", 1780000001000, "literal head\n"));
-        var service = new IdeHistoryService(new Context(), IdeHistoryRegistry.CreateDefault(home, Path.Combine(home, "no-jb")),
-            new IdeHistoryOptions { Timeline = true });
+        var service = new IdeHistoryService(CreateHistoryContext(), IdeHistoryRegistry.CreateDefault(home, Path.Combine(home, "no-jb")),
+            IdeHistoryOptions.From(null) with { Timeline = true });
 
         var moment = Assert.Single(service.QueryTimeline(repo.Root));
 
@@ -237,8 +275,8 @@ public sealed class IdeHistoryServiceTests
             var target = Path.Combine(root, "a.txt");
             var home = Path.Combine(root, "editor-data");
             WriteSyntheticVsCodeStore(home, target, ("old", 1000, "old"), ("new", 2000, "new"));
-            var service = new IdeHistoryService(new Context(), IdeHistoryRegistry.CreateDefault(home, Path.Combine(root, "no-jb")),
-                new IdeHistoryOptions { TimelineLimit = 1 });
+            var service = new IdeHistoryService(CreateHistoryContext(), IdeHistoryRegistry.CreateDefault(home, Path.Combine(root, "no-jb")),
+                IdeHistoryOptions.From(null) with { TimelineLimit = 1 });
 
             var entry = Assert.Single(service.Query(root, 1000, 1000));
             Assert.Equal(1000, entry.Timestamp);
@@ -263,9 +301,9 @@ public sealed class IdeHistoryServiceTests
             File.WriteAllBytes(target, current);
             var home = Path.Combine(root, "editor-data");
             WriteSyntheticVsCodeStore(home, target, ("old", 1000, "revision"));
-            var ctx = new Context();
+            var ctx = CreateHistoryContext();
             ctx.SetOwn("dshHomePath", Path.Combine(root, "dsh-data"));
-            var service = new IdeHistoryService(ctx, IdeHistoryRegistry.CreateDefault(home, Path.Combine(root, "no-jb")), new());
+            var service = new IdeHistoryService(ctx, IdeHistoryRegistry.CreateDefault(home, Path.Combine(root, "no-jb")), IdeHistoryOptions.From(null));
             var entry = Assert.Single(service.Query(root, null, null));
             var preview = service.PreviewRestore(root, entry);
 

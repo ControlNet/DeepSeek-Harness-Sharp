@@ -62,7 +62,7 @@ public sealed class EditorLauncher(IEditorCatalog catalog, EditorOptions? option
         Add(options.DefaultEditor, "global-default");
         foreach (var descriptor in options.Editors) Add(descriptor.Id.Value, "global");
         foreach (var descriptor in catalog.Descriptors) Add(descriptor.Id.Value, "registered");
-        Add(request.HostEditor ?? EditorSelection.DetectHostEditor(), "host");
+        Add(request.HostEditor ?? EditorSelection.DetectHostEditor(options.HostDetection), "host");
         return result;
     }
     private async ValueTask<EditorResult> TryCandidates(EditorRequest request, EditorWorkspace workspace, List<(EditorId Id, string Source)> candidates, IReadOnlyList<EditorInstallation> installations, CancellationToken ct)

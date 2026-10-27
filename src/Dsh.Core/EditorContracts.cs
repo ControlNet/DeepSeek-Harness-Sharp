@@ -36,7 +36,10 @@ public sealed record EditorDescriptor
     public required string Command { get; init; }
     public string[] ExecutableCandidates { get; init; } = [];
     public IReadOnlyDictionary<EditorAction, string[]> Actions { get; init; } = new Dictionary<EditorAction, string[]>();
+    public IReadOnlyDictionary<EditorAction, string[]> RemoteActions { get; init; } = new Dictionary<EditorAction, string[]>();
+    public IReadOnlyList<EditorDiscoveryCommand> DiscoveryCommands { get; init; } = [];
     public EditorCapability Capabilities { get; init; }
+    public Dsh.Ide.History.IdeWorkspaceKind HistoryProvider { get; init; }
     public EditorConditions When { get; init; } = new();
     public IReadOnlyDictionary<string, string> Environment { get; init; } = new Dictionary<string, string>();
     public string? WorkingDirectory { get; init; }
@@ -46,6 +49,8 @@ public sealed record EditorDescriptor
     public string[] FocusArguments { get; init; } = [];
     public string[] BundleNames { get; init; } = [];
 }
+
+public sealed record EditorDiscoveryCommand(string Platform, string Command, string[] Arguments);
 
 public sealed record EditorInstallation(EditorId Editor, string Executable, string Source, string? Version = null, bool IsBundle = false);
 public sealed record EditorWorkspace(string Root, string[] Markers)

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using Dsh.Core;
 using YamlDotNet.RepresentationModel;
+using System.IO.Enumeration;
 
 namespace Dsh.Ide.Selection;
 
@@ -16,8 +17,6 @@ public sealed class EditorBindings
 public static class EditorSelection
 {
     private static readonly ConcurrentDictionary<string, Regex> Globs = new(StringComparer.Ordinal);
-    private static readonly (string Marker, string Id)[] HostVariants = [("Cursor", "cursor"), ("Windsurf", "windsurf"), ("VSCodium", "vscodium"), ("Code - Insiders", "vscode-insiders")];
-    private static readonly string[] JetBrainsHosts = ["rider", "idea", "pycharm", "webstorm", "clion", "goland", "rustrover", "phpstorm", "rubymine", "datagrip"];
     public static EditorWorkspace InspectWorkspace(string root)
     {
         root = Path.GetFullPath(root);
@@ -81,9 +80,14 @@ public static class EditorSelection
     private static bool MatchesWorkspace(EditorConditions conditions, EditorWorkspace workspace)
     {
         if (conditions.Workspace.Length == 0) return true;
+        foreach (var marker in workspace.Markers)
+            if (MatchesWorkspaceMarker(conditions, marker)) return true;
+        return false;
+    }
+    internal static bool MatchesWorkspaceMarker(EditorConditions conditions, string marker)
+    {
         foreach (var pattern in conditions.Workspace)
-            foreach (var marker in workspace.Markers)
-                if (Glob(pattern, marker)) return true;
+            if (Glob(pattern, marker)) return true;
         return false;
     }
     private static bool MatchesFile(EditorConditions conditions, EditorWorkspace workspace, string? path)
@@ -110,16 +114,14 @@ public static class EditorSelection
         var escaped = Regex.Escape(key.Replace('\\', '/')).Replace("\\*\\*/", "(?:.*/)?").Replace("\\*\\*", ".*").Replace("\\*", "[^/]*").Replace("\\?", "[^/]");
         return new Regex($"\\A{escaped}\\z", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.NonBacktracking);
     }).IsMatch(value.Replace('\\', '/'));
-    public static string? DetectHostEditor()
+    public static string? DetectHostEditor(IReadOnlyList<EditorHostRule> rules)
     {
-        var vscodeHook = Environment.GetEnvironmentVariable("VSCODE_IPC_HOOK_CLI") ?? "";
-        foreach (var (marker, id) in HostVariants)
-            if (vscodeHook.Contains(marker, StringComparison.OrdinalIgnoreCase)) return id;
-        if (Environment.GetEnvironmentVariable("VSCODE_PID") is not null || Environment.GetEnvironmentVariable("TERM_PROGRAM") == "vscode") return "vscode";
-        if (Environment.GetEnvironmentVariable("ZED_TERM") is not null || Environment.GetEnvironmentVariable("TERM_PROGRAM") == "zed") return "zed";
-        var jetbrains = Environment.GetEnvironmentVariable("JETBRAINS_IDE");
-        foreach (var id in JetBrainsHosts)
-            if (jetbrains?.Contains(id, StringComparison.OrdinalIgnoreCase) == true) return id;
+        foreach (var rule in rules)
+        {
+            if (Environment.GetEnvironmentVariable(rule.Variable) is not { } value
+                || !FileSystemName.MatchesSimpleExpression(rule.Pattern, value, ignoreCase: true)) continue;
+            return rule.Editor.Value;
+        }
         return null;
     }
 }

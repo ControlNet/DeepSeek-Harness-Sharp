@@ -1,18 +1,19 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Core;
+using Dsh.Ide.Catalog;
 
 namespace Dsh.Ide.History;
 
 public sealed class VsCodeLocalHistoryProvider : IIdeHistoryProvider
 {
-    private static readonly string[] Products = ["Code", "Code - Insiders", "Code - OSS", "VSCodium"];
-
     private readonly string? _home;
+    private readonly IdeHistoryDiscovery _discovery;
 
-    public VsCodeLocalHistoryProvider(string? home = null)
+    public VsCodeLocalHistoryProvider(string? home = null, IdeHistoryDiscovery? discovery = null)
     {
         _home = home;
+        _discovery = discovery ?? IdeHistoryOptions.From(null).Discovery.GetValueOrDefault("vscode") ?? new();
     }
 
     public string Name => "vscode";
@@ -21,62 +22,34 @@ public sealed class VsCodeLocalHistoryProvider : IIdeHistoryProvider
 
     public string? LastReadError { get; private set; }
 
-    private string Home => _home ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-
     public IReadOnlyList<IdeHistoryStoreInfo> Discover()
     {
         var stores = new List<IdeHistoryStoreInfo>();
         foreach (var userDir in CandidateUserDirs())
+        foreach (var relative in _discovery.StorePaths)
         {
-            var history = Path.Combine(userDir, "History");
+            var history = Path.Combine(userDir, relative);
             if (!Directory.Exists(history))
                 continue;
             stores.Add(new IdeHistoryStoreInfo
             {
                 Provider = Name,
                 Location = history,
-                Retention = DescribeRetention(Path.Combine(userDir, "settings.json")),
+                Retention = DescribeRetention(_discovery.SettingsFile is { } settings ? Path.Combine(userDir, settings) : null),
             });
         }
         return stores;
     }
 
-    /**
-     * 各平台 VS Code 系产品的 User 目录: Windows 在 %APPDATA%, macOS 在 ~/Library/Application Support, Linux 在 ~/.config。
-     * 注入 _home 时按 Linux 布局解析(测试缝, 与平台无关)。
-     */
     private IEnumerable<string> CandidateUserDirs()
     {
-        if (_home is not null)
-        {
-            foreach (var product in Products)
-                yield return Path.Combine(_home, ".config", product, "User");
-            yield return Path.Combine(_home, ".vscode-server", "data", "User");
-            yield break;
-        }
-        if (OperatingSystem.IsWindows())
-        {
-            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            foreach (var product in Products)
-                yield return Path.Combine(appData, product, "User");
-        }
-        else if (OperatingSystem.IsMacOS())
-        {
-            var support = Path.Combine(Home, "Library", "Application Support");
-            foreach (var product in Products)
-                yield return Path.Combine(support, product, "User");
-        }
-        else
-        {
-            foreach (var product in Products)
-                yield return Path.Combine(Home, ".config", product, "User");
-            // VS Code Remote(SSH 到 Linux/容器)把 User 数据放在 ~/.vscode-server/data/User:
-            // 服务器上没有 ~/.config/Code, 只查前者会一无所获。
-            yield return Path.Combine(Home, ".vscode-server", "data", "User");
-        }
+        var platform = _home is null ? EditorDiscoveryPaths.Platform : "linux";
+        foreach (var template in _discovery.Roots.GetValueOrDefault(platform) ?? [])
+            foreach (var directory in EditorDiscoveryPaths.Directories(EditorDiscoveryPaths.Render(template, home: _home)))
+                yield return directory;
     }
 
-    private static string DescribeRetention(string settingsPath)
+    private static string DescribeRetention(string? settingsPath)
     {
         const int defaultEntries = 50;
         const int defaultMaxBytes = 256 * 1024;
@@ -85,7 +58,7 @@ public sealed class VsCodeLocalHistoryProvider : IIdeHistoryProvider
         var enabled = true;
         try
         {
-            if (File.Exists(settingsPath)
+            if (settingsPath is not null && File.Exists(settingsPath)
                 && JsonNode.Parse(File.ReadAllText(settingsPath)) is JsonObject settings)
             {
                 entries = IntOf(settings, "workbench.localHistory.maxFileEntries") ?? entries;

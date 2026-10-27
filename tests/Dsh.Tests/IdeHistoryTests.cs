@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Text;
 using Dsh.Ide.History;
 using Dsh.Runtime;
+using static Dsh.Tests.IdeHistoryTestContext;
 
 namespace Dsh.Tests;
 
@@ -267,8 +268,8 @@ public sealed class IdeHistoryTests(ITestOutputHelper output)
             BinaryPrimitives.WriteInt64BigEndian(index.AsSpan(88), 1780000000000);
             File.WriteAllBytes(Path.Combine(local, "changes.storageRecordIndex"), index);
             var registry = IdeHistoryRegistry.CreateDefault(root, cacheRoot);
-            var preferred = new IdeHistoryService(new Context(), registry, new IdeHistoryOptions { Providers = ["jetbrains", "vscode"] });
-            var defaults = new IdeHistoryService(new Context(), registry, new IdeHistoryOptions());
+            var preferred = new IdeHistoryService(CreateHistoryContext(), registry, IdeHistoryOptions.From(null) with { Providers = ["jetbrains", "vscode"] });
+            var defaults = new IdeHistoryService(CreateHistoryContext(), registry, IdeHistoryOptions.From(null));
 
             Assert.Equal(2, preferred.Query(workspace, null, null).Count);
             Assert.Equal("jetbrains", Assert.Single(Assert.Single(preferred.QueryTimeline(workspace)).Entries).Provider);

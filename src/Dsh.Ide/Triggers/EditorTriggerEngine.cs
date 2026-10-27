@@ -12,9 +12,10 @@ public sealed record EditorTriggerContext(string Event, EditorRequest Request)
 
 public sealed record EditorTriggerOutcome(string Rule, bool Executed, string Reason, IReadOnlyList<EditorResult> Results);
 
-public sealed class EditorTriggerEngine(IEditorService editors, IReadOnlyList<EditorTrigger> rules, TimeProvider? clock = null)
+public sealed class EditorTriggerEngine(IEditorService editors, IReadOnlyList<EditorTrigger> rules, TimeProvider? clock = null, IReadOnlyList<EditorHostRule>? hostDetection = null)
 {
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly IReadOnlyList<EditorHostRule> hostDetection = hostDetection ?? [];
     private readonly SemaphoreSlim _serial = new(1, 1);
     private readonly Dictionary<(string Rule, string Scope), string> _completed = [];
     private readonly Dictionary<(EditorAction Action, string Path, string Editor), DateTimeOffset> _cooldown = [];
@@ -28,7 +29,7 @@ public sealed class EditorTriggerEngine(IEditorService editors, IReadOnlyList<Ed
             var workspace = editors.InspectWorkspace(context.Request.WorkspaceRoot);
             if (workspace.TriggersEnabled == false)
                 return [];
-            var host = context.Request.HostEditor ?? EditorSelection.DetectHostEditor();
+            var host = context.Request.HostEditor ?? EditorSelection.DetectHostEditor(hostDetection);
             if (host != context.Request.HostEditor)
                 context = context with { Request = context.Request with { HostEditor = host } };
             if (context.ProjectTypes.Length == 0 && rules.Any(rule => rule.When.ProjectTypes.Length > 0))

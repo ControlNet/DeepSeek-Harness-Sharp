@@ -8,6 +8,7 @@ using Dsh.Persistence;
 using Dsh.Tui;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using static Dsh.Tests.IdeHistoryTestContext;
 
 namespace Dsh.Tests;
 
@@ -1305,9 +1306,10 @@ public class ChatWindowMenuTests : IDisposable
         using var chat = await CreateChat(cwd: workspace, configure: (ctx, _) =>
         {
             ctx.SetOwn("dshHomePath", _homeDir);
+            CreateHistoryContext(ctx);
             new IdeHistoryService(ctx,
                 IdeHistoryRegistry.CreateDefault(Path.Combine(_homeDir, "editor-data"), Path.Combine(_homeDir, "no-jb")),
-                new IdeHistoryOptions { Timeline = true });
+                IdeHistoryOptions.From(null) with { Timeline = true });
         });
         Type(chat, "message before the history revision");
         Press(chat, ConsoleKey.Enter);

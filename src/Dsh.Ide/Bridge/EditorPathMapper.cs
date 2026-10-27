@@ -10,7 +10,7 @@ public sealed record EditorPathMapping(
     [property: Dsh.Plugins.DshPluginSettings(Name = "machine")] string Machine,
     [property: Dsh.Plugins.DshPluginSettings(Name = "source_root")] string SourceRoot,
     [property: Dsh.Plugins.DshPluginSettings(Name = "destination_root")] string DestinationRoot,
-    EditorPathMappingKind Kind = EditorPathMappingKind.LocalMirror, string? Authority = null, string Editor = "vscode");
+    EditorPathMappingKind Kind = EditorPathMappingKind.LocalMirror, string? Authority = null, string? Editor = null);
 
 public sealed class EditorPathMapper
 {
@@ -29,7 +29,7 @@ public sealed class EditorPathMapper
                 ConfigMap.Text(map, "source_root") ?? throw new ArgumentException("Client mapping requires source_root."),
                 ConfigMap.Text(map, "destination_root") ?? throw new ArgumentException("Client mapping requires destination_root."),
                 ConfigMap.EnumValue(map, "kind", EditorPathMappingKind.LocalMirror),
-                ConfigMap.Text(map, "authority"), ConfigMap.Text(map, "editor") ?? "vscode");
+                ConfigMap.Text(map, "authority"), ConfigMap.Text(map, "editor"));
         });
         return new EditorPathMapper(mappings);
     }

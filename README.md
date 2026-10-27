@@ -192,7 +192,12 @@ plugins:
       window_seconds: 60
 ```
 
-内置描述符提供常见 VS Code 系、JetBrains IDE、Zed、Eclipse、Code::Blocks、Vim/Neovim、Emacs、Sublime Text 和 Visual Studio 的启动模板。
+随包的 `Profiles/Templates/settings.yaml` 是默认编辑器定义、安装位置、宿主识别规则和历史发现路径的唯一来源，可在全局配置中覆盖这些数据。
+显式 `editors` 列表替换默认清单并保留顺序；删除条目或设置 `enabled: false` 不会重新追加，`editors: []` 禁用全部默认启动条目。
+仅有 `id` 的条目引用该 ID 的默认定义；显式 `actions: {}`、`when: {}`、`env: {}`、`executables: []` 或 `bundles: []` 清除对应字段，而不是重新补回默认内容。
+安装搜索数据通过 `installation_roots` 的平台映射、macOS 的 `bundle_roots`、Linux 的 `desktop_roots` 及编辑器条目中的 `discovery_commands` 配置，默认文件列出了可覆盖的路径与参数。
+宿主识别使用独立、有序的 `host_detection` 规则，每项包含 `editor`、`variable`、`pattern`，读取宿主应用已有的环境信号；宿主不必出现在可启动编辑器列表中，`host_detection: []` 关闭自动识别。
+工作区历史门控使用编辑器条目的 `history_provider` 和 `when.workspace`，`history.discovery` 配置格式读取器的平台根目录、`store_paths` 与可选的 `settings_file`；清空工作区标记不会开启全局历史扫描。
 `/ide list` 展示检测结果与声明的能力；检测到安装不等于逐项能力实测通过，不同编辑器版本的定位、差异及窗口行为仍须在实际应用中确认。
 自定义编辑器的 `command`、参数数组、环境及动作模板只能由全局配置定义；工作区只能引用编辑器 ID 和偏好，不能定义可执行命令。
 打印和 dry-run 命令保留工作目录及参数，但省略全局编辑器环境覆盖值，避免把它们带入模型或诊断输出；实际启动仍应用这些环境覆盖值。
@@ -202,6 +207,7 @@ plugins:
 
 触发规则按声明顺序执行，可按事件、工作区、文件类型及宿主编辑器过滤；`stop` 控制后续规则是否继续，手动操作与模型工具使用同一派发链路。
 远端客户端映射由全局 `client_mappings` 配置，每项必须指定与 Fleet 机器名一致的 `machine`，再配置对应源根及本地镜像或受支持的 Remote-SSH URI；不同机器的同名目录不会共用映射。
+Remote URI 动作通过受信任描述中的 `remote: true`、`actions` 和 `remote_actions` 声明，参数模板支持 `{remote_uri}`，不依赖固定品牌 ID；映射未指定 `editor` 时，由本地配置的候选清单选择。
 桥接仅接受已认证连接协商的能力，不接受远端提供可执行命令或环境；具体失败不会静默改用另一个目标。
 
 `/ide lsp neovim`、`/ide lsp vscode`、`/ide lsp helix` 生成客户端配置，LSP 由 `Dsh.Lsp` 插件提供，通过既有 `dsharp host serve --stdio --lsp` 服务命令使用标准 stdio 协议。

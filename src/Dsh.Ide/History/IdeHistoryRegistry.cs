@@ -9,8 +9,14 @@ public sealed class IdeHistoryRegistry
         _providers = [.. providers];
     }
 
-    public static IdeHistoryRegistry CreateDefault(string? home = null, string? jetBrainsCacheRoot = null)
-        => new([new VsCodeLocalHistoryProvider(home), new JetBrainsLocalHistoryProvider(jetBrainsCacheRoot)]);
+    public static IdeHistoryRegistry CreateDefault(string? home = null, string? jetBrainsCacheRoot = null, IdeHistoryOptions? options = null)
+    {
+        var discovery = (options ?? IdeHistoryOptions.From(null)).Discovery;
+        return new([
+            new VsCodeLocalHistoryProvider(home, discovery.GetValueOrDefault("vscode") ?? new()),
+            new JetBrainsLocalHistoryProvider(jetBrainsCacheRoot, discovery.GetValueOrDefault("jetbrains") ?? new()),
+        ]);
+    }
 
     public IReadOnlyList<(IIdeHistoryProvider Provider, IdeHistoryStoreInfo Store)> Discover()
         => _providers

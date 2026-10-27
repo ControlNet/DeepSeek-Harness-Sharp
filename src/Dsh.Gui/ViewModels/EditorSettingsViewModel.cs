@@ -3,7 +3,6 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
-using Dsh.Core;
 using Dsh.Gui.Services;
 using Dsh.Runtime.Composition;
 using YamlDotNet.Serialization;
@@ -13,16 +12,12 @@ namespace Dsh.Gui.ViewModels;
 public sealed partial class EditorSettingsViewModel : ObservableObject
 {
     public const string Package = "@deepseek-ai/dsh-ide";
-    private const string DefaultHistoryProviders = "vscode, jetbrains, zed";
-    private const int DefaultHistoryLimit = 50;
     private readonly SettingsFacade _settings;
-    private readonly IEditorCatalog? _catalog;
     private Dictionary<string, object?> _history = [];
 
-    public EditorSettingsViewModel(SettingsFacade settings, IEditorCatalog? catalog = null)
+    public EditorSettingsViewModel(SettingsFacade settings)
     {
         _settings = settings;
-        _catalog = catalog;
         Reload();
     }
 
@@ -44,40 +39,41 @@ public sealed partial class EditorSettingsViewModel : ObservableObject
     [ObservableProperty] private string _focus = "never";
     [ObservableProperty] private string _reuseWindow = "auto";
     [ObservableProperty] private string _fallback = "none";
-    [ObservableProperty] private string _historyProviders = DefaultHistoryProviders;
+    [ObservableProperty] private string _historyProviders = "";
     [ObservableProperty] private bool _historyTimeline;
-    [ObservableProperty] private int _historyLimit = DefaultHistoryLimit;
+    [ObservableProperty] private int _historyLimit;
     [ObservableProperty] private string _status = "";
 
     [RelayCommand]
     public void Reload()
     {
-        var map = PluginSettingsSection.Resolve(_settings.Load().Plugins, Package)?.Parameters ?? [];
+        var supplied = PluginSettingsSection.Resolve(_settings.Load().Plugins, Package)?.Parameters ?? [];
+        var map = PluginSettingsSection.DefaultParameters(Package);
+        var historyDefaults = map.GetValueOrDefault("history") as Dictionary<string, object?> ?? [];
+        foreach (var (key, value) in supplied) map[key] = value;
         DefaultEditor = Text(map, "default_editor", "auto");
         StrictMatch = Flag(map, "strict_match");
         AllowOutsideWorkspace = Flag(map, "allow_outside_workspace");
         Focus = Text(map, "focus", "never");
         ReuseWindow = Text(map, "reuse_window", "auto");
         Fallback = Text(map, "fallback", "none");
-        _history = map.Where(pair => pair.Key is "providers" or "timeline" or "timeline_limit" or "timelineLimit")
+        _history = supplied.Where(pair => pair.Key is "providers" or "timeline" or "timeline_limit" or "timelineLimit")
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
-        var nested = map.GetValueOrDefault("history") as Dictionary<string, object?>;
+        var nested = supplied.GetValueOrDefault("history") as Dictionary<string, object?>;
         if (nested is not null)
             foreach (var (key, value) in nested) _history[key] = value;
-        HistoryProviders = _history.GetValueOrDefault("providers") switch
+        var configuredProviders = _history.TryGetValue("providers", out var providerValue) ? providerValue : historyDefaults.GetValueOrDefault("providers");
+        HistoryProviders = configuredProviders switch
         {
             string provider => provider,
             IEnumerable providers => string.Join(", ", providers.Cast<object>()),
-            _ => DefaultHistoryProviders,
+            _ => "",
         };
-        HistoryTimeline = Flag(_history, "timeline");
+        HistoryTimeline = _history.ContainsKey("timeline") ? Flag(_history, "timeline") : Flag(historyDefaults, "timeline");
         var historyLimit = nested is not null && (nested.TryGetValue("timeline_limit", out var nestedLimit) || nested.TryGetValue("timelineLimit", out nestedLimit))
-            ? nestedLimit : map.GetValueOrDefault("timeline_limit") ?? map.GetValueOrDefault("timelineLimit");
-        HistoryLimit = int.TryParse(historyLimit?.ToString(), out var limit) ? limit : DefaultHistoryLimit;
+            ? nestedLimit : supplied.GetValueOrDefault("timeline_limit") ?? supplied.GetValueOrDefault("timelineLimit");
+        HistoryLimit = int.TryParse(historyLimit?.ToString(), out var limit) ? limit : Convert.ToInt32(historyDefaults.GetValueOrDefault("timeline_limit"));
         LoadRows(Editors, map.GetValueOrDefault("editors"));
-        if (!map.ContainsKey("editors") && _catalog is not null)
-            foreach (var descriptor in _catalog.Descriptors)
-                Editors.Add(new(new Dictionary<string, object?> { ["id"] = descriptor.Id.Value, ["enabled"] = true }));
         LoadRows(Triggers, map.GetValueOrDefault("triggers"));
         SelectedEditor = Editors.FirstOrDefault();
         SelectedTrigger = Triggers.FirstOrDefault();

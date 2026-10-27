@@ -20,11 +20,11 @@ public sealed partial class EditorTriggerService : IAsyncDisposable
     private readonly Task _worker;
     private IReadOnlyList<EditorTriggerOutcome> _last = [];
 
-    public EditorTriggerService(Context ctx, IEditorService editors, IReadOnlyList<EditorTrigger> rules)
+    public EditorTriggerService(Context ctx, IEditorService editors, IReadOnlyList<EditorTrigger> rules, IReadOnlyList<EditorHostRule>? hostDetection = null)
     {
         _ctx = ctx;
         _rules = rules;
-        _engine = new(editors, rules);
+        _engine = new(editors, rules, hostDetection: hostDetection);
         var global = new EventOptions { Global = true };
         _remove = [
             ctx.On<AgentSessionStartNotification>(SessionStarted, global),

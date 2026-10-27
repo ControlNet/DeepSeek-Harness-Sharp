@@ -66,7 +66,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         LocalProxyProbe.PropertyChanged += OnLocalLayerProbeStateChanged;
         BorrowedOutboundProbe.PropertyChanged += OnLocalLayerProbeStateChanged;
         Account = new AccountPanelViewModel(_ctx.Get<IAccountService>(IAccountService.ServiceName, false));
-        Ide = new EditorSettingsViewModel(facade, _ctx.Get<IEditorService>(IEditorService.ServiceName, false)?.Catalog);
+        Ide = new EditorSettingsViewModel(facade);
         foreach (var section in Sections)
             section.SelectCommand = new RelayCommand<SettingsNavItemViewModel>(SelectSection);
         Sections[0].IsSelected = true;

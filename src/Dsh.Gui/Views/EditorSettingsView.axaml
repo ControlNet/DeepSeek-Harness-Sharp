@@ -31,8 +31,8 @@
           <TextBox Text="{Binding SelectedEditor.Id, Mode=TwoWay}" PlaceholderText="稳定 ID" />
           <ComboBox Grid.Column="1" ItemsSource="{Binding KindOptions}" SelectedItem="{Binding SelectedEditor.Kind, Mode=TwoWay}" />
         </Grid>
-        <TextBox Text="{Binding SelectedEditor.Command, Mode=TwoWay}" PlaceholderText="command（内置 ID 留空则使用内置命令）" />
-        <TextBlock Text="YAML 字段：id、enabled、kind (gui/terminal/hybrid)、command、actions (open_file/open_at_position/open_workspace/open_diff/reveal)、when (workspace/extensions/globs)、env、cwd、reuse_args、new_window_args、background_args、focus_args。内置 ID 可仅覆盖需要的字段。参数支持 {path}/{file}/{dir}/{workspace}/{line}/{column}/{left}/{right}。" Classes="Tertiary" TextWrapping="Wrap" />
+        <TextBox Text="{Binding SelectedEditor.Command, Mode=TwoWay}" PlaceholderText="command（默认定义来自 settings.yaml）" />
+        <TextBlock Text="YAML 字段：id、enabled、display_name、kind、command、executables、bundles、actions、remote_actions、history_provider、discovery_commands、when、env、cwd 及窗口参数。默认定义来自随包 settings.yaml；显式列表保留顺序，actions/when 的空映射可清除默认值。动作参数支持 {path}/{file}/{dir}/{workspace}/{line}/{column}/{left}/{right}/{remote_uri}。" Classes="Tertiary" TextWrapping="Wrap" />
         <TextBox Name="EditorProfileYaml" Text="{Binding SelectedEditor.Yaml, Mode=TwoWay}" AcceptsReturn="True" MinHeight="200" FontFamily="{DynamicResource Font.Mono}" TextWrapping="NoWrap" />
       </StackPanel>
     </Border>

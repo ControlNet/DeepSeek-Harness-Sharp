@@ -28,15 +28,15 @@ public sealed class Plugin(string packageName) : IDshPlugin
     {
         var options = EditorOptions.From(config);
         var paths = DshPaths.FromContext(ctx) ?? throw new InvalidOperationException("IDE integration requires configured DSH storage paths.");
-        var registry = IdeHistoryRegistry.CreateDefault();
-        _ = new IdeHistoryService(ctx, registry, options.History);
+        var registry = IdeHistoryRegistry.CreateDefault(options: options.History);
         ConfigureEditors(ctx, options, paths);
+        _ = new IdeHistoryService(ctx, registry, options.History);
         return IdeHistoryTool.Register(ctx, registry);
     }
 
     private static void ConfigureEditors(Context ctx, EditorOptions options, DshPaths paths)
     {
-        var catalog = new EditorCatalog(options.Editors);
+        var catalog = new EditorCatalog(options.Editors, new EditorDetector(options.InstallationRoots, options.BundleRoots, options.DesktopRoots));
         var execution = new EditorExecutionContext();
         ctx.Provide(EditorExecutionContext.ServiceName, execution);
         var terminal = new DelegateTerminalHost("DSH-PTY",
@@ -48,7 +48,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
         var editors = RegisterBridge(ctx, launcher, options.ClientMappings, execution);
         if (options.Triggers.Count > 0)
         {
-            var triggers = new EditorTriggerService(ctx, editors, options.Triggers);
+            var triggers = new EditorTriggerService(ctx, editors, options.Triggers, options.HostDetection);
             ctx.Provide(EditorTriggerService.ServiceName, triggers);
             ctx.Effect(() => (Func<Task>)(() => triggers.DisposeAsync().AsTask()));
             editors = new EditorInteractionService(ctx, editors, triggers);

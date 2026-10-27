@@ -13,10 +13,10 @@ public sealed class EditorCatalog : IEditorCatalog
     private long cachedGeneration = -1;
     private IReadOnlyList<EditorInstallation> cached = [];
 
-    public EditorCatalog(IEnumerable<EditorDescriptor>? descriptors = null, EditorDetector? detector = null)
+    public EditorCatalog(IEnumerable<EditorDescriptor> descriptors, EditorDetector? detector = null)
     {
         this.detector = detector ?? new();
-        foreach (var descriptor in descriptors ?? BuiltinEditors.Create()) Register(descriptor);
+        foreach (var descriptor in descriptors) Register(descriptor);
     }
 
     public IReadOnlyList<EditorDescriptor> Descriptors
@@ -81,6 +81,8 @@ public sealed class EditorCatalog : IEditorCatalog
     private static EditorDescriptor Snapshot(EditorDescriptor d) => d with
     {
         Actions = d.Actions.ToDictionary(p => p.Key, p => p.Value.ToArray()),
+        RemoteActions = d.RemoteActions.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()),
+        DiscoveryCommands = d.DiscoveryCommands.Select(command => command with { Arguments = command.Arguments.ToArray() }).ToArray(),
         Environment = d.Environment.ToDictionary(p => p.Key, p => p.Value),
         When = d.When with { Workspace = d.When.Workspace.ToArray(), Extensions = d.When.Extensions.ToArray(), Globs = d.When.Globs.ToArray() },
         ExecutableCandidates = d.ExecutableCandidates.ToArray(), BundleNames = d.BundleNames.ToArray(),
@@ -95,7 +97,7 @@ public sealed class EditorCatalog : IEditorCatalog
             throw new ArgumentException("Editor command must name an executable, not a shell command.");
         foreach (var key in d.Environment.Keys)
             if (key.Length == 0 || key.IndexOfAny(['=', '\0']) >= 0) throw new ArgumentException("Invalid editor environment key.");
-        foreach (var action in d.Actions)
+        foreach (var action in d.Actions.Concat(d.RemoteActions))
             foreach (var argument in action.Value) Launch.EditorTemplates.Validate(argument);
         foreach (var argument in d.ReuseArguments.Concat(d.NewWindowArguments).Concat(d.BackgroundArguments).Concat(d.FocusArguments))
             Launch.EditorTemplates.Validate(argument);

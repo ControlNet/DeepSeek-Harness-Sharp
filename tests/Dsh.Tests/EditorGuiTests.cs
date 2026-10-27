@@ -282,10 +282,9 @@ public sealed class EditorGuiTests
     [Theory]
     [InlineData("timeline_limit", "timelineLimit", "zed", "zed")]
     [InlineData("timelineLimit", "timeline_limit", "[vscode, zed]", "vscode, zed")]
-    [InlineData("timeline_limit", "timeline_limit", null, "vscode, jetbrains, zed")]
     [InlineData("timelineLimit", "timelineLimit", "[]", "")]
     public async Task Settings_Use_Nested_History_Limit_Before_Either_Flat_Spelling_And_Preserve_It_When_Saving(
-        string flatKey, string nestedKey, string? providerYaml, string expectedProviders)
+        string flatKey, string nestedKey, string providerYaml, string expectedProviders)
     {
         await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         var home = environment.App.Home;
@@ -297,7 +296,7 @@ public sealed class EditorGuiTests
                 history:
                   {{nestedKey}}: 17
                   timeline: false
-                  {{(providerYaml is null ? "# Default provider selection" : $"providers: {providerYaml}")}}
+                  providers: {{providerYaml}}
                   # Preserve the custom history policy.
                   custom_history: {retention: keep-history}
             """);
@@ -323,6 +322,28 @@ public sealed class EditorGuiTests
         var custom = Assert.IsType<Dictionary<string, object?>>(history["custom_history"]);
         Assert.Equal("keep-history", custom["retention"]);
         Assert.Contains("# Preserve the custom history policy.", File.ReadAllText(home.SettingsFile));
+    }
+
+    [Fact]
+    public async Task Saving_Unrelated_Editor_Settings_Does_Not_Reenable_Explicitly_Disabled_History_Providers()
+    {
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
+        var home = environment.App.Home;
+        File.WriteAllText(home.SettingsFile, """
+            plugins:
+              "@deepseek-ai/dsh-ide":
+                history:
+                  providers: null
+                  timeline: true
+            """);
+        var facade = new SettingsFacade(environment.App.Ctx, home);
+        Assert.Empty(IdeHistoryOptions.From(facade.Load().Plugins[EditorSettingsViewModel.Package].Parameters).Providers);
+        var vm = new EditorSettingsViewModel(facade);
+        vm.StrictMatch = true;
+        vm.SaveCommand.Execute(null);
+        var saved = HarnessSettings.Load(home).Plugins[EditorSettingsViewModel.Package];
+        Assert.True(Assert.IsType<bool>(saved.Parameters["strict_match"]));
+        Assert.Empty(IdeHistoryOptions.From(saved.Parameters).Providers);
     }
 
     [Fact]

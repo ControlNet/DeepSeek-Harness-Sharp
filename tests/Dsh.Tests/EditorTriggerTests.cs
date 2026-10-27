@@ -125,6 +125,34 @@ public sealed class EditorTriggerTests
         Assert.False(File.Exists(fixture.Output));
     }
 
+    [Fact]
+    public async Task Configured_Host_Rules_Work_When_The_Host_Is_Not_A_Configured_Launch_Target()
+    {
+        using var fixture = new EditorLauncherTests.FakeEditorFixture();
+        var variable = $"DSH_IDE_TEST_HOST_{Guid.NewGuid():N}";
+        var options = EditorOptions.From(new Dictionary<string, object?>
+        {
+            ["host_detection"] = new object[]
+            {
+                new Dictionary<string, object?> { ["editor"] = "configured-host", ["variable"] = variable, ["pattern"] = "*fixture/tool*" },
+            },
+        });
+        var service = fixture.Service(fixture.Profile("configured-editor"));
+        var rule = new EditorTrigger { Id = "configured-host", On = "manual", Action = EditorAction.OpenFile, When = new() { HostEditors = ["configured-host"] } };
+        var context = new EditorTriggerContext("manual", new() { WorkspaceRoot = fixture.Root, Path = "source.cs" });
+        try
+        {
+            Environment.SetEnvironmentVariable(variable, "protocol://fixture/tool/socket");
+            var results = await new EditorTriggerEngine(service, [rule], hostDetection: options.HostDetection).ExecuteAsync(context, TestContext.Current.CancellationToken);
+            Assert.True(Assert.Single(Assert.Single(results).Results).Success);
+            Assert.Empty(await new EditorTriggerEngine(service, [rule], hostDetection: []).ExecuteAsync(context, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, null);
+        }
+    }
+
     private sealed class TriggerClock : TimeProvider
     {
         private DateTimeOffset _now = DateTimeOffset.UnixEpoch;

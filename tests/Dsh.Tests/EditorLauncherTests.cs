@@ -1,6 +1,7 @@
 using Dsh.Core;
 using Dsh.Ide;
 using Dsh.Ide.Catalog;
+using Dsh.Ide.Bridge;
 using Dsh.Ide.Launch;
 using Dsh.Ide.Selection;
 
@@ -152,20 +153,7 @@ public sealed class EditorLauncherTests
     }
 
     [Fact]
-    public void Builtins_Advertise_Only_Actions_With_Templates_And_Cover_Families()
-    {
-        var profiles = BuiltinEditors.Create();
-        foreach (var id in new[] { "vscode", "vscode-insiders", "vscodium", "cursor", "rider", "idea", "pycharm", "zed", "eclipse", "codeblocks", "vim", "nvim", "emacs", "emacs-terminal", "sublime", "visualstudio" })
-            Assert.Contains(profiles, d => d.Id.Value == id);
-        foreach (var descriptor in profiles)
-            foreach (var action in Enum.GetValues<EditorAction>().Where(action => action != EditorAction.OpenTerminal))
-                Assert.Equal(descriptor.Actions.ContainsKey(action), descriptor.Capabilities.HasFlag(EditorActionCapabilities.For(action)));
-        Assert.DoesNotContain(profiles, d => d.Capabilities.HasFlag(EditorCapability.Focus));
-        Assert.Throws<ArgumentException>(() => new EditorCatalog([profiles[0] with { Actions = new Dictionary<EditorAction, string[]> { [EditorAction.OpenFile] = ["{command}"] } }]));
-    }
-
-    [Fact]
-    public void Global_Options_Merge_Builtin_Overrides_And_Custom_Profiles()
+    public void Global_Options_Merge_Configured_Defaults_And_Custom_Profiles()
     {
         var options = EditorOptions.From(new Dictionary<string, object?>
         {
@@ -321,11 +309,11 @@ public sealed class EditorLauncherTests
     }
 
     [Fact]
-    public async Task RemoteUri_FakeEditor_Records_Only_Allowlisted_VsCode_Cli_Arguments()
+    public async Task RemoteUri_FakeEditor_Records_Configured_VsCode_Cli_Arguments()
     {
         using var fixture = new FakeEditorFixture();
-        var builtin = BuiltinEditors.Create().Single(d => d.Id.Value == "vscode");
-        var descriptor = fixture.Profile("vscode") with { Command = fixture.Executable, Actions = builtin.Actions, Capabilities = builtin.Capabilities | EditorCapability.Terminal };
+        var configured = EditorOptions.From(null).Editors.Single(d => d.Id.Value == "vscode");
+        var descriptor = fixture.Profile("vscode") with { Command = fixture.Executable, Actions = configured.Actions, RemoteActions = configured.RemoteActions, Capabilities = configured.Capabilities | EditorCapability.Terminal };
         var service = fixture.Service(descriptor);
         const string uri = "vscode-remote://ssh-remote+fixture/workspace/source%20%26%20file.cs";
         var request = new EditorRequest { WorkspaceRoot = fixture.Root, Path = "source & file.cs", Editor = "vscode", Action = EditorAction.OpenFile, RemoteUri = uri };
@@ -372,6 +360,184 @@ public sealed class EditorLauncherTests
         Assert.False(File.Exists(fixture.Output));
     }
 
+    [Fact]
+    public async Task Configuration_Order_And_Disabled_Entries_Control_The_Launched_Editor()
+    {
+        using var fixture = new FakeEditorFixture();
+        var environment = fixture.Profile("recording").Environment;
+        var options = EditorOptions.From(new Dictionary<string, object?>
+        {
+            ["editors"] = new[] { ("disabled", false), ("second", true), ("first", true) }.Select(entry => new Dictionary<string, object?>
+            {
+                ["id"] = entry.Item1, ["enabled"] = entry.Item2, ["command"] = fixture.Executable, ["kind"] = "terminal",
+                ["env"] = environment, ["actions"] = new Dictionary<string, object?> { ["open_file"] = new[] { entry.Item1, "{path}" } },
+            }).ToArray(),
+        });
+        var result = await fixture.Service(options, options.Editors.ToArray()).LaunchAsync(new()
+        {
+            WorkspaceRoot = fixture.Root, Path = "source.cs", Action = EditorAction.OpenFile,
+        }, TestContext.Current.CancellationToken);
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(["second", Path.Combine(fixture.Root, "source.cs"), fixture.Root, "fixture"], File.ReadAllLines(fixture.Output));
+    }
+
+    [Fact]
+    public async Task Explicit_Empty_Editor_List_Does_Not_Restore_Default_Profiles()
+    {
+        using var fixture = new FakeEditorFixture();
+        var options = EditorOptions.From(new Dictionary<string, object?> { ["editors"] = Array.Empty<object>() });
+        var result = await fixture.Service(options, options.Editors.ToArray()).LaunchAsync(new()
+        {
+            WorkspaceRoot = fixture.Root, Path = "source.cs", Action = EditorAction.OpenFile,
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(EditorErrorCode.NOT_FOUND, result.Error);
+    }
+
+    [Fact]
+    public void Configured_Action_Rejects_An_Executable_Placeholder()
+    {
+        var options = EditorOptions.From(new Dictionary<string, object?>
+        {
+            ["editors"] = new object[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["id"] = "invalid-template", ["command"] = "fixture-configured-editor",
+                    ["actions"] = new Dictionary<string, object?> { ["open_file"] = new[] { "{command}" } },
+                },
+            },
+        });
+        Assert.Throws<ArgumentException>(() => new EditorCatalog(options.Editors));
+    }
+
+    [Fact]
+    public async Task Explicit_Empty_Actions_Remove_Default_Launch_Support()
+    {
+        using var fixture = new FakeEditorFixture();
+        var options = EditorOptions.From(new Dictionary<string, object?>
+        {
+            ["editors"] = new object[]
+            {
+                new Dictionary<string, object?> { ["id"] = "vim", ["command"] = fixture.Executable, ["actions"] = new Dictionary<string, object?>() },
+            },
+        });
+        var result = await fixture.Service(options, options.Editors.ToArray()).LaunchAsync(new()
+        {
+            WorkspaceRoot = fixture.Root, Path = "source.cs", Action = EditorAction.OpenFile,
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(EditorErrorCode.UNSUPPORTED, Assert.Single(result.Decision.Steps).Error);
+    }
+
+    [Theory]
+    [InlineData(EditorAction.OpenFile, "source.cs")]
+    [InlineData(EditorAction.OpenWorkspace, null)]
+    public async Task Explicit_Empty_Conditions_Remove_Default_Workspace_And_Extension_Preferences(EditorAction action, string? path)
+    {
+        using var fixture = new FakeEditorFixture();
+        Directory.CreateDirectory(Path.Combine(fixture.Root, ".idea"));
+        var environment = fixture.Profile("recording").Environment;
+        var options = EditorOptions.From(new Dictionary<string, object?>
+        {
+            ["editors"] = new object[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["id"] = "first", ["command"] = fixture.Executable, ["kind"] = "terminal", ["env"] = environment,
+                    ["actions"] = new Dictionary<string, object?> { ["open_file"] = new[] { "first", "{path}" }, ["open_workspace"] = new[] { "first", "{workspace}" } },
+                },
+                new Dictionary<string, object?>
+                {
+                    ["id"] = "rider", ["command"] = fixture.Executable, ["kind"] = "terminal",
+                    ["env"] = environment, ["when"] = new Dictionary<string, object?>(),
+                },
+            },
+        });
+        var result = await fixture.Service(options, options.Editors.ToArray()).LaunchAsync(new()
+        {
+            WorkspaceRoot = fixture.Root, Path = path, Action = action,
+        }, TestContext.Current.CancellationToken);
+        Assert.True(result.Success, result.Message);
+        Assert.Equal("first", result.Editor?.Value);
+        Assert.Equal("first", File.ReadAllLines(fixture.Output)[0]);
+    }
+
+    [Fact]
+    public async Task Configured_Installation_Root_Is_Used_To_Launch_An_Editor_Outside_Path()
+    {
+        using var fixture = new FakeEditorFixture();
+        var descriptor = fixture.Profile("configured-location") with { Command = Path.GetFileName(fixture.Executable) };
+        var options = EditorOptions.From(new Dictionary<string, object?>
+        {
+            ["installation_roots"] = new Dictionary<string, object?>
+            {
+                ["windows"] = new[] { fixture.Root }, ["macos"] = new[] { fixture.Root }, ["linux"] = new[] { fixture.Root },
+            },
+        }) with { Editors = [descriptor] };
+        var result = await fixture.Service(options, descriptor).LaunchAsync(new()
+        {
+            WorkspaceRoot = fixture.Root, Path = "source.cs", Action = EditorAction.OpenFile,
+        }, TestContext.Current.CancellationToken);
+        Assert.True(result.Success, result.Message);
+        Assert.Equal([Path.Combine(fixture.Root, "source.cs"), fixture.Root, "fixture"], File.ReadAllLines(fixture.Output));
+    }
+
+    [Fact]
+    public async Task Configured_Discovery_Command_On_Path_Locates_And_Launches_An_Editor()
+    {
+        using var fixture = new FakeEditorFixture();
+        var platform = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
+        var command = OperatingSystem.IsWindows() ? "powershell.exe" : "sh";
+        string[] arguments = OperatingSystem.IsWindows()
+            ? ["-NoProfile", "-NonInteractive", "-Command", $"[Console]::WriteLine('{fixture.Executable.Replace("'", "''")}')"]
+            : ["-c", "printf '%s\\n' \"$1\"", "dsh-discovery", fixture.Executable];
+        var descriptor = fixture.Profile("configured-discovery") with
+        {
+            Command = $"uninstalled-editor-{Guid.NewGuid():N}",
+            DiscoveryCommands = [new(platform, command, arguments)],
+        };
+        var result = await fixture.Service(descriptor).LaunchAsync(new()
+        {
+            WorkspaceRoot = fixture.Root, Path = "source.cs", Action = EditorAction.OpenFile,
+        }, TestContext.Current.CancellationToken);
+        Assert.True(result.Success, result.Message);
+        Assert.Equal([Path.Combine(fixture.Root, "source.cs"), fixture.Root, "fixture"], File.ReadAllLines(fixture.Output));
+    }
+
+    [Fact]
+    public async Task Remote_Mapping_Uses_Configured_Action_Templates_Without_A_Built_In_Editor_Id()
+    {
+        using var fixture = new FakeEditorFixture();
+        var configuration = new Dictionary<string, object?>
+        {
+            ["editors"] = new object[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["id"] = "configured-remote", ["command"] = fixture.Executable, ["kind"] = "terminal",
+                    ["env"] = fixture.Profile("recording").Environment, ["remote"] = true,
+                    ["actions"] = new Dictionary<string, object?> { ["open_file"] = new[] { "{path}" } },
+                    ["remote_actions"] = new Dictionary<string, object?> { ["open_file"] = new[] { "configured-uri", "{remote_uri}" } },
+                },
+            },
+            ["client_mappings"] = new object[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["machine"] = "remote", ["source_root"] = "/workspace", ["destination_root"] = fixture.Root,
+                    ["kind"] = "ssh", ["authority"] = "fixture",
+                },
+            },
+        };
+        var options = EditorOptions.From(configuration);
+        var request = EditorPathMapper.From(configuration).Map("remote", new()
+        {
+            WorkspaceRoot = "/workspace", Path = "source.cs", Action = EditorAction.OpenFile,
+        });
+        var result = await fixture.Service(options, options.Editors.ToArray()).LaunchAsync(request, TestContext.Current.CancellationToken);
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(["configured-uri", "vscode-remote://ssh-remote+fixture/workspace/source.cs", fixture.Root, "fixture"], File.ReadAllLines(fixture.Output));
+    }
+
     internal sealed class FakeEditorFixture : IDisposable
     {
         public string Root { get; } = TempTree.CreateDirectory("fake-editor-argv-cwd-env");
@@ -402,7 +568,7 @@ public sealed class EditorLauncherTests
         public EditorLauncher Service(EditorOptions options, params EditorDescriptor[] profiles)
         {
             var host = new DelegateTerminalHost("fake-editor-argv-cwd-env", _ => true, (command, token) => EditorProcess.StartAsync(command with { WaitForExit = true }, token));
-            return new(new EditorCatalog(profiles), options, new EditorExecutor([host]));
+            return new(new EditorCatalog(profiles, new EditorDetector(options.InstallationRoots, options.BundleRoots, options.DesktopRoots)), options, new EditorExecutor([host]));
         }
         public void Dispose() => TempTree.Delete(Root);
     }

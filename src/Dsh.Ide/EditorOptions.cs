@@ -1,15 +1,23 @@
 using System.Collections;
 using Dsh.Core;
 using Dsh.Ide.History;
-using Dsh.Ide.Catalog;
 using Dsh.Ide.Bridge;
+using Dsh.Boot;
 
 namespace Dsh.Ide;
 
 [global::Dsh.Plugins.DshPluginSettings]
 public sealed record EditorOptions
 {
-    public IReadOnlyList<EditorDescriptor> Editors { get; init; } = BuiltinEditors.Create();
+    public IReadOnlyList<EditorDescriptor> Editors { get; init; } = [];
+    [global::Dsh.Plugins.DshPluginSettings(Name = "host_detection")]
+    public IReadOnlyList<EditorHostRule> HostDetection { get; init; } = [];
+    [global::Dsh.Plugins.DshPluginSettings(Name = "installation_roots")]
+    public IReadOnlyDictionary<string, string[]> InstallationRoots { get; init; } = new Dictionary<string, string[]>();
+    [global::Dsh.Plugins.DshPluginSettings(Name = "bundle_roots")]
+    public IReadOnlyList<string> BundleRoots { get; init; } = [];
+    [global::Dsh.Plugins.DshPluginSettings(Name = "desktop_roots")]
+    public IReadOnlyList<string> DesktopRoots { get; init; } = [];
     [global::Dsh.Plugins.DshPluginSettings(Name = "default_editor")]
     public string DefaultEditor { get; init; } = "auto";
     [global::Dsh.Plugins.DshPluginSettings(Name = "strict_match")]
@@ -26,19 +34,26 @@ public sealed record EditorOptions
     public IReadOnlyList<EditorPathMapping> ClientMappings { get; init; } = [];
     public static EditorOptions From(object? config)
     {
-        var map = ConfigMap.Read(config);
-        var builtins = BuiltinEditors.Create();
-        var editors = map.TryGetValue("editors", out var raw) ? ConfigMap.Items(raw).Where(IsEnabled).Select(item => ReadEditor(item, builtins)).ToArray() : builtins;
+        var supplied = ConfigMap.Read(config);
+        var map = PluginSettingsSection.DefaultParameters(Plugin.Ide);
+        var historyDefaults = map.GetValueOrDefault("history");
+        var defaults = ConfigMap.Items(map.GetValueOrDefault("editors")).Where(IsEnabled).Select(item => ReadEditor(item, [])).ToArray();
+        foreach (var (key, value) in supplied) map[key] = value;
+        var editors = supplied.TryGetValue("editors", out var raw) ? ConfigMap.Items(raw).Where(IsEnabled).Select(item => ReadEditor(item, defaults)).ToArray() : defaults;
         return new EditorOptions
         {
             Editors = editors,
+            HostDetection = ConfigMap.Items(map.GetValueOrDefault("host_detection")).Select(EditorHostRule.From).ToArray(),
+            InstallationRoots = Catalog.EditorDiscoveryPaths.Read(map.GetValueOrDefault("installation_roots")),
+            BundleRoots = ConfigMap.Strings(map.GetValueOrDefault("bundle_roots")),
+            DesktopRoots = ConfigMap.Strings(map.GetValueOrDefault("desktop_roots")),
             DefaultEditor = ConfigMap.Text(map, "default_editor") ?? "auto",
             StrictMatch = ConfigMap.Boolean(map, "strict_match"),
             AllowOutsideWorkspace = ConfigMap.Boolean(map, "allow_outside_workspace"),
             ReuseWindow = ConfigMap.EnumValue(map, "reuse_window", EditorReuseWindow.Auto),
             Focus = ConfigMap.EnumValue(map, "focus", EditorFocus.Never),
             Fallback = ConfigMap.EnumValue(map, "fallback", EditorFallback.None),
-            History = IdeHistoryOptions.From(config),
+            History = IdeHistoryOptions.From(config, historyDefaults),
             Triggers = Dsh.Ide.Triggers.EditorTrigger.Parse(map.GetValueOrDefault("triggers")),
             ClientMappings = EditorPathMapper.From(config).Mappings,
         };
@@ -53,45 +68,38 @@ public sealed record EditorOptions
         throw new ArgumentException("Editor enabled must be a boolean.");
     }
 
-    private static EditorDescriptor ReadEditor(object? value, IReadOnlyList<EditorDescriptor> builtins)
+    private static EditorDescriptor ReadEditor(object? value, IReadOnlyList<EditorDescriptor> defaults)
     {
         if (value is string id)
-            return builtins.FirstOrDefault(d => d.Id.Value == id) ?? throw new ArgumentException($"Unknown editor ID '{id}'.");
+            return defaults.FirstOrDefault(d => d.Id.Value == id) ?? throw new ArgumentException($"Unknown editor ID '{id}'.");
         var map = ConfigMap.Read(value);
         var name = ConfigMap.Text(map, "id") ?? throw new ArgumentException("Editor requires an ID.");
-        var basis = builtins.FirstOrDefault(d => d.Id.Value == name);
+        var basis = defaults.FirstOrDefault(d => d.Id.Value == name);
         var command = ConfigMap.Text(map, "command") ?? basis?.Command ?? throw new ArgumentException($"Editor '{name}' requires a global command.");
-        var actions = basis?.Actions.ToDictionary(p => p.Key, p => p.Value) ?? new Dictionary<EditorAction, string[]>();
-        if (map.TryGetValue("actions", out var rawActions))
-        {
-            var supplied = ConfigMap.Read(rawActions);
-            foreach (var (key, action) in supplied)
-            {
-                if (!Enum.TryParse<EditorAction>(key.Replace("_", ""), true, out var parsed) || !Enum.IsDefined(parsed))
-                    throw new ArgumentException($"Unknown editor action '{key}'.");
-                actions[parsed] = ConfigMap.Strings(action);
-            }
-            if (supplied.ContainsKey("open_file") && !supplied.ContainsKey("open_at_position"))
-            {
-                if (actions[EditorAction.OpenFile].Any(a => a.Contains("{line}", StringComparison.Ordinal)))
-                    actions[EditorAction.OpenAtPosition] = actions[EditorAction.OpenFile];
-                else actions.Remove(EditorAction.OpenAtPosition);
-            }
-        }
+        var actions = map.TryGetValue("actions", out var rawActions) ? ReadActions(rawActions) : basis?.Actions ?? new Dictionary<EditorAction, string[]>();
+        var remoteActions = map.TryGetValue("remote_actions", out var rawRemoteActions) ? ReadActions(rawRemoteActions) : basis?.RemoteActions ?? new Dictionary<EditorAction, string[]>();
         var kind = ConfigMap.EnumValue(map, "kind", basis?.Kind ?? EditorKind.Gui);
         var conditions = map.TryGetValue("when", out var when) ? ConfigMap.Read(when) : null;
+        var historyProvider = ConfigMap.EnumValue(map, "history_provider", basis?.HistoryProvider ?? IdeWorkspaceKind.None);
         var environment = map.TryGetValue("env", out var env) ? ConfigMap.Read(env).ToDictionary(p => p.Key, p => p.Value?.ToString() ?? "") : basis?.Environment ?? new Dictionary<string, string>();
         return (basis ?? new EditorDescriptor { Id = name, Command = command }) with
         {
-            Command = command, Kind = kind, Actions = actions,
-            ExecutableCandidates = ConfigMap.Text(map, "command") is not null ? [] : basis?.ExecutableCandidates ?? [],
-            BundleNames = ConfigMap.Text(map, "command") is not null ? [] : basis?.BundleNames ?? [],
+            DisplayName = ConfigMap.Text(map, "display_name") ?? basis?.DisplayName ?? name,
+            Command = command, Kind = kind, Actions = actions, HistoryProvider = historyProvider,
+            RemoteActions = remoteActions,
+            DiscoveryCommands = map.TryGetValue("discovery_commands", out var discoveryCommands)
+                ? ConfigMap.Items(discoveryCommands).Select(ReadDiscoveryCommand).ToArray() : basis?.DiscoveryCommands ?? [],
+            ExecutableCandidates = map.TryGetValue("executables", out var executables) ? ConfigMap.Strings(executables) : ConfigMap.Text(map, "command") is not null ? [] : basis?.ExecutableCandidates ?? [],
+            BundleNames = map.TryGetValue("bundles", out var bundles) ? ConfigMap.Strings(bundles) : ConfigMap.Text(map, "command") is not null ? [] : basis?.BundleNames ?? [],
             Environment = environment, WorkingDirectory = ConfigMap.Text(map, "cwd") ?? basis?.WorkingDirectory,
             ReuseArguments = map.TryGetValue("reuse_args", out var reuse) ? ConfigMap.Strings(reuse) : basis?.ReuseArguments ?? [],
             NewWindowArguments = map.TryGetValue("new_window_args", out var newWindow) ? ConfigMap.Strings(newWindow) : basis?.NewWindowArguments ?? [],
             BackgroundArguments = map.TryGetValue("background_args", out var background) ? ConfigMap.Strings(background) : basis?.BackgroundArguments ?? [],
             FocusArguments = map.TryGetValue("focus_args", out var focus) ? ConfigMap.Strings(focus) : basis?.FocusArguments ?? [],
-            Capabilities = actions.Keys.Aggregate(EditorCapability.None, (caps, action) => caps | EditorActionCapabilities.For(action)) | (kind != EditorKind.Gui ? EditorCapability.Terminal : EditorCapability.None) | (basis?.Capabilities & (EditorCapability.History | EditorCapability.Remote) ?? EditorCapability.None),
+            Capabilities = actions.Keys.Aggregate(EditorCapability.None, (caps, action) => caps | EditorActionCapabilities.For(action))
+                | (kind != EditorKind.Gui ? EditorCapability.Terminal : EditorCapability.None)
+                | (historyProvider != IdeWorkspaceKind.None ? EditorCapability.History : EditorCapability.None)
+                | (map.TryGetValue("remote", out _) ? ConfigMap.Boolean(map, "remote") ? EditorCapability.Remote : EditorCapability.None : basis?.Capabilities & EditorCapability.Remote ?? EditorCapability.None),
             When = conditions is null ? basis?.When ?? new() : new EditorConditions
             {
                 Workspace = conditions.TryGetValue("workspace", out var markers) ? ConfigMap.Strings(markers) : [],
@@ -99,6 +107,43 @@ public sealed record EditorOptions
                 Globs = conditions.TryGetValue("globs", out var globs) ? ConfigMap.Strings(globs) : [],
             },
         };
+    }
+
+    private static Dictionary<EditorAction, string[]> ReadActions(object? value)
+    {
+        var supplied = ConfigMap.Read(value);
+        var actions = new Dictionary<EditorAction, string[]>();
+        foreach (var (key, action) in supplied)
+        {
+            if (!Enum.TryParse<EditorAction>(key.Replace("_", ""), true, out var parsed) || !Enum.IsDefined(parsed))
+                throw new ArgumentException($"Unknown editor action '{key}'.");
+            actions[parsed] = ConfigMap.Strings(action);
+        }
+        if (actions.TryGetValue(EditorAction.OpenFile, out var file) && !actions.ContainsKey(EditorAction.OpenAtPosition)
+            && file.Any(argument => argument.Contains("{line}", StringComparison.Ordinal)))
+            actions[EditorAction.OpenAtPosition] = file;
+        return actions;
+    }
+
+    private static EditorDiscoveryCommand ReadDiscoveryCommand(object? value)
+    {
+        var map = ConfigMap.Read(value);
+        return new(
+            ConfigMap.Text(map, "platform") ?? throw new ArgumentException("Discovery command requires a platform."),
+            ConfigMap.Text(map, "command") ?? throw new ArgumentException("Discovery command requires an executable."),
+            ConfigMap.Strings(map.GetValueOrDefault("args")));
+    }
+}
+
+public sealed record EditorHostRule(EditorId Editor, string Variable, string Pattern)
+{
+    internal static EditorHostRule From(object? value)
+    {
+        var map = ConfigMap.Read(value);
+        return new(
+            ConfigMap.Text(map, "editor") ?? throw new ArgumentException("Host detection requires an editor ID."),
+            ConfigMap.Text(map, "variable") ?? throw new ArgumentException("Host detection requires an environment variable name."),
+            ConfigMap.Text(map, "pattern") ?? "*");
     }
 }
 

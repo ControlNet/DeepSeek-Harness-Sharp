@@ -6,7 +6,7 @@ namespace Dsh.Ide.Launch;
 
 public static class EditorTemplates
 {
-    private static readonly HashSet<string> Placeholders = ["path", "file", "dir", "workspace", "line", "column", "left", "right"];
+    private static readonly HashSet<string> Placeholders = ["path", "file", "dir", "workspace", "line", "column", "left", "right", "remote_uri"];
     public static void Validate(string template)
     {
         if (template.Contains('\0')) throw new ArgumentException("Editor template contains a null character.");
@@ -38,6 +38,7 @@ public static class EditorTemplates
                 "column" => request.Column.ToString(CultureInfo.InvariantCulture),
                 "left" => request.Left ?? throw new ArgumentException("Template requires a left path."),
                 "right" => request.Right ?? throw new ArgumentException("Template requires a right path."),
+                "remote_uri" => request.RemoteUri ?? throw new ArgumentException("Template requires a remote URI."),
                 _ => throw new ArgumentException("Unknown editor template placeholder."),
             });
             i = end;
@@ -59,9 +60,8 @@ public static class EditorTemplates
         {
             if (!SupportsRemoteUri(descriptor, request.Action)) throw new ArgumentException("This editor action does not support remote URI targets.");
             remoteUri = ValidateRemoteUri(remoteUri);
-            if (request.Action == EditorAction.OpenAtPosition) args.Add("--goto");
-            args.Add(request.Action == EditorAction.OpenWorkspace ? "--folder-uri" : "--file-uri");
-            args.Add(request.Action == EditorAction.OpenAtPosition ? $"{remoteUri}:{request.Line}:{request.Column}" : remoteUri);
+            var remoteRequest = request.RemoteUri == remoteUri ? request : request with { RemoteUri = remoteUri };
+            args.AddRange(descriptor.RemoteActions[request.Action].Select(template => Render(template, remoteRequest, workspace)));
         }
         else args.AddRange(action.Select(template => Render(template, request, workspace)));
         return new()
@@ -118,9 +118,8 @@ public static class EditorTemplates
         }
         return result.ToString();
     }
-    public static bool SupportsRemoteUri(EditorDescriptor descriptor, EditorAction action) => descriptor.Capabilities.HasFlag(EditorCapability.Remote)
-        && (descriptor.Id.Value is "vscode" or "vscode-insiders" or "vscodium" or "cursor" or "windsurf")
-        && (action is EditorAction.OpenWorkspace or EditorAction.OpenFile or EditorAction.OpenAtPosition);
+    public static bool SupportsRemoteUri(EditorDescriptor descriptor, EditorAction action)
+        => descriptor.Capabilities.HasFlag(EditorCapability.Remote) && descriptor.RemoteActions.ContainsKey(action);
 
     public static string ValidateRemoteUri(string value)
     {
