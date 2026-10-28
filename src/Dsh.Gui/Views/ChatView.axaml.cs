@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -19,6 +20,8 @@ public sealed partial class ChatView : UserControl
     private const RoutingStrategies ScrollInputRoutes = RoutingStrategies.Tunnel | RoutingStrategies.Bubble;
 
     private MainViewModel? _viewModel;
+    private ComposerViewModel? _composer;
+    private bool _syncingCaret;
     private bool _sticky = true;
     private ListBox? _anchorList;
     private ScrollViewer? _anchorScroll;
@@ -36,6 +39,7 @@ public sealed partial class ChatView : UserControl
     {
         InitializeComponent();
         DataContextChanged += OnDataContextChanged;
+        InputBox.PropertyChanged += OnInputBoxPropertyChanged;
         MessageList.AddHandler(ScrollViewer.ScrollChangedEvent, OnScrollChanged);
         MessageList.AddHandler(InputElement.PointerWheelChangedEvent, OnScrollInput, ScrollInputRoutes, handledEventsToo: true);
         MessageList.AddHandler(InputElement.KeyDownEvent, OnScrollInput, ScrollInputRoutes, handledEventsToo: true);
@@ -69,16 +73,61 @@ public sealed partial class ChatView : UserControl
             return;
         _viewModel.ScrollRequested += ScrollToMessage;
         _viewModel.MessagesChanged += ScrollToEnd;
+        _composer = _viewModel.Composer;
+        _composer.PropertyChanged += OnComposerPropertyChanged;
+        SyncCaretFromView();
     }
 
     private void Detach()
     {
         ClearAnchor();
+        if (_composer is not null)
+            _composer.PropertyChanged -= OnComposerPropertyChanged;
+        _composer = null;
         if (_viewModel is null)
             return;
         _viewModel.ScrollRequested -= ScrollToMessage;
         _viewModel.MessagesChanged -= ScrollToEnd;
         _viewModel = null;
+    }
+
+    /** 输入框文本或光标变化都回填给视图模型: 补全菜单要按光标所在 token 决定是否弹出。 */
+    private void OnInputBoxPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs args)
+    {
+        if (args.Property != TextBox.TextProperty && args.Property != TextBox.CaretIndexProperty)
+            return;
+        SyncCaretFromView();
+    }
+
+    private void SyncCaretFromView()
+    {
+        if (_syncingCaret || _composer is null)
+            return;
+        _syncingCaret = true;
+        try
+        {
+            _composer.CaretIndex = Math.Clamp(InputBox.CaretIndex, 0, (InputBox.Text ?? "").Length);
+        }
+        finally
+        {
+            _syncingCaret = false;
+        }
+    }
+
+    /** 视图模型改写文本后(如选中引用候选)由它决定光标落点, 这里把光标搬过去。 */
+    private void OnComposerPropertyChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (_syncingCaret || _composer is null || args.PropertyName != nameof(ComposerViewModel.CaretIndex))
+            return;
+        _syncingCaret = true;
+        try
+        {
+            InputBox.CaretIndex = Math.Clamp(_composer.CaretIndex, 0, (InputBox.Text ?? "").Length);
+        }
+        finally
+        {
+            _syncingCaret = false;
+        }
     }
 
     private void OnScrollInput(object? sender, RoutedEventArgs e) =>

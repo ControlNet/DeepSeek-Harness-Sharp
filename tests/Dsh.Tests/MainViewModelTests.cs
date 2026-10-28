@@ -491,10 +491,84 @@ public sealed class MainViewModelTests
         Assert.Contains(viewModel.Suggestions, suggestion => suggestion.Label == "/model");
 
         viewModel.Composer.Input = $"@{environment.Agent.Id.Value[..6]}";
+        viewModel.Composer.CaretIndex = viewModel.Composer.Input.Length;
 
         Assert.True(viewModel.IsSuggestionOpen);
-        Assert.Contains(viewModel.Suggestions, suggestion => suggestion.InsertText == $"@{environment.Agent.Id.Value}");
+        Assert.Contains(viewModel.Suggestions, suggestion => suggestion.Label == $"@{environment.Agent.Id.Value}");
     });
+
+    /** 引用补全只看光标处的未完成 @token: 引用之后继续打提示词, 菜单必须收起。 */
+    [Fact]
+    public async Task MentionSuggestions_CloseOncePromptFollowsTheReference() => await HeadlessGui.RunAsync(async () =>
+    {
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
+        await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
+        await WriteReferencedFileAsync(environment, "notes.md", "见附图说明");
+
+        viewModel.Composer.Input = "@notes";
+        viewModel.Composer.CaretIndex = viewModel.Composer.Input.Length;
+
+        Assert.True(viewModel.IsSuggestionOpen);
+        Assert.Contains(viewModel.Suggestions, suggestion => suggestion.Label == "@notes.md");
+
+        viewModel.Composer.Input = "@notes.md 请修改这个文件";
+        viewModel.Composer.CaretIndex = viewModel.Composer.Input.Length;
+
+        Assert.False(viewModel.IsSuggestionOpen);
+        Assert.Empty(viewModel.Suggestions);
+    });
+
+    /** 选中引用候选只替换光标处的 token, 用户已经打在 token 之后的提示词必须保留。 */
+    [Fact]
+    public async Task ConfirmMention_KeepsPromptTypedAfterToken() => await HeadlessGui.RunAsync(async () =>
+    {
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
+        await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
+        await WriteReferencedFileAsync(environment, "notes.md", "见附图说明");
+
+        viewModel.Composer.Input = "@notes 请修改这个文件";
+        viewModel.Composer.CaretIndex = "@notes".Length;
+
+        var candidate = Assert.Single(viewModel.Suggestions, suggestion => suggestion.Label == "@notes.md");
+        viewModel.ConfirmSuggestionCommand.Execute(candidate);
+
+        Assert.Equal("@notes.md  请修改这个文件", viewModel.Composer.Input);
+        Assert.Equal("@notes.md ".Length, viewModel.Composer.CaretIndex);
+        Assert.False(viewModel.IsSuggestionOpen);
+    });
+
+    /** 引用之后接着打的提示词必须能整段发出, 不能被补全菜单吞掉。 */
+    [Fact]
+    public async Task Submit_KeepsPromptTypedAfterReference() => await HeadlessGui.RunAsync(async () =>
+    {
+        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
+        await using var viewModel = new MainViewModel(environment.App, await environment.OpenChatAsync());
+        await WriteReferencedFileAsync(environment, "notes.md", "见附图说明");
+
+        viewModel.Composer.Input = "参考 @notes.md 请修改这个文件";
+        viewModel.Composer.CaretIndex = viewModel.Composer.Input.Length;
+        Assert.False(viewModel.IsSuggestionOpen);
+
+        await viewModel.SubmitCommand.ExecuteAsync(null);
+
+        static bool HasPrompt(UserMessagePayload payload)
+            => payload.Message.Content.Any(block =>
+                block is TextBlock text && text.Text.Contains("请修改这个文件", StringComparison.Ordinal));
+        await GuiTestEnvironment.WaitForAsync(
+            viewModel.Messages,
+            () => environment.Agent.Session.SnapshotEvents()
+                .Select(sessionEvent => sessionEvent.Data)
+                .OfType<UserMessagePayload>()
+                .Any(HasPrompt),
+            () => GuiTestEnvironment.DescribeChatState(viewModel));
+        Assert.Equal("", viewModel.Composer.Input);
+    });
+
+    private static Task WriteReferencedFileAsync(GuiTestEnvironment environment, string name, string content)
+    {
+        var cwd = environment.Agent.Session.Header.Cwd ?? throw new InvalidOperationException("session has no cwd");
+        return File.WriteAllTextAsync(Path.Combine(cwd, name), content, TestContext.Current.CancellationToken);
+    }
 
     [Fact]
     public async Task ConfirmSuggestion_PrefersClickedItem_OverKeyboardIndex() => await HeadlessGui.RunAsync(async () =>

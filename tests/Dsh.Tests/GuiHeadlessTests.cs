@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.VisualTree;
@@ -457,6 +458,49 @@ public sealed class GuiHeadlessTests(ITestOutputHelper output)
             Dispatcher.UIThread.RunJobs();
             Assert.True(message.IsDiffExpanded);
             Assert.True(changedLine.IsEffectivelyVisible);
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+        });
+
+    /** @引用补全只看光标处的未完成 token: 选中候选或继续打提示词之后, 提示词都要保住并且能整段发送。 */
+    [Fact]
+    public async Task ComposerMentionMenu_ClosesOncePromptFollowsTheReference() => await HeadlessGui.RunAsync(async () =>
+        {
+            var environment = await GuiTestEnvironment.CreateIsolatedAsync();
+            await using var environmentScope = environment;
+            var cwd = environment.Agent.Session.Header.Cwd ?? throw new InvalidOperationException("session has no cwd");
+            await File.WriteAllTextAsync(Path.Combine(cwd, "notes.md"), "见附图说明", TestContext.Current.CancellationToken);
+            var window = new MainWindow(environment.App, await environment.OpenChatAsync());
+            var viewModel = window.ViewModel!;
+            window.Show();
+            viewModel.ShowChatCommand.Execute(null);
+            Dispatcher.UIThread.RunJobs();
+            var inputBox = window.GetVisualDescendants().OfType<ChatView>().Single().FindControl<TextBox>("InputBox")!;
+            Assert.True(inputBox.Focus());
+
+            // 选中引用候选后光标必须落在 token 之后, 继续打的提示词不能被清掉。
+            window.KeyTextInput("@notes");
+            Assert.Equal("@notes", viewModel.Composer.Input);
+            Assert.True(viewModel.IsSuggestionOpen);
+            Assert.Contains(viewModel.Suggestions, suggestion => suggestion.Label == "@notes.md");
+            window.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null);
+            Assert.Equal("@notes.md ", viewModel.Composer.Input);
+            Assert.Equal(viewModel.Composer.Input.Length, inputBox.CaretIndex);
+            Assert.False(viewModel.IsSuggestionOpen);
+
+            window.KeyTextInput("请修改这个文件");
+            Assert.Equal("@notes.md 请修改这个文件", viewModel.Composer.Input);
+            Assert.False(viewModel.IsSuggestionOpen);
+            window.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null);
+            if (viewModel.SubmitCommand.ExecutionTask is { } submission)
+                await GuiTestEnvironment.PumpAsync(submission);
+            Assert.Equal("", viewModel.Composer.Input);
+            await GuiTestEnvironment.WaitForAsync(viewModel.Messages,
+                () => viewModel.Messages.Any(message => message.Kind == MessageKind.User
+                    && message.Text.Contains("[file: notes.md]", StringComparison.Ordinal)
+                    && message.Text.Contains("请修改这个文件", StringComparison.Ordinal)),
+                () => GuiTestEnvironment.DescribeChatState(viewModel));
 
             window.Close();
             Dispatcher.UIThread.RunJobs();
