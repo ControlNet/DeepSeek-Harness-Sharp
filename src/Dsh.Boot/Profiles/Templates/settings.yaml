@@ -492,13 +492,13 @@ plugins:
 # rules: []
 # MCP 服务器
 # mcp:
-#   stdio | http
+#   stdio | streamable-http | sse
 #   transport:
 #   stdio 启动命令
 #   command: []
 #   额外参数
 #   args: []
-#   http 端点
+#   HTTP 端点(transport: streamable-http 或 sse 时使用)
 #   url:
 #   是否启用
 #   enabled: true
@@ -895,15 +895,15 @@ plugins:
 # MCP 服务器
 mcp:
   filesystem:
-    # stdio | http
+    # stdio | streamable-http | sse（必填）
     transport: stdio
     # stdio 启动命令
     command: ["npx", "-y", "@modelcontextprotocol/server-filesystem"]
-    # 额外参数
+    # 额外参数(transport: stdio 时使用)
     args: []
-    # http 端点(transport: http 时使用)
+    # HTTP 端点(transport: streamable-http 或 sse 时使用)
     url: null
-    # 是否启用
+    # 是否启用（必填）
     enabled: true
 
 # 自动压缩选项
