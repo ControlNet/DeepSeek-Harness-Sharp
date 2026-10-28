@@ -33,7 +33,7 @@ internal sealed class HarnessRemoteSessionBackend(HarnessRemoteRuntime runtime, 
     public async Task<RemoteSessionSummary> CreateSessionAsync(string cwd, CancellationToken cancellationToken)
     {
         var resolved = HostPathPolicy.Expand(cwd);
-        var handle = await runtime.Registry.Create(new CreateAgentOptions(Cwd: resolved), cancellationToken).ConfigureAwait(false);
+        var handle = await runtime.Registry.Create(new CreateAgentOptions(Cwd: resolved, AgentOptions: runtime.DefaultAgentOptions), cancellationToken).ConfigureAwait(false);
         runtime.Own(handle);
         runtime.Track(handle.Agent);
         return Describe(handle.Agent);
@@ -47,7 +47,7 @@ internal sealed class HarnessRemoteSessionBackend(HarnessRemoteRuntime runtime, 
             runtime.Track(live);
             return Describe(live);
         }
-        var handle = await runtime.Registry.Resume(new ResumeAgentOptions(id), cancellationToken).ConfigureAwait(false);
+        var handle = await runtime.Registry.Resume(new ResumeAgentOptions(id, runtime.DefaultAgentOptions), cancellationToken).ConfigureAwait(false);
         runtime.Own(handle);
         runtime.Track(handle.Agent);
         return Describe(handle.Agent);
