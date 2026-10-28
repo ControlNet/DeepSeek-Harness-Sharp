@@ -8,7 +8,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
 using Dsh.Core;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Gui.Services;
 using Dsh.Ide.Bridge;
 using Dsh.Interaction;
@@ -502,7 +502,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         {
             var connection = _chat.Fleet.Find(machine) ?? throw new InvalidOperationException("The editor host is unavailable.");
             var lease = await connection.WaitConnectedAsync(cancellationToken);
-            var service = new RemoteEditorService(lease.Client.Editor);
+            var service = new HostEditorService(lease.Client.Editor);
             await service.RefreshAsync(workspace, cancellationToken, sessionId);
             return service;
         }, workspace, machine, sessionId, turn);

@@ -463,8 +463,7 @@ public sealed class EditorGuiTests
         var ct = TestContext.Current.CancellationToken;
         await using var host = await HarnessHostFixture.CreateAsync("eg", ct);
         var options = FleetConnectionTests.TestOptions;
-        await using var fleet = new FleetWorkspace(new MachineStore(new HarnessHome(host.Root)), options,
-            () => new FleetClient([MachineSpec.Local(host.Root)], options));
+        await using var fleet = new FleetWorkspace(new FleetWorkspaceServices(new MachineStore(new HarnessHome(host.Root)), options, () => new FleetClient([MachineSpec.Local(host.Root)], options)));
         fleet.Start();
         await fleet.Find(MachineSpec.LocalName)!.WaitConnectedAsync(ct);
         TerminalViewModel? terminal = null;

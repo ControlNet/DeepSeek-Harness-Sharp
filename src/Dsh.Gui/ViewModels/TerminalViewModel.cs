@@ -2,7 +2,7 @@ using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Dsh.Gui.Services;
 using Dsh.Gui.Terminal;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Core;
 using Dsh.Pty;
 using Dsh.RemoteHost;
@@ -19,7 +19,7 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
     private string _origin = "";
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TaskCompletionSource<int?> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private MachineConnection? _editorMachine;
+    private IWorkspaceMachine? _editorMachine;
     private bool _disposed;
     private readonly Lock _disposeGate = new();
     private Task? _disposal;
@@ -28,7 +28,7 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
     public string? PtyId => _remote?.PtyId;
     public bool ActivateOnOpen { get; init; } = true;
 
-    public async Task StartEditorAsync(MachineConnection machine, EditorLaunchCommand command, CancellationToken cancellationToken)
+    public async Task StartEditorAsync(IWorkspaceMachine machine, EditorLaunchCommand command, CancellationToken cancellationToken)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         _editorMachine = machine;
@@ -55,7 +55,7 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
         }
     }
 
-    private void ObserveEditorExit(MachineConnection machine)
+    private void ObserveEditorExit(IWorkspaceMachine machine)
     {
         if (_remote is null) return;
         var summary = machine.Sessions.FirstOrDefault(session => session.Id == _remote.PtyId);
@@ -81,7 +81,7 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
 
     /** 本地机器也经常驻 host/PTY daemon 启动, 与 SSH 终端共享会话登记和断线存活语义。 */
     public async Task StartOnMachineAsync(
-        MachineConnection machine,
+        IWorkspaceMachine machine,
         string workingDirectory,
         string? title = null,
         CancellationToken cancellationToken = default)
@@ -104,7 +104,7 @@ public sealed partial class TerminalViewModel : ObservableObject, IAsyncDisposab
             Rows: InitialSize.Rows);
     }
 
-    private static RemotePtyStartRequest RemoteRequest(MachineConnection machine, string workingDirectory, string title)
+    private static RemotePtyStartRequest RemoteRequest(IWorkspaceMachine machine, string workingDirectory, string title)
     {
         var windows = machine.Info?.Platform == "windows";
         return new RemotePtyStartRequest(

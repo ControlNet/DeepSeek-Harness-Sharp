@@ -7,7 +7,7 @@ using static Dsh.RemoteHost.RemoteHostRpc;
 namespace Dsh.RemoteHost;
 
 /// <summary>Independent IDE domain plus the local half of the typed, cancellable extension protocol.</summary>
-public sealed class RemoteEditorClient(RemoteHostClient host) : IAsyncDisposable
+public sealed class RemoteEditorClient(RemoteHostClient host) : IAsyncDisposable, IWorkspaceEditors
 {
     private readonly object _gate = new();
     private readonly CancellationTokenSource _lifetime = new();

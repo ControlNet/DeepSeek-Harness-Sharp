@@ -4,7 +4,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
 using Dsh.Core;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Gui.Services;
 using Dsh.Interaction;
 using Dsh.Llm;
@@ -40,8 +40,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly Func<string, Task<string>> _run;
     private readonly GuiSettings _gui;
     private readonly SettingsFacade _facade;
-    private readonly Func<Task<RemotePluginsClient>> _plugins;
-    private readonly FleetProxyProbe _proxyProbe;
+    private readonly Func<Task<IWorkspacePlugins>> _plugins;
+    private readonly IWorkspaceProxyProbe _proxyProbe;
     private string _draftProxyUrl = "";
     private string _draftProxyProbeUrl = "";
     private bool _loadingNetwork;
@@ -54,7 +54,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         Func<string, Task<string>> run,
         GuiSettings gui,
         SettingsFacade facade,
-        Func<Task<RemotePluginsClient>> plugins)
+        Func<Task<IWorkspacePlugins>> plugins)
     {
         _ctx = ctx;
         _home = home;

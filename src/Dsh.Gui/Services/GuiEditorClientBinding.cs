@@ -1,5 +1,5 @@
 using Dsh.Core;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Ide.Bridge;
 using Dsh.RemoteHost;
 
@@ -10,7 +10,7 @@ public sealed class GuiEditorClientBinding(IEditorService? local, Func<string, E
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
-    private RemoteHostClient? _client;
+    private IWorkspaceHost? _client;
     private IAsyncDisposable? _registration;
     private string? _session;
     private string? _workspace;
@@ -18,7 +18,7 @@ public sealed class GuiEditorClientBinding(IEditorService? local, Func<string, E
     private long _generation;
     private bool _disposed;
 
-    public async Task UpdateAsync(MachineConnection? machine, string session, string workspace)
+    public async Task UpdateAsync(IWorkspaceMachine? machine, string session, string workspace)
     {
         var generation = Interlocked.Increment(ref _generation);
         if (local is null || _disposed) return;

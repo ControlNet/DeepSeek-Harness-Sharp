@@ -1,6 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Interaction;
 using Dsh.RemoteHost;
 
@@ -10,7 +10,7 @@ namespace Dsh.Gui.ViewModels;
  * One approval or question waiting on some machine, answerable from the notification center and from its session's view.
  * Every client sees the same request; the first answer wins and the host's resolution removes it everywhere, so this item only sends the answer.
  */
-public sealed partial class PendingDecisionViewModel(FleetPendingItem item, Func<MachineConnection?> machine) : ObservableObject
+public sealed partial class PendingDecisionViewModel(FleetPendingItem item, Func<IWorkspaceMachine?> machine) : ObservableObject
 {
     public FleetPendingItem Item { get; } = item;
 
@@ -76,7 +76,7 @@ public sealed partial class PendingDecisionViewModel(FleetPendingItem item, Func
             : Task.CompletedTask;
 
     /** Answers on the machine's current link, waiting for it while the machine reconnects. */
-    private async Task SendAsync(MachineConnection connection, Func<RemoteHostClient, CancellationToken, Task<bool>> respond)
+    private async Task SendAsync(IWorkspaceMachine connection, Func<IWorkspaceHost, CancellationToken, Task<bool>> respond)
     {
         IsBusy = true;
         try

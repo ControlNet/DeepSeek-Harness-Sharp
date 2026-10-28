@@ -2,10 +2,10 @@ using System.Collections.Concurrent;
 using Dsh.Core;
 using Dsh.Ide.Bridge;
 
-namespace Dsh.RemoteHost;
+namespace Dsh.Gui.Services;
 
 /// <summary>Core service facade for an explicit Host destination; synchronous projections never block the UI on RPC.</summary>
-public sealed class RemoteEditorService(RemoteEditorClient editor) : IEditorService
+public sealed class HostEditorService(IWorkspaceEditors editor) : IEditorService
 {
     private readonly RemoteCatalog _catalog = new(editor);
     private readonly ConcurrentDictionary<string, EditorRemoteStatus> _status = new(StringComparer.Ordinal);
@@ -44,7 +44,7 @@ public sealed class RemoteEditorService(RemoteEditorClient editor) : IEditorServ
         return result;
     }
 
-    private sealed class RemoteCatalog(RemoteEditorClient editor) : IEditorCatalog
+    private sealed class RemoteCatalog(IWorkspaceEditors editor) : IEditorCatalog
     {
         private EditorDescriptor[] _descriptors = [];
         public IReadOnlyList<EditorDescriptor> Descriptors => Volatile.Read(ref _descriptors);

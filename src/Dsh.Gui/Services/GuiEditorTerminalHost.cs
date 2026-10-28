@@ -1,6 +1,6 @@
 using Avalonia.Threading;
 using Dsh.Core;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Gui.ViewModels;
 
 namespace Dsh.Gui.Services;

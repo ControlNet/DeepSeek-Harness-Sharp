@@ -346,7 +346,7 @@ JSON 的 home 等身份字段仍可能包含本机路径，分享输出前需额
 - 浏览器：先单独安装 `dsharp-web`（见下方发布形态），再运行 `dsharp web` 或 `dsharp-web`；`dsharp host web` 也是同一进程转发入口，TUI/GUI 不加载 WebBridge 或 ASP.NET。独立 WebHost 内的真实 WebBridge 插件拥有 Fleet 连接、协议桥和监听生命周期，只监听 `127.0.0.1:8780`；`dsharp web --print-token`（或 `dsharp-web --print-token`）打印登录链接，其它设备先 `ssh -N -L 8780:127.0.0.1:8780 user@host` 转发再访问。
   独立安装的 WebHost 可按需启动同一可执行文件内的 Host 与 PTY daemon，无需另装 TUI 可执行文件。
 - 手机触摸或触控笔点按终端会取得输入焦点，不阻止正常滚动手势；首屏快照解析完成后才解除忙碌标记，使用终端键栏发送 `Ctrl+C` 后仍可继续输入。文字、回车和键栏按键按各自终端的输入顺序提交，切换页面不会把已排队的输入发送到新会话；发送失败会显示错误且不自动重放。
-- `@deepseek-ai/dsh-fleet` 提供机器客户端服务并拥有客户端连接的生命周期，禁用时断开客户端而不终止 Host 会话；可复用连接与部署实现位于 `Dsh.Fleet.Client`，GUI、WebBridge 和 CLI 共用它。
+- `@deepseek-ai/dsh-fleet` 提供机器客户端服务并拥有客户端连接的生命周期，禁用时断开客户端而不终止 Host 会话；WebBridge 和 CLI 继续复用 `Dsh.Fleet` 的具体连接与部署实现。桌面 GUI 只消费 `Dsh.Workspace` 的中性工作区、Host 分组能力、机器目录与管理契约，不引用 `Dsh.Fleet`、`Dsh.RemoteHost.Client` 或 `Dsh.AgentAdapters`；默认 Fleet 插件在 `workspaceProvider` 服务上提供真实实现，连接创建、SSH/部署及出口适配仍归后端所有。共享会话与审批等数据沿用 `Dsh.Core` 已有协议记录，不通过重导出具体客户端或隐藏的动态调用接线。
 - SSH 的认证（agent/key/password、askpass）、ProxyCommand、进程管道及上传由 `SshTransport` 独占；部署策略通过 `IRemoteMachineTransport` 决定版本复用、远端下载或本地上传，doctor 也只消费该传输边界。Host 协议握手不再公开未握手的 raw Web/隧道入口；杀掉 SSH 桥接仍不结束常驻 Host 和原 PTY。
 - Unix 密码认证的临时 askpass 脚本从创建起只授予当前用户权限；Host 握手成功即删除脚本，SSH 桥接仍保持连接，失败和退出时也会清理。
 - `@deepseek-ai/dsh-web-bridge` 拥有 WebUI 入口及桥接服务器生命周期，停用或退出入口会停止监听并删除临时访问凭据；它不是绕过插件装载的静态网页宿主。
@@ -663,9 +663,11 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 0.1.1 起的发布说明未单独张贴,这里按版本折叠列出新增能力(0.1.0 的完整发布说明见[讨论区](https://github.com/deepseek-ai/deepseek-harness/discussions/8952))。
 
 <details>
-<summary><b>未发布</b> — SSH-over-iroh 与 SSH 命令流代理</summary>
+<summary><b>未发布</b> — GUI 后端解耦、SSH-over-iroh 与 SSH 命令流代理</summary>
 
 - 多机连接新增 Endpoint ID 接入、独立可选 `Dsh.Fleet.Client.Iroh` 程序集、已有 SSH 自动启用与目标端本地启用两种入口，沿用原有 SSH 认证和 Fleet 会话生命周期。
+- GUI 的会话、审批/问答、文件/Git、编辑器、终端、机器及网络设置改由中性能力契约驱动；重连准备仍先确认终端尺寸再加载快照，工作区释放只断开自己的连接，不停止 Host 持有的会话。
+- 修复内置 Host 新建或恢复会话时遗漏启动默认模型与 reasoning 的问题；持久化的会话选择仍优先，完全未配置模型时仍明确报错。
 - 原生 `iroh-ssh` 由用户安装并通过启动进程的 `PATH` 检测，产品构建与发行包不下载、不捆绑；缺少命令时不显示 GUI 新增入口，不改动已有配置。
 - 接收端要求兼容的 `server --ready-file` 命令，同步地址发现就绪再验证 SSH 隧道；仓库保留显式原生测试依赖准备脚本、固定来源和补丁说明。
 - macOS 接收端嵌入本地网络用途声明，局域网接入遵循用户授权，不静默提权。

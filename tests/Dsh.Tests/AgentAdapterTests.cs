@@ -1,3 +1,4 @@
+using Dsh.RemoteHost;
 using Dsh.AgentAdapters;
 
 namespace Dsh.Tests;
