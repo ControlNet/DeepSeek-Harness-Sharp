@@ -147,9 +147,9 @@ dsharp 有完善的多机远程支持(Dsh.Fleet)，同时可以在 GUI 中直接
 
 示意图：
 
-![img_2.png](img_2.png)
+<img width="1470" height="285" alt="图片" src="https://github.com/user-attachments/assets/f0208d99-8c2d-490a-a97b-6606bd8f2dc3" />
 
-![img_3.png](img_3.png)
+<img width="1703" height="833" alt="图片" src="https://github.com/user-attachments/assets/7548b1a8-8732-4241-8384-f1b62fa70570" />
 
 运维命令：
 ```bash
