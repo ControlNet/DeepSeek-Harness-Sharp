@@ -2,22 +2,24 @@ using System.Buffers.Binary;
 using System.Globalization;
 using System.Text;
 using Dsh.Core;
+using Dsh.Ide.Catalog;
 
-namespace Dsh.IdeHistory;
+namespace Dsh.Ide.History;
 
 public sealed class JetBrainsLocalHistoryProvider : IIdeHistoryProvider
 {
     private const int IndexHeaderSize = 32;
     private const int IndexRecordSize = 32;
-    private const string StorageName = "changes";
     private const string DataSuffix = ".storageData";
     private const string IndexSuffix = ".storageRecordIndex";
 
     private readonly string? _root;
+    private readonly IdeHistoryDiscovery _discovery;
 
-    public JetBrainsLocalHistoryProvider(string? cacheRoot = null)
+    public JetBrainsLocalHistoryProvider(string? cacheRoot = null, IdeHistoryDiscovery? discovery = null)
     {
         _root = cacheRoot;
+        _discovery = discovery ?? IdeHistoryOptions.From(null).Discovery.GetValueOrDefault("jetbrains") ?? new();
     }
 
     public string Name => "jetbrains";
@@ -65,19 +67,15 @@ public sealed class JetBrainsLocalHistoryProvider : IIdeHistoryProvider
             yield return _root;
             yield break;
         }
-        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (OperatingSystem.IsWindows())
-            yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JetBrains");
-        else if (OperatingSystem.IsMacOS())
-            yield return Path.Combine(profile, "Library", "Caches", "JetBrains");
-        else
-            yield return Path.Combine(profile, ".cache", "JetBrains");
+        foreach (var template in _discovery.Roots.GetValueOrDefault(EditorDiscoveryPaths.Platform) ?? [])
+            foreach (var directory in EditorDiscoveryPaths.Directories(EditorDiscoveryPaths.Render(template)))
+                yield return directory;
     }
 
-    private static IEnumerable<string> CandidateStores(string ideDir)
+    private IEnumerable<string> CandidateStores(string ideDir)
     {
-        yield return Path.Combine(ideDir, "LocalHistory", StorageName + DataSuffix);
-        yield return Path.Combine(ideDir, "LocalHistory", "changes", StorageName + DataSuffix);
+        foreach (var relative in _discovery.StorePaths)
+            yield return Path.Combine(ideDir, relative);
     }
 
     public IReadOnlyList<IdeHistoryEntry> List(IdeHistoryStoreInfo store, string? pathFilter, int limit)

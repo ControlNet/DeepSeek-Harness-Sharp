@@ -93,9 +93,8 @@ sandbox:
 # 快照恢复点 @deepseek-ai/dsh-checkpoints 默认关闭,改 true 开启;参数:max_points、keep_days。
 # TOON 编码面 @deepseek-ai/dsh-toon 默认关闭(实验性:工具结果/调用改用 TOON 文本,输出侧会缓冲流式渲染);
 # 参数:output(默认 true)、input(逗号分隔的工具名白名单,这些工具的结果以 TOON 进上下文)。
-# IDE 本地历史 @deepseek-ai/dsh-ide-history: 只有工作区带对应标记(.vscode/*.code-workspace、.idea/*.iml、.zed)时才查该来源;
-# 参数:providers(默认 [vscode, jetbrains, zed])、timeline(是否把 IDE 历史并进 /timestamp 时间线供 jump/revert/fork,默认 false,避免自动保存噪声)、
-#       timeline_limit(开启后合并的条目上限,默认 50)。
+# Dsh.IDE @deepseek-ai/dsh-ide includes gated local history (.vscode/*.code-workspace, .idea/*.iml, .zed).
+# history: providers (default [vscode, jetbrains, zed]), timeline (default false), timeline_limit (default 50), window_seconds (default 60).
 # TUI @deepseek-ai/dsh-tui: 参数 highlightColor/arrowColor/dividerColor/statusColor/errorColor 可配色(取 "#rrggbb" 真彩或 16 色名如 BrightCyan;
 # arrowColor 缺省跟随 highlightColor, 其余缺省不留痕; 示例见下)。sidebarWidth/inputHeight/gpuBackend 亦在此配。
 # keys 改快捷键:动作名: 按键串(修饰键 Ctrl/Alt 用 + 连接, 多键序列用空格分隔, 如 "Ctrl+X W");未写的动作用默认键位,TUI 内 /keys 列出全部动作与当前绑定;
@@ -113,10 +112,314 @@ plugins:
   "@deepseek-ai/dsh-memory": false
   "@deepseek-ai/dsh-toon": false
   "@deepseek-ai/dsh-checkpoints": false
+  "@deepseek-ai/dsh-ide":
+    default_editor: auto
+    strict_match: false
+    reuse_window: auto
+    focus: never
+    fallback: none
+    allow_outside_workspace: false
+    triggers: []
+    client_mappings: []
+    # This ordered list is the source of editor defaults; [] disables every editor.
+    # An explicit actions/when/executables/bundles mapping or list replaces that field.
+    editors:
+      - id: vscode
+        display_name: Visual Studio Code
+        command: code
+        executables: [code, code.exe, code.cmd]
+        bundles: [Visual Studio Code]
+        history_provider: vscode
+        remote: true
+        when: {workspace: [.vscode, "*.code-workspace"], extensions: [.cs, .ts, .tsx, .js, .json, .md, .py, .go, .rs, .c, .cpp]}
+        actions: {open_file: ["{path}"], open_at_position: ["--goto", "{path}:{line}:{column}"], open_workspace: ["{workspace}"], open_diff: ["--diff", "{left}", "{right}"]}
+        remote_actions: {open_file: ["--file-uri", "{remote_uri}"], open_at_position: ["--goto", "--file-uri", "{remote_uri}:{line}:{column}"], open_workspace: ["--folder-uri", "{remote_uri}"]}
+        reuse_args: [--reuse-window]
+        new_window_args: [--new-window]
+      - id: vscode-insiders
+        display_name: Visual Studio Code - Insiders
+        command: code-insiders
+        executables: [code-insiders, code-insiders.exe, code-insiders.cmd]
+        bundles: [Visual Studio Code - Insiders]
+        history_provider: vscode
+        remote: true
+        when: {workspace: [.vscode, "*.code-workspace"], extensions: [.cs, .ts, .tsx, .js, .json, .md, .py, .go, .rs, .c, .cpp]}
+        actions: {open_file: ["{path}"], open_at_position: ["--goto", "{path}:{line}:{column}"], open_workspace: ["{workspace}"], open_diff: ["--diff", "{left}", "{right}"]}
+        remote_actions: {open_file: ["--file-uri", "{remote_uri}"], open_at_position: ["--goto", "--file-uri", "{remote_uri}:{line}:{column}"], open_workspace: ["--folder-uri", "{remote_uri}"]}
+        reuse_args: [--reuse-window]
+        new_window_args: [--new-window]
+      - id: vscodium
+        display_name: VSCodium
+        command: codium
+        executables: [codium, codium.exe, codium.cmd]
+        bundles: [VSCodium]
+        history_provider: vscode
+        remote: true
+        when: {workspace: [.vscode, "*.code-workspace"], extensions: [.cs, .ts, .tsx, .js, .json, .md, .py, .go, .rs, .c, .cpp]}
+        actions: {open_file: ["{path}"], open_at_position: ["--goto", "{path}:{line}:{column}"], open_workspace: ["{workspace}"], open_diff: ["--diff", "{left}", "{right}"]}
+        remote_actions: {open_file: ["--file-uri", "{remote_uri}"], open_at_position: ["--goto", "--file-uri", "{remote_uri}:{line}:{column}"], open_workspace: ["--folder-uri", "{remote_uri}"]}
+        reuse_args: [--reuse-window]
+        new_window_args: [--new-window]
+      - id: cursor
+        display_name: Cursor
+        command: cursor
+        executables: [cursor, cursor.exe, cursor.cmd]
+        bundles: [Cursor]
+        history_provider: vscode
+        remote: true
+        when: {workspace: [.vscode, "*.code-workspace"], extensions: [.cs, .ts, .tsx, .js, .json, .md, .py, .go, .rs, .c, .cpp]}
+        actions: {open_file: ["{path}"], open_at_position: ["--goto", "{path}:{line}:{column}"], open_workspace: ["{workspace}"], open_diff: ["--diff", "{left}", "{right}"]}
+        remote_actions: {open_file: ["--file-uri", "{remote_uri}"], open_at_position: ["--goto", "--file-uri", "{remote_uri}:{line}:{column}"], open_workspace: ["--folder-uri", "{remote_uri}"]}
+        reuse_args: [--reuse-window]
+        new_window_args: [--new-window]
+      - id: windsurf
+        display_name: Windsurf
+        command: windsurf
+        executables: [windsurf, windsurf.exe, windsurf.cmd]
+        bundles: [Windsurf]
+        history_provider: vscode
+        remote: true
+        when: {workspace: [.vscode, "*.code-workspace"], extensions: [.cs, .ts, .tsx, .js, .json, .md, .py, .go, .rs, .c, .cpp]}
+        actions: {open_file: ["{path}"], open_at_position: ["--goto", "{path}:{line}:{column}"], open_workspace: ["{workspace}"], open_diff: ["--diff", "{left}", "{right}"]}
+        remote_actions: {open_file: ["--file-uri", "{remote_uri}"], open_at_position: ["--goto", "--file-uri", "{remote_uri}:{line}:{column}"], open_workspace: ["--folder-uri", "{remote_uri}"]}
+        reuse_args: [--reuse-window]
+        new_window_args: [--new-window]
+      - id: rider
+        display_name: Rider
+        command: rider
+        executables: [rider, rider64.exe, rider.exe, rider.sh]
+        bundles: [Rider, Rider CE]
+        history_provider: jetbrains
+        when: {workspace: [.idea, "*.sln", "*.slnx", "*.iml"], extensions: [.cs, .xaml, .csproj, .fs]}
+        actions: {open_file: ["--line", "{line}", "--column", "{column}", "{path}"], open_at_position: ["--line", "{line}", "--column", "{column}", "{path}"], open_workspace: ["{workspace}"]}
+      - id: idea
+        display_name: IntelliJ IDEA
+        command: idea
+        executables: [idea, idea64.exe, idea.exe, idea.sh]
+        bundles: [IntelliJ IDEA, IntelliJ IDEA CE]
+        history_provider: jetbrains
+        when: {workspace: [.idea, "*.sln", "*.slnx", "*.iml"], extensions: [.java, .kt, .scala]}
+        actions: {open_file: ["--line", "{line}", "--column", "{column}", "{path}"], open_at_position: ["--line", "{line}", "--column", "{column}", "{path}"], open_workspace: ["{workspace}"]}
+      - id: pycharm
+        display_name: PyCharm
+        command: pycharm
+        executables: [pycharm, pycharm64.exe, pycharm.exe, pycharm.sh]
+        bundles: [PyCharm, PyCharm CE]
+        history_provider: jetbrains
+        when: {workspace: [.idea, "*.sln", "*.slnx", "*.iml"], extensions: [.py]}
+        actions: {open_file: ["--line", "{line}", "--column", "{column}", "{path}"], open_at_position: ["--line", "{line}", "--column", "{column}", "{path}"], open_workspace: ["{workspace}"]}
+      - id: webstorm
+        display_name: WebStorm
+        command: webstorm
+        executables: [webstorm, webstorm64.exe, webstorm.exe, webstorm.sh]
+        bundles: [WebStorm, WebStorm CE]
+        history_provider: jetbrains
+        when: {workspace: [.idea, "*.sln", "*.slnx", "*.iml"], extensions: [.ts, .js, .tsx]}
+        actions: {open_file: ["--line", "{line}", "--column", "{column}", "{path}"], open_at_position: ["--line", "{line}", "--column", "{column}", "{path}"], open_workspace: ["{workspace}"]}
+      - id: clion
+        display_name: CLion
+        command: clion
+        executables: [clion, clion64.exe, clion.exe, clion.sh]
+        bundles: [CLion, CLion CE]
+        history_provider: jetbrains
+        when: {workspace: [.idea, "*.sln", "*.slnx", "*.iml"], extensions: [.c, .cpp, .h, .hpp]}
+        actions: {open_file: ["--line", "{line}", "--column", "{column}", "{path}"], open_at_position: ["--line", "{line}", "--column", "{column}", "{path}"], open_workspace: ["{workspace}"]}
+      - id: goland
+        display_name: GoLand
+        command: goland
+        executables: [goland, goland64.exe, goland.exe, goland.sh]
+        bundles: [GoLand, GoLand CE]
+        history_provider: jetbrains
+        when: {workspace: [.idea, "*.sln", "*.slnx", "*.iml"], extensions: [.go]}
+        actions: {open_file: ["--line", "{line}", "--column", "{column}", "{path}"], open_at_position: ["--line", "{line}", "--column", "{column}", "{path}"], open_workspace: ["{workspace}"]}
+      - id: rubymine
+        display_name: RubyMine
+        command: rubymine
+        executables: [rubymine, rubymine64.exe, rubymine.exe, rubymine.sh]
+        bundles: [RubyMine, RubyMine CE]
+        history_provider: jetbrains
+        when: {workspace: [.idea, "*.sln", "*.slnx", "*.iml"], extensions: [.rb]}
+        actions: {open_file: ["--line", "{line}", "--column", "{column}", "{path}"], open_at_position: ["--line", "{line}", "--column", "{column}", "{path}"], open_workspace: ["{workspace}"]}
+      - id: phpstorm
+        display_name: PhpStorm
+        command: phpstorm
+        executables: [phpstorm, phpstorm64.exe, phpstorm.exe, phpstorm.sh]
+        bundles: [PhpStorm, PhpStorm CE]
+        history_provider: jetbrains
+        when: {workspace: [.idea, "*.sln", "*.slnx", "*.iml"], extensions: [.php]}
+        actions: {open_file: ["--line", "{line}", "--column", "{column}", "{path}"], open_at_position: ["--line", "{line}", "--column", "{column}", "{path}"], open_workspace: ["{workspace}"]}
+      - id: rustrover
+        display_name: RustRover
+        command: rustrover
+        executables: [rustrover, rustrover64.exe, rustrover.exe, rustrover.sh]
+        bundles: [RustRover, RustRover CE]
+        history_provider: jetbrains
+        when: {workspace: [.idea, "*.sln", "*.slnx", "*.iml"], extensions: [.rs]}
+        actions: {open_file: ["--line", "{line}", "--column", "{column}", "{path}"], open_at_position: ["--line", "{line}", "--column", "{column}", "{path}"], open_workspace: ["{workspace}"]}
+      - id: datagrip
+        display_name: DataGrip
+        command: datagrip
+        executables: [datagrip, datagrip64.exe, datagrip.exe, datagrip.sh]
+        bundles: [DataGrip, DataGrip CE]
+        history_provider: jetbrains
+        when: {workspace: [.idea, "*.sln", "*.slnx", "*.iml"], extensions: [.sql]}
+        actions: {open_file: ["--line", "{line}", "--column", "{column}", "{path}"], open_at_position: ["--line", "{line}", "--column", "{column}", "{path}"], open_workspace: ["{workspace}"]}
+      - id: zed
+        display_name: Zed
+        command: zed
+        executables: [zed, zed.exe, zed.cmd]
+        bundles: [Zed]
+        when: {workspace: [.zed]}
+        actions: {open_file: ["{path}:{line}:{column}"], open_at_position: ["{path}:{line}:{column}"], open_workspace: ["{workspace}"]}
+        reuse_args: [--reuse]
+        new_window_args: [--new]
+        background_args: [--background]
+      - id: eclipse
+        display_name: Eclipse
+        command: eclipse
+        executables: [eclipse, eclipse.exe, eclipse.cmd]
+        bundles: [Eclipse]
+        when: {workspace: [.project, .classpath], extensions: [.java]}
+        actions: {open_file: ["{path}"], open_workspace: [-data, "{workspace}"]}
+      - id: codeblocks
+        display_name: CodeBlocks
+        command: codeblocks
+        executables: [codeblocks, codeblocks.exe, codeblocks.cmd]
+        bundles: [CodeBlocks]
+        when: {workspace: ["*.cbp"], extensions: [.c, .cpp, .h, .hpp]}
+        actions: {open_file: ["{path}"], open_workspace: ["{workspace}"]}
+      - id: vim
+        display_name: vim
+        kind: terminal
+        command: vim
+        executables: [vim, vim.exe, vim.cmd]
+        when: {extensions: [.vim]}
+        actions: {open_file: ["+call cursor({line},{column})", "{path}"], open_at_position: ["+call cursor({line},{column})", "{path}"], open_workspace: ["{workspace}"]}
+      - id: nvim
+        display_name: nvim
+        kind: terminal
+        command: nvim
+        executables: [nvim, nvim.exe, nvim.cmd]
+        when: {extensions: [.vim, .lua]}
+        actions: {open_file: ["+call cursor({line},{column})", "{path}"], open_at_position: ["+call cursor({line},{column})", "{path}"], open_workspace: ["{workspace}"]}
+      - id: emacs
+        display_name: Emacs
+        command: emacsclient
+        executables: [emacsclient, emacsclient.exe]
+        bundles: [Emacs]
+        when: {extensions: [.el]}
+        actions: {open_file: [-c, "--alternate-editor=", "+{line}:{column}", "{path}"], open_at_position: [-c, "--alternate-editor=", "+{line}:{column}", "{path}"], open_workspace: [-c, "--alternate-editor=", "{workspace}"]}
+      - id: emacs-terminal
+        display_name: emacs-terminal
+        kind: terminal
+        command: emacsclient
+        executables: [emacsclient, emacsclient.exe, emacsclient.cmd]
+        when: {extensions: [.el]}
+        actions: {open_file: [-t, "--alternate-editor=", "+{line}:{column}", "{path}"], open_at_position: [-t, "--alternate-editor=", "+{line}:{column}", "{path}"], open_workspace: [-t, "--alternate-editor=", "{workspace}"]}
+      - id: sublime
+        display_name: Sublime Text
+        command: subl
+        executables: [subl, subl.exe, subl.cmd]
+        bundles: [Sublime Text]
+        when: {workspace: ["*.sublime-project"]}
+        actions: {open_file: ["{path}:{line}:{column}"], open_at_position: ["{path}:{line}:{column}"], open_workspace: ["{workspace}"]}
+        reuse_args: [--add]
+        new_window_args: [--new-window]
+        background_args: [--background]
+      - id: visualstudio
+        display_name: visualstudio
+        command: devenv.exe
+        executables: [devenv.exe]
+        when: {workspace: ["*.sln", "*.slnx"], extensions: [.cs, .cpp, .vb, .fs]}
+        actions: {open_file: [/Edit, "{path}"], open_workspace: ["{workspace}"]}
+        discovery_commands:
+          - platform: windows
+            command: "{program_files_x86}/Microsoft Visual Studio/Installer/vswhere.exe"
+            args: [-latest, -products, "*", -property, productPath]
+    # Host identification is independent from launch targets; the first matching rule wins.
+    host_detection:
+      - {editor: cursor, variable: VSCODE_IPC_HOOK_CLI, pattern: "*Cursor*"}
+      - {editor: windsurf, variable: VSCODE_IPC_HOOK_CLI, pattern: "*Windsurf*"}
+      - {editor: vscodium, variable: VSCODE_IPC_HOOK_CLI, pattern: "*VSCodium*"}
+      - {editor: vscode-insiders, variable: VSCODE_IPC_HOOK_CLI, pattern: "*Code - Insiders*"}
+      - {editor: vscode, variable: VSCODE_PID}
+      - {editor: vscode, variable: TERM_PROGRAM, pattern: vscode}
+      - {editor: zed, variable: ZED_TERM}
+      - {editor: zed, variable: TERM_PROGRAM, pattern: zed}
+      - {editor: rider, variable: JETBRAINS_IDE, pattern: "*rider*"}
+      - {editor: idea, variable: JETBRAINS_IDE, pattern: "*idea*"}
+      - {editor: pycharm, variable: JETBRAINS_IDE, pattern: "*pycharm*"}
+      - {editor: webstorm, variable: JETBRAINS_IDE, pattern: "*webstorm*"}
+      - {editor: clion, variable: JETBRAINS_IDE, pattern: "*clion*"}
+      - {editor: goland, variable: JETBRAINS_IDE, pattern: "*goland*"}
+      - {editor: rustrover, variable: JETBRAINS_IDE, pattern: "*rustrover*"}
+      - {editor: phpstorm, variable: JETBRAINS_IDE, pattern: "*phpstorm*"}
+      - {editor: rubymine, variable: JETBRAINS_IDE, pattern: "*rubymine*"}
+      - {editor: datagrip, variable: JETBRAINS_IDE, pattern: "*datagrip*"}
+    # Roots are global trusted configuration, never workspace-supplied commands.
+    installation_roots:
+      linux:
+        - /usr/bin
+        - /usr/local/bin
+        - /snap/bin
+        - "/opt/{id}"
+        - "/opt/{id}/bin"
+        - "/opt/jetbrains/{id}/bin"
+        - "{home}/.local/bin"
+        - "{home}/.local/share/JetBrains/Toolbox/scripts"
+        - "{home}/.local/share/JetBrains/Toolbox/apps/*{id}*/bin"
+        - "{home}/.local/share/JetBrains/Toolbox/apps/*{id}*/*/bin"
+        - "{home}/.local/share/JetBrains/Toolbox/apps/*{id}*/*/*/bin"
+      macos:
+        - /usr/bin
+        - /usr/local/bin
+        - "/opt/{id}/bin"
+        - "{home}/.local/bin"
+        - "{home}/Library/Application Support/JetBrains/Toolbox/scripts"
+        - "{home}/Library/Application Support/JetBrains/Toolbox/apps/*{id}*/bin"
+        - "{home}/Library/Application Support/JetBrains/Toolbox/apps/*{id}*/*/bin"
+        - "{home}/Library/Application Support/JetBrains/Toolbox/apps/*{id}*/*/*/bin"
+      windows:
+        - "{local_app_data}/Programs/{display_name}/bin"
+        - "{local_app_data}/Programs/{display_name}"
+        - "{local_app_data}/JetBrains/Toolbox/scripts"
+        - "{local_app_data}/JetBrains/Toolbox/apps/*{id}*/bin"
+        - "{local_app_data}/JetBrains/Toolbox/apps/*{id}*/*/bin"
+        - "{local_app_data}/JetBrains/Toolbox/apps/*{id}*/*/*/bin"
+        - "{program_files}/{display_name}"
+        - "{program_files_x86}/{display_name}"
+        - "{program_files}/JetBrains/{display_name}*/bin"
+        - "{program_files}/CodeBlocks"
+        - "{program_files}/Eclipse"
+        - "{program_files}/Neovim/bin"
+        - "{program_files}/Vim/*"
+        - "{program_files}/Emacs/*/bin"
+        - "{program_files}/Sublime Text"
+        - "{local_app_data}/Programs/Microsoft VS Code/bin"
+        - "{local_app_data}/Programs/Microsoft VS Code Insiders/bin"
+        - "{program_files}/Microsoft VS Code/bin"
+    bundle_roots: ["/Applications", "{home}/Applications"]
+    desktop_roots: ["/usr/share/applications", "/usr/local/share/applications", "{home}/.local/share/applications"]
+    history:
+      providers: [vscode, jetbrains, zed]
+      timeline: false
+      timeline_limit: 50
+      window_seconds: 60
+      discovery:
+        vscode:
+          roots:
+            linux: ["{home}/.config/Code/User", "{home}/.config/Code - Insiders/User", "{home}/.config/Code - OSS/User", "{home}/.config/VSCodium/User", "{home}/.vscode-server/data/User"]
+            macos: ["{home}/Library/Application Support/Code/User", "{home}/Library/Application Support/Code - Insiders/User", "{home}/Library/Application Support/Code - OSS/User", "{home}/Library/Application Support/VSCodium/User"]
+            windows: ["{app_data}/Code/User", "{app_data}/Code - Insiders/User", "{app_data}/Code - OSS/User", "{app_data}/VSCodium/User"]
+          store_paths: [History]
+          settings_file: settings.json
+        jetbrains:
+          roots:
+            linux: ["{home}/.cache/JetBrains"]
+            macos: ["{home}/Library/Caches/JetBrains"]
+            windows: ["{local_app_data}/JetBrains"]
+          store_paths: [LocalHistory/changes.storageData, LocalHistory/changes/changes.storageData]
   # 下面几段是示例, 默认不打开:
-  # "@deepseek-ai/dsh-ide-history":
-  #   timeline: true    # 支持IDE(JetBrains/VSCode)历史记录进入timestamp fork/revert/jump时间线，默认为false
-  #   timeline_limit: 30
   # "@acme/foo":
   #   enabled: true
   #   permissions:
@@ -260,10 +563,29 @@ plugins:
 #   defaultMaxGoalRounds:  # 轮数
 #   blockedAfterConsecutiveRounds:  # 轮数
 #
-# @deepseek-ai/dsh-ide-history:
-#   providers:  # 列表
-#   timeline:  # 是否把 IDE 历史并进 `/timestamp` 时间线(供 jump/revert/fork)
-#   timelineLimit:
+# @deepseek-ai/dsh-ide:
+#   editors:  # 列表
+#   host_detection:  # 列表
+#   installation_roots:  # 映射(见子项)
+#   bundle_roots:  # 列表
+#   desktop_roots:  # 列表
+#   default_editor: "auto"
+#   strict_match:
+#   reuse_window:
+#   focus:
+#   fallback:
+#   allow_outside_workspace:
+#   history:  # 映射(见子项)
+#     providers:  # 列表
+#     discovery:  # 映射(见子项)
+#       roots:  # 映射(见子项)
+#       store_paths:  # 列表
+#       settings_file:
+#     timeline:
+#     timeline_limit:
+#     window_seconds:
+#   triggers:  # 列表
+#   client_mappings:  # 列表
 #
 # @deepseek-ai/dsh-jobs-local:
 #   maxConcurrentJobsPerOwner:

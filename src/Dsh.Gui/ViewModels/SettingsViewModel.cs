@@ -25,6 +25,7 @@ public enum SettingsSection
     Plugins,
     Shortcuts,
     Network,
+    Ide,
     About,
 }
 
@@ -65,6 +66,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         LocalProxyProbe.PropertyChanged += OnLocalLayerProbeStateChanged;
         BorrowedOutboundProbe.PropertyChanged += OnLocalLayerProbeStateChanged;
         Account = new AccountPanelViewModel(_ctx.Get<IAccountService>(IAccountService.ServiceName, false));
+        Ide = new EditorSettingsViewModel(facade);
         foreach (var section in Sections)
             section.SelectCommand = new RelayCommand<SettingsNavItemViewModel>(SelectSection);
         Sections[0].IsSelected = true;
@@ -95,6 +97,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         new(SettingsSection.Plugins, "插件与 MCP"),
         new(SettingsSection.Shortcuts, "快捷键"),
         new(SettingsSection.Network, "网络"),
+        new(SettingsSection.Ide, "IDE 与编辑器"),
         new(SettingsSection.About, "关于"),
     ];
 
@@ -140,6 +143,10 @@ public sealed partial class SettingsViewModel : ObservableObject
     public SettingsSection Section { get; private set; }
 
     public AccountPanelViewModel Account { get; }
+    public EditorSettingsViewModel Ide { get; }
+
+    [ObservableProperty]
+    private bool _isIdeSection;
 
     [ObservableProperty]
     private bool _isAppearanceSection = true;
@@ -888,6 +895,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         IsShortcutsSection = Section == SettingsSection.Shortcuts;
         IsNetworkSection = Section == SettingsSection.Network;
         IsAboutSection = Section == SettingsSection.About;
+        IsIdeSection = Section == SettingsSection.Ide;
         if (Section == SettingsSection.Model)
             LoadHarnessSettings();
         if (Section == SettingsSection.Plugins)

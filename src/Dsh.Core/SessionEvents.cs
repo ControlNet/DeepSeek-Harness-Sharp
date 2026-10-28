@@ -114,6 +114,12 @@ public sealed record ToolResultPayload(
     public override string Type => SessionEventTypes.ToolResult;
 }
 
+/** A successful file mutation, recorded at the business boundary without file contents. */
+public sealed record FileChangedPayload(string Path) : SessionEventPayload
+{
+    public override string Type => SessionEventTypes.FileChanged;
+}
+
 public sealed record EpochHeader(
     LlmCallConfig Config,
     LlmCallConfigAdapterDefaults? AdapterDefaults = null,
@@ -161,6 +167,7 @@ public static class SessionEventTypes
     public const string AssistantMessage = "assistant/message";
     public const string ToolCall = "tool/call";
     public const string ToolResult = "tool/result";
+    public const string FileChanged = "file/changed";
     public const string RequestHeader = "request/header";
     public const string RequestContext = "request/context";
     public const string SessionEndSeed = "session/end-seed";

@@ -191,15 +191,7 @@ public static class HarnessEntrypoint
 
     private static async Task<int> RunHostServeAsync(HarnessHome home, bool useStdio, string? token)
     {
-
-        if (useStdio)
-        {
-            // stdio-over-SSH: 桥接到常驻 daemon; 没有就 detached 起一个。断开只断这条桥, 会话留在远端(脱钩/重连)。
-            await HostAutostart.EnsureRunningAsync(home, token);
-            using var duplex = Dsh.Transport.TransportConnection.FromStandardIo();
-            await HostBridge.RunAsync(duplex, home.Root, CancellationToken.None);
-            return 0;
-        }
+        if (useStdio) return await HostStdio.RunAsync(home, token).ConfigureAwait(false);
 
         using var instance = HostAutostart.TryAcquireInstance(home);
         if (instance is null)
@@ -340,7 +332,7 @@ public static class HarnessEntrypoint
                    dsharp gui [--session <id>]
                    dsharp web [--port N] [--print-token]   (启动独立安装的 dsharp-web，不在本进程加载 Web 框架)
                    dsharp headless "task"
-                   dsharp host serve [--stdio] [--token <t>]   (后台工作区宿主: --stdio 通过 ssh 桥接, 不安装系统服务)
+                   dsharp host serve [--stdio] [--token <t>]   (后台工作区宿主；--stdio 承载 Host 帧及已启用的 LSP 协议能力)
                    dsharp host web [--port N] [--print-token]   (同上；只监听 127.0.0.1，跨设备用 ssh -L 转发)
                    dsharp register-terminal    (Linux: 注册为桌面环境的默认终端)
                    dsharp storage paths        (打印 storage.root 与各分区解析结果)
