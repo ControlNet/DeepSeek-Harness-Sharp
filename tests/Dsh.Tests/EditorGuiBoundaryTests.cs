@@ -224,17 +224,18 @@ public sealed class EditorGuiBoundaryTests
         var service = fixture.Service(fixture.Profile("first"), fixture.Profile("second"), fixture.Profile("late") with { Command = executable });
         await using var host = await HarnessHostFixture.CreateAsync("eb", ct, core => new EditorHost(core, service));
         var client = await host.ConnectAsync("editor-gui-binding", ct);
+        var editors = Assert.IsAssignableFrom<IRemoteEditors>(((IWorkspaceHost)client).GetCapability<IRemoteEditors>());
         await HarnessHostFixture.OpenProjectAsync(client, fixture.Root, ct);
         foreach (var (session, editor) in new[] { ("session-a", "second"), ("session-b", "first") })
         {
-            var result = await client.Editor.OpenAsync(new()
+            var result = await editors.OpenAsync(new()
             {
                 WorkspaceRoot = fixture.Root, Path = fixture.Root, Action = EditorAction.OpenWorkspace,
                 Editor = editor, SessionId = session, RememberSelection = true, ExecutionTarget = EditorExecutionTarget.Local,
             }, ct);
             Assert.True(result.Success, result.Message);
         }
-        var remote = new HostEditorService(client.Editor);
+        var remote = new HostEditorService(editors);
         await remote.RefreshAsync(fixture.Root, ct, "session-a");
         Assert.Equal("second", remote.GetBinding(fixture.Root, "session-a")?.Editor.Value);
         await remote.RefreshAsync(fixture.Root, ct, "session-b");
@@ -258,7 +259,7 @@ public sealed class EditorGuiBoundaryTests
         File.Delete(fixture.Output);
         await vm.OpenAsync();
         Assert.Equal([fixture.Root, fixture.Root, "fixture"], File.ReadAllLines(fixture.Output));
-        var reopened = new HostEditorService(client.Editor);
+        var reopened = new HostEditorService(editors);
         await reopened.RefreshAsync(fixture.Root, ct, "session-a");
         Assert.Equal("late", reopened.GetBinding(fixture.Root, "session-a")?.Editor.Value);
         await reopened.RefreshAsync(fixture.Root, ct, "session-b");

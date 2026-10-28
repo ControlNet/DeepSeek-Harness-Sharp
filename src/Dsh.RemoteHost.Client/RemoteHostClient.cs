@@ -49,7 +49,8 @@ public sealed class RemoteHostClient : IAsyncDisposable, IWorkspaceHost
     public RemoteNetworkClient Network { get; }
     public RemoteEditorClient Editor { get; }
     IWorkspaceAgents IWorkspaceHost.Agent => Agent;
-    IWorkspaceEditors IWorkspaceHost.Editor => Editor;
+    public T? GetCapability<T>() where T : class
+        => Supports(Dsh.Ide.Bridge.EditorProtocol.Capability) ? Editor as T : null;
     IWorkspaceFiles IWorkspaceHost.Files => Files;
     IWorkspaceGit IWorkspaceHost.Git => Git;
     IWorkspaceNotifications IWorkspaceHost.Notifications => Notifications;

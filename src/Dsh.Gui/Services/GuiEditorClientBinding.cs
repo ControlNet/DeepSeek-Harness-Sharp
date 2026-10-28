@@ -1,7 +1,6 @@
 using Dsh.Core;
 using Dsh.Workspace;
 using Dsh.Ide.Bridge;
-using Dsh.RemoteHost;
 
 namespace Dsh.Gui.Services;
 
@@ -11,6 +10,7 @@ public sealed class GuiEditorClientBinding(IEditorService? local, Func<string, E
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
     private IWorkspaceHost? _client;
+    private IRemoteEditors? _editors;
     private IAsyncDisposable? _registration;
     private string? _session;
     private string? _workspace;
@@ -35,19 +35,21 @@ public sealed class GuiEditorClientBinding(IEditorService? local, Func<string, E
                     if (_registration is not null) await _registration.DisposeAsync();
                     _registration = null;
                     _client = null;
+                    _editors = null;
                     _session = null;
                     _workspace = workspace;
                     _machine = machineName;
-                    if (client is null || machineName is null || !client.Supports(EditorProtocol.Capability)) return;
-                    _registration = await client.Editor.RegisterClientAsync(local, _lifetime.Token,
+                    if (client is null || machineName is null || client.GetCapability<IRemoteEditors>() is not { } editors) return;
+                    _registration = await editors.RegisterClientAsync(local, _lifetime.Token,
                         trustedMap is { } map ? request => map(machineName, request) : null,
                         isLocalMachine: machine?.Machine.IsLocal == true,
                         hasMappings: hasMapping?.Invoke(machineName, workspace) == true);
                     _client = client;
+                    _editors = editors;
                 }
-                if (_client is not null && _session != session)
+                if (_editors is not null && _session != session)
                 {
-                    if (await _client.Editor.SelectForSessionAsync(session, _lifetime.Token))
+                    if (await _editors.SelectForSessionAsync(session, _lifetime.Token))
                         _session = session;
                 }
             }
@@ -70,6 +72,7 @@ public sealed class GuiEditorClientBinding(IEditorService? local, Func<string, E
             if (_registration is not null) await _registration.DisposeAsync();
             _registration = null;
             _client = null;
+            _editors = null;
         }
         finally { _gate.Release(); }
         _lifetime.Dispose();

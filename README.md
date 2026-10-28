@@ -197,7 +197,7 @@ network:
 - 看板软行锁：按路径和行区间声明编辑意图，以防其他 SubAgent 乱改，`ttl` 到期自动失效；重叠声明返回冲突，只作 advisory。
 - 大规模编排：`workflow`(Dsh.Workflow) 或 PTC 模式，用 C# 程序批量启动子 Agent。
 - A2A支持：带有`a2a_card`、`a2a_send`、`a2a_get`、`a2a_list`、`a2a_cancel`工具，可作 A2A server 或连接远端 Agent。
-- 外部 Agent：目前支持 Codex、Claude Code、OpenCode 或任意 ACP Agent。
+- 外部 Agent：目前支持 Codex、Claude Code、OpenCode、Kilo Code 或任意 ACP Agent。
 
 <details>
 <summary>多 Agent 配置</summary>
@@ -288,6 +288,8 @@ sandbox:
 <summary><b>未发布</b> — GUI 后端解耦</summary>
 
 - GUI 改由中性工作区契约连接后端，会话、问答、文件/Git、编辑器、终端和机器设置保留现有入口；释放工作区不停止 Host 持有的会话。
+- 工作区作为独立插件管理后端连接，不依赖 IDE 插件；未启用 IDE 时仍可使用会话、终端和文件能力。
+- 新增 Kilo Code 内置适配器，支持 ACP 会话与交互终端入口。
 - 内置 Host 新建或恢复会话时继承启动默认模型与 reasoning；持久化的会话选择仍优先，完全未配置模型时仍明确报错。
 
 </details>

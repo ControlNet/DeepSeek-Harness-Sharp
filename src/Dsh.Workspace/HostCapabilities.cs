@@ -1,5 +1,3 @@
-using Dsh.Core;
-using Dsh.Ide.Bridge;
 using Dsh.GitInspect;
 using Dsh.RemoteHost;
 
@@ -14,18 +12,6 @@ public interface IWorkspaceAgents
     Task CancelAgentAsync(string sessionId, CancellationToken cancellationToken = default);
     Task StopAgentAsync(string sessionId, CancellationToken cancellationToken = default);
     Task<RemoteSessionSummary> ResumeAgentAsync(string sessionId, CancellationToken cancellationToken = default);
-}
-
-/** Typed editor capability; the connection owner controls its lifetime. */
-public interface IWorkspaceEditors
-{
-    Task<EditorRemoteList> ListAsync(CancellationToken cancellationToken = default, bool refresh = false);
-    Task<EditorRemoteStatus> StatusAsync(string workspaceRoot, CancellationToken cancellationToken = default, string? sessionId = null);
-    Task<IReadOnlyList<EditorDiagnostic>> DoctorAsync(string workspaceRoot, CancellationToken cancellationToken = default);
-    Task<EditorResult> OpenAsync(EditorRequest request, CancellationToken cancellationToken = default);
-    Task<IAsyncDisposable> RegisterClientAsync(IEditorService localService, CancellationToken cancellationToken = default,
-        Func<EditorRequest, EditorRequest>? map = null, bool isLocalMachine = false, bool hasMappings = false);
-    Task<bool> SelectForSessionAsync(string sessionId, CancellationToken cancellationToken = default);
 }
 
 /** Typed files capability; the connection owner controls its lifetime. */
@@ -110,7 +96,8 @@ public interface IWorkspaceHost
     Task<long> PingAsync(CancellationToken cancellationToken = default);
     Task<HostInfo> InfoAsync(CancellationToken cancellationToken = default);
     IWorkspaceAgents Agent { get; }
-    IWorkspaceEditors Editor { get; }
+    /** Optional typed extensions are owned by their domain module and advertised by the connected Host. */
+    T? GetCapability<T>() where T : class;
     IWorkspaceFiles Files { get; }
     IWorkspaceGit Git { get; }
     IWorkspaceNotifications Notifications { get; }

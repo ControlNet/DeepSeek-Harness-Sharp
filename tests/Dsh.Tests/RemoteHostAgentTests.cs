@@ -11,7 +11,7 @@ namespace Dsh.Tests;
 /**
  * host.agent.* against a real host with real agent processes.
  * Terminal mode runs a local script as an unknown agent, then the installed Codex and Claude Code up to their first screen (no prompt is ever sent to them).
- * ACP mode runs the installed `opencode acp`; only the LlmSmoke tests send prompts to its configured model.
+ * ACP mode runs the installed native ACP agents; only the LlmSmoke tests send prompts to their configured models.
  */
 [Collection(SerialProcessCollection.Name)]
 public sealed class RemoteHostAgentTests : IDisposable
@@ -31,24 +31,6 @@ public sealed class RemoteHostAgentTests : IDisposable
     {
         if (Directory.Exists(_workspace))
             Directory.Delete(_workspace, recursive: true);
-    }
-
-    [Fact(Explicit = true)]
-    public async Task Catalog_ListsTheHarnessTheBuiltInAgentsAndTheCustomKinds()
-    {
-        await using var host = await HarnessHostFixture.CreateAsync("mac", TestContext.Current.CancellationToken);
-        var client = await host.ConnectAsync("catalog", Ct);
-
-        var catalog = await client.Agent.AgentCatalogAsync(Ct);
-
-        Assert.True(client.Supports(AgentProtocol.Capability));
-        Assert.Equal(
-            [HostAgentKinds.Dsharp, AgentKinds.Codex, AgentKinds.ClaudeCode, AgentKinds.OpenCode, AgentKinds.Terminal, AgentKinds.Acp],
-            catalog.Select(entry => entry.AgentKind));
-        Assert.Equal(HostSessionKinds.Harness, catalog[0].SessionKind);
-        Assert.All(catalog.Where(entry => entry.AgentKind is AgentKinds.Terminal or AgentKinds.Acp), entry => Assert.True(entry.RequiresCommand));
-        var openCode = Assert.Single(catalog, entry => entry.AgentKind == AgentKinds.OpenCode);
-        Assert.Equal(AgentExecutableLocator.Resolve("opencode") is not null, openCode.SupportsAcp);
     }
 
     [Fact(Explicit = true)]
@@ -200,15 +182,17 @@ public sealed class RemoteHostAgentTests : IDisposable
         Assert.Equal(HostSessionStatuses.Exited, exited.Status);
     }
 
-    [Fact(Explicit = true)]
-    public async Task OpenCodeAcp_StopsAndResumesTheSameSession_AlsoAfterAHostRestart()
+    [Theory(Explicit = true)]
+    [InlineData(AgentKinds.OpenCode)]
+    [InlineData(AgentKinds.KiloCode)]
+    public async Task BuiltInAcp_StopsAndResumesTheSameSession_AlsoAfterAHostRestart(string agentKind)
     {
-        RequireOpenCode();
+        RequireAcpAdapter(agentKind);
         await using var host = await HarnessHostFixture.CreateAsync("maa", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("acp", Ct);
         var changes = client.HostSessionChangesAsync(Ct);
 
-        var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp, Title: "opencode acp"), Ct);
+        var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(agentKind, _workspace, Mode: RemoteAgentModes.Acp), Ct);
         await client.SessionEditing.RenameSessionAsync(session.SessionId, "renamed acp", Ct);
         await client.Agent.StopAgentAsync(session.SessionId, Ct);
         var stopped = (await RemoteHostMultiClientTests.NextAsync(changes, item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Exited)).Session!;
@@ -223,23 +207,24 @@ public sealed class RemoteHostAgentTests : IDisposable
         var reopened = await after.Agent.ResumeAgentAsync(session.SessionId, Ct);
         await after.Agent.StopAgentAsync(session.SessionId, Ct);
 
-        Assert.Equal((HostSessionKinds.Acp, AgentKinds.OpenCode, HostSessionStatuses.Idle), (session.Kind, session.AgentKind, session.Status));
+        Assert.Equal((HostSessionKinds.Acp, agentKind, HostSessionStatuses.Idle), (session.Kind, session.AgentKind, session.Status));
         Assert.Equal(HostSessionStatuses.Exited, stopped.Status);
         Assert.Equal((session.SessionId, HostSessionStatuses.Idle), (resumed.SessionId, resumed.Status));
         Assert.Equal(HostSessionStatuses.Exited, restored.Status);
         Assert.Equal((session.SessionId, HostSessionStatuses.Idle, "renamed acp"), (reopened.SessionId, reopened.Status, reopened.Title));
     }
 
-    [Fact(Explicit = true)]
+    [Theory(Explicit = true)]
+    [InlineData(AgentKinds.OpenCode)]
+    [InlineData(AgentKinds.KiloCode)]
     [Trait("Category", "LlmSmoke")]
-    public async Task OpenCodeAcp_PromptTurn_PersistsAndRemainsQueryableAcrossRestart()
+    public async Task BuiltInAcp_PromptTurn_PersistsAndRemainsQueryableAcrossRestart(string agentKind)
     {
-        RequireOpenCode();
+        RequireAcpAdapter(agentKind);
         await using var host = await HarnessHostFixture.CreateAsync("map", TestContext.Current.CancellationToken);
         var client = await host.ConnectAsync("acp", Ct);
-        var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(AgentKinds.OpenCode, _workspace, Mode: RemoteAgentModes.Acp), Ct);
-
-        await client.Agent.PromptAgentAsync(session.SessionId, "Reply with exactly the word pong and nothing else. Do not use any tools.", Ct);
+        var session = await client.Agent.StartAgentAsync(new RemoteAgentStartRequest(agentKind, _workspace,
+            InitialPrompt: "Reply with exactly the word pong and nothing else. Do not use any tools.", Mode: RemoteAgentModes.Acp), Ct);
         var events = await ReadEventsAsync(client, session.SessionId, item => item.Data is TurnEndPayload, cancellationToken: Ct);
         var idle = (await RemoteHostMultiClientTests.NextAsync(client.HostSessionChangesAsync(Ct), item => item.Session?.SessionId == session.SessionId && item.Session.Status == HostSessionStatuses.Idle)).Session!;
 
@@ -257,7 +242,7 @@ public sealed class RemoteHostAgentTests : IDisposable
     [Trait("Category", "LlmSmoke")]
     public async Task OpenCodeAcp_PermissionRequest_ReachesEveryClient_AndTheFirstAnswerWins()
     {
-        RequireOpenCode();
+        RequireAcpAdapter(AgentKinds.OpenCode);
         await using var host = await HarnessHostFixture.CreateAsync("mar", TestContext.Current.CancellationToken);
         var alice = await host.ConnectAsync("alice", Ct);
         var bob = await host.ConnectAsync("bob", Ct);
@@ -344,14 +329,13 @@ public sealed class RemoteHostAgentTests : IDisposable
         }
         Assert.Equal(expected, history.Select(item => DshJson.Serialize(item)));
         Assert.Equal(Enumerable.Range(0, history.Count).Select(seq => (long)seq), history.Select(item => item.Seq));
-        var recovered = history.ToArray();
-        Assert.Equal(recovered, (await ReadEventsAsync(client, sessionId, item => item.Seq == history[^1].Seq)).ToArray());
+        Assert.Equal(expected, (await ReadEventsAsync(client, sessionId, item => item.Seq == history[^1].Seq)).Select(item => DshJson.Serialize(item)));
         AssertSearchable(host, sessionId, queryText, history);
 
         var resumed = await client.Agent.ResumeAgentAsync(sessionId, Ct);
         Assert.Equal((sessionId, HostSessionStatuses.Idle), (resumed.SessionId, resumed.Status));
         var resumedSnapshot = await client.GetSessionSnapshotAsync(sessionId, Ct);
-        Assert.Equal(recovered, resumedSnapshot.Events.Take(history.Count));
+        Assert.Equal(expected, resumedSnapshot.Events.Take(history.Count).Select(item => DshJson.Serialize(item)));
         var resumedHistory = resumedSnapshot.Events.ToArray();
         var marker = $"acpresumed{Guid.NewGuid():N}";
         await client.Agent.PromptAgentAsync(sessionId, $"Reply with exactly {marker} and nothing else. Do not use any tools.", Ct);
@@ -380,10 +364,11 @@ public sealed class RemoteHostAgentTests : IDisposable
             && events.Any(item => item.Seq == hit.Seq && item.Type == hit.Type));
     }
 
-    private static void RequireOpenCode()
+    private static void RequireAcpAdapter(string agentKind)
     {
-        if (AgentExecutableLocator.Resolve("opencode") is null)
-            Assert.Skip("opencode is not installed on this machine");
+        var adapter = Assert.IsType<AgentAdapter>(AgentAdapterCatalog.Find(agentKind));
+        if (AgentExecutableLocator.Resolve(adapter.Acp!.Executable) is null)
+            Assert.Skip($"{adapter.DisplayName} is not installed on this machine");
     }
 
     /** Read a bounded portion of the public event stream, checking its session identity and contiguous sequence numbers. */

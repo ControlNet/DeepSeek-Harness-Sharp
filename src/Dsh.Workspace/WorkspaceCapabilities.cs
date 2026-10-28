@@ -96,7 +96,7 @@ public interface IWorkspaceServices
     Task<ProxyProbeResult> ProbeBorrowedOutboundAsync(string machine, Guid operationId, CancellationToken cancellationToken);
 }
 
-public interface IWorkspaceProvider
+public interface IWorkspaceProvider : IDisposable
 {
     const string ServiceName = "workspaceProvider";
     IWorkspaceServices Create(HarnessHome home, string clientName, Func<string, CancellationToken, Task>? startLocalHost = null);

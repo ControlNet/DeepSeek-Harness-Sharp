@@ -6,6 +6,7 @@ public static class AgentKinds
     public const string Codex = "codex";
     public const string ClaudeCode = "claude-code";
     public const string OpenCode = "opencode";
+    public const string KiloCode = "kilocode";
 
     /** Any agent that speaks ACP over stdio, launched with a user-supplied command. */
     public const string Acp = "acp";
