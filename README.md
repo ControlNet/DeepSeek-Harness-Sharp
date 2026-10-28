@@ -721,6 +721,7 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 
 配置文件为 `~/.dsh/settings.yaml`;首次运行按 `src/Dsh.Boot/Profiles/Templates/settings.yaml` 使用带注释的模板作为默认配置,文件在首次保存设置时创建,不覆盖已有配置(可用 `$DSH_HOME` 或 `storage.root` 指定其它 harness home 做隔离测试)。
 `/plugins` 命令写回 `plugins:` 段时采用文本级修改(保留注释)。
+Host 新建或从持久化恢复的内置会话继承 Host 启动时的默认模型与 reasoning；会话中已有的模型选择优先于这些启动默认值，完全未配置模型时仍在首次请求时报错。
 
 ```yaml
 # 全局默认模型 / 压缩模型 / 子代理默认模型,格式均为 provider/model
