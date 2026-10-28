@@ -120,9 +120,11 @@ plugins:
     fallback: none
     allow_outside_workspace: false
     triggers: []
+    # 可选：为远端机器配置匹配的工作区映射后，Automatic 才会在本机 client 打开；留空则在本机/远端 host 上启动。
     client_mappings: []
     # This ordered list is the source of editor defaults; [] disables every editor.
-    # An explicit actions/when/executables/bundles mapping or list replaces that field.
+    # An explicit actions/when/executables/remote_executables/bundles mapping or list replaces that field.
+    # executables 是本机候选；remote_executables 是远端 host 候选（远端 host 优先尝试）。
     editors:
       - id: vscode
         display_name: Visual Studio Code
