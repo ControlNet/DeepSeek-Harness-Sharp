@@ -4,6 +4,7 @@ using System.Text.Json.Serialization.Metadata;
 using Dsh.Core;
 using Dsh.Fleet;
 using Dsh.Interaction;
+using Dsh.Ide.Bridge;
 using Dsh.Llm;
 using Dsh.Notifications;
 using Dsh.GitInspect;
@@ -36,7 +37,11 @@ internal static class BrowserProtocol
             [nameof(HostSessionKinds.Acp)] = HostSessionKinds.Acp,
             [nameof(HostSessionKinds.Terminal)] = HostSessionKinds.Terminal,
         });
-        Export(script, "Capability", HostProtocolCatalog.KnownCapabilities);
+        Export(script, "Capability", new Dictionary<string, string>(HostProtocolCatalog.KnownCapabilities, StringComparer.Ordinal)
+        {
+            ["Editor"] = EditorProtocol.Capability,
+            ["EditorClient"] = EditorProtocol.ClientCapability,
+        });
         Export(script, "AgentMode", new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [nameof(RemoteAgentModes.Terminal)] = RemoteAgentModes.Terminal,

@@ -22,6 +22,14 @@ public sealed partial class FilesViewModel(RemoteFilesClient files, string rootP
     private readonly RemotePathStyle _style = style;
 
     public string RootPath => rootPath;
+    public EditorOpenWithViewModel? OpenWith { get; set; }
+
+    partial void OnSelectedChanged(FileNodeViewModel? value)
+    {
+        if (OpenWith is null) return;
+        OpenWith.Path = value?.Path ?? rootPath;
+        OpenWith.IsDirectory = value?.IsDirectory ?? true;
+    }
 
     /** 树的顶层: 只有根目录一个节点。 */
     public ObservableCollection<FileNodeViewModel> Roots { get; } = [];

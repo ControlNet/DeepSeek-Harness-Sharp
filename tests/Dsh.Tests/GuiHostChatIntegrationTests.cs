@@ -298,6 +298,8 @@ public sealed class GuiHostChatIntegrationTests
             var preferences = new GuiSettings(gui.App.Home);
             preferences.Save(preferences.Load() with { CloseAction = GuiSettings.CloseQuit });
             var window = new MainWindow(gui.App, chat);
+            var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.Closed += (_, _) => closed.TrySetResult();
             try
             {
                 window.Show();
@@ -339,6 +341,7 @@ public sealed class GuiHostChatIntegrationTests
                 await GuiTestEnvironment.WaitForAsync(viewModel.Messages,
                     () => viewModel.Messages.Any(message => message.Text == "last message before closing"));
                 Dispatcher.UIThread.RunJobs();
+                await GuiTestEnvironment.PumpAsync(closed.Task.WaitAsync(Ct));
                 Assert.False(window.IsVisible);
             }
             finally

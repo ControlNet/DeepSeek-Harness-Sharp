@@ -32,6 +32,8 @@ public sealed class RemoteHostClient : IAsyncDisposable
         SessionEditing = new RemoteSessionEditingClient(this);
         Plugins = new RemotePluginsClient(this);
         Network = new RemoteNetworkClient(this);
+        Editor = new RemoteEditorClient(this);
+        peer.RequestPreparation = Editor.Prepare;
         peer.NotificationReceived += OnNotification;
         peer.Closed += OnClosed;
     }
@@ -45,6 +47,7 @@ public sealed class RemoteHostClient : IAsyncDisposable
     public RemoteSessionEditingClient SessionEditing { get; }
     public RemotePluginsClient Plugins { get; }
     public RemoteNetworkClient Network { get; }
+    public RemoteEditorClient Editor { get; }
     internal bool IsClosed => _peer.IsClosed;
 
     /** Whether the host advertises a capability from HostProtocolCatalog. */
@@ -223,6 +226,7 @@ public sealed class RemoteHostClient : IAsyncDisposable
         var failure = error ?? new IOException("host connection closed");
         _pty.OnClosed(failure);
         _notifications.OnClosed(failure);
+        _ = Editor.DisposeAsync();
         foreach (var stream in _eventStreams.Values)
             stream.Writer.TryComplete(failure);
         _pendingChanges.Writer.TryComplete(failure);
@@ -241,7 +245,11 @@ public sealed class RemoteHostClient : IAsyncDisposable
         return JsonSerializer.Deserialize(value, info) ?? throw new IOException($"host returned an invalid result for {method}");
     }
 
-    public ValueTask DisposeAsync() => _peer.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await _peer.DisposeAsync().ConfigureAwait(false);
+        await Editor.DisposeAsync().ConfigureAwait(false);
+    }
 }
 
 

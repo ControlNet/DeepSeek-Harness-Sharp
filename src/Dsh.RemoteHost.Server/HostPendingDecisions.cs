@@ -116,11 +116,66 @@ public sealed class HostPendingDecisions : IDisposable
             if (answer is RemoteApprovalResponse { Cancelled: false } decision && entry.Approval?.Availability is { } availability
                 && !(decision.Allow ? decision.RememberForSession ? availability.AllowForSession : availability.AllowOnce : availability.Reject))
                 return false;
+            if (answer is RemoteQuestionResponse questionResponse
+                && (entry.Question is not { } question || !IsValidQuestionResponse(question, questionResponse)))
+                return false;
             _entries.Remove(requestId);
             _broadcast.Publish(Change(Resolved(requestId, entry, resolution, resolver)));
         }
         entry.Completion.TrySetResult(answer);
         CountChanged?.Invoke(entry.SessionId);
+        return true;
+    }
+
+    private static bool IsValidQuestionResponse(RemoteQuestionRequest request, RemoteQuestionResponse response)
+    {
+        if (response.Status == "dismissed")
+            return true;
+        if (response.Status != "answered" || response.Answers is null || response.Answers.Count != request.Questions.Count)
+            return false;
+        for (var questionIndex = 0; questionIndex < request.Questions.Count; questionIndex++)
+        {
+            var question = request.Questions[questionIndex];
+            RemoteQuestionAnswerItem? answer = null;
+            for (var answerIndex = 0; answerIndex < response.Answers.Count; answerIndex++)
+            {
+                var candidate = response.Answers[answerIndex];
+                if (candidate is null || candidate.Id != question.Id)
+                    continue;
+                if (answer is not null)
+                    return false;
+                answer = candidate;
+            }
+            if (answer is null || !IsValidQuestionAnswer(question, answer))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool IsValidQuestionAnswer(RemoteQuestionItem question, RemoteQuestionAnswerItem answer)
+    {
+        if (answer.Selected is null || !question.MultiSelect && answer.Selected.Count > 1
+            || !question.AllowCustom && answer.Custom is not null)
+            return false;
+        if (answer.Selected.Count == 0 && (!question.AllowCustom || string.IsNullOrWhiteSpace(answer.Custom)))
+            return false;
+        for (var selectedIndex = 0; selectedIndex < answer.Selected.Count; selectedIndex++)
+        {
+            var value = answer.Selected[selectedIndex];
+            var occurrences = 1;
+            for (var previous = 0; previous < selectedIndex; previous++)
+                if (answer.Selected[previous] == value)
+                    occurrences++;
+            var available = 0;
+            for (var optionIndex = 0; optionIndex < question.Options.Count; optionIndex++)
+            {
+                var option = question.Options[optionIndex];
+                if (!option.Disabled && (option.Value ?? option.Label) == value)
+                    available++;
+            }
+            if (occurrences > available)
+                return false;
+        }
         return true;
     }
 

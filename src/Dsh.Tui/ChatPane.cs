@@ -926,6 +926,7 @@ public sealed class ChatPane : ITuiPane
 
     private void StashDraft()
     {
+        _window.CancelPointerGestures();
         if (_stashedInput is not null)
             return;
         _stashedInput = Input;

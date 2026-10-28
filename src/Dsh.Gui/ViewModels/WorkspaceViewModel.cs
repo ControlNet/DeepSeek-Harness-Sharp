@@ -82,6 +82,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
 
     /** Opens the folder picker used by path-based host pages (Git). */
     public Func<Task<string?>>? FolderPicker { get; set; }
+    public Func<string, string, EditorOpenWithViewModel>? CreateEditorPicker { get; set; }
 
     private string? GitWorkspaceMachine { get; set; }
 
@@ -220,10 +221,14 @@ public sealed partial class WorkspaceViewModel : ObservableObject, IAsyncDisposa
     {
         Pages.Register(new WorkspacePageEntry(WorkspacePages.Files, "文件", filesIcon, context => new HostPageViewModel(
             Fleet, "文件", FilesProtocol.Capability, context.Machine ?? MachineSpec.LocalName, context.ProjectPath ?? RemotePaths.Home,
-            async (host, _, path, style) =>
+            async (host, machine, path, style) =>
             {
                 var files = new FilesViewModel(host.Files, path, style);
-                await files.LoadAsync();
+                if (await files.LoadAsync())
+                {
+                    files.OpenWith = CreateEditorPicker?.Invoke(machine, files.Roots[0].Path);
+                    if (files.OpenWith is not null) await files.OpenWith.RefreshAsync();
+                }
                 return files;
             })));
         Pages.Register(new WorkspacePageEntry(WorkspacePages.Git, "Git", gitIcon, context => new HostPageViewModel(

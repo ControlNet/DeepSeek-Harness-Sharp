@@ -10,14 +10,13 @@ namespace Dsh.Tests;
 
 /**
  * Opt-in, real model -> ask_user_question -> default daemon/proxy TUI -> model consumers.
- * Run with a project-local QA DSH_HOME template configured for nemotron-3.5-lightning, real provider credentials, persistence and tool-ask-user enabled.
+ * Run with a project-local QA DSH_HOME template configured with an authorized model, real provider credentials, persistence and tool-ask-user enabled.
  * CopyRealConfiguration supplies each terminal's private storage; no endpoint, credential or product test switch lives here.
  * The requested question data is fixed, but the assistant's acknowledgement is never graded.
  */
 [Collection(SerialProcessCollection.Name)]
 public sealed class ChoicePromptLlmSmokeTests
 {
-    private const string AuthorizedModel = "nemotron-3.5-lightning";
     private const string Draft = "choice-draft-tail";
     private const string RestoredDraft = "choice-draft-Xtail";
     private const string PasteStart = "\u001b[200~";
@@ -204,7 +203,7 @@ public sealed class ChoicePromptLlmSmokeTests
         return "";
     }
 
-    private sealed class RealTui(PtyTuiHarness terminal, string provider) : IAsyncDisposable
+    private sealed class RealTui(PtyTuiHarness terminal, string provider, string model) : IAsyncDisposable
     {
         private readonly JsonlSessionPersistence _persistence = new(new HarnessHome(terminal.Home).SessionsPath);
         private ToolCallPayload? _call;
@@ -229,11 +228,10 @@ public sealed class ChoicePromptLlmSmokeTests
             var settings = HarnessSettings.Load(template);
             var route = settings.ResolveDefaultModel()
                 ?? throw new InvalidOperationException("The QA template requires a default provider/model.");
-            Assert.Equal(AuthorizedModel, route.Model);
             Assert.True(settings.Providers.ContainsKey(route.Provider), "The QA template requires its real default provider.");
             Assert.True(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DSH_PTY_CHILD")), "Run the smoke outside a resident TUI child so the default proxy path is exercised.");
 
-            var tui = new RealTui(await PtyTuiHarness.StartAsync(), route.Provider);
+            var tui = new RealTui(await PtyTuiHarness.StartAsync(), route.Provider, route.Model);
             try
             {
                 await tui.WaitForScreenAsync(screen => screen.IsAlternateScreen && Input(screen) == ">",
@@ -332,7 +330,7 @@ public sealed class ChoicePromptLlmSmokeTests
             // Its natural-language wording is deliberately not compared with an expected phrase.
             Assert.Contains(events.Skip(resultIndex + 1), entry => entry.Data is AssistantMessagePayload assistant
                 && assistant.Turn == call.Turn && assistant.Step > call.Step && !assistant.Interrupted
-                && assistant.Message.ModelSource.Provider == provider && assistant.Message.ModelSource.Model == AuthorizedModel);
+                && assistant.Message.ModelSource.Provider == provider && assistant.Message.ModelSource.Model == model);
             Assert.Single(events.Select(entry => entry.Data).OfType<UserMessagePayload>(),
                 message => message.Message.Source is UserMessageSource);
             var text = Assert.Single(result.Message.Block.Content.OfType<TextBlock>());

@@ -1,4 +1,4 @@
-namespace Dsh.IdeHistory;
+namespace Dsh.Ide.History;
 
 /**
  * IDE 历史的路径过滤: 各 provider 记录的路径写法不同(JetBrains 用正斜杠 `C:/Users/...`、VSCode 存 `file:///c:/...` 形式的 resource),

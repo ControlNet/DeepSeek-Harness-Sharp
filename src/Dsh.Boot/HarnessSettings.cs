@@ -154,9 +154,13 @@ public sealed class HarnessSettings
         using var transaction = new SettingsWriteLock(path);
         var text = File.Exists(path) ? ReadSettingsTextShared(path) : LoadTemplate();
         _ = Parse(text);
-        var updated = SettingsDocument.ReplacePluginsBlock(text, SettingsDocument.RenderPlugins(Plugins));
+        var updated = SettingsDocument.MergePlugins(text, Plugins);
         _ = Parse(updated);
-        WriteAtomic(path, updated);
+        if (updated != text)
+        {
+            WriteAtomic($"{path}.bak", text);
+            WriteAtomic(path, updated);
+        }
     }
 
     /** Validate independently, persist only the owned child, then publish the route to existing clients. */

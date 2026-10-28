@@ -158,6 +158,70 @@ SQLite 是可选的系统依赖,发布包不捆绑或自动下载 SQLite 原生�
    - 两者分别对应插件 `@deepseek-ai/dsh-tool-working-directory` 与 `@deepseek-ai/dsh-tool-worktree`,可用 `/plugins disable` 关闭。
 14. A2A 宿主默认只监听回环地址；自动端口由实际 HTTP 监听器直接绑定并持有，连接时使用宿主报告的 `Endpoint`。指定端口已被占用时直接报错，不暗中换端口或重试；对非回环地址开放时必须配置认证令牌。关闭宿主会释放监听端口。
 
+## 编辑器与 IDE
+
+内置插件 `@deepseek-ai/dsh-ide` 统一提供外部编辑器启动、文件定位、差异审阅、历史查询和客户端桥接。
+GUI 的「设置 → IDE 与编辑器」可以调整编辑器顺序、动作模板和触发规则；「打开方式」可选择编辑器、本地或远端目标，并记住当前工作区的选择。
+列表顺序决定匹配和回退顺序，`/ide why` 显示实际选择原因，`/ide doctor` 检查安装、显示环境与终端宿主。
+
+以下命令在 DSH 会话中输入：
+
+```text
+/ide list
+/ide doctor
+/ide open README.md --line 1 --column 1 --pick
+/ide open --changed
+/ide diff --git --pick
+/ide diff --checkpoint --pick
+/ide status
+/ide why
+```
+
+`--changed` 打开上一已完成回合实际写入的文件；Git 审阅对比当前工作树与 HEAD，checkpoint 审阅对比当前会话上一回合前的快照。
+`--editor vscode` 可明确选择已配置的编辑器，`--print` 或 `--dry-run` 可检查启动参数而不运行编辑器；带空格的路径需加引号。
+Vim、Neovim 和终端 Emacs 使用 DSH 自己的 PTY，TUI 中退出编辑器并关闭终端面板后可继续原会话。
+GUI 的终端编辑器在发起请求的窗口中打开；多个 GUI 窗口与 TUI 可以共享应用，关闭一个 GUI 只回收其拥有的编辑器 PTY，重新打开后仍路由到新窗口。
+图形编辑器默认不发送焦点请求（`focus: never`），编辑器自身与桌面窗口策略仍可能影响窗口激活。
+
+在全局 `settings.yaml` 的 `plugins` 中配置有序列表，例如：
+
+```yaml
+plugins:
+  "@deepseek-ai/dsh-ide":
+    editors:
+      - id: rider
+      - id: vscode
+      - id: nvim
+    default_editor: auto
+    focus: never
+    reuse_window: auto
+    history:
+      timeline: true
+      timeline_limit: 50
+      window_seconds: 60
+```
+
+随包的 `Profiles/Templates/settings.yaml` 是默认编辑器定义、安装位置、宿主识别规则和历史发现路径的唯一来源，可在全局配置中覆盖这些数据。
+显式 `editors` 列表替换默认清单并保留顺序；删除条目或设置 `enabled: false` 不会重新追加，`editors: []` 禁用全部默认启动条目。
+仅有 `id` 的条目引用该 ID 的默认定义；显式 `actions: {}`、`when: {}`、`env: {}`、`executables: []` 或 `bundles: []` 清除对应字段，而不是重新补回默认内容。
+安装搜索数据通过 `installation_roots` 的平台映射、macOS 的 `bundle_roots`、Linux 的 `desktop_roots` 及编辑器条目中的 `discovery_commands` 配置，默认文件列出了可覆盖的路径与参数。
+宿主识别使用独立、有序的 `host_detection` 规则，每项包含 `editor`、`variable`、`pattern`，读取宿主应用已有的环境信号；宿主不必出现在可启动编辑器列表中，`host_detection: []` 关闭自动识别。
+工作区历史门控使用编辑器条目的 `history_provider` 和 `when.workspace`，`history.discovery` 配置格式读取器的平台根目录、`store_paths` 与可选的 `settings_file`；清空工作区标记不会开启全局历史扫描。
+`/ide list` 展示检测结果与声明的能力；检测到安装不等于逐项能力实测通过，不同编辑器版本的定位、差异及窗口行为仍须在实际应用中确认。
+自定义编辑器的 `command`、参数数组、环境及动作模板只能由全局配置定义；工作区只能引用编辑器 ID 和偏好，不能定义可执行命令。
+打印和 dry-run 命令保留工作目录及参数，但省略全局编辑器环境覆盖值，避免把它们带入模型或诊断输出；实际启动仍应用这些环境覆盖值。
+`fallback: os-default` 仅供用户显式执行的编辑器命令或 GUI 打开操作使用，模型工具与自动触发只使用受信任的全局编辑器配置。
+编辑器集成包使用 `@deepseek-ai/dsh-ide`，历史参数配置在该包的 `history` 层级下。
+`ide_history` 模型工具继续提供只读历史查询；历史时间线可按内容去重并标记与 HEAD 的关系，恢复须先预览差异，确认后备份当前文件，再检查预览后的并发修改。
+
+触发规则按声明顺序执行，可按事件、工作区、文件类型及宿主编辑器过滤；`stop` 控制后续规则是否继续，手动操作与模型工具使用同一派发链路。
+远端客户端映射由全局 `client_mappings` 配置，每项必须指定与 Fleet 机器名一致的 `machine`，再配置对应源根及本地镜像或受支持的 Remote-SSH URI；不同机器的同名目录不会共用映射。
+Remote URI 动作通过受信任描述中的 `remote: true`、`actions` 和 `remote_actions` 声明，参数模板支持 `{remote_uri}`，不依赖固定品牌 ID；映射未指定 `editor` 时，由本地配置的候选清单选择。
+桥接仅接受已认证连接协商的能力，不接受远端提供可执行命令或环境；具体失败不会静默改用另一个目标。
+
+`/ide lsp neovim`、`/ide lsp vscode`、`/ide lsp helix` 生成客户端配置，LSP 由 `Dsh.Lsp` 插件提供，通过既有 `dsharp host serve --stdio` 通道使用标准 stdio 协议；Host 按收到的帧识别协议，无需单独的 LSP 启动选项。
+`/ide bridge` 的命令帮助说明认证扩展协议的端点与令牌文件参数；配置助手不读取或输出令牌内容，也不附带安装 IDE 扩展。
+
 ## 图形界面
 
 GUI 是内置插件 `@deepseek-ai/dsh-gui`,与 TUI 共用同一份配置、会话与命令实现(`/` 命令、`@` 引用、审批、`ask_user_question` 都走 harness 的同一条链路)。

@@ -141,8 +141,9 @@ public sealed class RemoteHostMultiClientTests
             new("q2", [], "Keep the notes."),
         ];
 
-        Assert.True(await alice.RespondQuestionAsync(request.RequestId, answers, Ct,
-            status: dismissFirst ? "dismissed" : "answered"));
+        Assert.True(await alice.RespondQuestionAsync(request.RequestId,
+            dismissFirst ? [new("q1", ["disabled"], "Discard this partial answer")] : answers, Ct,
+            status: dismissFirst ? "dismissed" : "answered", reason: dismissFirst ? "discard this reason" : null));
         Assert.False(await bob.RespondQuestionAsync(request.RequestId, answers, Ct,
             status: dismissFirst ? "answered" : "dismissed", reason: "user_cancelled"));
         var result = await waiting.WaitAsync(Arrival, Ct);
@@ -168,6 +169,87 @@ public sealed class RemoteHostMultiClientTests
                 change.Resolution!.Resolution);
             Assert.Equal("alice", change.Resolution.ResolvedBy);
             Assert.Equal(alice.Hello.ConnectionId, change.Resolution.ResolvedByConnection);
+        }
+    }
+
+    [Theory(Timeout = 60000)]
+    [InlineData("unsupported_status")]
+    [InlineData("missing_group")]
+    [InlineData("missing_question")]
+    [InlineData("foreign_question")]
+    [InlineData("extra_question")]
+    [InlineData("duplicate_question")]
+    [InlineData("disabled_option")]
+    [InlineData("label_instead_of_value")]
+    [InlineData("unknown_option")]
+    [InlineData("multiple_single")]
+    [InlineData("duplicate_selection")]
+    [InlineData("empty_single")]
+    [InlineData("empty_multi")]
+    [InlineData("forbidden_custom")]
+    [InlineData("blank_custom")]
+    public async Task Question_InvalidResponseLeavesAuthoritativePending_AndAnotherClientsValidAnswerWins(string invalidCase)
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("mqv", TestContext.Current.CancellationToken);
+        var alice = await host.ConnectAsync("invalid-answer", Ct);
+        var bob = await host.ConnectAsync("valid-answer", Ct);
+        var service = host.Environment.App.Ctx.Get<UserQuestionService>(UserQuestionService.ServiceName)!;
+        var waiting = service.Ask(new(
+        [
+            new("single", "Choose one", Options:
+                [new("Alpha", Value: "a"), new("Beta", Value: "b"), new("Disabled", Value: "disabled", Disabled: true)], AllowCustom: false),
+            new("multi", "Choose several", Options:
+                [new("X", Value: "x"), new("Fallback"), new("Disabled", Value: "disabled", Disabled: true)], MultiSelect: true, AllowCustom: false),
+            new("custom", "Explain"),
+        ], host.Environment.Agent), Ct);
+        var request = Assert.Single((await NextAsync(alice.PendingChangesAsync(Ct),
+            change => change.Pending.Questions.Count > 0)).Pending.Questions);
+        Assert.Equal(request.RequestId, Assert.Single((await NextAsync(bob.PendingChangesAsync(Ct),
+            change => change.Pending.Questions.Count > 0)).Pending.Questions).RequestId);
+        RemoteQuestionAnswerItem[] valid =
+        [
+            new("single", ["a"], null),
+            new("multi", ["x", "Fallback"], null),
+            new("custom", [], "Keep these notes"),
+        ];
+        var answers = valid.ToArray();
+        var status = "answered";
+        switch (invalidCase)
+        {
+            case "unsupported_status": status = "unsupported"; break;
+            case "missing_group": answers = []; break;
+            case "missing_question": answers = answers[..2]; break;
+            case "foreign_question": answers[0] = answers[0] with { Id = "unknown" }; break;
+            case "extra_question": answers = [.. answers, new("unknown", [], "Unrequested")]; break;
+            case "duplicate_question": answers[1] = answers[0]; break;
+            case "disabled_option": answers[0] = answers[0] with { Selected = ["disabled"] }; break;
+            case "label_instead_of_value": answers[0] = answers[0] with { Selected = ["Alpha"] }; break;
+            case "unknown_option": answers[0] = answers[0] with { Selected = ["unknown"] }; break;
+            case "multiple_single": answers[0] = answers[0] with { Selected = ["a", "b"] }; break;
+            case "duplicate_selection": answers[1] = answers[1] with { Selected = ["x", "x"] }; break;
+            case "empty_single": answers[0] = answers[0] with { Selected = [] }; break;
+            case "empty_multi": answers[1] = answers[1] with { Selected = [] }; break;
+            case "forbidden_custom": answers[0] = answers[0] with { Custom = "Not allowed" }; break;
+            case "blank_custom": answers[2] = answers[2] with { Custom = " \t " }; break;
+            default: throw new ArgumentException("Unknown invalid response case.", nameof(invalidCase));
+        }
+        Assert.False(await alice.RespondQuestionAsync(request.RequestId, answers, Ct, status));
+        Assert.False(waiting.IsCompleted);
+        foreach (var client in new[] { alice, bob })
+            Assert.Equal(request.RequestId, Assert.Single((await client.ListPendingAsync(Ct)).Questions).RequestId);
+        Assert.True(await bob.RespondQuestionAsync(request.RequestId, valid, Ct));
+        Assert.False(await alice.RespondQuestionAsync(request.RequestId, answers, Ct, status));
+        var result = await waiting.WaitAsync(Arrival, Ct);
+        Assert.Equal("answered", result.Status);
+        Assert.Equal(["a"], result.Answers[0].Selected);
+        Assert.Equal(["x", "Fallback"], result.Answers[1].Selected);
+        Assert.Equal("Keep these notes", result.Answers[2].Custom);
+        foreach (var client in new[] { alice, bob })
+        {
+            var change = await NextAsync(client.PendingChangesAsync(Ct), item => item.Resolution?.RequestId == request.RequestId);
+            Assert.Empty(change.Pending.Questions);
+            Assert.Equal(PendingResolutions.Answered, change.Resolution!.Resolution);
+            Assert.Equal("valid-answer", change.Resolution.ResolvedBy);
         }
     }
 

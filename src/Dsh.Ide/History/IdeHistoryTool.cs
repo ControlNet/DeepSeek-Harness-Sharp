@@ -3,7 +3,7 @@ using Dsh.Core;
 using Dsh.Llm;
 using Dsh.Runtime;
 
-namespace Dsh.IdeHistory;
+namespace Dsh.Ide.History;
 
 public static class IdeHistoryTool
 {
