@@ -71,6 +71,7 @@ public sealed partial class EditorSettingsViewModel : ObservableObject
             ? configuredLimit : historyDefaults.GetValueOrDefault("timeline_limit");
         HistoryLimit = int.TryParse(historyLimit?.ToString(), out var limit) ? limit : Convert.ToInt32(historyDefaults.GetValueOrDefault("timeline_limit"));
         LoadRows(Editors, map.GetValueOrDefault("editors"));
+        foreach (var row in Editors) row.EnsureKey("remote_executables", Array.Empty<string>());
         LoadRows(Triggers, map.GetValueOrDefault("triggers"));
         SelectedEditor = Editors.FirstOrDefault();
         SelectedTrigger = Triggers.FirstOrDefault();
@@ -114,6 +115,7 @@ public sealed partial class EditorSettingsViewModel : ObservableObject
         {
             ["id"] = $"custom-{Editors.Count + 1}", ["enabled"] = true,
             ["kind"] = "gui", ["command"] = "",
+            ["remote_executables"] = Array.Empty<string>(),
             ["actions"] = new Dictionary<string, object?> { ["open_file"] = new[] { "{path}" }, ["open_workspace"] = new[] { "{workspace}" } },
             ["when"] = new Dictionary<string, object?> { ["workspace"] = Array.Empty<string>(), ["extensions"] = Array.Empty<string>(), ["globs"] = Array.Empty<string>() },
             ["env"] = new Dictionary<string, object?>(),
@@ -158,6 +160,13 @@ public sealed partial class EditorConfigurationRow : ObservableObject
     private static readonly ISerializer Serializer = new SerializerBuilder().Build();
     public EditorConfigurationRow(Dictionary<string, object?> map) => _yaml = Serializer.Serialize(map);
     [ObservableProperty] private string _yaml;
+    public void EnsureKey(string key, object? value)
+    {
+        var map = Read();
+        if (map.ContainsKey(key)) return;
+        map[key] = value;
+        Yaml = Serializer.Serialize(map);
+    }
     public string Label
     {
         get

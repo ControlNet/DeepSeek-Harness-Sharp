@@ -41,6 +41,8 @@ public sealed class EditorDetector(
     }
     private IEnumerable<(string Path, string Source, bool Bundle)> Candidates(EditorDescriptor d)
     {
+        foreach (var command in d.RemoteExecutableCandidates.Distinct(StringComparer.OrdinalIgnoreCase))
+            if (FindOnPath(command) is { } found) yield return (found, "remote-executable", false);
         if (Path.IsPathRooted(d.Command)) { yield return (d.Command, "configuration", false); yield break; }
         var names = new[] { d.Command }.Concat(d.ExecutableCandidates).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         foreach (var command in names)

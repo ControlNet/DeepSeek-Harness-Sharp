@@ -90,6 +90,7 @@ public sealed record EditorOptions
             DiscoveryCommands = map.TryGetValue("discovery_commands", out var discoveryCommands)
                 ? ConfigMap.Items(discoveryCommands).Select(ReadDiscoveryCommand).ToArray() : basis?.DiscoveryCommands ?? [],
             ExecutableCandidates = map.TryGetValue("executables", out var executables) ? ConfigMap.Strings(executables) : ConfigMap.Text(map, "command") is not null ? [] : basis?.ExecutableCandidates ?? [],
+            RemoteExecutableCandidates = map.TryGetValue("remote_executables", out var remoteExecutables) ? ConfigMap.Strings(remoteExecutables) : basis?.RemoteExecutableCandidates ?? [],
             BundleNames = map.TryGetValue("bundles", out var bundles) ? ConfigMap.Strings(bundles) : ConfigMap.Text(map, "command") is not null ? [] : basis?.BundleNames ?? [],
             Environment = environment, WorkingDirectory = ConfigMap.Text(map, "cwd") ?? basis?.WorkingDirectory,
             ReuseArguments = map.TryGetValue("reuse_args", out var reuse) ? ConfigMap.Strings(reuse) : basis?.ReuseArguments ?? [],

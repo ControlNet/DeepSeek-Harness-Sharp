@@ -28,7 +28,7 @@ public sealed class EditorInteractionService(Context ctx, IEditorService editors
         var outcomes = await triggers.ExecuteAsync(new("manual", request)
         {
             SessionSource = "manual",
-            MachineType = ctx.Get<EditorExecutionContext>(EditorExecutionContext.ServiceName, false)?.IsRemoteHost == true ? "remote" : "local",
+            MachineType = MachineTypeFor(request.SessionId),
         }, cancellationToken).ConfigureAwait(false);
         var results = outcomes.SelectMany(outcome => outcome.Results).ToArray();
         return results.Length switch
@@ -45,4 +45,9 @@ public sealed class EditorInteractionService(Context ctx, IEditorService editors
             },
         };
     }
+
+    private string MachineTypeFor(string? sessionId)
+        => ctx.Get<EditorClientDispatcher>(EditorClientDispatcher.ServiceName, false)?.TryIsLocalMachine(sessionId) is { } local
+            ? local ? "local" : "remote"
+            : ctx.Get<EditorExecutionContext>(EditorExecutionContext.ServiceName, false)?.IsRemoteHost == true ? "remote" : "local";
 }

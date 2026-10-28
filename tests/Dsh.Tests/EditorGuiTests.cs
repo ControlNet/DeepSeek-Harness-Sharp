@@ -85,6 +85,7 @@ public sealed class EditorGuiTests
         var vm = new EditorSettingsViewModel(facade);
         Assert.Equal(["vscode", "rider"], vm.Editors.Select(row => row.Label));
         Assert.Equal("vscode", vm.HistoryProviders);
+        Assert.All(vm.Editors, row => Assert.True(row.Read().ContainsKey("remote_executables")));
         vm.SelectedEditor = vm.Editors[1];
         vm.MoveEditorUpCommand.Execute(null);
         vm.Editors[0].Enabled = false;

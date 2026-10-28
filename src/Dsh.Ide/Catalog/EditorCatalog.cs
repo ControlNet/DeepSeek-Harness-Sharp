@@ -85,7 +85,7 @@ public sealed class EditorCatalog : IEditorCatalog
         DiscoveryCommands = d.DiscoveryCommands.Select(command => command with { Arguments = command.Arguments.ToArray() }).ToArray(),
         Environment = d.Environment.ToDictionary(p => p.Key, p => p.Value),
         When = d.When with { Workspace = d.When.Workspace.ToArray(), Extensions = d.When.Extensions.ToArray(), Globs = d.When.Globs.ToArray() },
-        ExecutableCandidates = d.ExecutableCandidates.ToArray(), BundleNames = d.BundleNames.ToArray(),
+        ExecutableCandidates = d.ExecutableCandidates.ToArray(), RemoteExecutableCandidates = d.RemoteExecutableCandidates.ToArray(), BundleNames = d.BundleNames.ToArray(),
         ReuseArguments = d.ReuseArguments.ToArray(), NewWindowArguments = d.NewWindowArguments.ToArray(),
         BackgroundArguments = d.BackgroundArguments.ToArray(), FocusArguments = d.FocusArguments.ToArray(),
     };

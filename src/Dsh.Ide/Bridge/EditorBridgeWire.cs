@@ -31,7 +31,7 @@ public sealed record RemoteEditorWorkspace(string WorkspaceRoot, string? Session
 public sealed record RemoteEditorList(bool Refresh = false);
 public sealed record RemoteEditorOpen(Guid OperationId, EditorRequest Request);
 public sealed record RemoteEditorCancel(Guid OperationId);
-public sealed record RemoteEditorClientRegistration(int ProtocolVersion = EditorProtocol.Version);
+public sealed record RemoteEditorClientRegistration(int ProtocolVersion = EditorProtocol.Version, bool IsLocalMachine = false, bool HasMappings = false);
 public sealed record RemoteEditorSelect(string SessionId);
 
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, UseStringEnumConverter = true,
