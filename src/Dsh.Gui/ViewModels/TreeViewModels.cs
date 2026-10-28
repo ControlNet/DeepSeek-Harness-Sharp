@@ -35,7 +35,7 @@ public sealed partial class TraceFilterViewModel(TraceKind? kind, string label) 
     private bool _isSelected;
 }
 
-/** 命令/@ 候选浮层里的一条候选。 */
+/** 命令/@ 候选浮层里的一条候选; InsertText 是写回输入框的文本, @ 候选只给 token 本身(不含 @)。 */
 public sealed record SuggestionViewModel(string Kind, string Label, string Description, string InsertText);
 
 /** 模型浮层的一项: Name 为 provider/model, IsCurrent 标记当前会话使用的模型。 */

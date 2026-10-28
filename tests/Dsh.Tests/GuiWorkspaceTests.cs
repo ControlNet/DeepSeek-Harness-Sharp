@@ -434,7 +434,7 @@ public sealed class GuiWorkspaceTests
         await using var gui = await GuiTestEnvironment.CreateAsync();
         await HeadlessGui.RunAsync(async () =>
         {
-            var fleet = new FleetWorkspace(new MachineStore(gui.App.Home), Options, () => new FleetClient([], Options));
+            var fleet = new FleetWorkspace(new FleetWorkspaceServices(new MachineStore(gui.App.Home), Options, () => new FleetClient([], Options)));
             var workspace = new WorkspaceViewModel(fleet,
         (_, _, _) => { });
             var destinations = new List<WorkspaceDestination>();
@@ -483,8 +483,7 @@ public sealed class GuiWorkspaceTests
         await using var host = await HarnessHostFixture.CreateAsync("gnc", ct);
         await HeadlessGui.RunAsync(async () =>
         {
-            var fleet = new FleetWorkspace(new MachineStore(new HarnessHome(host.Root)), Options,
-                () => new FleetClient([MachineSpec.Local(host.Root, "alpha"), MachineSpec.Local(host.Root, "beta")], Options));
+            var fleet = new FleetWorkspace(new FleetWorkspaceServices(new MachineStore(new HarnessHome(host.Root)), Options, () => new FleetClient([MachineSpec.Local(host.Root, "alpha"), MachineSpec.Local(host.Root, "beta")], Options)));
         var actions = new FleetSessionActions(fleet);
             var form = new NewSessionViewModel(fleet, actions, "alpha", host.Root);
             var window = new NewSessionWindow(form);
@@ -535,8 +534,7 @@ public sealed class GuiWorkspaceTests
         await HeadlessGui.RunAsync(async () =>
         {
             var store = new MachineStore(new HarnessHome(alpha.Root));
-            var fleet = new FleetWorkspace(
-                store, Options, () => new FleetClient([MachineSpec.Local(alpha.Root, "alpha"), MachineSpec.Local(beta.Root, "beta"), .. store.Load().Machines], Options));
+            var fleet = new FleetWorkspace(new FleetWorkspaceServices(store, Options, () => new FleetClient([MachineSpec.Local(alpha.Root, "alpha"), MachineSpec.Local(beta.Root, "beta"), .. store.Load().Machines], Options)));
         var workspace = new WorkspaceViewModel(fleet, (_, _, _) => { });
             workspace.RegisterHostPages(Icon("Icon.Folder"), Icon("Icon.Git"), Icon("Icon.Machine"));
             NewSessionViewModel? form = null;
@@ -601,8 +599,7 @@ private static WorkspacePageEntry Page(WorkspaceViewModel workspace, string id) 
     {
         TempTree.AssertFitsMacOsSocketLimit(Path.Combine(alpha.Root, "host.sock"));
         TempTree.AssertFitsMacOsSocketLimit(Path.Combine(beta.Root, "host.sock"));
-        var fleet = new FleetWorkspace(
-            new MachineStore(new HarnessHome(alpha.Root)), Options, () => new FleetClient([MachineSpec.Local(alpha.Root, "alpha"), MachineSpec.Local(beta.Root, "beta")], Options));
+        var fleet = new FleetWorkspace(new FleetWorkspaceServices(new MachineStore(new HarnessHome(alpha.Root)), Options, () => new FleetClient([MachineSpec.Local(alpha.Root, "alpha"), MachineSpec.Local(beta.Root, "beta")], Options)));
         var workspace = new WorkspaceViewModel(fleet, (_, _, _) => { });
         workspace.Start();
         return workspace;

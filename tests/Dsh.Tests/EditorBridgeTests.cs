@@ -70,12 +70,12 @@ public sealed class EditorBridgeTests
     }
 
     [Fact(Timeout = 10000)]
-    public async Task RemoteAutomaticAndManualRequestsReachOnlyTheSelectedClientBeforeHostDetection()
+    public async Task ExplicitClientAndManualRequestsReachOnlyTheSelectedClientBeforeHostDetection()
     {
         await using var core = await RemoteHostCapabilityTests.FakeBackend.CreateAsync(TestContext.Current.CancellationToken);
         using var clients = new EditorClientDispatcher();
         var hostService = new RecordingService();
-        var bridge = new EditorBridgeService(hostService, clients, new EditorExecutionContext { IsRemoteHost = true });
+        var bridge = new EditorBridgeService(hostService, clients);
         var server = new RemoteHostServer(new("editor-test-token"), new Backend(core, new EditorBackend(bridge, clients, core.Files.Policy)));
         await using var first = await Connection.CreateAsync(server, Ct);
         await using var second = await Connection.CreateAsync(server, Ct);
@@ -83,7 +83,7 @@ public sealed class EditorBridgeTests
         var desktopTwo = new RecordingService();
         await using var registrationOne = await first.Client.Editor.RegisterClientAsync(desktopOne, Ct, request => request with { WorkspaceRoot = core.Root });
         await using var registrationTwo = await second.Client.Editor.RegisterClientAsync(desktopTwo, Ct, request => request with { WorkspaceRoot = core.Root });
-        var newSession = new EditorRequest { WorkspaceRoot = core.Root, SessionId = "new-session", ExecutionTarget = EditorExecutionTarget.Automatic };
+        var newSession = new EditorRequest { WorkspaceRoot = core.Root, SessionId = "new-session", ExecutionTarget = EditorExecutionTarget.Client };
         Assert.True((await first.Client.Editor.OpenAsync(newSession, Ct)).Success);
         Assert.True((await second.Client.Editor.OpenAsync(newSession, Ct)).Success);
         Assert.Equal(2, desktopOne.Requests.Count);
@@ -91,7 +91,7 @@ public sealed class EditorBridgeTests
         await first.Client.Editor.SelectForSessionAsync("session-a", Ct);
         await second.Client.Editor.SelectForSessionAsync("session-b", Ct);
 
-        var request = new EditorRequest { WorkspaceRoot = core.Root, SessionId = "session-a", TriggerId = "session.start", ExecutionTarget = EditorExecutionTarget.Automatic, MachineId = "remote" };
+        var request = new EditorRequest { WorkspaceRoot = core.Root, SessionId = "session-a", TriggerId = "session.start", ExecutionTarget = EditorExecutionTarget.Client, MachineId = "remote" };
         Assert.True((await bridge.LaunchAsync(request, Ct)).Success);
         Assert.True((await second.Client.Editor.OpenAsync(request with { TriggerId = null }, Ct)).Success);
         Assert.Equal(4, desktopOne.Requests.Count);
@@ -104,8 +104,13 @@ public sealed class EditorBridgeTests
             Assert.Null(forwarded.MachineId);
             Assert.Null(forwarded.HostEditor);
         });
+        var automatic = await bridge.LaunchAsync(request with { ExecutionTarget = EditorExecutionTarget.Automatic }, Ct);
+        Assert.True(automatic.Success);
+        var automaticRequest = Assert.Single(hostService.Requests);
+        Assert.Equal(EditorExecutionTarget.Local, automaticRequest.ExecutionTarget);
+        Assert.Equal(0, hostService.Detections);
         Assert.True((await bridge.LaunchAsync(request with { ExecutionTarget = EditorExecutionTarget.Local }, Ct)).Success);
-        Assert.Single(hostService.Requests);
+        Assert.Equal(2, hostService.Requests.Count);
     }
 
     [Fact(Timeout = 10000)]
@@ -116,7 +121,7 @@ public sealed class EditorBridgeTests
         using var clients = new EditorClientDispatcher();
         var desktop = fixture.Service(fixture.Profile("desktop"));
         var host = fixture.Service(fixture.Profile("host"));
-        var bridge = new EditorBridgeService(host, clients, new EditorExecutionContext { IsRemoteHost = true });
+        var bridge = new EditorBridgeService(host, clients);
         var server = new RemoteHostServer(new("editor-test-token"), new Backend(core, new EditorBackend(bridge, clients, core.Files.Policy)));
         await using var connection = await Connection.CreateAsync(server, Ct);
         await using var registration = await connection.Client.Editor.RegisterClientAsync(desktop, Ct,
@@ -127,7 +132,7 @@ public sealed class EditorBridgeTests
             WorkspaceRoot = core.Root, Path = core.Root, SessionId = "decision-session",
             Editor = "desktop", Action = EditorAction.OpenWorkspace,
         };
-        var remote = await connection.Client.Editor.OpenAsync(request, Ct);
+        var remote = await connection.Client.Editor.OpenAsync(request with { ExecutionTarget = EditorExecutionTarget.Client }, Ct);
         Assert.True(remote.Success, remote.Message);
         var selected = Assert.IsType<EditorDecision>((await connection.Client.Editor.StatusAsync(core.Root, Ct)).LastDecision);
         Assert.Equal(["desktop"], selected.CandidateOrder);
@@ -148,7 +153,7 @@ public sealed class EditorBridgeTests
     {
         await using var core = await RemoteHostCapabilityTests.FakeBackend.CreateAsync(TestContext.Current.CancellationToken);
         using var clients = new EditorClientDispatcher();
-        var bridge = new EditorBridgeService(new RecordingService(), clients, new EditorExecutionContext { IsRemoteHost = true });
+        var bridge = new EditorBridgeService(new RecordingService(), clients);
         var server = new RemoteHostServer(new("editor-test-token"), new Backend(core, new EditorBackend(bridge, clients, core.Files.Policy)));
         await using var connection = await Connection.CreateAsync(server, Ct);
         var started = NewSignal();
@@ -279,18 +284,104 @@ public sealed class EditorBridgeTests
     }
 
     [Fact]
-    public async Task MissingDesktopPrintsWithoutSelectingAnArbitraryConnectedClient()
+    public async Task AutomaticUsesTheHostWithoutSelectingAnArbitraryConnectedClient()
     {
         using var clients = new EditorClientDispatcher();
         var local = new RecordingService();
         var other = new RecordingService();
         using var registration = clients.RegisterClient("unselected", other.LaunchAsync, TestContext.Current.CancellationToken);
-        var bridge = new EditorBridgeService(local, clients, new EditorExecutionContext { IsRemoteHost = true });
+        var bridge = new EditorBridgeService(local, clients);
         var result = await bridge.LaunchAsync(new EditorRequest { WorkspaceRoot = ".", SessionId = "ssh", ExecutionTarget = EditorExecutionTarget.Automatic }, Ct);
-        Assert.True(result.Printed);
-        Assert.NotNull(result.PrintableCommand);
-        Assert.Equal(EditorExecutionTarget.Print, Assert.Single(local.Requests).ExecutionTarget);
+        Assert.True(result.Success);
+        Assert.False(result.Printed);
+        Assert.Equal(EditorExecutionTarget.Local, Assert.Single(local.Requests).ExecutionTarget);
         Assert.Empty(other.Requests);
+    }
+
+    [Fact]
+    public async Task AutomaticNeverDispatchesToAClient()
+    {
+        using var clients = new EditorClientDispatcher();
+        var client = new RecordingService();
+        var local = new RecordingService();
+        using var registration = clients.RegisterClient("client", client.LaunchAsync, Ct);
+        clients.SelectClient("automatic-session", "client");
+        var bridge = new EditorBridgeService(local, clients);
+        var result = await bridge.LaunchAsync(new EditorRequest { WorkspaceRoot = ".", SessionId = "automatic-session", ExecutionTarget = EditorExecutionTarget.Automatic }, Ct);
+        Assert.True(result.Success);
+        Assert.Equal(EditorExecutionTarget.Local, Assert.Single(local.Requests).ExecutionTarget);
+        Assert.Empty(client.Requests);
+    }
+
+    [Fact]
+    public async Task AutomaticUsesTheClientOnlyWhenTheRemoteClientHasMappings()
+    {
+        using var clients = new EditorClientDispatcher();
+        var client = new RecordingService();
+        var local = new RecordingService();
+        using var registration = clients.RegisterClient("client", client.LaunchAsync, Ct, isLocalMachine: false, hasMappings: true);
+        clients.SelectClient("mapped-session", "client");
+        var bridge = new EditorBridgeService(local, clients);
+        var result = await bridge.LaunchAsync(new EditorRequest { WorkspaceRoot = ".", SessionId = "mapped-session", ExecutionTarget = EditorExecutionTarget.Automatic }, Ct);
+        Assert.True(result.Success);
+        Assert.Single(client.Requests);
+        Assert.Empty(local.Requests);
+    }
+
+    [Fact]
+    public async Task AutomaticUsesTheHostForALocalClientWithMappings()
+    {
+        using var clients = new EditorClientDispatcher();
+        var client = new RecordingService();
+        var local = new RecordingService();
+        using var registration = clients.RegisterClient("client", client.LaunchAsync, Ct, isLocalMachine: true, hasMappings: true);
+        clients.SelectClient("local-session", "client");
+        var bridge = new EditorBridgeService(local, clients);
+        var result = await bridge.LaunchAsync(new EditorRequest { WorkspaceRoot = ".", SessionId = "local-session", ExecutionTarget = EditorExecutionTarget.Automatic }, Ct);
+        Assert.True(result.Success);
+        Assert.Equal(EditorExecutionTarget.Local, Assert.Single(local.Requests).ExecutionTarget);
+        Assert.Empty(client.Requests);
+    }
+
+    [Fact]
+    public void ClientMappingAvailabilityRequiresAWorkspaceMatch()
+    {
+        var mapper = new EditorPathMapper([new("remote", "/workspace", Directory.GetCurrentDirectory())]);
+        Assert.True(mapper.HasMapping("remote", "/workspace"));
+        Assert.True(mapper.HasMapping("remote", "/workspace/src"));
+        Assert.False(mapper.HasMapping("remote", "/other"));
+        Assert.False(mapper.HasMapping("other", "/workspace"));
+    }
+
+    [Fact]
+    public async Task ExplicitClientWithoutMappingDoesNotFallBackToTheHost()
+    {
+        using var clients = new EditorClientDispatcher();
+        var client = new RecordingService((_, _) => ValueTask.FromResult(new EditorResult
+        {
+            Error = EditorErrorCode.UNSUPPORTED,
+            Message = "A locally trusted remote workspace mapping is required.",
+        }));
+        var local = new RecordingService();
+        using var registration = clients.RegisterClient("client", client.LaunchAsync, Ct);
+        clients.SelectClient("client-session", "client");
+        var bridge = new EditorBridgeService(local, clients);
+        var result = await bridge.LaunchAsync(new EditorRequest { WorkspaceRoot = ".", SessionId = "client-session", ExecutionTarget = EditorExecutionTarget.Client }, Ct);
+        Assert.Equal(EditorErrorCode.UNSUPPORTED, result.Error);
+        Assert.Empty(local.Requests);
+    }
+
+    [Fact(Timeout = 10000)]
+    public async Task ClientRegistrationCarriesMappingAvailability()
+    {
+        await using var core = await RemoteHostCapabilityTests.FakeBackend.CreateAsync(TestContext.Current.CancellationToken);
+        using var clients = new EditorClientDispatcher();
+        var server = new RemoteHostServer(new("editor-test-token"), new Backend(core, new EditorBackend(new RecordingService(), clients, core.Files.Policy)));
+        await using var connection = await Connection.CreateAsync(server, Ct);
+        var client = new RecordingService();
+        await using var registration = await connection.Client.Editor.RegisterClientAsync(client, Ct, request => request, isLocalMachine: false, hasMappings: true);
+        await connection.Client.Editor.SelectForSessionAsync("mapped-session", Ct);
+        Assert.Equal(EditorExecutionTarget.Client, clients.TargetFor("mapped-session"));
     }
 
     [Theory]

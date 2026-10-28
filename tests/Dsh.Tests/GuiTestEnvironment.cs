@@ -302,7 +302,7 @@ public sealed class GuiTestEnvironment : IAsyncDisposable
         _chats.Add(chat);
         var machine = _fleet!.Find(MachineSpec.LocalName)!;
         var registered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        void SessionsChanged(MachineConnection connection)
+        void SessionsChanged(IWorkspaceMachine connection)
         {
             if (connection.Sessions.Any(session => session.SessionId == chat.Id.Value))
                 registered.TrySetResult();

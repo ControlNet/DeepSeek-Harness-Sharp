@@ -1,13 +1,13 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Interaction;
 using Dsh.RemoteHost;
 
 namespace Dsh.Gui.ViewModels;
 
 /** Host pending state owns the lifetime; this adapter only presents and sends an answer. */
-public sealed partial class PendingDecisionViewModel(FleetPendingItem item, Func<MachineConnection?> machine) : ObservableObject
+public sealed partial class PendingDecisionViewModel(FleetPendingItem item, Func<IWorkspaceMachine?> machine) : ObservableObject
 {
     private DecisionViewModel? _dialog;
     private bool _resolved;
@@ -137,7 +137,7 @@ public sealed partial class PendingDecisionViewModel(FleetPendingItem item, Func
                 status: AskUserQuestionAnswer.Dismissed.Status, reason: AskUserQuestionAnswer.Dismissed.Reason))
             : Task.CompletedTask;
 
-    private async Task SendAsync(MachineConnection connection, Func<RemoteHostClient, CancellationToken, Task<bool>> respond)
+    private async Task SendAsync(IWorkspaceMachine connection, Func<IWorkspaceHost, CancellationToken, Task<bool>> respond)
     {
         if (_resolved)
         {
@@ -157,7 +157,7 @@ public sealed partial class PendingDecisionViewModel(FleetPendingItem item, Func
         }
     }
 
-    private async Task SendCoreAsync(MachineConnection connection, Func<RemoteHostClient, CancellationToken, Task<bool>> respond)
+    private async Task SendCoreAsync(IWorkspaceMachine connection, Func<IWorkspaceHost, CancellationToken, Task<bool>> respond)
     {
         var lease = await connection.WaitConnectedAsync(CancellationToken.None);
         if (_resolved)

@@ -28,7 +28,7 @@ public sealed class RemoteHostMultiClientTests
     public async Task Approval_IsBroadcast_FirstAnswerWins_AndResolutionReachesEveryone(bool rememberForSession)
     {
         await using var host = await HarnessHostFixture.CreateAsync("mha", TestContext.Current.CancellationToken);
-        var alice = await host.ConnectAsync("alice", Ct);
+        IWorkspaceHost alice = await host.ConnectAsync("alice", Ct);
         var bob = await host.ConnectAsync("bob", Ct);
         foreach (var client in new[] { alice, bob })
         {
@@ -76,7 +76,7 @@ public sealed class RemoteHostMultiClientTests
     public async Task Client_Approval_Cancellation_Is_Not_Rejection_And_Cannot_Be_Overridden(bool allow)
     {
         await using var host = await HarnessHostFixture.CreateAsync("mhc", TestContext.Current.CancellationToken);
-        var alice = await host.ConnectAsync("alice", Ct);
+        IWorkspaceHost alice = await host.ConnectAsync("alice", Ct);
         var bob = await host.ConnectAsync("bob", Ct);
         var decision = RaiseApprovalAsync(host, host.Environment.Agent, "write");
         var request = Assert.Single((await NextAsync(alice.PendingChangesAsync(Ct),
@@ -106,7 +106,7 @@ public sealed class RemoteHostMultiClientTests
     public async Task Question_Answer_And_Dismissal_Are_First_Response_Wins_Across_Clients(bool dismissFirst)
     {
         await using var host = await HarnessHostFixture.CreateAsync("mhq", TestContext.Current.CancellationToken);
-        var alice = await host.ConnectAsync("alice", Ct);
+        IWorkspaceHost alice = await host.ConnectAsync("alice", Ct);
         var bob = await host.ConnectAsync("bob", Ct);
         var service = host.Environment.App.Ctx.Get<UserQuestionService>(UserQuestionService.ServiceName)!;
         var waiting = service.Ask(new AskUserQuestionRequest(

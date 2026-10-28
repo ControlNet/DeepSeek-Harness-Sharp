@@ -90,6 +90,15 @@ public sealed class EditorPathMapper
         return mapped with { Editor = mapping.Editor, RemoteUri = BuildUri(mapping, target), TriggerEditors = [], ExcludedEditors = [] };
     }
 
+    public bool HasMapping(string machine, string workspace)
+    {
+        if (string.IsNullOrWhiteSpace(machine) || string.IsNullOrWhiteSpace(workspace)) return false;
+        string canonical;
+        try { canonical = CanonicalRemote(workspace); }
+        catch (ArgumentException) { return false; }
+        return _mappings.Any(value => value.Machine.Equals(machine, StringComparison.Ordinal) && IsUnder(canonical, value.SourceRoot));
+    }
+
     public static string BuildUri(EditorPathMapping mapping, string path)
     {
         var root = CanonicalRemote(mapping.SourceRoot);

@@ -85,6 +85,7 @@ public sealed class EditorGuiTests
         var vm = new EditorSettingsViewModel(facade);
         Assert.Equal(["vscode", "rider"], vm.Editors.Select(row => row.Label));
         Assert.Equal("vscode", vm.HistoryProviders);
+        Assert.All(vm.Editors, row => Assert.True(row.Read().ContainsKey("remote_executables")));
         vm.SelectedEditor = vm.Editors[1];
         vm.MoveEditorUpCommand.Execute(null);
         vm.Editors[0].Enabled = false;
@@ -463,8 +464,7 @@ public sealed class EditorGuiTests
         var ct = TestContext.Current.CancellationToken;
         await using var host = await HarnessHostFixture.CreateAsync("eg", ct);
         var options = FleetConnectionTests.TestOptions;
-        await using var fleet = new FleetWorkspace(new MachineStore(new HarnessHome(host.Root)), options,
-            () => new FleetClient([MachineSpec.Local(host.Root)], options));
+        await using var fleet = new FleetWorkspace(new FleetWorkspaceServices(new MachineStore(new HarnessHome(host.Root)), options, () => new FleetClient([MachineSpec.Local(host.Root)], options)));
         fleet.Start();
         await fleet.Find(MachineSpec.LocalName)!.WaitConnectedAsync(ct);
         TerminalViewModel? terminal = null;

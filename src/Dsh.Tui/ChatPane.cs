@@ -1046,7 +1046,7 @@ public sealed class ChatPane : ITuiPane
             // 回到普通输入(浮层关闭)时丢弃 Ctrl+P 暂存的提示词, 避免误接到别的命令后面。
             _promptText = "";
             DeleteConfirmSessionId = null;
-            if (TryGetMentionToken(text, Cursor, out var start, out var end))
+            if (MentionResolver.TryGetActiveToken(text, Cursor, out var start, out var end))
             {
                 _mentionActive = true;
                 _mentionStart = start;
@@ -1376,7 +1376,7 @@ public sealed class ChatPane : ITuiPane
 
     private void InsertMentionCandidate()
     {
-        var (inserted, cursor) = ReplaceMention(Input, _mentionStart, _mentionEnd, _mentionCandidates[_mentionIndex]);
+        var (inserted, cursor) = MentionResolver.ReplaceActiveToken(Input, _mentionStart, _mentionEnd, _mentionCandidates[_mentionIndex]);
         Cursor = cursor;
         Input = inserted;
         CloseMentionMenu();
@@ -1623,36 +1623,6 @@ public sealed class ChatPane : ITuiPane
         SetBusy(true);
         Agent.Followup(MessageFactory.CreateUserMessage(content));
     }
-
-    /** 仅当光标落在「@token」区间内部或紧邻末尾时才算活跃 mention, 否则(如 token 后又输入了提示词)视为普通文本。 */
-    internal static bool TryGetMentionToken(string text, int cursor, out int start, out int end)
-    {
-        var at = text.LastIndexOf('@');
-        if (at < 0)
-        {
-            start = 0;
-            end = 0;
-            return false;
-        }
-
-        var tokenEnd = at + 1;
-        while (tokenEnd < text.Length && !char.IsWhiteSpace(text[tokenEnd]) && text[tokenEnd] != '@')
-            tokenEnd++;
-        if (cursor <= at || cursor > tokenEnd)
-        {
-            start = 0;
-            end = 0;
-            return false;
-        }
-
-        start = at;
-        end = tokenEnd;
-        return true;
-    }
-
-    /** 只替换 mention token 区间并补尾随空格, 保留 token 之后已输入的文本; 返回新文本与光标位置。 */
-    internal static (string Text, int Cursor) ReplaceMention(string text, int start, int end, string candidate)
-        => ($"{text[..start]}@{candidate} {text[end..]}", start + candidate.Length + 2);
 
     private void RecallHistory(int direction)
     {

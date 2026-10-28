@@ -1,7 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Gui.Services;
 using Dsh.Notifications;
 using Dsh.RemoteHost;
@@ -178,14 +178,14 @@ public sealed partial class NotificationCenterViewModel : ObservableObject, IDis
         }
     }
 
-    private void ReplaceHistory(MachineConnection machine)
+    private void ReplaceHistory(IWorkspaceMachine machine)
     {
         _all.RemoveAll(item => item.Machine == machine.Machine.Name);
         if (machine.Notifications is { } page)
             _all.AddRange(page.Items.Select(record => Describe(new NotificationItemViewModel(machine.Machine.Name, record))));
     }
 
-    private void OnNotificationsChanged(MachineConnection machine, RemoteNotificationChange? change)
+    private void OnNotificationsChanged(IWorkspaceMachine machine, RemoteNotificationChange? change)
     {
         ReplaceHistory(machine);
         RefreshAll();

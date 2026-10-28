@@ -1,4 +1,4 @@
-namespace Dsh.RemoteHost;
+namespace Dsh.Workspace;
 
 /** 远端文件系统的路径风格: 由**远端**平台决定, 客户端据此解析相对路径/取目录名(不能借用本地 OS 的 Path)。 */
 public enum RemotePathStyle
@@ -63,4 +63,3 @@ public static class RemotePaths
     private static int LastSeparator(string path, RemotePathStyle style)
         => style == RemotePathStyle.Windows ? path.LastIndexOfAny(['/', '\\']) : path.LastIndexOf('/');
 }
-

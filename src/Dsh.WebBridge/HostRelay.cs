@@ -98,8 +98,8 @@ internal sealed class HostRelay(WebSocket socket, MachineConnection machine, Fun
         _ = operation.ContinueWith(task => _operations.TryRemove(task, out _), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
-    private void Changed(MachineConnection _) => _changed.Writer.TryWrite(0);
-    private void NotificationsChanged(MachineConnection connection, RemoteNotificationChange? _) => Changed(connection);
+    private void Changed(IWorkspaceMachine _) => _changed.Writer.TryWrite(0);
+    private void NotificationsChanged(IWorkspaceMachine connection, RemoteNotificationChange? _) => Changed(connection);
 
     private async Task PublishViewsAsync()
     {

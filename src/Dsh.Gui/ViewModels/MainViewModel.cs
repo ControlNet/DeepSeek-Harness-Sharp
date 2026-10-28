@@ -8,7 +8,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
 using Dsh.Core;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Gui.Services;
 using Dsh.Ide.Bridge;
 using Dsh.Interaction;
@@ -122,7 +122,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _editors = editors is null ? null
             : _ctx.Get<EditorExecutionContext>(EditorExecutionContext.ServiceName, false)!.BindTerminal(editors, _editorTerminalHost);
         _editorClientBinding = new GuiEditorClientBinding(_editors,
-            _ctx.Get<Func<string, EditorRequest, EditorRequest>>("editorClientRequestMapper", false));
+            _ctx.Get<Func<string, EditorRequest, EditorRequest>>("editorClientRequestMapper", false),
+            _ctx.Get<Func<string, string, bool>>("editorClientHasMapping", false));
         chat.Fleet.Changed += OnFleetChanged;
         chat.Reset += ShowSession;
         chat.Received += ApplyEvents;
@@ -502,7 +503,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         {
             var connection = _chat.Fleet.Find(machine) ?? throw new InvalidOperationException("The editor host is unavailable.");
             var lease = await connection.WaitConnectedAsync(cancellationToken);
-            var service = new RemoteEditorService(lease.Client.Editor);
+            var editors = lease.Client.GetCapability<IRemoteEditors>()
+                ?? throw new NotSupportedException("The selected Host does not provide IDE integration.");
+            var service = new HostEditorService(editors);
             await service.RefreshAsync(workspace, cancellationToken, sessionId);
             return service;
         }, workspace, machine, sessionId, turn);
@@ -988,6 +991,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         var insert = $"@{text}";
         Composer.Input = Composer.Input.Length == 0 ? $"{insert} " : $"{Composer.Input.TrimEnd()} {insert} ";
+        Composer.CaretIndex = Composer.Input.Length;
     }
 
     [RelayCommand]
@@ -1386,6 +1390,11 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     }
     private void OnComposerPropertyChanged(object? sender, PropertyChangedEventArgs args)
     {
+        if (args.PropertyName == nameof(ComposerViewModel.CaretIndex))
+        {
+            RefreshSuggestions();
+            return;
+        }
         if (args.PropertyName != nameof(ComposerViewModel.Input))
             return;
         RefreshSuggestions();
@@ -1845,7 +1854,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         if (_updatingSuggestions || _disposed)
             return;
         var input = Composer.Input;
-        var suggestions = BuildSuggestions(input);
+        var suggestions = BuildSuggestions(input, Composer.CaretIndex);
         _updatingSuggestions = true;
         Suggestions.Clear();
         foreach (var suggestion in suggestions)
@@ -1868,15 +1877,16 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private IReadOnlyList<SuggestionViewModel> BuildSuggestions(string input)
+    private IReadOnlyList<SuggestionViewModel> BuildSuggestions(string input, int caret)
     {
         if (IsImagePath(input))
             return [];
-        if (input.StartsWith('@') || input.Contains(" @", StringComparison.Ordinal))
-            return MentionSuggestions(input);
         if (input.StartsWith('/'))
             return CommandSuggestions(input);
-        return [];
+        // 引用补全只在光标处存在未完成的 @token 时出现; token 之后已输入提示词就不再算选文件。
+        return MentionResolver.TryGetActiveToken(input, caret, out var start, out var end)
+            ? MentionSuggestions(input, start, end)
+            : [];
     }
 
     private IReadOnlyList<SuggestionViewModel> CommandSuggestions(string input)
@@ -1936,33 +1946,30 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private IReadOnlyList<SuggestionViewModel> MentionSuggestions(string input)
+    private IReadOnlyList<SuggestionViewModel> MentionSuggestions(string input, int start, int end)
     {
-        var at = input.LastIndexOf('@');
-        var end = at + 1;
-        while (end < input.Length && !char.IsWhiteSpace(input[end]) && input[end] != '@')
-            end++;
-        var token = input[(at + 1)..end];
+        var token = input[(start + 1)..end];
         var cwd = _chat.Header.Cwd ?? Environment.CurrentDirectory;
         return [.. MentionResolver.ResolveCandidates(token, cwd, CurrentMentionSessions())
-            .Select(candidate => new SuggestionViewModel("mention", $"@{candidate}", "", $"@{candidate}"))];
+            .Select(candidate => new SuggestionViewModel("mention", $"@{candidate}", "", candidate))];
     }
 
     private void ApplySuggestion(SuggestionViewModel suggestion)
     {
-        if (suggestion.Kind == "argument")
+        if (suggestion.Kind != "mention")
         {
             Composer.Input = suggestion.InsertText;
+            Composer.CaretIndex = Composer.Input.Length;
+            CloseSuggestions();
+            return;
         }
-        else if (suggestion.Kind == "mention")
+        // token 可能已被用户改到光标之外, 那种情况只收起菜单, 不再改写文本。
+        if (MentionResolver.TryGetActiveToken(Composer.Input, Composer.CaretIndex, out var start, out var end))
         {
-            var input = Composer.Input;
-            var at = input.LastIndexOf('@');
-            Composer.Input = at < 0 ? input : input[..at] + suggestion.InsertText + " ";
-        }
-        else
-        {
-            Composer.Input = suggestion.InsertText;
+            // 只替换光标所在的 @token, token 之后已经输入的提示词必须原样保留。
+            var (text, caret) = MentionResolver.ReplaceActiveToken(Composer.Input, start, end, suggestion.InsertText);
+            Composer.Input = text;
+            Composer.CaretIndex = caret;
         }
         CloseSuggestions();
     }

@@ -10,7 +10,7 @@ namespace Dsh.RemoteHost;
  * 本地侧连接远端 host: 先握手(版本/token), 然后实现 RemoteHost 客户端。
  * 会话事件/审批/PTY 输出经服务端推送(通知)转成本端的异步流。
  */
-public sealed class RemoteHostClient : IAsyncDisposable
+public sealed class RemoteHostClient : IAsyncDisposable, IWorkspaceHost
 {
     private readonly JsonRpcPeer _peer;
     private readonly RemotePtyClient _pty;
@@ -48,6 +48,17 @@ public sealed class RemoteHostClient : IAsyncDisposable
     public RemotePluginsClient Plugins { get; }
     public RemoteNetworkClient Network { get; }
     public RemoteEditorClient Editor { get; }
+    IWorkspaceAgents IWorkspaceHost.Agent => Agent;
+    public T? GetCapability<T>() where T : class
+        => Supports(Dsh.Ide.Bridge.EditorProtocol.Capability) ? Editor as T : null;
+    IWorkspaceFiles IWorkspaceHost.Files => Files;
+    IWorkspaceGit IWorkspaceHost.Git => Git;
+    IWorkspaceNotifications IWorkspaceHost.Notifications => Notifications;
+    IWorkspaceSessionEditing IWorkspaceHost.SessionEditing => SessionEditing;
+    IWorkspacePlugins IWorkspaceHost.Plugins => Plugins;
+    IWorkspaceNetwork IWorkspaceHost.Network => Network;
+    IWorkspaceTerminals IWorkspaceHost.Pty => Pty;
+
     internal bool IsClosed => _peer.IsClosed;
 
     /** Whether the host advertises a capability from HostProtocolCatalog. */

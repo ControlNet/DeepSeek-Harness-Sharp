@@ -17,7 +17,28 @@ public sealed class EditorClientDispatcher : IDisposable
         get { lock (_gate) return _clients.Keys.Order(StringComparer.Ordinal).Select(id => new EditorClientInfo(id)).ToArray(); }
     }
 
-    public IDisposable RegisterClient(string clientId, Func<EditorRequest, CancellationToken, ValueTask<EditorResult>> handler, CancellationToken lifetime = default)
+    /** Resolves Automatic to the client only when the owning remote client has a trusted mapping. */
+    public EditorExecutionTarget? TargetFor(string? sessionId)
+    {
+        var client = ClientFor(sessionId);
+        return client is null ? null : client.IsLocalMachine || !client.HasMappings ? EditorExecutionTarget.Local : EditorExecutionTarget.Client;
+    }
+
+    /** Null when no IDE client owns the request. */
+    public bool? TryIsLocalMachine(string? sessionId) => ClientFor(sessionId)?.IsLocalMachine;
+
+    private Client? ClientFor(string? sessionId)
+    {
+        lock (_gate)
+        {
+            if (_disposed) return null;
+            if (sessionId is { } session && _sessions.TryGetValue(session, out var id) && _clients.TryGetValue(id, out var bound))
+                return bound;
+            return _origin.Value is { } origin && _clients.TryGetValue(origin, out var originClient) ? originClient : null;
+        }
+    }
+
+    public IDisposable RegisterClient(string clientId, Func<EditorRequest, CancellationToken, ValueTask<EditorResult>> handler, CancellationToken lifetime = default, bool isLocalMachine = false, bool hasMappings = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(clientId);
         ArgumentNullException.ThrowIfNull(handler);
@@ -27,7 +48,7 @@ public sealed class EditorClientDispatcher : IDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_clients.ContainsKey(clientId))
                 throw new InvalidOperationException("An IDE handler is already registered for this connection.");
-            client = new Client(this, clientId, handler);
+            client = new Client(this, clientId, handler, isLocalMachine, hasMappings);
             _clients.Add(clientId, client);
         }
         client.ObserveLifetime(lifetime);
@@ -131,11 +152,13 @@ public sealed class EditorClientDispatcher : IDisposable
         public void Dispose() => origin.Value = previous;
     }
 
-    private sealed class Client(EditorClientDispatcher owner, string id, Func<EditorRequest, CancellationToken, ValueTask<EditorResult>> handler) : IDisposable
+    private sealed class Client(EditorClientDispatcher owner, string id, Func<EditorRequest, CancellationToken, ValueTask<EditorResult>> handler, bool isLocalMachine, bool hasMappings) : IDisposable
     {
         private CancellationTokenRegistration _registration;
         private int _disposed;
         public string Id { get; } = id;
+        public bool IsLocalMachine { get; } = isLocalMachine;
+        public bool HasMappings { get; } = hasMappings;
         public Func<EditorRequest, CancellationToken, ValueTask<EditorResult>> Handler { get; } = handler;
         public CancellationTokenSource Lifetime { get; } = new();
         public void ObserveLifetime(CancellationToken token)

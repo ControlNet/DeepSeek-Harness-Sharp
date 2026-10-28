@@ -3,7 +3,7 @@ using Dsh.Core;
 namespace Dsh.Ide.Bridge;
 
 /// <summary>Client dispatch is deliberately outside the local launcher's installation and template pipeline.</summary>
-public sealed class EditorBridgeService(IEditorService local, EditorClientDispatcher clients, EditorExecutionContext? executionContext = null) : IEditorService
+public sealed class EditorBridgeService(IEditorService local, EditorClientDispatcher clients) : IEditorService
 {
     public IEditorCatalog Catalog => local.Catalog;
     public EditorDecision? LastDecision
@@ -20,7 +20,7 @@ public sealed class EditorBridgeService(IEditorService local, EditorClientDispat
     public async ValueTask<EditorResult> LaunchAsync(EditorRequest request, CancellationToken cancellationToken = default)
     {
         if (request.ExecutionTarget == EditorExecutionTarget.Automatic)
-            request = request with { ExecutionTarget = executionContext?.IsRemoteHost == true ? EditorExecutionTarget.Client : EditorExecutionTarget.Local };
+            request = request with { ExecutionTarget = clients.TargetFor(request.SessionId) ?? EditorExecutionTarget.Local };
         if (request.ExecutionTarget != EditorExecutionTarget.Client || request.Print)
         {
             var localResult = await local.LaunchAsync(request, cancellationToken).ConfigureAwait(false);
@@ -28,12 +28,6 @@ public sealed class EditorBridgeService(IEditorService local, EditorClientDispat
             return localResult;
         }
         var result = await clients.LaunchAsync(request, cancellationToken).ConfigureAwait(false);
-        if (result.Error == EditorErrorCode.CLIENT_UNAVAILABLE)
-        {
-            // A copyable host-side command remains available on SSH even without a desktop client.
-            var printed = await local.LaunchAsync(request with { Print = true, ExecutionTarget = EditorExecutionTarget.Print }, cancellationToken).ConfigureAwait(false);
-            result = printed.Success ? printed with { Message = result.Message + " " + printed.Message } : result with { PrintableCommand = printed.PrintableCommand };
-        }
         LastDecision = result.Decision;
         return result;
     }

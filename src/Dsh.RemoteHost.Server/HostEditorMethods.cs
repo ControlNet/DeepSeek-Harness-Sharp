@@ -43,7 +43,7 @@ internal sealed class HostEditorMethods(IRemoteEditorBackend backend, JsonRpcPee
                 ObjectDisposedException.ThrowIf(_disposed, this);
                 if (backend.Clients is not { } clients)
                     throw MethodNotFound(name);
-                _registration ??= clients.RegisterClient(clientId, OpenClientAsync, lifetime);
+                _registration ??= clients.RegisterClient(clientId, OpenClientAsync, lifetime, request.IsLocalMachine, request.HasMappings);
             }
             return ValueTask.FromResult<JsonElement?>(True);
         }

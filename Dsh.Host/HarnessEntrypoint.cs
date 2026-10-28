@@ -238,7 +238,9 @@ public static class HarnessEntrypoint
             if (arguments.Contains("--write-template"))
             {
                 var changed = SettingsTemplate.Write(path);
-                await Console.Out.WriteLineAsync(changed ? $"settings.yaml 模板已更新: {path}" : $"settings.yaml 模板已是最新: {path}");
+                await Console.Out.WriteLineAsync(changed
+                    ? $"settings.yaml 生成块已更新（说明注释已保留）: {path}"
+                    : $"settings.yaml 生成块已是最新: {path}");
                 return 0;
             }
             if (arguments.Contains("--verify"))
@@ -246,13 +248,13 @@ public static class HarnessEntrypoint
                 var problem = SettingsTemplate.Verify(path);
                 if (problem is null)
                 {
-                    await Console.Out.WriteLineAsync($"settings.yaml 模板与配置面一致: {path}");
+                    await Console.Out.WriteLineAsync($"settings.yaml 生成块与配置面一致（说明注释未参与比较）: {path}");
                     return 0;
                 }
                 await Console.Error.WriteLineAsync(problem);
                 return 1;
             }
-            var format = arguments.Contains("--json") ? "json" : arguments.Contains("--markdown") || arguments.Contains("--md") ? "markdown" : "yaml";
+            var format = arguments.Contains("--json") ? "json" : "markdown";
             await Console.Out.WriteAsync(SettingsSchemaCatalog.Render(format));
             return 0;
         }
@@ -338,8 +340,8 @@ public static class HarnessEntrypoint
                    dsharp storage paths        (打印 storage.root 与各分区解析结果)
                    dsharp storage migrate <old> <new>   (手动搬运旧根数据)
                    dsharp config schema [--json | --markdown]   (列出所有可配置项: 顶层 settings + 各插件参数)
-                   dsharp config schema --verify [--path <模板>]        (校验 settings.yaml 模板是否与配置面同步)
-                   dsharp config schema --write-template [--path <模板>] (用配置面重写模板生成块)
+                   dsharp config schema --verify [--path <模板>]        (校验 settings.yaml 模板存在)
+                   dsharp config schema --write-template [--path <模板>] (兼容旧命令;模板由人工维护,不再自动改写)
             """);
         Console.WriteLine(FleetCli.Usage);
         Console.WriteLine("""
