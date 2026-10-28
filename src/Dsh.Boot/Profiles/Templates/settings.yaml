@@ -95,7 +95,6 @@ sandbox:
 # 参数:output(默认 true)、input(逗号分隔的工具名白名单,这些工具的结果以 TOON 进上下文)。
 # Dsh.IDE @deepseek-ai/dsh-ide includes gated local history (.vscode/*.code-workspace, .idea/*.iml, .zed).
 # history: providers (default [vscode, jetbrains, zed]), timeline (default false), timeline_limit (default 50), window_seconds (default 60).
-# The old @deepseek-ai/dsh-ide-history package and flat history keys remain readable for one release; canonical settings win if both packages exist.
 # TUI @deepseek-ai/dsh-tui: 参数 highlightColor/arrowColor/dividerColor/statusColor/errorColor 可配色(取 "#rrggbb" 真彩或 16 色名如 BrightCyan;
 # arrowColor 缺省跟随 highlightColor, 其余缺省不留痕; 示例见下)。sidebarWidth/inputHeight/gpuBackend 亦在此配。
 # keys 改快捷键:动作名: 按键串(修饰键 Ctrl/Alt 用 + 连接, 多键序列用空格分隔, 如 "Ctrl+X W");未写的动作用默认键位,TUI 内 /keys 列出全部动作与当前绑定;

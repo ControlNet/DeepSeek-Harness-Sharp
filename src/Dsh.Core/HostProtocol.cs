@@ -377,8 +377,6 @@ public static class HostProtocolCatalog
             ["NetworkOutbound"] = NetworkProtocol.Capability,
             ["NetworkProbeCancellation"] = NetworkProtocol.CancellableProbeCapability,
             ["NetworkReload"] = NetworkProtocol.ReloadCapability,
-            ["Editor"] = EditorProtocol.Capability,
-            ["EditorClient"] = EditorProtocol.ClientCapability,
         });
 }
 

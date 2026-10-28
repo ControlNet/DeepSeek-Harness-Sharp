@@ -2,77 +2,11 @@ using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Runtime;
 using Dsh.Tools;
-using Dsh.Plugins;
-using Dsh.Ide.History;
 
 namespace Dsh.Tests;
 
 public class ConfigBootTests
 {
-    [Theory]
-    [InlineData(false, null, false)]
-    [InlineData(true, null, true)]
-    [InlineData(false, true, true)]
-    [InlineData(true, false, false)]
-    public async Task Compose_IdeLegacyAliasHonorsCanonicalPrecedenceWithoutDoubleActivation(bool legacy, bool? canonical, bool enabled)
-    {
-        var root = TempTree.CreateDirectory("ide-alias");
-        try
-        {
-            var home = HarnessHome.Resolve(root);
-            var extra = canonical is null ? "" : $"\n  \"@deepseek-ai/dsh-ide\": {canonical.Value.ToString().ToLowerInvariant()}";
-            File.WriteAllText(home.SettingsFile, $"plugins:\n  \"@deepseek-ai/dsh-ide-history\": {legacy.ToString().ToLowerInvariant()}{extra}\n");
-            using var app = await ConfigBoot.Compose(new HarnessOptions(home, Cwd: root));
-
-            var activation = app.Composition!.Find(PluginPackageNames.Ide);
-            Assert.Equal(enabled, activation is { State: ActivationState.Active });
-            Assert.Null(app.Composition.Find(PluginPackageNames.LegacyIdeHistory));
-            Assert.Equal(enabled, app.Ctx.Get<IIdeHistoryService>(IIdeHistoryService.ServiceName, false) is not null);
-            var catalog = Assert.IsType<PluginCatalog>(app.Ctx.GetProp("pluginCatalog"));
-            Assert.Contains(PluginPackageNames.Ide, catalog.PackageNames);
-            Assert.DoesNotContain(PluginPackageNames.LegacyIdeHistory, catalog.PackageNames);
-            Assert.Equal(PluginPackageNames.Ide, catalog.CreateDefinition(PluginPackageNames.LegacyIdeHistory).Name);
-        }
-        finally
-        {
-            TempTree.Delete(root);
-        }
-    }
-
-    [Fact]
-    public async Task Compose_LegacyHistoryParametersAndCommentsSurvivePluginToggle()
-    {
-        var root = TempTree.CreateDirectory("ide-alias-toggle");
-        try
-        {
-            var home = HarnessHome.Resolve(root);
-            File.WriteAllText(home.SettingsFile, """
-                plugins:
-                  "@deepseek-ai/dsh-ide-history": # legacy package comment
-                    timeline: true # legacy timeline comment
-                    future_key: keep
-                """);
-            using var app = await ConfigBoot.Compose(new HarnessOptions(home, Cwd: root));
-            var manager = app.Ctx.Get<IPluginManager>("pluginManager", false)!;
-            Assert.True(app.Ctx.Get<IIdeHistoryService>(IIdeHistoryService.ServiceName, false)!.TimelineEnabled);
-
-            await manager.DisableAsync(PluginPackageNames.LegacyIdeHistory);
-            await manager.EnableAsync(PluginPackageNames.LegacyIdeHistory);
-
-            Assert.True(app.Ctx.Get<IIdeHistoryService>(IIdeHistoryService.ServiceName, false)!.TimelineEnabled);
-            var saved = HarnessSettings.Load(home);
-            Assert.DoesNotContain(PluginPackageNames.Ide, saved.Plugins.Keys);
-            Assert.Equal("keep", saved.Plugins[PluginPackageNames.LegacyIdeHistory].Parameters["future_key"]);
-            var text = File.ReadAllText(home.SettingsFile);
-            Assert.Contains("# legacy package comment", text);
-            Assert.Contains("# legacy timeline comment", text);
-        }
-        finally
-        {
-            TempTree.Delete(root);
-        }
-    }
-
     [Fact]
     public async Task Compose_ActivatesConfiguredPluginsAndMergesDefaults()
     {

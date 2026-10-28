@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using Dsh.Core;
 
-namespace Dsh.RemoteHost;
+namespace Dsh.Ide.Bridge;
 
 /// <summary>Optional authenticated IDE domain and reverse client extension protocol, version 1.</summary>
 public static class EditorProtocol
@@ -22,6 +22,10 @@ public static class EditorProtocol
     public static IReadOnlyList<string> Methods { get; } = Array.AsReadOnly<string>(
         [MethodList, MethodStatus, MethodDoctor, MethodOpen, MethodCancel, MethodRegister, MethodUnregister, MethodSelect]);
 }
+
+public sealed record EditorClientInfo(string Id);
+public sealed record EditorRemoteStatus(EditorWorkspace Workspace, EditorBinding? Binding, EditorDecision? LastDecision, IReadOnlyList<EditorClientInfo> Clients);
+public sealed record EditorRemoteList(IReadOnlyList<EditorDescriptor> Descriptors, IReadOnlyList<EditorInstallation> Installations);
 
 public sealed record RemoteEditorWorkspace(string WorkspaceRoot, string? SessionId = null);
 public sealed record RemoteEditorList(bool Refresh = false);

@@ -382,7 +382,7 @@ public sealed class EditorBridgeTests
     }
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private sealed record EditorBackend(IEditorService Service, IEditorClientRegistry? Clients, HostPathPolicy? Paths = null) : IRemoteEditorBackend;
+    private sealed record EditorBackend(IEditorService Service, EditorClientDispatcher? Clients, HostPathPolicy? Paths = null) : IRemoteEditorBackend;
     private sealed class Backend(IRemoteHostBackend core, IRemoteEditorBackend? editor) : IRemoteHostBackend
     {
         public HostPendingDecisions Pending => core.Pending;

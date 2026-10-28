@@ -59,7 +59,6 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
 
     public string Describe(string package)
     {
-        package = PluginPackageNames.Canonical(package);
         if (_nativePlugins.TryGetValue(package, out var native) && native.State == NativePluginState.Faulted)
             return "faulted [native-library] (unloaded on fault; quarantined after repeat)";
         var activation = _composition.Find(package);
@@ -71,7 +70,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
             ActivationState.Failed => $"failed: {activation.Error}",
             ActivationState.Disposed => "removed",
             ActivationState.Pending => "pending (dependencies missing)",
-            null when PluginSettingsSection.Resolve(_settings.Plugins, package) is { Enabled: false } => "disabled",
+            null when _settings.Plugins.GetValueOrDefault(package) is { Enabled: false } => "disabled",
             _ => "available",
         };
         var descriptor = Descriptor(package);
@@ -86,7 +85,6 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
             return "usage: /plugins add <package|path>";
         if (IsLibraryPath(spec) || File.Exists(spec))
             return await AddFromPathAsync(spec);
-        spec = PluginPackageNames.Canonical(spec);
         if (_host.Catalog.PackageNames.Contains(spec, StringComparer.Ordinal))
             return await ActivateAsync(spec);
         return $"plugin package not found: {spec}";
@@ -94,7 +92,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
 
     public async Task<string> RemoveAsync(string package, bool force = false)
     {
-        var trimmed = PluginPackageNames.Canonical(package.Trim());
+        var trimmed = package.Trim();
         if (trimmed.Length == 0)
             return "usage: /plugins remove <package>";
         var active = _composition.Root.Scheduler.Find(trimmed) is not null;
@@ -147,7 +145,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
 
     public async Task<string> DisableAsync(string package)
     {
-        var trimmed = PluginPackageNames.Canonical(package.Trim());
+        var trimmed = package.Trim();
         if (trimmed.Length == 0)
             return "usage: /plugins disable <package>";
         if (!IsKnown(trimmed))
@@ -168,7 +166,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
 
     public async Task<string> EnableAsync(string package)
     {
-        var trimmed = PluginPackageNames.Canonical(package.Trim());
+        var trimmed = package.Trim();
         if (trimmed.Length == 0)
             return "usage: /plugins enable <package>";
         if (!IsKnown(trimmed))
@@ -181,7 +179,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
 
     public string SetPermission(string package, PluginPermission permission, bool allowed)
     {
-        var trimmed = PluginPackageNames.Canonical(package.Trim());
+        var trimmed = package.Trim();
         var key = PluginPermissions.KeyOf(permission);
         if (trimmed.Length == 0)
             return $"usage: /plugins {(allowed ? "enable" : "ban")}_{key} <package>";
@@ -294,7 +292,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
             return $"plugin {package} is already active ({existing.State})";
         if (!_host.Catalog.TryCreateDefinition(package, out var definition))
             return $"plugin package not found: {package}";
-        var setting = PluginSettingsSection.Resolve(_settings.Plugins, package);
+        var setting = _settings.Plugins.GetValueOrDefault(package);
         var activation = await _composition.AddAsync(definition!, setting is { Parameters.Count: > 0 } ? setting.Parameters : null);
         if (activation.State == ActivationState.Active)
         {
@@ -382,10 +380,7 @@ public sealed class HarnessPluginManager : IPluginManager, IDisposable
     private void Persist(string package, Func<PluginSetting?, PluginSetting> update)
     {
         var plugins = HarnessSettings.Load(_home).Plugins;
-        var key = package == PluginPackageNames.Ide
-            && !plugins.ContainsKey(package) && plugins.ContainsKey(PluginPackageNames.LegacyIdeHistory)
-                ? PluginPackageNames.LegacyIdeHistory : package;
-        plugins[key] = update(PluginSettingsSection.Resolve(plugins, package));
+        plugins[package] = update(plugins.GetValueOrDefault(package));
         _settings.Plugins = plugins;
         _settings.SavePlugins(_home);
     }

@@ -8,6 +8,7 @@ using Dsh.Gui.Services;
 using Dsh.Gui.Terminal;
 using Dsh.Gui.ViewModels;
 using Dsh.Gui.Views;
+using Dsh.Ide.Bridge;
 using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
@@ -283,7 +284,7 @@ public sealed class EditorGuiBoundaryTests
         public IRemoteNetworkBackend? Network => core.Network;
         public IRemoteEditorBackend Editor => this;
         public IEditorService Service => service;
-        public IEditorClientRegistry? Clients => null;
+        public EditorClientDispatcher? Clients => null;
         public HostPathPolicy? Paths => core.Files?.Policy;
     }
 }

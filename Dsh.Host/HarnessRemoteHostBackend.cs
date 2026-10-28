@@ -1,5 +1,6 @@
 using Dsh.Boot;
 using Dsh.Core;
+using Dsh.Ide.Bridge;
 using Dsh.Plugins;
 using Dsh.RemoteHost;
 using Dsh.Runtime;
@@ -43,7 +44,7 @@ public sealed class HarnessRemoteHostBackend : IRemoteHostBackend, IAsyncDisposa
         if (app.Ctx.Get<EditorExecutionContext>(EditorExecutionContext.ServiceName, false) is { } editorContext)
             editorContext.IsRemoteHost = true;
         if (app.Ctx.Get<IEditorService>(IEditorService.ServiceName, false) is { } editor)
-            Editor = new HarnessRemoteEditorBackend(editor, app.Ctx.Get<IEditorClientRegistry>(IEditorClientDispatcher.ServiceName, false), Files.Policy);
+            Editor = new HarnessRemoteEditorBackend(editor, app.Ctx.Get<EditorClientDispatcher>(EditorClientDispatcher.ServiceName, false), Files.Policy);
         var platform = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
         _info = new HostInfo(HostProtocol.Version, HostProtocol.ReleaseVersion, platform, app.Home.Root);
     }

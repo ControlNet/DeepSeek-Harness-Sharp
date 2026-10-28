@@ -17,7 +17,6 @@ public sealed record IdeHistoryOptions
     [global::Dsh.Plugins.DshPluginSettings(Name = "window_seconds")]
     public int WindowSeconds { get; init; } = DefaultWindowSeconds;
 
-    /** Nested history wins per key; legacy flat and camel-case keys remain readable for one release. */
     public static IdeHistoryOptions From(object? config)
         => From(config, PluginSettingsSection.DefaultParameter(Plugin.Ide, "history"));
 
@@ -26,17 +25,15 @@ public sealed record IdeHistoryOptions
         var map = ConfigMap.Read(config);
         var nested = map.TryGetValue("history", out var history) ? ConfigMap.Read(history) : null;
         var defaults = defaultHistory as IReadOnlyDictionary<string, object?> ?? ConfigMap.Read(defaultHistory);
-        object? Value(string key, string? alias = null)
-            => nested is not null && (nested.TryGetValue(key, out var value) || alias is not null && nested.TryGetValue(alias, out value))
-                ? value : map.TryGetValue(key, out value) || alias is not null && map.TryGetValue(alias, out value)
-                    ? value : defaults.GetValueOrDefault(key);
+        object? Value(string key)
+            => nested is not null && nested.TryGetValue(key, out var value) ? value : defaults.GetValueOrDefault(key);
         return new IdeHistoryOptions
         {
             Providers = ReadProviders(Value("providers")),
             Discovery = ConfigMap.Read(Value("discovery")).ToDictionary(pair => pair.Key, pair => IdeHistoryDiscovery.From(pair.Value), StringComparer.Ordinal),
             Timeline = Value("timeline") is true,
-            TimelineLimit = ReadNumber(Value("timeline_limit", "timelineLimit"), DefaultTimelineLimit, 1, 500),
-            WindowSeconds = ReadNumber(Value("window_seconds", "windowSeconds"), DefaultWindowSeconds, 0, 3600),
+            TimelineLimit = ReadNumber(Value("timeline_limit"), DefaultTimelineLimit, 1, 500),
+            WindowSeconds = ReadNumber(Value("window_seconds"), DefaultWindowSeconds, 0, 3600),
         };
     }
 

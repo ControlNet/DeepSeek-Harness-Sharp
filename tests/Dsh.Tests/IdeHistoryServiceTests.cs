@@ -88,7 +88,7 @@ public sealed class IdeHistoryServiceTests
 
             // providers 配置把 vscode 摘掉后, 同一条历史不再返回。
             var jetbrainsOnly = new IdeHistoryService(CreateHistoryContext(), registry, IdeHistoryOptions.From(
-                new Dictionary<string, object?>(StringComparer.Ordinal) { ["providers"] = new object?[] { "jetbrains" } }));
+                new Dictionary<string, object?> { ["history"] = new Dictionary<string, object?> { ["providers"] = new[] { "jetbrains" } } }));
             Assert.Empty(jetbrainsOnly.Query(workspace, from: null, to: null));
         }
         finally
@@ -145,13 +145,16 @@ public sealed class IdeHistoryServiceTests
         Directory.Move(Path.Combine(home, ".config", "Code", "User", "History"), Path.Combine(configuredRoot, "revisions"));
         var options = IdeHistoryOptions.From(new Dictionary<string, object?>
         {
-            ["providers"] = new[] { "vscode" },
-            ["discovery"] = new Dictionary<string, object?>
+            ["history"] = new Dictionary<string, object?>
             {
-                ["vscode"] = new Dictionary<string, object?>
+                ["providers"] = new[] { "vscode" },
+                ["discovery"] = new Dictionary<string, object?>
                 {
-                    ["roots"] = new Dictionary<string, object?> { ["windows"] = new[] { configuredRoot }, ["macos"] = new[] { configuredRoot }, ["linux"] = new[] { configuredRoot } },
-                    ["store_paths"] = new[] { "revisions" },
+                    ["vscode"] = new Dictionary<string, object?>
+                    {
+                        ["roots"] = new Dictionary<string, object?> { ["windows"] = new[] { configuredRoot }, ["macos"] = new[] { configuredRoot }, ["linux"] = new[] { configuredRoot } },
+                        ["store_paths"] = new[] { "revisions" },
+                    },
                 },
             },
         });
@@ -162,30 +165,8 @@ public sealed class IdeHistoryServiceTests
     [Fact]
     public void History_Entry_Limit_Is_Bounded()
     {
-        Assert.Equal(1, IdeHistoryOptions.From(new Dictionary<string, object?> { ["timeline_limit"] = 0 }).TimelineLimit);
-        Assert.Equal(500, IdeHistoryOptions.From(new Dictionary<string, object?> { ["timeline_limit"] = 9999 }).TimelineLimit);
-    }
-
-    [Fact]
-    public void Options_NestedValuesOverrideFlatAliases_AndEmptyProvidersDisableHistory()
-    {
-        var options = IdeHistoryOptions.From(new Dictionary<string, object?>
-        {
-            ["timeline"] = true,
-            ["timelineLimit"] = 8,
-            ["providers"] = new object?[] { "vscode" },
-            ["history"] = new Dictionary<string, object?>
-            {
-                ["timeline"] = false,
-                ["providers"] = Array.Empty<object?>(),
-                ["window_seconds"] = 12,
-            },
-        });
-
-        Assert.False(options.Timeline);
-        Assert.Empty(options.Providers);
-        Assert.Equal(8, options.TimelineLimit);
-        Assert.Equal(12, options.WindowSeconds);
+        Assert.Equal(1, IdeHistoryOptions.From(new Dictionary<string, object?> { ["history"] = new Dictionary<string, object?> { ["timeline_limit"] = 0 } }).TimelineLimit);
+        Assert.Equal(500, IdeHistoryOptions.From(new Dictionary<string, object?> { ["history"] = new Dictionary<string, object?> { ["timeline_limit"] = 9999 } }).TimelineLimit);
     }
 
     [Fact]

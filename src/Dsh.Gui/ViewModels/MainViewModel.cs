@@ -10,6 +10,7 @@ using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Fleet;
 using Dsh.Gui.Services;
+using Dsh.Ide.Bridge;
 using Dsh.Interaction;
 using Dsh.Llm;
 using Dsh.RemoteHost;

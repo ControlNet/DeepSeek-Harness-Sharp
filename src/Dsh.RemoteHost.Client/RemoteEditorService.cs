@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Dsh.Core;
+using Dsh.Ide.Bridge;
 
 namespace Dsh.RemoteHost;
 

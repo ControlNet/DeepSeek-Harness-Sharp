@@ -1,4 +1,5 @@
 using Dsh.Core;
+using Dsh.Ide.Bridge;
 using Dsh.Llm;
 using Dsh.Ide.Triggers;
 using Dsh.Runtime;

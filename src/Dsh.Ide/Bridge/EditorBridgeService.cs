@@ -3,7 +3,7 @@ using Dsh.Core;
 namespace Dsh.Ide.Bridge;
 
 /// <summary>Client dispatch is deliberately outside the local launcher's installation and template pipeline.</summary>
-public sealed class EditorBridgeService(IEditorService local, IEditorClientDispatcher clients, EditorExecutionContext? executionContext = null) : IEditorService
+public sealed class EditorBridgeService(IEditorService local, EditorClientDispatcher clients, EditorExecutionContext? executionContext = null) : IEditorService
 {
     public IEditorCatalog Catalog => local.Catalog;
     public EditorDecision? LastDecision

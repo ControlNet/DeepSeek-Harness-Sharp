@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using Dsh.Ide.Bridge;
 using Dsh.Transport;
 using static Dsh.RemoteHost.HostRpc;
 

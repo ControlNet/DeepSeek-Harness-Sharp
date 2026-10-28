@@ -202,7 +202,7 @@ plugins:
 自定义编辑器的 `command`、参数数组、环境及动作模板只能由全局配置定义；工作区只能引用编辑器 ID 和偏好，不能定义可执行命令。
 打印和 dry-run 命令保留工作目录及参数，但省略全局编辑器环境覆盖值，避免把它们带入模型或诊断输出；实际启动仍应用这些环境覆盖值。
 `fallback: os-default` 仅供用户显式执行的编辑器命令或 GUI 打开操作使用，模型工具与自动触发只使用受信任的全局编辑器配置。
-旧包名 `@deepseek-ai/dsh-ide-history` 及旧平铺历史参数保留一个版本的读取兼容，保存使用新包名和 `history` 层级；同一参数以嵌套历史配置为准。
+编辑器集成包使用 `@deepseek-ai/dsh-ide`，历史参数配置在该包的 `history` 层级下。
 `ide_history` 模型工具继续提供只读历史查询；历史时间线可按内容去重并标记与 HEAD 的关系，恢复须先预览差异，确认后备份当前文件，再检查预览后的并发修改。
 
 触发规则按声明顺序执行，可按事件、工作区、文件类型及宿主编辑器过滤；`stop` 控制后续规则是否继续，手动操作与模型工具使用同一派发链路。
@@ -210,7 +210,7 @@ plugins:
 Remote URI 动作通过受信任描述中的 `remote: true`、`actions` 和 `remote_actions` 声明，参数模板支持 `{remote_uri}`，不依赖固定品牌 ID；映射未指定 `editor` 时，由本地配置的候选清单选择。
 桥接仅接受已认证连接协商的能力，不接受远端提供可执行命令或环境；具体失败不会静默改用另一个目标。
 
-`/ide lsp neovim`、`/ide lsp vscode`、`/ide lsp helix` 生成客户端配置，LSP 由 `Dsh.Lsp` 插件提供，通过既有 `dsharp host serve --stdio --lsp` 服务命令使用标准 stdio 协议。
+`/ide lsp neovim`、`/ide lsp vscode`、`/ide lsp helix` 生成客户端配置，LSP 由 `Dsh.Lsp` 插件提供，通过既有 `dsharp host serve --stdio` 通道使用标准 stdio 协议；Host 按收到的帧识别协议，无需单独的 LSP 启动选项。
 `/ide bridge` 的命令帮助说明认证扩展协议的端点与令牌文件参数；配置助手不读取或输出令牌内容，也不附带安装 IDE 扩展。
 
 ## 图形界面

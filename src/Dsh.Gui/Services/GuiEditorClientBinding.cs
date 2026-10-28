@@ -1,5 +1,6 @@
 using Dsh.Core;
 using Dsh.Fleet;
+using Dsh.Ide.Bridge;
 using Dsh.RemoteHost;
 
 namespace Dsh.Gui.Services;

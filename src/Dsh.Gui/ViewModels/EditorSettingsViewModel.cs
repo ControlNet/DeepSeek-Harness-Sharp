@@ -47,7 +47,7 @@ public sealed partial class EditorSettingsViewModel : ObservableObject
     [RelayCommand]
     public void Reload()
     {
-        var supplied = PluginSettingsSection.Resolve(_settings.Load().Plugins, Package)?.Parameters ?? [];
+        var supplied = _settings.Load().Plugins.GetValueOrDefault(Package)?.Parameters ?? [];
         var map = PluginSettingsSection.DefaultParameters(Package);
         var historyDefaults = map.GetValueOrDefault("history") as Dictionary<string, object?> ?? [];
         foreach (var (key, value) in supplied) map[key] = value;
@@ -57,11 +57,8 @@ public sealed partial class EditorSettingsViewModel : ObservableObject
         Focus = Text(map, "focus", "never");
         ReuseWindow = Text(map, "reuse_window", "auto");
         Fallback = Text(map, "fallback", "none");
-        _history = supplied.Where(pair => pair.Key is "providers" or "timeline" or "timeline_limit" or "timelineLimit")
-            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
-        var nested = supplied.GetValueOrDefault("history") as Dictionary<string, object?>;
-        if (nested is not null)
-            foreach (var (key, value) in nested) _history[key] = value;
+        _history = supplied.GetValueOrDefault("history") is Dictionary<string, object?> history
+            ? new(history, StringComparer.Ordinal) : [];
         var configuredProviders = _history.TryGetValue("providers", out var providerValue) ? providerValue : historyDefaults.GetValueOrDefault("providers");
         HistoryProviders = configuredProviders switch
         {
@@ -70,8 +67,8 @@ public sealed partial class EditorSettingsViewModel : ObservableObject
             _ => "",
         };
         HistoryTimeline = _history.ContainsKey("timeline") ? Flag(_history, "timeline") : Flag(historyDefaults, "timeline");
-        var historyLimit = nested is not null && (nested.TryGetValue("timeline_limit", out var nestedLimit) || nested.TryGetValue("timelineLimit", out nestedLimit))
-            ? nestedLimit : supplied.GetValueOrDefault("timeline_limit") ?? supplied.GetValueOrDefault("timelineLimit");
+        var historyLimit = _history.TryGetValue("timeline_limit", out var configuredLimit)
+            ? configuredLimit : historyDefaults.GetValueOrDefault("timeline_limit");
         HistoryLimit = int.TryParse(historyLimit?.ToString(), out var limit) ? limit : Convert.ToInt32(historyDefaults.GetValueOrDefault("timeline_limit"));
         LoadRows(Editors, map.GetValueOrDefault("editors"));
         LoadRows(Triggers, map.GetValueOrDefault("triggers"));

@@ -82,7 +82,7 @@ public interface IRemoteNetworkReloadBackend
 public interface IRemoteEditorBackend
 {
     Dsh.Core.IEditorService Service { get; }
-    Dsh.Core.IEditorClientRegistry? Clients { get; }
+    Dsh.Ide.Bridge.EditorClientDispatcher? Clients { get; }
     HostPathPolicy? Paths => null;
 }
 

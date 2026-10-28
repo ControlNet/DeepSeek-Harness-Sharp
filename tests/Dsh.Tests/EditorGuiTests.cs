@@ -59,20 +59,18 @@ public sealed class EditorGuiTests
     });
 
     [Fact]
-    public async Task Settings_Save_Ordered_Profiles_Triggers_Options_And_Legacy_Unknown_Keys()
+    public async Task Settings_Save_Ordered_Profiles_Triggers_Options_And_Unknown_Keys()
     {
         await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         var home = environment.App.Home;
         File.WriteAllText(home.SettingsFile, """
             # IDE GUI preservation fixture
             plugins:
-              "@deepseek-ai/dsh-ide-history":
+              "@deepseek-ai/dsh-ide":
                 permissions:
                   write: false
                 custom_option: keep
                 editors: [vscode, rider]
-                providers: [jetbrains]
-                timeline: true
                 triggers:
                   - on: session.start
                     action: open_workspace
@@ -279,51 +277,6 @@ public sealed class EditorGuiTests
         Assert.Contains("# Preserve the custom integration setting.", document);
     }
 
-    [Theory]
-    [InlineData("timeline_limit", "timelineLimit", "zed", "zed")]
-    [InlineData("timelineLimit", "timeline_limit", "[vscode, zed]", "vscode, zed")]
-    [InlineData("timelineLimit", "timelineLimit", "[]", "")]
-    public async Task Settings_Use_Nested_History_Limit_Before_Either_Flat_Spelling_And_Preserve_It_When_Saving(
-        string flatKey, string nestedKey, string providerYaml, string expectedProviders)
-    {
-        await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
-        var home = environment.App.Home;
-        File.WriteAllText(home.SettingsFile, $$"""
-            plugins:
-              "@deepseek-ai/dsh-ide":
-                {{flatKey}}: 8
-                timeline: true
-                history:
-                  {{nestedKey}}: 17
-                  timeline: false
-                  providers: {{providerYaml}}
-                  # Preserve the custom history policy.
-                  custom_history: {retention: keep-history}
-            """);
-        var facade = new SettingsFacade(environment.App.Ctx, home);
-        var vm = new EditorSettingsViewModel(facade);
-        var before = IdeHistoryOptions.From(facade.Load().Plugins[EditorSettingsViewModel.Package].Parameters);
-        Assert.Equal(17, before.TimelineLimit);
-        Assert.Equal(before.TimelineLimit, vm.HistoryLimit);
-        Assert.Equal(expectedProviders, vm.HistoryProviders);
-        Assert.False(vm.HistoryTimeline);
-
-        vm.StrictMatch = true;
-        vm.SaveCommand.Execute(null);
-
-        var saved = HarnessSettings.Load(home).Plugins[EditorSettingsViewModel.Package];
-        Assert.True(Assert.IsType<bool>(saved.Parameters["strict_match"]));
-        Assert.Equal(17, IdeHistoryOptions.From(saved.Parameters).TimelineLimit);
-        var reloaded = new EditorSettingsViewModel(facade);
-        Assert.Equal(17, reloaded.HistoryLimit);
-        Assert.Equal(expectedProviders, reloaded.HistoryProviders);
-        Assert.False(reloaded.HistoryTimeline);
-        var history = Assert.IsType<Dictionary<string, object?>>(saved.Parameters["history"]);
-        var custom = Assert.IsType<Dictionary<string, object?>>(history["custom_history"]);
-        Assert.Equal("keep-history", custom["retention"]);
-        Assert.Contains("# Preserve the custom history policy.", File.ReadAllText(home.SettingsFile));
-    }
-
     [Fact]
     public async Task Saving_Unrelated_Editor_Settings_Does_Not_Reenable_Explicitly_Disabled_History_Providers()
     {
@@ -475,7 +428,7 @@ public sealed class EditorGuiTests
     {
         await using var environment = await GuiTestEnvironment.CreateIsolatedAsync();
         var configuration = providers is null ? $"plugins:\n  \"{EditorSettingsViewModel.Package}\": true\n"
-            : $"plugins:\n  \"{EditorSettingsViewModel.Package}\":\n    providers: {providers}\n";
+            : $"plugins:\n  \"{EditorSettingsViewModel.Package}\":\n    history:\n      providers: {providers}\n";
         File.WriteAllText(environment.App.Home.SettingsFile, configuration);
         var vm = new EditorSettingsViewModel(new SettingsFacade(environment.App.Ctx, environment.App.Home));
         Assert.Equal(expected, vm.HistoryProviders);

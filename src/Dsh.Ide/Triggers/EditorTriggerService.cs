@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using Dsh.Core;
+using Dsh.Ide.Bridge;
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
 
@@ -49,7 +50,7 @@ public sealed partial class EditorTriggerService : IAsyncDisposable
     private void SessionStarted(AgentSessionStartNotification notification)
     {
         var kind = notification.Source == "resume" ? "session.resume" : "session.start";
-        _ctx.Get<IEditorClientDispatcher>(IEditorClientDispatcher.ServiceName, false)?.BindCurrentClient(notification.Agent.Id.Value);
+        _ctx.Get<EditorClientDispatcher>(EditorClientDispatcher.ServiceName, false)?.BindCurrentClient(notification.Agent.Id.Value);
         Enqueue(ContextFor(notification.Agent, kind, null, null, notification.Source));
     }
 

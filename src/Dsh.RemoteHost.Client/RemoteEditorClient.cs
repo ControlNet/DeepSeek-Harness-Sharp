@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dsh.Core;
+using Dsh.Ide.Bridge;
 using Dsh.Transport;
 using static Dsh.RemoteHost.RemoteHostRpc;
 

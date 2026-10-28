@@ -44,7 +44,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
             (command, signal) => (execution.TerminalHost ?? ctx.Get<ITerminalHost>("editorTerminalHost", false)) is { } host ? host.LaunchAsync(command, signal) : ValueTask.FromResult(new EditorExecutionResult(false, EditorErrorCode.NO_TERMINAL_HOST)));
         var reviews = new EditorReviewService(ctx, Path.Combine(paths.CachePath, "ide-review"));
         var launcher = new EditorLauncher(catalog, options, new EditorExecutor([terminal]), [reviews.SnapshotRoot],
-            () => PluginSettingsSection.Resolve(HarnessSettings.Load(new(paths.Root)).Plugins, Ide)?.Permissions?.Write != false);
+            () => HarnessSettings.Load(new(paths.Root)).Plugins.GetValueOrDefault(Ide)?.Permissions?.Write != false);
         var editors = RegisterBridge(ctx, launcher, options.ClientMappings, execution);
         if (options.Triggers.Count > 0)
         {
@@ -64,7 +64,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
     {
         var clients = new EditorClientDispatcher();
         var mapper = new EditorPathMapper(mappings);
-        ctx.Provide(IEditorClientDispatcher.ServiceName, clients);
+        ctx.Provide(EditorClientDispatcher.ServiceName, clients);
         ctx.Provide("editorClientRequestMapper", (Func<string, EditorRequest, EditorRequest>)mapper.Map);
         ctx.Effect(() => clients);
         return new EditorBridgeService(launcher, clients, execution);

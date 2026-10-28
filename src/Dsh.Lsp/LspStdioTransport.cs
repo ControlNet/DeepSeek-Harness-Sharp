@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace Dsh.Lsp;
 
-/// <summary>Standard Content-Length stdio framing for the existing independent Dsh.Lsp service.</summary>
+/// <summary>Content-Length framing for LSP messages carried by the existing Host stdio channel.</summary>
 internal static class LspStdioTransport
 {
     private const int MaxHeaderBytes = 8192;

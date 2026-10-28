@@ -3,8 +3,9 @@ using Dsh.Core;
 namespace Dsh.Ide.Bridge;
 
 /// <summary>Routes to an explicitly selected connection or the authenticated origin of a new session.</summary>
-public sealed class EditorClientDispatcher : IEditorClientRegistry, IDisposable
+public sealed class EditorClientDispatcher : IDisposable
 {
+    public const string ServiceName = "editorClientDispatcher";
     private readonly object _gate = new();
     private readonly Dictionary<string, Client> _clients = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _sessions = new(StringComparer.Ordinal);

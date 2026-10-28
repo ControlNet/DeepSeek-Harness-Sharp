@@ -109,10 +109,10 @@ public static class PluginSettingsSection
     private static readonly Lazy<Dictionary<string, PluginSetting>> TemplateSettings = new(() => ParseDocument(HarnessSettings.LoadTemplate()));
 
     public static Dictionary<string, object?> DefaultParameters(string name)
-        => Resolve(TemplateSettings.Value, name)?.Parameters.ToDictionary(pair => pair.Key, pair => CloneValue(pair.Value), StringComparer.Ordinal) ?? [];
+        => TemplateSettings.Value.GetValueOrDefault(name)?.Parameters.ToDictionary(pair => pair.Key, pair => CloneValue(pair.Value), StringComparer.Ordinal) ?? [];
 
     public static object? DefaultParameter(string name, string key)
-        => CloneValue(Resolve(TemplateSettings.Value, name)?.Parameters.GetValueOrDefault(key));
+        => CloneValue(TemplateSettings.Value.GetValueOrDefault(name)?.Parameters.GetValueOrDefault(key));
 
     private static object? CloneValue(object? value) => value switch
     {
@@ -120,13 +120,6 @@ public static class PluginSettingsSection
         IEnumerable<object?> items => items.Select(CloneValue).ToArray(),
         _ => value,
     };
-
-    /** The canonical entry wins when both spellings exist; persisted source keys remain untouched. */
-    public static PluginSetting? Resolve(IReadOnlyDictionary<string, PluginSetting> plugins, string name)
-        => plugins.GetValueOrDefault(PluginPackageNames.Canonical(name))
-            ?? (PluginPackageNames.Canonical(name) == PluginPackageNames.Ide
-                ? plugins.GetValueOrDefault(PluginPackageNames.LegacyIdeHistory)
-                : null);
 
     public static Dictionary<string, PluginSetting> ParseDocument(string yaml)
     {

@@ -1,4 +1,6 @@
-namespace Dsh.Core;
+using Dsh.Core;
+
+namespace Dsh.Ide.Bridge;
 
 /// <summary>Owns incoming IDE operations in frame order and drains cancellation before retirement.</summary>
 public sealed class EditorBridgeOperations(CancellationToken lifetime) : IAsyncDisposable

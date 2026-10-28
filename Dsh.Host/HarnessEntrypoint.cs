@@ -29,7 +29,6 @@ public static class HarnessEntrypoint
         string? gpuCapturePlan = null;
         string? gpuCard = null;
         var hostStdio = false;
-        var lsp = false;
         var hostServe = false;
         string? hostToken = null;
         var positional = new List<string>();
@@ -51,9 +50,6 @@ public static class HarnessEntrypoint
                     break;
                 case "--stdio":
                     hostStdio = true;
-                    break;
-                case "--lsp":
-                    lsp = true;
                     break;
                 case "--serve":
                     hostServe = true;
@@ -120,11 +116,6 @@ public static class HarnessEntrypoint
         }
 
         var command = positional.FirstOrDefault();
-        if (lsp && (command != "host" || (!hostServe && (positional.Count < 2 || positional[1] != "serve")) || !hostStdio))
-        {
-            await Console.Error.WriteLineAsync("dsharp: --lsp requires host serve --stdio");
-            return 2;
-        }
         // 裸 `dsharp attach <pty-id>` 等价 `dsharp tui attach <pty-id>`(tmux 习惯)。
         // 仅当第二个参数确实是 daemon 里的 PTY 会话时生效; 否则仍按任务提示词走 headless, 不吞掉 "attach ..." 开头的指令。
         if (command == "attach" && positional.Count >= 2 && await BootCli.IsDaemonPtyAsync(positional[1]))
@@ -179,7 +170,7 @@ public static class HarnessEntrypoint
                 {
                     var subcommand = positional.Skip(1).FirstOrDefault();
                     if (subcommand is "serve" || hostServe)
-                        return await RunHostServeAsync(harnessHome, hostStdio, hostToken, lsp);
+                        return await RunHostServeAsync(harnessHome, hostStdio, hostToken);
                     await Console.Error.WriteLineAsync("dsharp: host requires a subcommand (serve | web)");
                     return 1;
                 }
@@ -198,27 +189,9 @@ public static class HarnessEntrypoint
         }
     }
 
-    private static async Task<int> RunHostServeAsync(HarnessHome home, bool useStdio, string? token, bool lsp)
+    private static async Task<int> RunHostServeAsync(HarnessHome home, bool useStdio, string? token)
     {
-        if (lsp)
-        {
-            using var lspApp = await ConfigBoot.Compose(new HarnessOptions(home, Directory.GetCurrentDirectory(), IsTui: false));
-            if (lspApp.Ctx.Get<Dsh.Core.ILspService>(Dsh.Core.ILspService.ServiceName, false) is not { } lspServer)
-            {
-                await Console.Error.WriteLineAsync("dsharp: LSP capability is not active; enable @deepseek-ai/dsh-lsp.");
-                return 1;
-            }
-            return await lspServer.RunStdioAsync(Console.OpenStandardInput(), Console.OpenStandardOutput());
-        }
-
-        if (useStdio)
-        {
-            // stdio-over-SSH: 桥接到常驻 daemon; 没有就 detached 起一个。断开只断这条桥, 会话留在远端(脱钩/重连)。
-            await HostAutostart.EnsureRunningAsync(home, token);
-            using var duplex = Dsh.Transport.TransportConnection.FromStandardIo();
-            await HostBridge.RunAsync(duplex, home.Root, CancellationToken.None);
-            return 0;
-        }
+        if (useStdio) return await HostStdio.RunAsync(home, token).ConfigureAwait(false);
 
         using var instance = HostAutostart.TryAcquireInstance(home);
         if (instance is null)
@@ -359,7 +332,7 @@ public static class HarnessEntrypoint
                    dsharp gui [--session <id>]
                    dsharp web [--port N] [--print-token]   (启动独立安装的 dsharp-web，不在本进程加载 Web 框架)
                    dsharp headless "task"
-                   dsharp host serve [--stdio [--lsp]] [--token <t>]   (后台工作区宿主；--stdio 通过 SSH 桥接，--lsp 选择标准 LSP 协议能力)
+                   dsharp host serve [--stdio] [--token <t>]   (后台工作区宿主；--stdio 承载 Host 帧及已启用的 LSP 协议能力)
                    dsharp host web [--port N] [--print-token]   (同上；只监听 127.0.0.1，跨设备用 ssh -L 转发)
                    dsharp register-terminal    (Linux: 注册为桌面环境的默认终端)
                    dsharp storage paths        (打印 storage.root 与各分区解析结果)

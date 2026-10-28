@@ -16,7 +16,6 @@ public sealed class PluginCatalog
     /** 包名全局唯一:后登记者拒绝,先登记者优先;重复登记是打包/组合错误,必须显式抛错而非静默覆盖。 */
     public void Register(PluginDescriptor descriptor, Func<IDshPlugin> create)
     {
-        descriptor = descriptor with { Package = PluginPackageNames.Canonical(descriptor.Package) };
         if (_plugins.TryGetValue(descriptor.Package, out var existing))
             throw new InvalidOperationException(
                 $"duplicate plugin package: {descriptor.Package} (already registered as {existing.Descriptor.Form}, refused {descriptor.Form})");
@@ -25,7 +24,7 @@ public sealed class PluginCatalog
 
     public bool TryDescribe(string packageName, [NotNullWhen(true)] out PluginDescriptor? descriptor)
     {
-        if (_plugins.TryGetValue(PluginPackageNames.Canonical(packageName), out var holder))
+        if (_plugins.TryGetValue(packageName, out var holder))
         {
             descriptor = holder.Descriptor;
             return true;
@@ -36,7 +35,7 @@ public sealed class PluginCatalog
 
     public bool TryGet(string packageName, [NotNullWhen(true)] out Func<IDshPlugin>? create)
     {
-        if (_plugins.TryGetValue(PluginPackageNames.Canonical(packageName), out var holder))
+        if (_plugins.TryGetValue(packageName, out var holder))
         {
             create = holder.Create;
             return true;
@@ -47,14 +46,14 @@ public sealed class PluginCatalog
 
     public PluginDefinition CreateDefinition(string packageName)
     {
-        if (!_plugins.TryGetValue(PluginPackageNames.Canonical(packageName), out var holder))
+        if (!_plugins.TryGetValue(packageName, out var holder))
             throw new KeyNotFoundException($"Plugin package '{packageName}' is not registered.");
         return holder.ToDefinition();
     }
 
     public bool TryCreateDefinition(string packageName, out PluginDefinition? definition)
     {
-        if (!_plugins.TryGetValue(PluginPackageNames.Canonical(packageName), out var holder))
+        if (!_plugins.TryGetValue(packageName, out var holder))
         {
             definition = null;
             return false;
@@ -63,7 +62,7 @@ public sealed class PluginCatalog
         return true;
     }
 
-    public void Remove(string packageName) => _plugins.Remove(PluginPackageNames.Canonical(packageName));
+    public void Remove(string packageName) => _plugins.Remove(packageName);
 
     private sealed record PluginHolder(PluginDescriptor Descriptor, Func<IDshPlugin> Create)
     {
