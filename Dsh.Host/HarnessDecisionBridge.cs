@@ -29,7 +29,7 @@ internal sealed class HarnessDecisionBridge : IDisposable
         var response = await _pending.AskApprovalAsync(
             new RemoteApprovalRequest(NewRequestId(), RootSessionId(request.Agent), request.ToolName, request.Arguments, request.Reason,
                 ApprovalHints.Impact(request.ToolName, request.Arguments)),
-            request.Agent.Id.Value).ConfigureAwait(false);
+            request.Agent.Id.Value, notification.Signal).ConfigureAwait(false);
         if (response is null || response.Cancelled)
             return ApprovalOutcome.Cancelled;
         return !response.Allow ? ApprovalOutcome.Rejected

@@ -19,6 +19,7 @@ namespace Dsh.Boot;
 [YamlSerializable(typeof(ToolResultsSettings))]
 [YamlSerializable(typeof(FleetSettings))]
 [YamlSerializable(typeof(MachineSettings))]
+[YamlSerializable(typeof(OutboundTunnelSettings))]
 [YamlSerializable(typeof(FleetDeploySettings))]
 [YamlSerializable(typeof(NetworkSettings))]
 [YamlSerializable(typeof(OutboundProxySettings))]

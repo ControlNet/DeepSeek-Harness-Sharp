@@ -77,8 +77,10 @@ function approvalBody(machineLink, request, isPending) {
         RememberForSession: value === 'session',
         Cancelled: value === 'cancel',
       });
-      if (!applied)
-        toast('Someone else already answered this request.');
+      if (!applied && isPending()) {
+        toast('The Host did not apply this choice; the request is still pending.');
+        fields.disabled = false;
+      }
     } catch (error) {
       if (isPending()) {
         toast(`Could not answer: ${describe(error)}`, 'error');
@@ -152,8 +154,11 @@ function questionBody(machineLink, request, isPending) {
         Status: dismissed ? QuestionResult.Dismissed : QuestionResult.Answered,
         Reason: dismissed ? QuestionResult.UserCancelled : null,
       });
-      if (!applied)
-        toast('Someone else already answered this question.');
+      if (!applied && isPending()) {
+        toast('The Host did not apply this answer; the request is still pending.');
+        fields.disabled = false;
+        refreshValidity();
+      }
     } catch (error) {
       if (isPending()) {
         toast(`Could not answer: ${describe(error)}`, 'error');

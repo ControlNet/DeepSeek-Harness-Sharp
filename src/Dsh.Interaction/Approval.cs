@@ -143,7 +143,7 @@ public sealed class ApprovalService : Service, IApprovalService
             return ApprovalOutcome.Rejected;
         if (EffectivePolicy(session) == ApprovalPolicy.Auto || HasGrant(session, request.ToolName))
             return ApprovalOutcome.AllowedOnce;
-        var answer = DispatchAnswerers(request);
+        var answer = DispatchAnswerers(request, signal);
         if (!signal.CanBeCanceled)
             return await answer;
         var cancelled = new TaskCompletionSource<ApprovalOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -154,13 +154,13 @@ public sealed class ApprovalService : Service, IApprovalService
         return completed == answer ? await answer : ApprovalOutcome.Cancelled;
     }
 
-    private async Task<ApprovalOutcome> DispatchAnswerers(ApprovalRequest request)
+    private async Task<ApprovalOutcome> DispatchAnswerers(ApprovalRequest request, CancellationToken signal)
     {
         try
         {
             var carrier = DshScope.ScopeTarget(Ctx, request.Agent.ScopeKey);
             var result = await Ctx.Events.Waterfall(
-                carrier, new ApprovalRequestNotification(request),
+                carrier, new ApprovalRequestNotification(request, signal),
                 () => new ValueTask<object?>(ApprovalOutcome.Unavailable));
             return result is ApprovalOutcome outcome ? outcome : ApprovalOutcome.Unavailable;
         }

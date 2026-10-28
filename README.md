@@ -20,7 +20,7 @@ SQLite 是可选的系统依赖,发布包不捆绑或自动下载 SQLite 原生�
 
 ## 运行
 
-1. 配置文件:`~/.dsh/settings.yaml`(Linux)/`%USERPROFILE%\.dsh\settings.yaml`(Windows);首次运行会生成带注释的模板,插件开关与参数写在 `plugins:` 段。
+1. 配置文件:`~/.dsh/settings.yaml`(Linux)/`%USERPROFILE%\.dsh\settings.yaml`(Windows);首次运行使用带注释的模板作为默认配置,保存设置时才写入文件,不会覆盖已有配置;插件开关与参数写在 `plugins:` 段。
 2. 构建与运行:
    ```bash
    dotnet build # 只构建不运行
@@ -84,6 +84,7 @@ SQLite 是可选的系统依赖,发布包不捆绑或自动下载 SQLite 原生�
    - 审批提供 `Allow once` (`y`)、`Always` (`a`，仅当前会话的该工具，fork 会话不继承)、`Reject` (`n`) 和 `Cancel` (`c` / `Esc`)；取消不会放行工具、退出界面或取消整个回合，不新增持久权限策略。
    - 审批忽略带 `Ctrl` / `Alt` 的确认键和授权快捷键，避免聊天或全局组合键误授权。
    - GUI 与 Web 使用相同选项值、禁用/默认、自定义输入及结果契约；Host 的 request id 和单一待决投影仍为唯一权威，其他客户端先回答或取消会关闭本地提示，迟到结果不覆盖。
+   - GUI 主聊天仅自动打开当前机器、当前会话的提示；其他会话仍可从通知中心回答。调用方撤销等待时同步移除自己的问答或审批，恢复 TUI 草稿，不遗留可迟到授权的提示。
    - GUI/Web 仅在 Host 宣告 `decision-cancellation-v1` 能力时启用题组 Dismissed 与审批 Cancel；旧 v2 Host 显示 Unsupported 并保持请求未决，仍可正常回答或拒绝。此能力不提升 Host 协议版本，也不影响旧 Host 已有的网络 Get/Set/Probe。
    - ACP 审批按代理实际提供的选项启用按钮；没有单次允许或拒绝选项时不代用更高权限选项，响应未被 Host 接受时保留待决状态。
 9. shell 工具:模型可按需选用以下几种 shell,各工具的提示词写明了彼此差异与常见坑。
@@ -164,14 +165,14 @@ GUI 是内置插件 `@deepseek-ai/dsh-gui`,与 TUI 共用同一份配置、会�
 原有 `sessions/` 历史会话可直接打开，恢复时由 Host 接管，不会另建一份 GUI 私有会话。
 
 ```bash
-# 构建 GUI 启动器(独立于 CLI/TUI 宿主;产物在 DshGuiHost/bin/<Debug|Release>/net10.0/)
-dotnet build DshGuiHost/DshGuiHost.csproj
+# 构建 GUI 启动器(独立于 CLI/TUI 宿主;产物在 Dsh.GuiHost/bin/<Debug|Release>/net10.0/)
+dotnet build Dsh.GuiHost/Dsh.GuiHost.csproj
 # 根目录的 dotnet build 会经 DeepSeek-Harness-Sharp.slnx 一并构建它
 
 # Windows: 双击 dsh-gui.exe(Windows 子系统,不会出现控制台黑框),或从命令行启动
-DshGuiHost\bin\Debug\net10.0\dsh-gui.exe
+Dsh.GuiHost\bin\Debug\net10.0\dsh-gui.exe
 # Linux/macOS: 运行同一工程的产物
-DshGuiHost/bin/Debug/net10.0/dsh-gui
+Dsh.GuiHost/bin/Debug/net10.0/dsh-gui
 # 从控制台宿主进入 GUI(会占用当前控制台)
 DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui
 # 直接打开某个历史会话
@@ -181,7 +182,7 @@ DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui --session <会话 id>
 - 挂到桌面环境:Windows 用 `pwsh -File scripts/install-desktop.ps1`(在桌面创建快捷方式),Linux 用 `bash scripts/install-desktop.sh`(写入 `~/.local/share/applications/dsh-gui.desktop` 并复制图标,GNOME/KDE 等桌面可直接固定到 dock/面板)。
 - 快捷键:`Enter` 发送、`Shift+Enter` 换行、`Esc` 回到对话、`Ctrl+N` 新会话、`Ctrl+B` 折叠左栏、`Ctrl+1`/`Ctrl+2` 对话/轨迹、`Ctrl+,` 设置、`Ctrl+W` 关闭(按关闭行为)、`Ctrl+Q` 直接退出。
 - 插件市场页:安装框旁的文件夹按钮可浏览选择插件库文件(`.dll`/`.so`/`.dylib`);每个插件有启用/禁用、"移除"按钮(与 `/plugins remove` 相同,托管插件移除后照常校验加载上下文回收)以及读/写/网络三个权限勾选框,写入与 `/plugins ban_write|enable_write` 相同的 `settings.yaml` 键,两端看到同一份状态。
-- 设置页改的是 GUI 插件自己的参数段(写在 `settings.yaml` 的 `plugins:` 里,不会新建 `ui:` 顶层段):
+- 设置页的外观、窗口与 GUI 参数仍保存在 GUI 插件自己的参数段(写在 `settings.yaml` 的 `plugins:` 里,不会新建 `ui:` 顶层段):
 
   ```yaml
   plugins:
@@ -194,8 +195,10 @@ DeepSeek-Harness-Sharp\bin\Debug\net10.0\dsharp.exe gui --session <会话 id>
       gpu: { enabled: true, adapter: auto, backend: auto }   # adapter 选显卡(设置页会列出本机识别到的卡), backend 是高级项: auto|opengl|vulkan|software,改动重启生效
       window: { rememberBounds: true }
   ```
+- 「网络」管理本机基准出口与本机借用选择；「远程」管理机器连接及目标 Host 的出口，两者不会搬动 GUI 插件参数。
 
 - 内容折叠:思考、工具调用与结果、上下文注入默认折叠,点「▸ 展开 / ▾ 折叠」切换;轨迹条目用右侧箭头展开详情;助手正文中的代码块超过 12 行先折叠。
+- 对话跟随:位于底部时自动跟随新增消息、流式正文和窗口尺寸变化；向上滚动后保持阅读位置，回到底部再恢复跟随。
 - 需要用户决定:工具审批与 `ask_user_question` 共用同一个窗口。审批提供「仅本次允许(y)/总是允许(a,本会话内该工具不再询问)/拒绝(n)/取消(c 或 Esc)」,并展示工具的主参数与影响提示。
 - 会话标题:首条用户消息写入会话标题(会话 id 不变),侧栏会话项的 `⋯` 菜单可重命名、导出日志、删除。
 - 消息操作:助手消息下方有复制、有帮助/没帮助、重新生成(把最后一条用户消息重新入队)。
@@ -253,6 +256,26 @@ dsharp machine proxy build clear
 
 这些命令借用 Fleet 的机器连接，不保存远端出口副本，不修改 CLI 所在机器的代理，也不自动部署或升级目标。目标 Host 必须提供 `network.outbound` 能力；旧 Host 会明确提示需要升级。连接断开时命令失败，不等待未来重连。
 
+**按层诊断网络**
+
+```bash
+dsharp doctor --proxy-layer ssh --machine build
+dsharp doctor --proxy-layer local_outbound
+dsharp doctor --proxy-layer remote_outbound --machine build
+```
+
+`ssh` 只执行真实 SSH `true`，不部署软件，也不要求目标运行 Host 或能访问 HTTP。
+`local_outbound` 只检查当前 home 的基准 `network.outbound_proxy`，不使用借用出口，也不受 `--machine` 影响；借用出口仍用下方的 `machine tunnel <name> test` 单独检查。
+`remote_outbound` 通过所选目标现有 Host 的 Network API 发起 HTTP，不配置或替代本机出口；需要支持可取消结构化探测的 Host，旧 Host 明确返回 `Unsupported`，不冒充通过。
+
+每个目标输出一行 JSON，只含所选层的结果；字段包括 `Layer`、`Outcome`、`Stage`、`Detail`、可空 `HttpStatus`、机器与 home，以及本次 `OperationId`。
+`Passed` 退出 0，`Failed`/`Unsupported` 退出 1，用户取消且所属资源完成回收后为 `Cancelled`、退出 130。
+HTTP 403/404 等目标响应只表示出口可达，不代表业务成功；HTTP 407 是 `proxy_auth` 失败。
+SSH 探测预算为 15 秒，代理 TCP 连接 5 秒、HTTP 请求 15 秒，本机合计 20 秒，远端探测 35 秒；远端取消另用最多 5 秒确认所属请求已回收，无法确认则明确失败。
+检查不保存草稿、不切换路由，也不关闭其他消费者；不自动重试，SSH 层仅发布安全说明，不将 OpenSSH 原始 stderr 或密钥路径写入该探测结果。
+JSON 的 home 等身份字段仍可能包含本机路径，分享输出前需额外隐藏用户名、路径和私有地址。
+不带 `--proxy-layer` 时仍使用原来的综合 `doctor`。
+
 - GUI:启动后进入总览,按 机器 → 项目 → 会话 分组,等待你审批的会话会高亮;`Ctrl+K` 快速跳转,`Esc` 返回;铃铛是通知中心,所有机器的待审批与提问都能在这里直接回答,先答者生效。侧栏还有文件、Git、机器三页;「设置 → 远程」与机器页是同一份机器清单。
 - 审批和提问由 Host 的单一待决队列拥有；`host.pending.changed` 在订阅时及每次变更后推送完整投影，结局可附首答者审计，所有客户端据此关闭已处理的对话，不保存已解决请求的记忆缓存。等待高亮只来自真实待决请求（包括 ACP 结构化权限请求）；外部终端仅显示进程状态，不再用屏幕文本或正则猜测审批、忙碌和等待。
 - 断线后每台机器独立重连,会话事件从断点续订,终端会重新接入。
@@ -275,7 +298,8 @@ dsharp machine proxy build clear
 - 浏览器只渲染服务器下发的权威视图、会话事件和实际 PTY 输出，提交文件/Git/会话/审批等操作；机器重连、能力处理、按序续订和 PTY 重挂由与 GUI/CLI 共用的 Fleet/RemoteHost 提供，浏览器不保存第二套事件回放或已解决请求缓存。关闭发起页面不会终止 Host 里的会话。
 - GUI 文件树支持轻量编辑、目录操作与可取消上传下载；Web 文件页保留只读预览与下载。两者的远端操作都由同一 Host 文件服务执行：允许路径仅限用户 home、harness home 与已注册会话的项目目录，符号链接也由 Host 检查，客户端不能通过输入路径绕过限制。
 - 多个浏览器共享 Fleet 连接，但未提交上传仍归创建它的浏览器所有：关闭页面会取消其临时上传，包括尚未读到 begin 响应的上传，不影响另一页面继续分块或提交。取消单个会话/终端视图只停止该视图，不取消共享 WebSocket 上已经开始发送的帧。
-- GUI 本地终端与 SSH 终端都由 Host/PTY daemon 托管；关闭终端页只分离客户端。重接会恢复主屏/备用屏、光标、滚动区域、换行模式及 DEC 图形字符集，`tmux` 切窗和切 pane 不再共用错误的屏幕保存槽，窗格边框不会因字符集丢失变成字母；离线期间最新窗口尺寸在重新 attach 前应用。
+- GUI 本地终端与 SSH 终端都由 Host/PTY daemon 托管；附加到已有会话的终端页关闭时只分离客户端，自己创建的终端页则停止自身 PTY。会话退出会取消尚未连上的额外 shell 启动，并等待已发出创建请求的自有资源回收，不影响原会话或其他客户端。重接会恢复主屏/备用屏、光标、滚动区域、换行模式及 DEC 图形字符集，`tmux` 切窗和切 pane 不再共用错误的屏幕保存槽，窗格边框不会因字符集丢失变成字母；离线期间最新窗口尺寸在重新 attach 前应用。
+- GUI 新建会话时，若选中机器尚在连接，会等待该连接完成后显示可用 Agent，无需关闭窗口或重新选机器；切换机器会取消旧机器的目录读取，关闭窗口也会取消尚未完成的读取，不断开其他消费者或停止 Host。
 - 终端的非独占订阅也可在进程退出后读取最终屏幕并正常结束；瞬时结束的命令仍正常入册，不因 Host 建立观察订阅稍晚而误报启动失败。
 - 终端聚焦时 `Ctrl+B`、`Ctrl+K`、`Esc` 等按键原样送往 PTY，不再被窗口快捷键先行截获；点击终端外的导航区后再使用工作台快捷键。普通 Chat 重新显示或重新挂载时会恢复输入框焦点及事件订阅。
 - 后台工具、Git、浏览器和剪贴板命令不会继承活动终端的输入；持续协议保留自己的输入管道，Unix 信号打断读取后仍可继续输入。
@@ -283,21 +307,153 @@ dsharp machine proxy build clear
 - 这里继续使用 Git CLI，而未引入 [LibGit2Sharp](https://github.com/libgit2/libgit2sharp)：它能省去进程启动和机器输出解析，但会增加托管绑定、原生 libgit2 资产及各发布 RID 的加载/NativeAOT 验证，并需重新核对既有 Git 配置、属性/textconv、重命名和 worktree 行为；不能仅因是托管 API 就认定 AOT 发布已兼容。当前 summary 已去掉逐文件进程与 patch 生成，保留安装 Git 的既有执行边界和统一解析实现，不额外维护第二套后端。
 - 同一 home 只允许一个常驻 Host 持有会话注册表，SSH、GUI 与 CLI 自动启动共用就绪等待；后台启动进程仍存活时继续等真实监听，退出或取消时结束等待，普通端点连接保留有界探测，避免冷启动被误判为不可达。
 - 机器清单与部署偏好只读写 `settings.yaml` 的 `fleet` 段；不读取或自动导入 `fleet/machines.json`、旧 GUI 插件的 `remoteWorkspaces` 或私有代理配置。试用过这些布局的用户需在机器页、CLI 或 `fleet` 段显式重新添加配置；原文件和旧插件参数不会因读取配置而被改写或删除。
-- 本机下载发布包使用统一的 `network.outbound_proxy`，不再使用 GUI/Fleet 私有的 `downloadProxy`；旧值不自动迁移，请在统一设置中显式填写。
+- 本机下载发布包使用与当前 home 相同的有效出口：已选择借用机器时建立独立的短期借用租约，否则使用 `network.outbound_proxy`；取消或下载结束只回收本次资源。旧 GUI/Fleet 私有的 `downloadProxy` 不自动迁移。
 - `fleet.deploy.serverProxy` 仅用于在远端下载部署包，不是每台服务器的一般网络出口；SSH 的跳板/代理命令仍配置在机器条目的 `proxy`。
 
 ```yaml
 network:
+  borrowed_outbound_machine: null
   outbound_proxy:
     url: http://127.0.0.1:7890  # 留空跟随系统代理
     bypass: [example.com, "*.example.org"]
 ```
 
+### 通过 SSH 借用远端代理
+
+已保存的 SSH 或 SSH-over-iroh 机器可配置独立的 `outboundTunnel`，通过 `proxyCommand` 的受管 `ssh -T -W` 字节流，或 `localForward` 的受管 `ssh -N -L` 本地转发访问远端 TCP 代理。
+远端只需可用的 SSH 和代理，不要求安装 `dsharp` 或启动 Host；这与设置目标 Host 自身出口的 `machine proxy` 命令不同。
+
+保存 `outbound-tunnel.json`，内容例如：
+
+```json
+{"mode":"proxyCommand","proxyUrl":"http://127.0.0.1:7890"}
+```
+
+需要本地监听时，可将同一文件写为：
+
+```json
+{"mode":"localForward","proxyUrl":"http://127.0.0.1:7890","localPort":17890}
+```
+
+```bash
+dsharp machine tunnel build set --json-stdin < outbound-tunnel.json
+dsharp machine tunnel build show
+dsharp machine tunnel build test --probe-url https://example.com/
+```
+
+PowerShell 中保存时使用 `Get-Content -Raw .\outbound-tunnel.json | dsharp machine tunnel build set --json-stdin`。
+`proxyUrl` 从远端视角解析，`127.0.0.1` 指该 SSH 机器；支持 HTTP、HTTPS、SOCKS4/4a/5，并保留代理的原始主机名、TLS 校验和认证。
+含认证信息的 URL 只通过 stdin 输入，输入文件应仅自己可读并加入 `.gitignore`，不要放进命令参数、提交或评论。
+
+配置保存在 `fleet.machines[].outboundTunnel`，也可直接填写 `mode` 和 `proxyUrl`；两项必须同时有效。
+本机机器不接受此配置；`proxyCommand` 不接受 `localPort`，`localForward` 的 `localPort` 可省略或设为 1 至 65535。
+它不会修改 `network.outbound_proxy`、机器的 SSH `proxy`、`fleet.deploy.serverProxy` 或其他机器；`clear` 只删除该机器的 `outboundTunnel`。
+保存配置本身不会将 TUI、GUI 或其它请求切换到借用出口；这里的 `test` 是独立验证操作，只释放本次取得的连接与租约，不切换当前出口。
+
+`localForward` 仅监听客户端的 `127.0.0.1`，逻辑代理主机名、认证和 TLS 身份仍取自 `proxyUrl`。
+省略 `localPort` 时向 OS 申请一次候选端口；无关程序占用固定端口或候选交接冲突时明确失败，不抢占、不杀占用者，也不循环更换端口。
+若固定端口已由当前受管借用持有，独立验证会明确说明并使用临时本地端口，不写回配置、不替换或关闭当前借用。
+临时端口、SSH PID 和 askpass 不写入配置。
+同一路由代际内复用一个受管 SSH 进程，每个 TCP 连接独立释放，取消一个请求不会关闭其他消费者的连接。
+
+`test` 实际发送 HTTP(S) 请求并消费响应正文，输出脱敏状态，成功状态退出码为 0，连接、认证、TLS 或请求失败时为非零。
+自检目标不能被直连规则排除；正常请求仍保留既有 bypass 和安全校验，进入借用路由后失败不会回退或重放原请求，SSH 掉线后仅下一次新请求可重建。
+TCP HTTP/1.1 和 HTTP/2 可用，借用出口强制 HTTP/3 会明确报不支持；取消或命令退出会等待自有 SSH、流及 askpass 清理，不会停止目标 Host 或 PTY。
+受管隧道保留 SSH 的 `LocalCommand`/`PermitLocalCommand` 来识别目标认证完成，`sshOptions` 不得显式设置这两项，SSH 配置文件中的同名命令也不会用于该隧道；普通 Host 连接保持原有认证行为。
+`localForward` 同时固定 `ForkAfterAuthentication=no` 和 `ClearAllForwardings=no`，保持所属进程在前台并保留受管监听；用户选项或 SSH 配置文件不能覆盖这两项。
+
+配置好机器后，显式选择当前 home 的共享借用出口：
+
+```bash
+dsharp machine tunnel build use
+```
+
+TUI 中使用 `/proxy via build` 选择机器，`/proxy direct` 清除选择，`/proxy reload` 重新读取当前 TUI 的配置。
+机器名中的空格可直接跟在 `/proxy via` 后面。
+CLI 与 TUI 共用 `settings.yaml` 的 `network.borrowed_outbound_machine`；默认 null 仅使用基准本机出口，不建立 SSH。
+选择前会验证机器、隧道和探测请求；验证或保存失败保留原选择和路由，已保存的无效借用选择在实际本机 HTTP 消费时明确失败，不暗中退回基准或另一台机器。
+基准的 `/proxy set`、`/proxy clear`、`/proxy test` 仍只操作或检查 `network.outbound_proxy`，不会解除借用选择。
+GUI「设置 → 网络」的「验证并保存借用」验证所选机器后保存同一个共享选择；「清除借用」恢复基准出口，「仅验证借用（不保存）」不改变选择。
+本机代理与探测地址默认遮蔽凭据，点击「编辑代理与探测地址」才展示完整草稿；未编辑时保存仍保留原值，不会把遮蔽文本写回配置。
+检查草稿不会保存配置，取消检查、离页或切换机器后不会接受迟到结果。
+
+```bash
+dsharp machine tunnel direct
+dsharp machine tunnel build clear
+```
+
+`direct` 只清除共享选择；随后可用 `clear` 删除已不需要的机器隧道定义。
+不要用删除隧道定义代替清除仍在使用的选择。
+共享的是同一 home 的选择，不是跨进程共享连接：各 Context 独立持有运行期租约，同一 Context 的消费者共用该代路由。
+同一 home 的配置保存协调进程间的完整读取、修改和替换，避免借用选择与基准出口等不同配置项的并发保存互相覆盖；不同 home 独立保存。
+切换、重载、最后消费者退出或卸载会关闭旧代自有连接、SSH 与 askpass，不会结束目标 Host、后台会话或 PTY，也不会重放已经发出的请求。
+本机 Host 是独立消费者，需要支持 `network.reload` 的连接客户端单独请求它重读自身文件；不会接收客户端的完整网络配置快照。
+仅提供 `network.outbound` 的旧 Host 仍可读取、保存和探测基准出口，但不支持此重载。
+Server 下载仍只使用 `fleet.deploy.serverProxy`，不启用本机借用选择。
+不需要本机下载的 SSH/远端 Host 管理不会获取本机出口租约；Client 下载或 Auto 回退本机下载时才按共享选择消费本机出口。
+
+
 ### 通过 iroh 接入没有公网 SSH 地址的机器
 
 普通 SSH 保持不变；选择 SSH-over-iroh 后，客户端通过稳定的 Endpoint ID 寻址，能直连时直连，否则使用可达的 relay。
-完整发行包自带固定版本的 `iroh-ssh`，无需另装 iroh 或手写 `ProxyCommand`；请保留安装目录中的 `tools/` 及许可文件，系统 OpenSSH 的 `ssh`、`scp` 仍需可用。
-WebBridge 使用运行它的那台机器上的组件，浏览器设备无需安装 iroh；浏览器到 WebBridge 的网络可达性仍需单独解决。
+SSH-over-iroh 是独立的可选程序集 `Dsh.Fleet.Client.Iroh`；基础 `Dsh.Fleet.Client` 不依赖它，正常产品包含接入支持，但不下载或捆绑原生 `iroh-ssh` 命令。
+客户端必须由用户安装 `iroh-ssh` 并放入实际启动进程的 `PATH`，系统 OpenSSH 的 `ssh`、`scp` 仍需可用；产品只检测可执行命令是否存在，不把它当作版本兼容或网络就绪证明。
+GUI 仅在检测到命令后显示新增 Iroh 机器的入口；缺少命令不会隐藏或改写已保存的 Iroh 机器，尝试连接或启用时会明确报告缺少依赖，不自动安装、下载或退回普通 SSH。
+WebBridge 使用运行它的那台机器上的可选程序集和已安装命令，浏览器设备无需安装 iroh；浏览器到 WebBridge 的网络可达性仍需单独解决。
+
+**先在客户端和接收目标准备命令：**
+
+客户端需要支持 `proxy` 的兼容 `iroh-ssh`；接收目标还必须支持 `server --ready-file`，以保留地址发现就绪、失败回滚和接收端进程所有权语义。
+上游固定源码修订 `82e99719f8b4e44c69622140f4acb25e5ae54184` 本身没有 `--ready-file`，不能只安装同名上游版本就认为接收端兼容。
+本仓库的 `scripts/fetch-iroh-ssh.sh` / `.ps1` 是显式调用的开发与 CI 原生测试依赖准备脚本：它们校验该修订、应用 `scripts/iroh-ssh-readiness.patch`，产出可供用户自行安装的兼容命令及许可说明；普通 build/publish 不调用它们。
+以下在仓库根运行，需要 Git、Rust 的 `rustup` / `cargo` 及平台原生编译器；Linux/macOS 还需要 Python 3、curl、tar、jq，Windows 需要 PowerShell 7 和 Visual Studio C++ 工具链。
+已有兼容命令时无需重复安装；下面操作会更新专用 `dsharp-iroh` 安装目录中的文件。
+若同名命令由其他安装管理，先自行选择保留或调整安装位置，示例不会覆盖它。
+
+Linux x64 示例（macOS Apple Silicon 把 `RID` 改成 `osx-arm64`，其他架构使用脚本支持的对应 RID）：
+
+```bash
+(
+set -e
+RID=linux-x64
+install_dir="$HOME/.local/lib/dsharp-iroh"
+link_path="$HOME/.local/bin/iroh-ssh"
+if { [ -e "$link_path" ] || [ -L "$link_path" ]; } && [ "$(readlink "$link_path" 2>/dev/null)" != "$install_dir/iroh-ssh" ]; then
+    printf 'Refusing to replace an existing iroh-ssh installation at %s\n' "$link_path" >&2
+    exit 1
+fi
+bash scripts/fetch-iroh-ssh.sh "$RID"
+mkdir -p "$install_dir" "$HOME/.local/bin"
+cp artifacts/iroh-ssh/"$RID"/{iroh-ssh,LICENSE.txt,THIRD-PARTY-LICENSES.txt,NOTICE.txt,READINESS.patch} "$install_dir/"
+if [ ! -L "$link_path" ]; then
+    ln -s "$install_dir/iroh-ssh" "$link_path"
+fi
+export PATH="$HOME/.local/bin:$PATH"
+iroh-ssh version
+iroh-ssh server --help
+dsh-gui
+)
+```
+
+Windows x64（在 PowerShell 7 中运行；ARM64 使用 `win-arm64`）：
+
+```powershell
+$rid = 'win-x64'
+pwsh -NoProfile -File scripts/fetch-iroh-ssh.ps1 -Rid $rid
+$install = Join-Path $env:LOCALAPPDATA 'dsharp-iroh'
+New-Item -ItemType Directory -Force $install | Out-Null
+'iroh-ssh.exe', 'LICENSE.txt', 'THIRD-PARTY-LICENSES.txt', 'NOTICE.txt', 'READINESS.patch' |
+    ForEach-Object { Copy-Item "artifacts/iroh-ssh/$rid/$_" $install -Force }
+$env:PATH = "$install;$env:PATH"
+iroh-ssh version
+iroh-ssh server --help
+dsh-gui
+```
+
+检查 `server --help` 中确有 `--ready-file`；命令存在但不兼容时，接收端启用仍会明确失败。
+以上 `PATH` 修改仅作用于示例的执行环境及其子进程；从该环境启动 `dsh-gui` 可让 GUI 继承它，从桌面图标、Finder 或服务启动则需在对应登录/启动环境配置同一目录并重新启动应用。
+不要只修改交互式 shell 的 `PATH` 就假定桌面 GUI 或远端非交互 SSH 同样可见。
+在接收目标重复相应安装步骤，使目标本地的 `dsharp iroh-remote enable` 以及远端非交互 SSH 启动的 `dsharp` 都能通过其 `PATH` 找到兼容命令；已有 SSH 自动启用只部署接收端产品，不替目标安装原生命令。
 
 **已有一次可达的 SSH 连接：**
 
@@ -308,21 +464,21 @@ dsharp machine test home
 ```
 
 GUI 中添加或选择普通 SSH 机器，然后点击「通过现有 SSH 启用 Iroh」。
-客户端单独部署接收端，通过真实 iroh SSH 命令验证认证与身份后才保存转换后的机器配置，不替换正在运行的 Host。
+客户端单独部署接收端产品（目标端兼容原生命令须预先安装），通过真实 iroh SSH 命令验证认证与身份后才保存转换后的机器配置，不替换正在运行的 Host。
 失败或取消保留原 SSH 配置；本次新启动的接收端会回滚，已有运行中的接收端只复用、不擅自重配。
-如果 SSH 本身已经断开而无法确认回滚，错误会明确要求在目标端运行 `dsharp remote disable`，不把清理失败当作成功。
+如果 SSH 本身已经断开而无法确认回滚，错误会明确要求在目标端运行 `dsharp iroh-remote disable`，不把清理失败当作成功。
 
 **客户端完全无法 SSH 到达目标：**
 
-先通过本机操作、云控制台或其他已有方式，把包含此功能的完整发行包放到目标机器并运行：
+先通过本机操作、云控制台或其他已有方式，把包含可选接入支持的发行包放到目标机器，完成上面的兼容命令安装与 `PATH` 配置后运行：
 
 ```bash
-dsharp remote enable                         # 默认连接目标本机 127.0.0.1:22 的 sshd
-dsharp remote info                           # 显示 endpointId、运行状态和后台服务说明
-dsharp remote disable                        # 停止接入，保留身份、原有 sshd 和 Host 会话
+dsharp iroh-remote enable                         # 默认连接目标本机 127.0.0.1:22 的 sshd
+dsharp iroh-remote info                           # 显示 endpointId、运行状态和后台服务说明
+dsharp iroh-remote disable                        # 停止接入，保留身份、原有 sshd 和 Host 会话
 ```
 
-自定义 sshd 端口使用 `dsharp remote enable --ssh-port 2222`。
+自定义 sshd 端口使用 `dsharp iroh-remote enable --ssh-port 2222`。
 未检测到本机 SSH 服务时会给出对应平台的安装或启用指引，不自动提权、改防火墙或安装另一套 SSH 服务。
 在客户端选择「新增 Iroh 机器」，填写目标端显示的 Endpoint ID、SSH 用户和认证信息；命令行等价入口为：
 
@@ -336,7 +492,7 @@ SSH-over-iroh 使用独立的主机密钥别名，不借用普通 TCP SSH 的已
 私钥保存在目标 harness home 的 `iroh-receiver/identity/` 中，备份和恢复时保留整对身份文件；删除它们会改变 Endpoint ID。
 停止后重新启用会复用原身份。
 
-可在目标端 `remote enable`、客户端 `machine add` 或 `machine enable-iroh` 上重复传入 `--relay-url https://relay.example.net/`，GUI 中每行填写一个 relay URL。
+可在目标端 `iroh-remote enable`、客户端 `machine add` 或 `machine enable-iroh` 上重复传入 `--relay-url https://relay.example.net/`，GUI 中每行填写一个 relay URL。
 机器配置对应 `kind: iroh`、`endpointId` 与 `relayUrls`；未指定时使用上游默认 relay。
 双方需要可用的出站网络，无法直连时必须能访问所选 relay；公共 relay 没有本产品的可用性保证，带宽和服务限制以[上游说明](https://docs.iroh.computer/concepts/relays)为准。
 设备发现与 relay 传输不是同一配置：自定义 relay 不会替换上游 N0 发现服务；不使用公共发现时，需要局域网 mDNS 实际可用，其可用性受平台权限和网络条件限制。
@@ -354,7 +510,8 @@ macOS 15 及以后，LaunchAgent 的局域网发现和直连需要用户在「�
 这些规则不影响已有的 SSH 认证与 host-key 校验；未授权 LAN 且配置的 relay 不可达时，启用会失败并保留原 Endpoint ID，不会提权、替换 relay 或退回旧 IP。
 详见 Apple [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)。
 
-完整发行包以实际提供的 RID 资产为准；从源码构建需要 Git，并获取固定源码、应用随包附带的发现就绪补丁；Windows 构建使用 PowerShell 7，跨架构构建还需要相应编译器与目标工具链。
+可用发行平台以实际提供的 RID 资产为准；原生命令由用户独立安装，许可与补丁随显式准备的测试依赖保留，不进入普通产品归档。
+跨架构编译原生测试依赖还需要相应编译器、sysroot 与目标工具链。
 
 ### 可选：由用户管理 systemd 服务
 
@@ -412,14 +569,14 @@ systemctl --user disable --now dsharp-host.service
 ### Web 入口与独立宿主
 
 TUI、GUI、Web 是同一产品的三个入口，共用 Host/Fleet 和会话数据；各自的宿主与发布目录用于隔离运行时依赖。
-发布项目分别是 `DeepSeek-Harness-Sharp`（`dsharp`）、`DshGuiHost`（`dsh-gui`）和 `Dsh.WebHost`（`dsharp-web`）。只有最后一个引入 `Microsoft.AspNetCore.App`：ASP.NET Core 的 HTTP/WebSocket、Cookie 认证和嵌入资源服务不会沿引用图进入 TUI/GUI。Web 的 Host/Origin 校验继续防止 DNS rebinding 与 CSRF，Cookie 为 HttpOnly/SameSite=Strict，令牌及 Cookie 密钥随进程重启失效。
+发布项目分别是 `DeepSeek-Harness-Sharp`（`dsharp`）、`Dsh.GuiHost`（`dsh-gui`）和 `Dsh.WebHost`（`dsharp-web`）。只有最后一个引入 `Microsoft.AspNetCore.App`：ASP.NET Core 的 HTTP/WebSocket、Cookie 认证和嵌入资源服务不会沿引用图进入 TUI/GUI。Web 的 Host/Origin 校验继续防止 DNS rebinding 与 CSRF，Cookie 为 HttpOnly/SameSite=Strict，令牌及 Cookie 密钥随进程重启失效。
 登录页面及同源协议资源在登录前即可加载，但不包含访问令牌、机器清单或会话数据；后者仍需登录后才能读取。更新 WebHost 后重新加载页面即可使用随服务生成的同版本协议定义。
 
 ```bash
 # 源码运行：WebHost 编译、激活 WebBridge 插件，再启动监听
 dotnet run --project Dsh.WebHost/Dsh.WebHost.csproj -- --port 8780
 # 独立发布（默认 JIT + partial trim + 自包含）
-dotnet publish DshGuiHost/DshGuiHost.csproj -c Release -r linux-x64
+dotnet publish Dsh.GuiHost/Dsh.GuiHost.csproj -c Release -r linux-x64
 dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r linux-x64
 # 不裁剪的 JIT / NativeAOT 档使用同一个入口
 dotnet publish Dsh.WebHost/Dsh.WebHost.csproj -c Release -r linux-x64 -p:PublishTrimmed=false
@@ -444,7 +601,7 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 ./scripts/smoke-web-host.ps1 `
   -WebPublishDir Dsh.WebHost/bin/Release/net10.0/linux-x64/publish `
   -TuiPublishDir DeepSeek-Harness-Sharp/bin/Release/net10.0/linux-x64/publish `
-  -GuiPublishDir DshGuiHost/bin/Release/net10.0/linux-x64/publish
+  -GuiPublishDir Dsh.GuiHost/bin/Release/net10.0/linux-x64/publish
 ```
 ## 各版本新增功能
 
@@ -455,18 +612,20 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 - TUI 问答与既有审批共用键鼠选择控件，支持多选、自定义输入、禁用/默认、中文折行命中、长内容滚动和草稿光标恢复。
 - 问答整组取消返回结构化 `dismissed`，审批保留当前会话工具授权边界，GUI/Web 复用选择与结果契约及 Host 先答者生效生命周期。
 - 决策取消采用显式 Host 能力门禁：旧 v2 Host 不会把取消误读为空答案或拒绝；GUI/Web 显示 Unsupported、保留未决项，既有回答与拒绝继续可用。
-- Host 的内置 Agent 在未显式选模时使用已配置的默认模型；恢复已有会话仍保留其持久化模型选择。
 
 </details>
 
 
 <details>
-<summary><b>未发布</b> — SSH-over-iroh</summary>
+<summary><b>未发布</b> — SSH-over-iroh 与 SSH 命令流代理</summary>
 
-- 多机连接新增 Endpoint ID 接入、客户端内置 iroh-ssh、已有 SSH 自动启用与目标端本地启用两种入口，沿用原有 SSH 认证和 Fleet 会话生命周期。
-- 接收端启动会同步地址发现就绪再验证 SSH 隧道，发布包附带上游修改补丁及来源说明。
+- 多机连接新增 Endpoint ID 接入、独立可选 `Dsh.Fleet.Client.Iroh` 程序集、已有 SSH 自动启用与目标端本地启用两种入口，沿用原有 SSH 认证和 Fleet 会话生命周期。
+- 原生 `iroh-ssh` 由用户安装并通过启动进程的 `PATH` 检测，产品构建与发行包不下载、不捆绑；缺少命令时不显示 GUI 新增入口，不改动已有配置。
+- 接收端要求兼容的 `server --ready-file` 命令，同步地址发现就绪再验证 SSH 隧道；仓库保留显式原生测试依赖准备脚本、固定来源和补丁说明。
 - macOS 接收端嵌入本地网络用途声明，局域网接入遵循用户授权，不静默提权。
 - 使用方法与平台差异见「通过 iroh 接入没有公网 SSH 地址的机器」。
+- CLI 新增 `machine tunnel` 配置、实际 HTTP(S) 自检及共享出口的 `use`/`direct`，TUI 通过 `/proxy via`、`/proxy direct` 与 `/proxy reload` 使用同一选择；受管租约保留认证、TLS 和连接释放边界，不修改基准或远端 Host 的出口配置。
+- `doctor --proxy-layer` 分别检查 SSH、本机基准出口和目标 Host 出口，输出带阶段、HTTP 状态与操作身份的结构化结果；独立取消会确认目标探测资源释放，不影响其他消费者。
 
 </details>
 
@@ -492,6 +651,17 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 </details>
 
 <details>
+<summary><b>0.3.0</b> — 远程宿主拆分、Iroh 传输与 GUI 工作区</summary>
+
+- **远程宿主**:拆分 Host 客户端/服务端契约, SSH 与 Iroh 作为可选传输;远端自动部署按协议版本标记,旧协议自动重新部署。
+- **Iroh**:新增显式 Iroh 传输与机器配置;目标端接收器命令改名为 `dsharp iroh-remote enable|info|disable`,仅新增 Iroh 机器时显示设置说明。
+- **网络**:SSH local-forward、proxy-command 与 borrowed route;分层代理探测和可取消的超时;设置页与 CLI 共用网络配置。
+- **GUI**:远端会话进入共享聊天/终端界面;会话列表可直接继续、重命名、删除;新增 Git 页面(仓库选择、提交 diff);机器编辑、目录选择与探测结果整理;自由输入问答选项。
+- **安全**:提示词引用的文本文件不再自动解析图片路径;图片改用 `read_image` 工具读取,避免大量图片拖垮上下文。
+- **设置**:`settings.yaml` 模板成为唯一来源,删除内置精简模板回退。
+</details>
+
+<details>
 <summary><b>0.2.0</b> — Vulkan 渲染后端、可配置主题、设置面统一</summary>
 
 - **Vulkan 渲染后端**:TUI 新增可插拔 GPU 宿主抽象与 Vulkan 后端,按 DRM 卡的 PCI 槽位选设备;裸控制台可经 SDL KMS/DRM 直接驱动;无 root 即可安装 Vulkan loader;OpenGL 后端拆分到独立模块。
@@ -503,7 +673,7 @@ Windows 可将 `dsharp-web-win-x64.zip` 解压到 `%LOCALAPPDATA%\\dsharp-web` �
 
 ## settings.yaml 结构
 
-配置文件为 `~/.dsh/settings.yaml`;首次运行按 `src/Dsh.Boot/Profiles/Templates/settings.yaml` 生成带注释的模板(可用 `$DSH_HOME` 或 `storage.root` 指定其它 harness home 做隔离测试)。
+配置文件为 `~/.dsh/settings.yaml`;首次运行按 `src/Dsh.Boot/Profiles/Templates/settings.yaml` 使用带注释的模板作为默认配置,文件在首次保存设置时创建,不覆盖已有配置(可用 `$DSH_HOME` 或 `storage.root` 指定其它 harness home 做隔离测试)。
 `/plugins` 命令写回 `plugins:` 段时采用文本级修改(保留注释)。
 
 ```yaml
@@ -568,7 +738,16 @@ network:
     probe_url: https://www.gstatic.com/generate_204
 ```
 
-`url` 支持 HTTP、HTTPS、SOCKS4/4a/5,留空跟随系统代理;日志与自检脱敏代理凭据。此配置统一本机 HTTP、LLM、web_search/web_fetch、目录查询与发布包下载,不配置远程服务器自己的出口。GUI 保存立即应用到已有客户端的后续请求;TUI `/proxy set <URL>` 写回并热更新,`/proxy clear` 恢复系统代理(保留直连名单与自检地址),手改 settings.yaml 后用 `/proxy reload` 热更新。`/proxy test [URL]` 自检并区分代理连接、认证与目标访问失败。
+`url` 支持 HTTP、HTTPS、SOCKS4/4a/5，留空跟随系统代理；日志与自检脱敏代理凭据。
+GUI「保存本机基准出口」只更新本机基准并应用到后续请求，不会解除借用选择；TUI `/proxy set <URL>` 写回并热更新，`/proxy clear` 恢复系统代理（保留直连名单与自检地址），手改 settings.yaml 后用 `/proxy reload` 热更新。
+`/proxy test [URL]` 与 GUI「检查本机出口代理」均检查本机基准，区分代理连接、认证与目标访问失败，不代表借用出口已经验证。
+
+GUI「设置 → 远程」把 SSH 连接代理与目标 Host 的一般网络出口分开。
+SSH 检查可以使用尚未保存的机器表单，只验证连接，不部署或保存。
+目标 Host 出口先读取并核对页面显示的 OwnerId、HostHome 与 Revision，再编辑、保存或清除；它由该 Host 的所有 workspace 和连接别名共享，不是本机借用隧道设置。
+读取/刷新会替换当前远端草稿，检查只使用当前草稿而不写盘；发生冲突或重连后须重新读取，保留草稿不会自动重放保存。
+远程机器列表和详情独立滚动，较窄窗口自动上下排列；不支持相关协议的旧 Host 会明确显示不支持，不改写本机出口。
+本机发布包下载仍走本机有效出口，远端下载部署包的 `fleet.deploy.serverProxy` 也不会替代目标 Host 的一般网络出口。
 
 有效的出口地址、代理认证或直连名单变化会取消旧路由代次的在途请求,关闭旧连接池并释放旧凭据;新请求使用新代配置,同一路由的请求仍复用连接。
 系统不会自动重放被取消的请求;非法或等效的配置不会中断当前请求。

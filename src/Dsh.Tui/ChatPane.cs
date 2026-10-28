@@ -993,6 +993,7 @@ public sealed class ChatPane : ITuiPane
         _questionRequest = request;
         _questionIndex = 0;
         _questionAnswers.Clear();
+
         ShowCurrentQuestion();
     }
 

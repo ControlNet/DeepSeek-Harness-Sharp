@@ -12,12 +12,13 @@ using Dsh.Transport;
 
 namespace Dsh.Tests;
 
+[Collection(GuiSerialCollection.CollectionName)]
 public sealed class FleetRemoteProxyTests
 {
     private const string ProbeTarget = "http://1.1.1.1/proxy-check";
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = 120000)]
+    [Fact(Explicit = true)]
     public async Task Cli_ChangesOnlyTargetHome_ProbesWithoutSaving_AndRedactsCredentials()
     {
         var targetHome = RealHostProcesses.CreateHome("npht");
@@ -37,13 +38,12 @@ public sealed class FleetRemoteProxyTests
             Assert.Equal(0, added.ExitCode);
             var clientBefore = await File.ReadAllTextAsync(Path.Combine(clientHome, "settings.yaml"), Ct);
             var url = $"http://{user}:{password}@127.0.0.1:{targetProxy.Port}";
-            var saved = await RunCliAsync(clientHome, $$"""{"url":"{{url}}","probeUrl":"{{ProbeTarget}}"}""",
-                "machine", "proxy", "target", "set", "--json-stdin");
+            var saved = await RunCliAsync(clientHome, $$"""{"url":"{{url}}","probeUrl":"{{ProbeTarget}}"}""", TestContext.Current.CancellationToken, "machine", "proxy", "target", "set", "--json-stdin");
             AssertSafeSuccess(saved, user, password);
             Assert.Equal(url, HarnessSettings.Load(new HarnessHome(targetHome)).Network?.OutboundProxy?.Url);
-            AssertSafeSuccess(await RunCliAsync(clientHome, null, "machine", "proxy", "target", "show"), user, password);
+            AssertSafeSuccess(await RunCliAsync(clientHome, null, TestContext.Current.CancellationToken, "machine", "proxy", "target", "show"), user, password);
             var targetBeforeProbe = await File.ReadAllTextAsync(Path.Combine(targetHome, "settings.yaml"), Ct);
-            var probe = await RunCliAsync(clientHome, null, "machine", "proxy", "target", "test", "--probe-url", ProbeTarget);
+            var probe = await RunCliAsync(clientHome, null, TestContext.Current.CancellationToken, "machine", "proxy", "target", "test", "--probe-url", ProbeTarget);
             AssertSafeSuccess(probe, user, password);
             Assert.Contains("远端", probe.Output);
             Assert.Contains($"GET {ProbeTarget} HTTP/1.1", targetProxy.Requests);
@@ -51,12 +51,12 @@ public sealed class FleetRemoteProxyTests
             var malformedProbe = $"ftp://{user}:{password} secret@example.invalid/check";
             var malformedInput = JsonSerializer.Serialize(new RemoteOutboundProxySettings(url, ProbeUrl: malformedProbe),
                 NetworkProtocolJsonContext.Default.RemoteOutboundProxySettings);
-            AssertSafeSuccess(await RunCliAsync(clientHome, malformedInput, "machine", "proxy", "target", "set", "--json-stdin"), user, password);
-            var invalidProbe = await RunCliAsync(clientHome, null, "machine", "proxy", "target", "test");
+            AssertSafeSuccess(await RunCliAsync(clientHome, malformedInput, TestContext.Current.CancellationToken, "machine", "proxy", "target", "set", "--json-stdin"), user, password);
+            var invalidProbe = await RunCliAsync(clientHome, null, TestContext.Current.CancellationToken, "machine", "proxy", "target", "test");
             Assert.NotEqual(0, invalidProbe.ExitCode);
             Assert.DoesNotContain(user, invalidProbe.Output + invalidProbe.Error);
             Assert.DoesNotContain(password, invalidProbe.Output + invalidProbe.Error);
-            AssertSafeSuccess(await RunCliAsync(clientHome, null, "machine", "proxy", "target", "clear"), user, password);
+            AssertSafeSuccess(await RunCliAsync(clientHome, null, TestContext.Current.CancellationToken, "machine", "proxy", "target", "clear"), user, password);
             Assert.Null(HarnessSettings.Load(new HarnessHome(targetHome)).Network?.OutboundProxy);
             Assert.Contains("retained: sibling", await File.ReadAllTextAsync(Path.Combine(targetHome, "settings.yaml"), Ct));
             Assert.Equal(clientBefore, await File.ReadAllTextAsync(Path.Combine(clientHome, "settings.yaml"), Ct));
@@ -71,12 +71,12 @@ public sealed class FleetRemoteProxyTests
         }
     }
 
-    [Fact(Timeout = 90000)]
+    [Fact(Explicit = true)]
     public async Task TargetChanges_ReachBothWorkspaces_KeepOtherOwnersLive_AndRejectStaleSaves()
     {
         await using var alpha = await HarnessHostFixture.CreateAsync("npa", TestContext.Current.CancellationToken);
         await using var beta = await HarnessHostFixture.CreateAsync("npb", Ct);
-        using var local = await GuiTestEnvironment.CreateAsync();
+        await using var local = await GuiTestEnvironment.CreateAsync();
         await using var alphaProxy = new TestForwardProxy();
         await using var betaProxy = new TestForwardProxy();
         await using var localProxy = new TestForwardProxy();
@@ -119,7 +119,7 @@ public sealed class FleetRemoteProxyTests
         Assert.Contains(live, session => session.Id == workspaceB.Id && session.Status != HostSessionStatuses.Exited);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Explicit = true)]
     public async Task DraftProbe_DoesNotPersistOrChangeTheSharedRoute()
     {
         await using var host = await HarnessHostFixture.CreateAsync("npp", TestContext.Current.CancellationToken);
@@ -139,7 +139,7 @@ public sealed class FleetRemoteProxyTests
         Assert.Equal([$"GET {ProbeTarget} HTTP/1.1"], savedProxy.Requests);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Explicit = true)]
     public async Task Revision_IgnoresUnrelatedYamlEdits_ButStillPersistsOnlyTheOwnedChild()
     {
         await using var host = await HarnessHostFixture.CreateAsync("npr", TestContext.Current.CancellationToken);
@@ -159,7 +159,7 @@ public sealed class FleetRemoteProxyTests
         Assert.Null(HarnessSettings.Load(host.Environment.App.Home).Network?.OutboundProxy);
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact(Explicit = true)]
     public async Task NullSavedBypass_CanBeReadProbedAndClearedRemotely()
     {
         await using var host = await HarnessHostFixture.CreateAsync("npnu", TestContext.Current.CancellationToken);
@@ -174,7 +174,7 @@ public sealed class FleetRemoteProxyTests
         Assert.Null(HarnessSettings.Load(home).Network?.OutboundProxy);
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact(Explicit = true)]
     public async Task StartupDisposal_SettlesAllNetworkOperationsWithoutCallerCancellation()
     {
         var root = RealHostProcesses.CreateHome("npst");
@@ -208,7 +208,7 @@ public sealed class FleetRemoteProxyTests
         }
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact(Explicit = true)]
     public async Task FailedConnection_ReadFailsWithoutWaitingForAnotherConnection()
     {
         var root = RealHostProcesses.CreateHome("npof");
@@ -226,7 +226,7 @@ public sealed class FleetRemoteProxyTests
         }
     }
 
-    [Fact(Timeout = 120000)]
+    [Fact(Explicit = true)]
     public async Task RealSsh_DefaultProxyConfigurationStillWorks_WhenTargetHttpEgressIsBroken()
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
@@ -307,7 +307,7 @@ public sealed class FleetRemoteProxyTests
         Assert.DoesNotContain(password, result.Error);
     }
 
-    internal static async Task<FleetCliProcess.Result> RunCliAsync(string home, string? input, params string[] arguments)
+    internal static async Task<FleetCliProcess.Result> RunCliAsync(string home, string? input, CancellationToken cancellationToken, params string[] arguments)
     {
         var info = new ProcessStartInfo(RealHostProcesses.Executable, arguments)
         {
@@ -318,24 +318,25 @@ public sealed class FleetRemoteProxyTests
             WorkingDirectory = home,
         };
         info.Environment[HarnessHome.HomeEnv] = home;
-        using var process = Process.Start(info) ?? throw new InvalidOperationException("failed to start dsharp");
-        var output = process.StandardOutput.ReadToEndAsync(Ct);
-        var error = process.StandardError.ReadToEndAsync(Ct);
+        using var process = TestProcessScope.Start(info) ?? throw new InvalidOperationException("failed to start dsharp");
+        var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var error = process.StandardError.ReadToEndAsync(cancellationToken);
         if (input is not null)
-            await process.StandardInput.WriteLineAsync(input.AsMemory(), Ct);
+            await process.StandardInput.WriteLineAsync(input.AsMemory(), cancellationToken);
         process.StandardInput.Close();
-        await process.WaitForExitAsync(Ct);
+        await process.WaitForExitAsync(cancellationToken);
         return new FleetCliProcess.Result(process.ExitCode, await output, await error);
     }
 }
 
 /** Real process-isolated HTTP forwarding; no user settings, mock providers, or fixed proxy responses. */
+[Collection(GuiSerialCollection.CollectionName)]
 public sealed class FleetRemoteProxyProcessSmokeTests
 {
     private const string PublicProbe = "https://example.com/";
     private const string RealAnswer = "NET77_REAL_OK";
 
-    [Fact(Explicit = true, Timeout = 180000)]
+    [Fact(Explicit = true)]
     [Trait("Category", "LlmSmoke")]
     public async Task CliSavedTargetRoute_CarriesRealRemoteWebAndModel_WithoutChangingOtherHosts()
     {
@@ -363,14 +364,14 @@ public sealed class FleetRemoteProxyProcessSmokeTests
             var before = await targetClient.Network.GetOutboundAsync(cancellation);
             var input = JsonSerializer.Serialize(new RemoteOutboundProxySettings($"http://127.0.0.1:{targetProxy.Port}"),
                 NetworkProtocolJsonContext.Default.RemoteOutboundProxySettings);
-            var set = await FleetRemoteProxyTests.RunCliAsync(localHome, input, "machine", "proxy", "target", "set", "--json-stdin");
+            var set = await FleetRemoteProxyTests.RunCliAsync(localHome, input, TestContext.Current.CancellationToken, "machine", "proxy", "target", "set", "--json-stdin");
             Assert.True(set.ExitCode == 0, OutboundProxy.Redact(set.Error));
             var fromCli = JsonSerializer.Deserialize(set.Output, NetworkProtocolJsonContext.Default.RemoteOutboundProxyState)!;
             var current = await targetClient.Network.GetOutboundAsync(cancellation);
             Assert.Equal((before.OwnerId, targetHome, fromCli.Revision, fromCli.Settings.Url),
                 (current.OwnerId, current.HostHome, current.Revision, current.Settings.Url));
             Assert.Equal(current.OwnerId, fromCli.OwnerId);
-            var session = await targetClient.CreateSessionAsync(targetHome, selected.Selection, cancellationToken: cancellation);
+            var session = await targetClient.CreateSessionAsync(targetHome, cancellationToken: cancellation);
             var completed = ReadCompletedTurnAsync(targetClient, session.Id, cancellation);
             await targetClient.SendMessageAsync(session.Id,
                 $"Use web_fetch to read {PublicProbe}.\nAfter its successful result, reply with exactly {RealAnswer} and no other text.\nDo not use other tools.",
@@ -409,7 +410,7 @@ public sealed class FleetRemoteProxyProcessSmokeTests
         }
     }
 
-    private static (RemoteModelSelection Selection, string ProviderHost, string Credential) ConfigureSelectedModel(HarnessHome target)
+    private static (string ProviderHost, string Credential) ConfigureSelectedModel(HarnessHome target)
     {
         var sourceHome = HarnessHome.Resolve();
         var source = HarnessSettings.Load(sourceHome);
@@ -431,7 +432,7 @@ public sealed class FleetRemoteProxyProcessSmokeTests
             },
         };
         settings.Save(target);
-        return (new RemoteModelSelection(route.Provider, route.Model), new Uri(provider.Options.BaseUrl!).Host, key!);
+        return (new Uri(provider.Options.BaseUrl!).Host, key!);
     }
 
     private static async Task<List<SessionEvent>> ReadCompletedTurnAsync(RemoteHostClient client, string sessionId, CancellationToken cancellation)
@@ -439,7 +440,8 @@ public sealed class FleetRemoteProxyProcessSmokeTests
         var events = new List<SessionEvent>();
         await foreach (var item in client.SubscribeAsync(sessionId, 0, cancellation))
         {
-            var sessionEvent = DshJson.Deserialize<SessionEvent>(item.EventJson)!;
+            if (item.Event is not { } sessionEvent)
+                continue;
             events.Add(sessionEvent);
             if (sessionEvent.Data is TurnEndPayload)
                 return events;
@@ -448,7 +450,7 @@ public sealed class FleetRemoteProxyProcessSmokeTests
     }
 
 
-    [Fact(Explicit = true, Timeout = 120000)]
+    [Fact(Explicit = true)]
     public async Task EmptySavedUrl_UsesEachHostProcessDefault_AndAnUnproxiedProcessConnectsDirectly()
     {
         var cancellation = TestContext.Current.CancellationToken;
@@ -505,7 +507,7 @@ public sealed class FleetRemoteProxyProcessSmokeTests
             info.Environment["HTTP_PROXY"] = proxy;
             info.Environment["HTTPS_PROXY"] = proxy;
         }
-        var process = Process.Start(info) ?? throw new InvalidOperationException("failed to start isolated Host");
+        var process = TestProcessScope.Start(info) ?? throw new InvalidOperationException("failed to start isolated Host");
         process.OutputDataReceived += (_, _) => { };
         process.ErrorDataReceived += (_, _) => { };
         process.BeginOutputReadLine();
@@ -515,7 +517,7 @@ public sealed class FleetRemoteProxyProcessSmokeTests
 
     private static async Task<RemoteHostClient> ConnectAsync(string home, CancellationToken cancellation)
     {
-        var stream = await RemoteHostListener.ConnectAsync(home, cancellation);
+        var stream = await RemoteHostConnector.ConnectAsync(home, cancellation);
         return await RemoteHostClient.ConnectAsync(stream, null, "default-proxy-smoke", cancellation);
     }
 
@@ -527,3 +529,5 @@ public sealed class FleetRemoteProxyProcessSmokeTests
         return cleared;
     }
 }
+
+

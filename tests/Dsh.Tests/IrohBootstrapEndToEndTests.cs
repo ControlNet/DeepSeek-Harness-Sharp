@@ -1,16 +1,18 @@
 using Dsh.Boot;
 using Dsh.Fleet;
+using Dsh.Fleet.Iroh;
 
 namespace Dsh.Tests;
 
 public sealed class IrohBootstrapEndToEndTests
 {
-    [Theory(Timeout = 180000)]
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task RejectedIrohHostKey_PreservesSshConfiguration_AndPreexistingReceiver(bool preexistingReceiver)
     {
         var executable = FleetSshEndToEndTests.RequireEnvironment();
+        _ = IrohSshComponent.RequireExecutable();
         var ct = TestContext.Current.CancellationToken;
         await using var server = await TestSshServer.StartAsync(ct);
         var root = TempTree.CreateSocketDirectory("ib");
@@ -20,7 +22,7 @@ public sealed class IrohBootstrapEndToEndTests
         {
             Assert.Equal("ordinary-ssh", await transport.RunAsync("printf '%s' ordinary-ssh", ct));
             if (preexistingReceiver)
-                await transport.RunAsync($"{RemoteShell.Prelude(original)}{RemoteShell.Quote(executable)} remote enable --ssh-port {original.Port}", ct);
+                await transport.RunAsync($"{RemoteShell.Prelude(original)}{RemoteShell.Quote(executable)} iroh-remote enable --ssh-port {original.Port}", ct);
             var previous = await IrohReceiver.InfoAsync(new HarnessHome(root), ct);
             var wrongKey = Path.Combine(server.Root, "untrusted_key");
             await TestSshServer.RunAsync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", wrongKey], ct);
@@ -31,6 +33,7 @@ public sealed class IrohBootstrapEndToEndTests
             var store = new MachineStore(new HarnessHome(Path.Combine(root, "client")));
             var options = FleetConnectionTests.TestOptions with
             {
+                SshTransportAdapter = new IrohSshTransport(),
                 Deploy = new DeploySettings { Via = DownloadVia.Client },
                 ArchiveFactory = (_, rid, token) => FleetSshEndToEndTests.BuildArchiveAsync(executable, rid, server.Root, token),
             };

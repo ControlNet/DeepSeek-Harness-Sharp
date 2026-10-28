@@ -1,5 +1,6 @@
 using Dsh.Boot;
 using Dsh.Fleet;
+using Dsh.Fleet.Iroh;
 
 namespace Dsh.Tests;
 
@@ -8,7 +9,7 @@ public sealed class IrohSshTransportTests
     private static MachineSpec Machine => MachineSpec.Ssh("home", "bootstrap.invalid", 22, "dev", SshAuth.Agent) with
     {
         Kind = MachineKinds.Iroh,
-        EndpointId = new string('a', IrohSshTransport.EndpointIdLength),
+        EndpointId = new string('a', MachineSpec.IrohEndpointIdLength),
     };
 
     [Theory]
@@ -19,7 +20,7 @@ public sealed class IrohSshTransportTests
     [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaag")]
     public async Task InvalidEndpointCannotFallBackToOrdinaryTcp(string? endpoint)
     {
-        await Assert.ThrowsAsync<InvalidOperationException>(() => new SshTransport(Machine with { EndpointId = endpoint }).CaptureAsync("true", TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new SshTransport(Machine with { EndpointId = endpoint }, new IrohSshTransport()).CaptureAsync("true", TestContext.Current.CancellationToken));
     }
 
     [Theory]
@@ -28,7 +29,7 @@ public sealed class IrohSshTransportTests
     [InlineData("ProxyJump=jump")]
     public async Task ExplicitIrohCannotBeOverriddenByAnotherSshRoute(string option)
     {
-        await Assert.ThrowsAsync<InvalidOperationException>(() => new SshTransport(Machine with { SshOptions = [option] }).CaptureAsync("true", TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new SshTransport(Machine with { SshOptions = [option] }, new IrohSshTransport()).CaptureAsync("true", TestContext.Current.CancellationToken));
     }
 
     [Theory]
@@ -46,6 +47,30 @@ public sealed class IrohSshTransportTests
             Assert.Throws<InvalidOperationException>(() => store.Upsert(Machine with { RelayUrls = [relay] }));
 
             Assert.Null(Assert.Single(store.Load().Machines).RelayUrls);
+        }
+        finally
+        {
+            TempTree.Delete(root);
+        }
+    }
+
+    [Fact]
+    public void ExplicitExecutableAndArguments_AreUsedWithoutPathLookup()
+    {
+        var root = TempTree.CreateDirectory("iroh-explicit");
+        try
+        {
+            var executable = Path.Combine(root, "iroh-ssh");
+            File.WriteAllText(executable, "");
+            var configuration = new IrohSshTransport().Configure(Machine with
+            {
+                IrohExecutablePath = executable,
+                IrohArguments = "-i ~/.ssh/id_ed25519",
+            });
+
+            Assert.Contains(executable, configuration.ProxyCommand);
+            Assert.Contains("proxy aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", configuration.ProxyCommand);
+            Assert.EndsWith("-i ~/.ssh/id_ed25519", configuration.ProxyCommand);
         }
         finally
         {

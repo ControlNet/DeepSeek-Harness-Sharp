@@ -1,8 +1,11 @@
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Gui.ViewModels;
 
@@ -11,9 +14,19 @@ namespace Dsh.Gui.Views;
 public sealed partial class ChatView : UserControl
 {
     private const double StickyTolerance = 24;
+    private const double AnchorTolerance = 0.5;
+    private const int MaxAnchorPasses = 8;
+    private const RoutingStrategies ScrollInputRoutes = RoutingStrategies.Tunnel | RoutingStrategies.Bubble;
 
     private MainViewModel? _viewModel;
     private bool _sticky = true;
+    private ListBox? _anchorList;
+    private ScrollViewer? _anchorScroll;
+    private object? _anchorData;
+    private double _anchorTop;
+    private int _anchorPasses;
+    private bool _anchorRealizePosted;
+    private RoutedEventArgs? _scrollInput;
     private Flyout? _modelFlyout;
     private Flyout? _reasoningFlyout;
     private Flyout? _presetFlyout;
@@ -24,6 +37,23 @@ public sealed partial class ChatView : UserControl
         InitializeComponent();
         DataContextChanged += OnDataContextChanged;
         MessageList.AddHandler(ScrollViewer.ScrollChangedEvent, OnScrollChanged);
+        MessageList.AddHandler(InputElement.PointerWheelChangedEvent, OnScrollInput, ScrollInputRoutes, handledEventsToo: true);
+        MessageList.AddHandler(InputElement.KeyDownEvent, OnScrollInput, ScrollInputRoutes, handledEventsToo: true);
+        MessageList.AddHandler(InputElement.PointerPressedEvent, OnScrollInput, ScrollInputRoutes, handledEventsToo: true);
+        MessageList.AddHandler(InputElement.PointerMovedEvent, OnScrollInput, ScrollInputRoutes, handledEventsToo: true);
+        MessageList.AddHandler(InputElement.PointerReleasedEvent, OnScrollInput, ScrollInputRoutes, handledEventsToo: true);
+        MessageList.AddHandler(DiffView.CardToggleRequestedEvent, OnCardToggleRequested, RoutingStrategies.Bubble);
+        AddHandler(InputElement.PointerPressedEvent, OnSelectablePointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
+        LayoutUpdated += OnLayoutUpdated;
+        MessageList.PropertyChanged += (_, change) =>
+        {
+            if (change.Property != ListBox.ScrollProperty)
+                return;
+            if (change.OldValue is ScrollViewer previous)
+                previous.PropertyChanged -= OnScrollPropertyChanged;
+            if (change.NewValue is ScrollViewer current)
+                current.PropertyChanged += OnScrollPropertyChanged;
+        };
         PropertyChanged += (_, change) =>
         {
             if (change.Property == IsVisibleProperty && IsVisible)
@@ -43,6 +73,7 @@ public sealed partial class ChatView : UserControl
 
     private void Detach()
     {
+        ClearAnchor();
         if (_viewModel is null)
             return;
         _viewModel.ScrollRequested -= ScrollToMessage;
@@ -50,12 +81,167 @@ public sealed partial class ChatView : UserControl
         _viewModel = null;
     }
 
-    /** 只在贴底时跟随流式输出; 用户向上翻阅时保持位置。 */
+    private void OnScrollInput(object? sender, RoutedEventArgs e) =>
+        _scrollInput = e.Route == RoutingStrategies.Tunnel ? e : null;
+
+    private bool IsScrollBarInput(Visual? source)
+    {
+        var inScrollBar = false;
+        for (var visual = source; visual is not null; visual = visual.GetVisualParent())
+        {
+            if (visual is ScrollBar)
+                inScrollBar = true;
+            if (visual is ScrollViewer scroll)
+                return inScrollBar && ReferenceEquals(scroll, MessageList.Scroll);
+        }
+        return false;
+    }
+
+    // Observe manual offset changes before ScrollChanged combines them with layout changes.
+    private void OnScrollPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs change)
+    {
+        if (change.Property != ScrollViewer.OffsetProperty || sender is not ScrollViewer scroll)
+            return;
+        var manual = _scrollInput is PointerWheelEventArgs
+            || _scrollInput is KeyEventArgs { Key: Key.Up or Key.Down or Key.PageUp or Key.PageDown or Key.Home or Key.End }
+            || _scrollInput is PointerEventArgs pointer && IsScrollBarInput(pointer.Source as Visual);
+        if (!manual)
+            return;
+        // 用户重新滚动时放弃折叠对齐, 不与其滚动意图抢位置。
+        ClearAnchor();
+        var previous = change.GetOldValue<Vector>().Y;
+        var maximum = Math.Max(0, scroll.Extent.Height - scroll.Viewport.Height);
+        // A smaller scroll range can clamp the offset without the reader scrolling.
+        if (scroll.Offset.Y < Math.Min(previous, maximum) || !_sticky)
+            _sticky = scroll.Offset.Y >= maximum - StickyTolerance;
+    }
+
+    /** Follow layout growth only while pinned; scrolling can leave or rejoin the tail. */
     private void OnScrollChanged(object? sender, ScrollChangedEventArgs e)
     {
-        if (e.Source is not ScrollViewer scroll)
+        if (e.Source is not ScrollViewer scroll || !ReferenceEquals(scroll, MessageList.Scroll))
             return;
-        _sticky = scroll.Offset.Y + scroll.Viewport.Height >= scroll.Extent.Height - StickyTolerance;
+        var layoutChanged = e.ExtentDelta != default || e.ViewportDelta != default;
+        // Preserve pinned intent through growth after immediate offset intent was observed.
+        if (!layoutChanged || !_sticky)
+            _sticky = scroll.Offset.Y + scroll.Viewport.Height >= scroll.Extent.Height - StickyTolerance;
+        // 折叠引起的高度变化不能触发触底跟随, 否则用户刚操作的消息会被甩出视口。
+        if (layoutChanged && _sticky && !ReferenceEquals(_anchorList, MessageList))
+            scroll.ScrollToEnd();
+    }
+
+    /** SelectableTextBlock 点击后不会自动获得焦点, 而 Ctrl+C 只有在其拥有焦点时才生效; 选中文字即意味着在阅读, 同时停止触底跟随。 */
+    private void OnSelectablePointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (e.Source is not Visual source
+            || source.FindAncestorOfType<SelectableTextBlock>(includeSelf: true) is not { } block)
+            return;
+        if (MessageList.IsEffectivelyVisible)
+            _sticky = false;
+        block.Focus();
+    }
+
+    /** 点击折叠按钮时先记下消息位置; Click 在 Button 执行命令前触发, 记录的是折叠前的布局。 */
+    private void OnMessageFoldClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control control)
+            BeginAnchor(control, MessageList, MessageList.Scroll as ScrollViewer);
+    }
+
+    private void OnTraceExpandClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control control)
+            BeginAnchor(control, TraceList, TraceList.Scroll as ScrollViewer);
+    }
+
+    private void OnCardToggleRequested(object? sender, RoutedEventArgs e)
+    {
+        if (e.Source is Control control)
+            BeginAnchor(control, MessageList, MessageList.Scroll as ScrollViewer);
+    }
+
+    /** 记下被折叠消息在视口中的位置; 列表虚拟化后容器会被回收, 因此按数据项而不仅是容器来跟踪。 */
+    private void BeginAnchor(Control control, ListBox list, ScrollViewer? scroll)
+    {
+        var item = control.FindAncestorOfType<ListBoxItem>() ?? control;
+        if (scroll is null || item.TranslatePoint(default, scroll) is not { } top)
+            return;
+        _anchorList = list;
+        _anchorScroll = scroll;
+        _anchorData = item.DataContext;
+        _anchorTop = top.Y;
+        _anchorPasses = 0;
+        _anchorRealizePosted = false;
+    }
+
+    private void OnLayoutUpdated(object? sender, EventArgs e)
+    {
+        if (_anchorList is null || _anchorScroll is null || _anchorData is null)
+            return;
+        var list = _anchorList;
+        var scroll = _anchorScroll;
+        var data = _anchorData;
+        if (FindRealizedItem(list, data) is { } item)
+        {
+            if (AlignAnchor(item, scroll))
+                FinishAnchor(scroll);
+            return;
+        }
+        if (_anchorRealizePosted)
+            return;
+        if (++_anchorPasses > MaxAnchorPasses)
+        {
+            FinishAnchor(scroll);
+            return;
+        }
+        _anchorRealizePosted = true;
+        // 列表自带的滚动锚定会把项移出视口并回收容器; 先让目标项重新实体化, 下一轮布局再按原位置对齐。
+        Dispatcher.UIThread.Post(() =>
+        {
+            _anchorRealizePosted = false;
+            if (ReferenceEquals(_anchorList, list) && ReferenceEquals(_anchorData, data))
+                list.ScrollIntoView(data);
+        }, DispatcherPriority.Loaded);
+    }
+
+    /** 返回 true 表示已经对齐或已到滚动边界, 无需再等下一轮布局。 */
+    private bool AlignAnchor(Control item, ScrollViewer scroll)
+    {
+        if (item.TranslatePoint(default, scroll) is not { } top)
+            return true;
+        var delta = top.Y - _anchorTop;
+        if (Math.Abs(delta) <= AnchorTolerance)
+            return true;
+        if (++_anchorPasses > MaxAnchorPasses)
+            return true;
+        var maximum = Math.Max(0, scroll.Extent.Height - scroll.Viewport.Height);
+        var target = Math.Clamp(scroll.Offset.Y + delta, 0, maximum);
+        // 到达滚动边界时无法继续对齐, 立即结束而不是反复重试。
+        if (Math.Abs(target - scroll.Offset.Y) <= AnchorTolerance)
+            return true;
+        scroll.Offset = new Vector(scroll.Offset.X, target);
+        return false;
+    }
+
+    private static ListBoxItem? FindRealizedItem(ListBox list, object data)
+        => list.GetVisualDescendants().OfType<ListBoxItem>()
+            .FirstOrDefault(item => ReferenceEquals(item.DataContext, data));
+
+    private void FinishAnchor(ScrollViewer scroll)
+    {
+        var messageList = ReferenceEquals(_anchorList, MessageList);
+        ClearAnchor();
+        if (messageList)
+            _sticky = scroll.Offset.Y + scroll.Viewport.Height >= scroll.Extent.Height - StickyTolerance;
+    }
+
+    private void ClearAnchor()
+    {
+        _anchorList = null;
+        _anchorScroll = null;
+        _anchorData = null;
+        _anchorPasses = 0;
+        _anchorRealizePosted = false;
     }
 
     private void ScrollToMessage(MessageViewModel message)
@@ -64,6 +250,7 @@ public sealed partial class ChatView : UserControl
             return;
         if (!_viewModel.Messages.Contains(message))
             return;
+        ClearAnchor();
         _sticky = true;
         Dispatcher.UIThread.Post(() => MessageList.ScrollIntoView(message));
     }
@@ -75,7 +262,7 @@ public sealed partial class ChatView : UserControl
         Dispatcher.UIThread.Post(() =>
         {
             if (_sticky && _viewModel?.Messages.Count is > 0)
-                MessageList.ScrollIntoView(_viewModel.Messages[^1]);
+                (MessageList.Scroll as ScrollViewer)?.ScrollToEnd();
         });
     }
 

@@ -167,7 +167,7 @@ public sealed class MarkdownView : UserControl
 
     private void AddHeading(Heading heading)
     {
-        var block = CreateTextBlock(heading.Content);
+        var block = CreateSelectableText(heading.Content);
         block.FontSize = heading.Level switch
         {
             1 => Scaled(Heading1FontSize),
@@ -186,7 +186,7 @@ public sealed class MarkdownView : UserControl
             content.Add(lines[index].Trim());
             index++;
         }
-        _root.Children.Add(CreateTextBlock(string.Join('\n', content)));
+        _root.Children.Add(CreateSelectableText(string.Join('\n', content)));
         return index;
     }
 
@@ -216,7 +216,7 @@ public sealed class MarkdownView : UserControl
             FontSize = BodySize,
             Margin = new Thickness(0, 0, ListGap, 0),
         });
-        var text = CreateTextBlock(content);
+        var text = CreateSelectableText(content);
         Grid.SetColumn(text, 1);
         grid.Children.Add(text);
         return grid;
@@ -227,7 +227,7 @@ public sealed class MarkdownView : UserControl
         var content = new StackPanel { Orientation = Orientation.Vertical, Spacing = InnerSpacing };
         while (index < lines.Length && ReadQuoteContent(lines[index]) is { } quoted)
         {
-            var block = CreateTextBlock(quoted);
+            var block = CreateSelectableText(quoted);
             block.Foreground = _secondaryBrush;
             content.Children.Add(block);
             index++;
@@ -264,7 +264,7 @@ public sealed class MarkdownView : UserControl
             FontSize = CaptionSize,
             Foreground = _secondaryBrush,
         });
-        panel.Children.Add(new TextBlock
+        panel.Children.Add(new SelectableTextBlock
         {
             Text = string.Join('\n', visible),
             FontFamily = _monoFont,
@@ -307,7 +307,7 @@ public sealed class MarkdownView : UserControl
         Rebuild(force: true);
     }
 
-    private TextBlock CreateTextBlock(string text) => new()
+    private SelectableTextBlock CreateSelectableText(string text) => new()
     {
         TextWrapping = TextWrapping.Wrap,
         Foreground = _primaryBrush,

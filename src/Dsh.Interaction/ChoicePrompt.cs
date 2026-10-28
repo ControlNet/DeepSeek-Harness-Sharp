@@ -29,7 +29,6 @@ public sealed record ChoicePrompt(
 public sealed class ChoicePromptState
 {
     private readonly HashSet<int> _selected = [];
-    private string _customText = "";
 
     public ChoicePromptState(ChoicePrompt prompt)
     {
@@ -57,13 +56,13 @@ public sealed class ChoicePromptState
     public int CustomCursor { get; set; }
     public string CustomText
     {
-        get => _customText;
+        get;
         set
         {
-            _customText = Prompt.AllowCustom ? value : "";
-            CustomCursor = Math.Clamp(CustomCursor, 0, _customText.Length);
+            field = Prompt.AllowCustom ? value : "";
+            CustomCursor = Math.Clamp(CustomCursor, 0, field.Length);
         }
-    }
+    } = "";
     public bool CanSubmit => _selected.Count > 0 || Prompt.AllowCustom && !string.IsNullOrWhiteSpace(CustomText);
     public bool IsSelected(int index) => _selected.Contains(index);
 

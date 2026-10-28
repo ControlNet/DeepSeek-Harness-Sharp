@@ -3,7 +3,7 @@ using Dsh.Runtime.Events;
 
 namespace Dsh.Interaction;
 
-public sealed record ApprovalRequestNotification(ApprovalRequest Request) : INotification
+public sealed record ApprovalRequestNotification(ApprovalRequest Request, CancellationToken Signal) : INotification
 {
     public static string EventName => "approval/request";
 }

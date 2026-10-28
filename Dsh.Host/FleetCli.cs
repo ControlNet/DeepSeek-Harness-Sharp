@@ -1,6 +1,8 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dsh.Boot;
 using Dsh.Fleet;
+using Dsh.Fleet.Iroh;
 using Dsh.Pty;
 using Dsh.RemoteHost;
 using Dsh.Transport;
@@ -17,7 +19,7 @@ internal static class FleetCli
     private const string MachineCommand = "machine";
     private const string SessionCommand = "session";
     private const string DoctorCommand = "doctor";
-    private const string RemoteCommand = "remote";
+    private const string IrohRemoteCommand = "iroh-remote";
 
     /** The shell convention for a command stopped by Ctrl+C (128 + SIGINT). */
     private const int InterruptedExitCode = 130;
@@ -25,33 +27,43 @@ internal static class FleetCli
     private static readonly HashSet<string> Flags = ["--local", "--force", "--password-stdin"];
 
     private static readonly HashSet<string> ValueOptions =
-        ["--host", "--port", "--user", "--auth", "--key", "--proxy", "--remote-path", "--remote-home", "--ssh-option", "--home", "--machine", "--endpoint-id", "--relay-url", "--ssh-port", "--activation"];
+        ["--host", "--port", "--user", "--auth", "--key", "--proxy", "--remote-path", "--remote-home", "--ssh-option", "--home", "--machine", "--proxy-layer", "--endpoint-id", "--relay-url", "--ssh-port", "--activation"];
 
-    public static bool Handles(string[] args) => args is [MachineCommand or SessionCommand or DoctorCommand or RemoteCommand, ..];
+    private static readonly FleetTunnelJsonContext TunnelJson = new(new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        AllowDuplicateProperties = false,
+    });
+
+    public static bool Handles(string[] args) => args is [MachineCommand or SessionCommand or DoctorCommand or IrohRemoteCommand, ..];
 
     /** resumeHarness opens a harness session of the local machine in this terminal's TUI. */
     public static async Task<int> RunAsync(HarnessHome home, string[] args, Func<HarnessHome, string, Task<int>> resumeHarness)
     {
         var isProxyCommand = args is [MachineCommand, "proxy", ..];
+        var isTunnelCommand = args is [MachineCommand, "tunnel", ..];
+        var hasPrivateInput = isProxyCommand || isTunnelCommand;
         var parsed = FleetArguments.Parse(args.Skip(1),
-            isProxyCommand ? [.. Flags, "--json-stdin"] : Flags,
-            isProxyCommand ? [.. ValueOptions, "--probe-url"] : ValueOptions);
+            hasPrivateInput ? [.. Flags, "--json-stdin"] : Flags,
+            hasPrivateInput ? [.. ValueOptions, "--probe-url"] : ValueOptions);
         if (parsed.Error is { } error)
-            return await FailAsync(isProxyCommand ? "invalid machine proxy options (try --help)" : error);
+            return await FailAsync(isProxyCommand ? "invalid machine proxy options (try --help)"
+                : isTunnelCommand ? "invalid machine tunnel options (try --help)" : error);
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>
         {
             eventArgs.Cancel = true;
             cancellation.Cancel();
         };
-        var context = new FleetCliContext(home, new MachineStore(home), parsed, resumeHarness, cancellation.Token);
+        await using var context = new FleetCliContext(home, new MachineStore(home), parsed, resumeHarness, cancellation.Token);
         try
         {
             return args[0] switch
             {
                 MachineCommand => await RunMachineAsync(context),
                 SessionCommand => await RunSessionAsync(context),
-                RemoteCommand => await RunReceiverAsync(context),
+                IrohRemoteCommand => await RunIrohRemoteAsync(context),
                 _ => await RunDoctorAsync(context),
             };
         }
@@ -79,13 +91,20 @@ internal static class FleetCli
                dsharp machine proxy <name> set --json-stdin
                dsharp machine proxy <name> clear
                dsharp machine proxy <name> test [--probe-url <url>]
+               dsharp machine tunnel <name> set --json-stdin
+               dsharp machine tunnel <name> show
+               dsharp machine tunnel <name> clear
+               dsharp machine tunnel <name> test [--probe-url <url>]
+               dsharp machine tunnel <name> use         (select this machine for this home's outbound requests)
+               dsharp machine tunnel direct             (restore the local baseline without opening SSH)
                dsharp session list [--machine <name>]
                dsharp session attach <machine>/<session>   (terminal sessions; leave with Ctrl+])
                dsharp session stop <machine>/<session>
                dsharp doctor [--machine <name>]
-               dsharp remote enable [--ssh-port N] [--relay-url <url>]...   (enable this machine's receiver)
-               dsharp remote info
-               dsharp remote disable
+               dsharp doctor --proxy-layer ssh|local_outbound|remote_outbound [--machine <name>]
+        dsharp iroh-remote enable [--ssh-port N] [--relay-url <url>]...   (enable this machine's iroh receiver)
+        dsharp iroh-remote info
+        dsharp iroh-remote disable
         """;
 
     private static Task<int> RunMachineAsync(FleetCliContext context) => context.Arguments.Subcommand switch
@@ -97,7 +116,8 @@ internal static class FleetCli
         "deploy" => DeployMachineAsync(context),
         "enable-iroh" => EnableIrohAsync(context),
         "proxy" => RunMachineProxyAsync(context),
-        var other => FailAsync($"unknown machine subcommand \"{other}\" (list | add | remove | test | deploy | enable-iroh | proxy)"),
+        "tunnel" => RunMachineTunnelAsync(context),
+        var other => FailAsync($"unknown machine subcommand \"{other}\" (list | add | remove | test | deploy | enable-iroh | proxy | tunnel)"),
     };
 
     private static Task<int> RunSessionAsync(FleetCliContext context) => context.Arguments.Subcommand switch
@@ -135,6 +155,8 @@ internal static class FleetCli
     private static async Task<MachineSpec> SshMachineAsync(string name, FleetArguments arguments)
     {
         var endpoint = arguments.Value("--endpoint-id");
+        if (endpoint is not null)
+            _ = IrohSshComponent.RequireExecutable();
         var host = arguments.Value("--host") ?? (endpoint is not null ? "" : throw new InvalidOperationException("machine add requires --host, --endpoint-id or --local --home"));
         var port = Port(arguments, "--port");
         var key = arguments.Value("--key");
@@ -253,6 +275,108 @@ internal static class FleetCli
         }
     }
 
+    private static async Task<int> RunMachineTunnelAsync(FleetCliContext context)
+    {
+        var arguments = context.Arguments;
+        var operation = arguments.Positional.ElementAtOrDefault(2);
+        var direct = arguments.Positional is ["tunnel", "direct"] && arguments.Flags.Count == 0 && arguments.Options.Count == 0;
+        if (!direct && (arguments.Positional.Count != 3 || operation is not ("show" or "set" or "clear" or "test" or "use")
+            || arguments.Flags.Any(flag => flag != "--json-stdin" || operation != "set")
+            || arguments.Options.Any(option => option.Key != "--probe-url" || operation != "test" || option.Value.Count != 1)
+            || operation == "set" && !arguments.Has("--json-stdin")))
+            return await FailAsync("usage: machine tunnel <name> set --json-stdin | show | clear | test [--probe-url <url>] | use; machine tunnel direct");
+
+        OutboundTunnelSpec? supplied = null;
+        OutboundTunnelSpec? saved = null;
+        var probeUrl = arguments.Value("--probe-url") ?? "https://example.com/";
+        try
+        {
+            if (direct || operation == "use")
+            {
+                await context.OutboundRoute.SelectAsync(direct ? null : arguments.Operand, context.Cancellation);
+                await Console.Out.WriteLineAsync(direct ? "Local outbound selection cleared." : "Local outbound selection saved.");
+                return 0;
+            }
+            var machine = context.RequireMachine(arguments.Operand);
+            saved = machine.OutboundTunnel;
+            if (machine.IsLocal)
+                return await FailAsync("outbound tunnels are not available for local machines");
+            if (operation == "set")
+            {
+                try
+                {
+                    supplied = JsonSerializer.Deserialize(await Console.In.ReadToEndAsync(context.Cancellation), TunnelJson.OutboundTunnelSpec);
+                }
+                catch (JsonException)
+                {
+                    return await FailAsync("machine tunnel set requires a valid JSON settings object on stdin");
+                }
+                if (supplied is null)
+                    return await FailAsync("machine tunnel set requires a JSON settings object on stdin");
+                machine = machine with { OutboundTunnel = supplied };
+                context.Store.Upsert(machine);
+            }
+            else if (operation == "clear")
+            {
+                machine = machine with { OutboundTunnel = null };
+                context.Store.Upsert(machine);
+            }
+            else if (operation == "test")
+            {
+                if (!Uri.TryCreate(probeUrl, UriKind.Absolute, out var destination)
+                    || destination.Scheme is not ("http" or "https") || destination.Host.Length == 0
+                    || destination.UserInfo.Length > 0 || destination.Fragment.Length > 0)
+                    return await FailAsync("machine tunnel test requires an absolute HTTP(S) probe URL without credentials or a fragment");
+                if (MachineStore.ValidateOutboundTunnel(machine) is null)
+                    return await FailAsync("machine has no outbound tunnel configured");
+                await using var tunnel = new SshOutboundTunnel(machine, context.SshTransportAdapter);
+                using var outbound = new OutboundProxy();
+                outbound.ConfigureBorrowed(tunnel.ProxyUri.OriginalString, tunnel.ConnectAsync);
+                if (outbound.CaptureRoute(destination).ProxyUri is null)
+                    return await FailAsync("probe URL bypasses the configured tunnel; use a public HTTP(S) destination");
+                using var client = new HttpClient(outbound.CreateHandler());
+                using var response = await client.GetAsync(destination, HttpCompletionOption.ResponseHeadersRead, context.Cancellation);
+                await using var body = await response.Content.ReadAsStreamAsync(context.Cancellation);
+                await body.CopyToAsync(Stream.Null, context.Cancellation);
+                await Console.Out.WriteLineAsync($"HTTP {(int)response.StatusCode} through {outbound.Describe()} (response consumed)");
+                return response.IsSuccessStatusCode ? 0 : 1;
+            }
+
+            var redacted = machine.OutboundTunnel is { } settings
+                ? settings with { ProxyUrl = RedactProxyUrl(settings.ProxyUrl) }
+                : null;
+            await Console.Out.WriteLineAsync(JsonSerializer.Serialize(redacted, TunnelJson.OutboundTunnelSpec));
+            return 0;
+        }
+        catch (YamlDotNet.Core.YamlException)
+        {
+            return await FailAsync("could not read machine tunnel settings: invalid YAML");
+        }
+        catch (OperationCanceledException) when (!context.Cancellation.IsCancellationRequested)
+        {
+            return await FailAsync("machine tunnel test timed out");
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or IOException or NotSupportedException or HttpRequestException or UnauthorizedAccessException or ArgumentException)
+        {
+            var message = failure.Message;
+            foreach (var url in new[] { supplied?.ProxyUrl, saved?.ProxyUrl, probeUrl })
+            {
+                if (string.IsNullOrEmpty(url))
+                    continue;
+                message = message.Replace(url, "[redacted URL]", StringComparison.Ordinal);
+                if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.UserInfo.Length > 0)
+                    foreach (var part in uri.UserInfo.Split(':', 2))
+                    {
+                        if (part.Length == 0)
+                            continue;
+                        message = message.Replace(part, "***", StringComparison.Ordinal);
+                        message = message.Replace(Uri.UnescapeDataString(part), "***", StringComparison.Ordinal);
+                    }
+            }
+            return await FailAsync(OutboundProxy.Redact(message));
+        }
+    }
+
     /** Redacts field values even when whitespace makes their user info an invalid URI. */
     private static string RedactProxyUrl(string url)
     {
@@ -270,12 +394,12 @@ internal static class FleetCli
         if (machine.IsLocal)
             return await FailAsync($"{machine.Name} is this computer; it runs this dsharp and needs no deployment");
         var deploy = context.Store.Load().Deploy;
-        var result = await new RemoteDsharpInstaller(new SshTransport(machine)).EnsureAsync(
+        var result = await new RemoteDsharpInstaller(new SshTransport(machine, context.SshTransportAdapter), context.SshTransportAdapter).EnsureAsync(
             deploy, step => Console.Error.WriteLine(step), context.Cancellation, force: context.Arguments.Has("--force"),
-            localProxy: context.Options(deploy: true, startLocalHost: false).LocalProxy);
+            localHome: context.Home);
         await Console.Out.WriteLineAsync(result.AlreadyPresent
-            ? $"{machine.Name}: {result.CommandPath} is already at {RemoteHostServer.ReleaseVersion} or newer (use --force to redeploy)"
-            : $"{machine.Name}: deployed {RemoteHostServer.ReleaseVersion} to {result.CommandPath}");
+            ? $"{machine.Name}: {result.CommandPath} is already at {HostProtocol.ReleaseVersion} or newer (use --force to redeploy)"
+            : $"{machine.Name}: deployed {HostProtocol.ReleaseVersion} to {result.CommandPath}");
         return 0;
     }
 
@@ -292,7 +416,7 @@ internal static class FleetCli
         return 0;
     }
 
-    private static async Task<int> RunReceiverAsync(FleetCliContext context)
+    private static async Task<int> RunIrohRemoteAsync(FleetCliContext context)
     {
         var activationText = context.Arguments.Value("--activation");
         var activation = activationText is null ? (Guid?)null : Guid.TryParseExact(activationText, "N", out var id) ? id : throw new ArgumentException("Invalid receiver activation identifier.");
@@ -306,7 +430,7 @@ internal static class FleetCli
         {
             "enable" => await IrohReceiver.EnableAsync(context.Home, Port(context.Arguments, "--ssh-port"), context.Arguments.Values("--relay-url"), activation, context.Cancellation),
             "info" => await IrohReceiver.InfoAsync(context.Home, context.Cancellation),
-            _ => throw new InvalidOperationException("remote requires a subcommand (enable | info | disable)"),
+            _ => throw new InvalidOperationException("iroh-remote requires a subcommand (enable | info | disable)"),
         };
         await Console.Out.WriteLineAsync($"endpointId={status.EndpointId}");
         await Console.Out.WriteLineAsync($"running={status.Running.ToString().ToLowerInvariant()}");
@@ -329,7 +453,7 @@ internal static class FleetCli
         var rows = fleet.Sessions()
             .Select(item => new[]
             {
-                item.Machine, item.Session.SessionId, item.Session.Kind, item.Session.AgentKind ?? "-", item.Session.Status,
+                item.Machine, item.Session.SessionId, item.Session.Kind ?? "-", item.Session.AgentKind ?? "-", item.Session.Status,
                 Math.Max(item.Session.PendingCount, pending.GetValueOrDefault((item.Machine, item.Session.SessionId))).ToString(),
                 item.Session.ProjectPath ?? "-",
             })
@@ -355,7 +479,7 @@ internal static class FleetCli
         return await context.ResumeHarness(context.HomeOf(connection.Machine), session.SessionId);
     }
 
-    private static async Task<int> AttachTerminalAsync(IRemotePty pty, MachineSpec machine, RemoteHostSession session, CancellationToken cancellationToken)
+    private static async Task<int> AttachTerminalAsync(RemotePtyClient pty, MachineSpec machine, RemoteSessionSummary session, CancellationToken cancellationToken)
     {
         await Console.Out.WriteLineAsync($"dsharp: attaching to {machine.Name}/{session.SessionId}; leave with {ConsoleTunnel.DetachKeyName} (the session keeps running)");
         await ConsoleTunnel.RunAsync(
@@ -396,6 +520,8 @@ internal static class FleetCli
 
     private static async Task<int> RunDoctorAsync(FleetCliContext context)
     {
+        if (context.Arguments.Value("--proxy-layer") is { } layer)
+            return await RunProxyDoctorAsync(context, layer);
         var failed = false;
         foreach (var machine in context.SelectedMachines())
         {
@@ -412,6 +538,50 @@ internal static class FleetCli
         }
 
         return failed ? 1 : 0;
+    }
+
+    private static async Task<int> RunProxyDoctorAsync(FleetCliContext context, string layerText)
+    {
+        ProxyProbeLayer? layer = layerText switch
+        {
+            "ssh" => ProxyProbeLayer.Ssh,
+            "local_outbound" => ProxyProbeLayer.LocalOutbound,
+            "remote_outbound" => ProxyProbeLayer.RemoteOutbound,
+            _ => null,
+        };
+        if (layer is null)
+            return await FailAsync("--proxy-layer must be ssh, local_outbound or remote_outbound");
+        var probe = new FleetProxyProbe(context.Options(deploy: false, startLocalHost: false));
+        if (layer == ProxyProbeLayer.LocalOutbound)
+            return await WriteProxyProbeAsync(await probe.ProbeLocalAsync(context.Home.Root,
+                HarnessSettings.Load(context.Home).Network?.OutboundProxy, Guid.NewGuid(), context.Cancellation));
+        var failed = false;
+        foreach (var machine in context.SelectedMachines())
+        {
+            var result = layer == ProxyProbeLayer.Ssh
+                ? await probe.ProbeSshAsync(machine, Guid.NewGuid(), context.Cancellation)
+                : await ProbeRemoteLayerAsync(context, probe, machine);
+            var exitCode = await WriteProxyProbeAsync(result);
+            if (exitCode == InterruptedExitCode)
+                return exitCode;
+            failed |= exitCode != 0;
+        }
+        return failed ? 1 : 0;
+    }
+
+    private static async Task<ProxyProbeResult> ProbeRemoteLayerAsync(FleetCliContext context, FleetProxyProbe probe, MachineSpec machine)
+    {
+        await using var connection = new MachineConnection(machine, context.Options(deploy: false, startLocalHost: true));
+        var pending = probe.ProbeRemoteAsync(connection, new RemoteOutboundProxyProbeRequest(), Guid.NewGuid(), context.Cancellation);
+        if (!pending.IsCompleted && !context.Cancellation.IsCancellationRequested)
+            connection.Start();
+        return await pending;
+    }
+
+    private static async Task<int> WriteProxyProbeAsync(ProxyProbeResult result)
+    {
+        await Console.Out.WriteLineAsync(JsonSerializer.Serialize(result, FleetProxyProbeJsonContext.Default.ProxyProbeResult));
+        return result.ExitCode;
     }
 
     private static async Task<int> ReportUnreachableAsync(FleetClient fleet)
@@ -481,20 +651,38 @@ internal sealed record FleetCliContext(
     MachineStore Store,
     FleetArguments Arguments,
     Func<HarnessHome, string, Task<int>> ResumeHarness,
-    CancellationToken Cancellation)
+    CancellationToken Cancellation) : IAsyncDisposable
 {
+    private BorrowedOutboundRoute? _outboundRoute;
+    public ISshTransportAdapter SshTransportAdapter { get; } = new IrohSshTransport();
+
+    public BorrowedOutboundRoute OutboundRoute => _outboundRoute ??= new BorrowedOutboundRoute(Home, new OutboundProxy(), SshTransportAdapter);
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_outboundRoute is not { } route)
+            return;
+        try
+        {
+            await route.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            route.Proxy.Dispose();
+        }
+    }
+
     /** The CLI connects once per command: no reconnects, the stored deployment preferences, and a local host started on demand like ssh starts a remote one. */
     public FleetOptions Options(bool deploy, bool startLocalHost)
     {
         var settings = Store.Load().Deploy;
-        var proxy = new OutboundProxy();
-        var proxySettings = HarnessSettings.Load(Home).Network?.OutboundProxy;
-        proxy.Configure(proxySettings?.Url, proxySettings?.Bypass);
         return new FleetOptions
         {
             ClientName = $"cli@{Environment.MachineName}",
             Deploy = deploy ? settings : settings with { AutoDeploy = false },
-            LocalProxy = proxy,
+            // Only an actual local archive download acquires this home's borrowed route.
+            LocalHome = Home,
+            SshTransportAdapter = SshTransportAdapter,
             AutoReconnect = false,
             StartLocalHost = startLocalHost ? StartLocalHostAsync : null,
         };
@@ -521,7 +709,7 @@ internal sealed record FleetCliContext(
     }
 
     /** Resolves `<machine>/<session>` on a connected machine; the caller owns the returned connection. */
-    public async Task<(MachineConnection Connection, RemoteHostSession Session)> FindSessionAsync()
+    public async Task<(MachineConnection Connection, RemoteSessionSummary Session)> FindSessionAsync()
     {
         var target = Arguments.Operand ?? throw new InvalidOperationException("a target <machine>/<session> is required (see dsharp session list)");
         var cut = target.IndexOf('/');
@@ -554,3 +742,8 @@ internal sealed record FleetCliContext(
             Console.Error.WriteLine($"{machine.Machine.Name}: {step}");
     }
 }
+
+[JsonSerializable(typeof(OutboundTunnelSpec))]
+internal partial class FleetTunnelJsonContext : JsonSerializerContext;
+
+

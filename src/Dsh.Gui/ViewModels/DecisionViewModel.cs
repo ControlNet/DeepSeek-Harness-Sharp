@@ -166,6 +166,8 @@ public sealed partial class DecisionQuestionViewModel : ObservableObject
         State = new(ChoicePrompt.FromQuestion(question, requestId));
         _isActive = isActive ?? (() => true);
         Options = [.. State.Prompt.Options.Select((option, index) => new DecisionOptionViewModel(option, State, index))];
+        foreach (var option in Options)
+            option.SelectCommand = new RelayCommand(() => Select(option));
     }
 
     public AskUserQuestionItem Item { get; }
@@ -216,5 +218,6 @@ public sealed class DecisionOptionViewModel(ChoicePromptOption option, ChoicePro
     public bool HasDescription => Description.Length > 0;
     public bool IsEnabled => !option.Disabled;
     public bool IsSelected => state.IsSelected(index);
+    public RelayCommand? SelectCommand { get; internal set; }
     internal void Refresh() => OnPropertyChanged(nameof(IsSelected));
 }

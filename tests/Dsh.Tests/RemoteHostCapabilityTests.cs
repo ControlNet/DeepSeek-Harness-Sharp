@@ -1,39 +1,26 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Dsh.Boot;
+using Dsh.Runtime;
 using Dsh.Core;
 using Dsh.Host;
+using Dsh.GitInspect;
+using Dsh.Interaction;
 using Dsh.Transport;
 using Dsh.Llm;
 using Dsh.RemoteHost;
 
 namespace Dsh.Tests;
 
+[Collection(GuiSerialCollection.CollectionName)]
 public sealed class RemoteHostCapabilityTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    [Fact(Timeout = 30000)]
-    public async Task CreateSessionForwardsModelSelectionOverTheWire()
-    {
-        await using var backend = await FakeBackend.CreateAsync(Ct);
-        await using var fixture = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
-        var selection = new RemoteModelSelection("prov", "model", "high");
-        var spec = new RemoteProviderSpec("prov", "openai-compatible", "https://example.invalid", "sk", "PROV_KEY");
-
-        var created = await fixture.Client.CreateSessionAsync("/work", selection, spec, Ct);
-        Assert.Equal("prov", backend.LastSelection?.Provider);
-        Assert.Equal("model", backend.LastSelection?.Model);
-        Assert.Equal("high", backend.LastSelection?.ReasoningEffort);
-        Assert.Equal(spec, backend.LastProvider);
-
-        await fixture.Client.ResumeSessionAsync(created.Id, selection, spec, Ct);
-        Assert.Equal(spec, backend.LastProvider);
-    }
-
-    [Fact(Timeout = 30000)]
+    [Fact(Timeout = 5000)]
     public async Task SessionsToolsFilesAndMessageFlowOverTheWire()
     {
         await using var backend = await FakeBackend.CreateAsync(Ct);
@@ -56,7 +43,7 @@ public sealed class RemoteHostCapabilityTests
         Assert.Equal(backend.Root, listing.Parent);
         Assert.Contains(listing.Entries, entry => entry is { Name: "sub", IsDirectory: true });
 
-        var received = new TaskCompletionSource<RemoteEventInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var received = new TaskCompletionSource<RemoteSessionEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var subscription = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var pump = Task.Run(async () =>
         {
@@ -67,9 +54,8 @@ public sealed class RemoteHostCapabilityTests
         await backend.Subscribed.Task.WaitAsync(Ct);
         await client.SendMessageAsync(created.Id, "hi", [], Ct);
         var item = await received.Task.WaitAsync(Ct);
-        var message = DshJson.Deserialize<SessionEvent>(item.EventJson)!;
-        Assert.Equal(0L, item.Sequence);
-        Assert.Equal(item.Sequence, message.Seq);
+        var message = item.Event!;
+        Assert.Equal(0L, message.Seq);
         Assert.Equal("hi", Assert.IsType<TextBlock>(Assert.Single(Assert.IsType<UserMessagePayload>(message.Data).Message.Content)).Text);
         await subscription.CancelAsync();
         try
@@ -81,7 +67,7 @@ public sealed class RemoteHostCapabilityTests
         }
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact(Timeout = 5000)]
     public async Task ApprovalRequestRoundTripsBack()
     {
         await using var backend = await FakeBackend.CreateAsync(Ct);
@@ -97,7 +83,7 @@ public sealed class RemoteHostCapabilityTests
             }
         }, Ct);
 
-        var decision = backend.Pending.AskApprovalAsync(new RemoteApprovalRequest("req-1", "session-1", "bash", null, "allow?"));
+        var decision = backend.Pending.AskApprovalAsync(new RemoteApprovalRequest("req-1", "session-1", "bash", null, "allow?"), cancellationToken: Ct);
         var approval = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct);
         Assert.True(await fixture.Client.RespondApprovalAsync(approval.RequestId, true, "ok", Ct));
         Assert.True((await decision.WaitAsync(TimeSpan.FromSeconds(5), Ct))?.Allow);
@@ -111,7 +97,7 @@ public sealed class RemoteHostCapabilityTests
         }
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact(Timeout = 5000)]
     public async Task PtyEchoesInputOverTheWire()
     {
         await using var backend = await FakeBackend.CreateAsync(Ct);
@@ -133,7 +119,7 @@ public sealed class RemoteHostCapabilityTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await attach);
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact(Timeout = 5000)]
     public async Task QuestionRequestRoundTripsBack()
     {
         await using var backend = await FakeBackend.CreateAsync(Ct);
@@ -171,7 +157,7 @@ public sealed class RemoteHostCapabilityTests
         await using var origin = await HostFixture.CreateAsync(backend, TestContext.Current.CancellationToken);
         await using var fixture = await MissingDecisionCapabilityRelay.CreateAsync(origin.Client, TestContext.Current.CancellationToken);
         Assert.False(fixture.Client.Supports(DecisionProtocol.Capability));
-        var waiting = backend.Pending.AskApprovalAsync(new RemoteApprovalRequest("legacy-approval", "session-1", "bash", null, "Approve?"));
+        var waiting = backend.Pending.AskApprovalAsync(new RemoteApprovalRequest("legacy-approval", "session-1", "bash", null, "Approve?"), cancellationToken: Ct);
         var parameters = JsonSerializer.SerializeToElement(
             new RemoteApprovalResponse("legacy-approval", false, null, Cancelled: true),
             HostProtocolJsonContext.Default.RemoteApprovalResponse);
@@ -205,12 +191,12 @@ public sealed class RemoteHostCapabilityTests
         Assert.Equal(["B"], Assert.Single(result.Answers).Selected);
     }
 
-    [Theory(Timeout = 30000)]
+    [Theory(Timeout = 5000)]
     [InlineData(false)]
     [InlineData(true)]
     public async Task RealHarnessCoreWorksWithOrWithoutOptionalDomains(bool includeOptional)
     {
-        using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var environment = await GuiTestEnvironment.CreateAsync();
         await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, TestContext.Current.CancellationToken);
         IRemoteHostBackend composed = includeOptional ? backend : new CoreOnlyBackend(backend);
         await using var fixture = await HostFixture.CreateAsync(composed, Ct);
@@ -250,7 +236,6 @@ public sealed class RemoteHostCapabilityTests
                 () => client.Git.GitStatusAsync(info.HomeRoot, Ct),
                 () => client.Notifications.ListNotificationsAsync(cancellationToken: Ct),
                 () => client.Plugins.ListPluginsAsync(Ct),
-                () => client.Models.ListProviderModelsAsync("unused", Ct),
                 () => client.Network.GetOutboundAsync(Ct),
                 () => client.Network.SetOutboundAsync(new RemoteOutboundProxySetRequest("unsupported", new RemoteOutboundProxySettings()), Ct),
                 () => client.Network.ProbeOutboundAsync(new RemoteOutboundProxyProbeRequest(), Ct),
@@ -264,7 +249,69 @@ public sealed class RemoteHostCapabilityTests
         }
     }
 
-    private sealed class CoreOnlyBackend(IRemoteHostBackend backend) : IRemoteHostBackend
+    [Fact(Timeout = 5000)]
+    public async Task NetworkReload_ReadsOnlyTheHostsFile_RetiresItsOldPool_AndRejectsSnapshots()
+    {
+        await using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, TestContext.Current.CancellationToken);
+        await using var fixture = await HostFixture.CreateAsync(backend, Ct);
+        await using var first = new TestForwardProxy(keepAlive: true);
+        await using var second = new TestForwardProxy(keepAlive: true);
+        var home = environment.App.Home;
+        var proxy = OutboundProxy.FromContext(environment.App.Ctx);
+        HarnessSettings.SaveOutboundProxy(home, new OutboundProxySettings { Url = $"http://127.0.0.1:{first.Port}" }, proxy);
+        using var consumer = new HttpClient(proxy.CreateHandler());
+        Assert.Equal(TestForwardProxy.ProxiedBody, await consumer.GetStringAsync("http://example.com/before-host-reload", Ct));
+        using var unrelated = new OutboundProxy();
+        HarnessSettings.SaveOutboundProxy(home, new OutboundProxySettings { Url = $"http://127.0.0.1:{second.Port}" }, unrelated);
+        var saved = await File.ReadAllTextAsync(home.SettingsFile, Ct);
+        Assert.True(fixture.Client.Supports(NetworkProtocol.ReloadCapability));
+
+        await fixture.Client.Network.ReloadAsync(Ct);
+
+        await FleetConnectionTests.WaitForAsync(() => first.ActiveConnections == 0);
+        Assert.Equal(TestForwardProxy.ProxiedBody, await consumer.GetStringAsync("http://example.com/after-host-reload", Ct));
+        Assert.Equal(saved, await File.ReadAllTextAsync(home.SettingsFile, Ct));
+        Assert.Equal(["GET http://example.com/before-host-reload HTTP/1.1"], first.Requests);
+        Assert.Equal(["GET http://example.com/after-host-reload HTTP/1.1"], second.Requests);
+        using var snapshot = JsonDocument.Parse("""{"network":{"outbound_proxy":{"url":"http://unexpected.invalid:3128"}}}""");
+        var rejected = await Assert.ThrowsAsync<JsonRpcException>(() => fixture.Client.RequestAsync(NetworkProtocol.MethodReload, snapshot.RootElement, Ct));
+        Assert.Equal(-32602, rejected.Code);
+        Assert.Equal(saved, await File.ReadAllTextAsync(home.SettingsFile, Ct));
+        Assert.Equal(TestForwardProxy.ProxiedBody, await consumer.GetStringAsync("http://example.com/snapshot-did-not-apply", Ct));
+        Assert.Single(first.Requests);
+    }
+
+    [Fact(Timeout = 5000)]
+    public async Task OutboundOnlyHost_RejectsReload_WhileRealGetSetAndProbeRemainUsable()
+    {
+        await using var environment = await GuiTestEnvironment.CreateAsync();
+        await using var backend = await HarnessRemoteHostBackend.CreateAsync(environment.App, HostPtyDaemonForTests.Unused, TestContext.Current.CancellationToken);
+        await using var forwarding = new TestForwardProxy();
+        var outbound = new OutboundOnlyNetwork(backend.Network!);
+        await using var fixture = await HostFixture.CreateAsync(new CoreOnlyBackend(backend, outbound), Ct);
+        var client = fixture.Client;
+        Assert.True(client.Supports(NetworkProtocol.Capability));
+        Assert.False(client.Supports(NetworkProtocol.ReloadCapability));
+        var state = await client.Network.GetOutboundAsync(Ct);
+        await client.Network.SetOutboundAsync(new(state.Revision, new($"http://127.0.0.1:{forwarding.Port}")), Ct);
+        var saved = await File.ReadAllTextAsync(environment.App.Home.SettingsFile, Ct);
+        Assert.True((await client.Network.ProbeOutboundAsync(new(ProbeUrl: "http://example.com/old-host-probe"), Ct)).Reachable);
+        await Assert.ThrowsAsync<NotSupportedException>(() => client.Network.ReloadAsync(Ct));
+        var unsupported = await Assert.ThrowsAsync<JsonRpcException>(() => client.RequestAsync(NetworkProtocol.MethodReload, null, Ct));
+        Assert.Equal(JsonRpcPeer.MethodNotFound, unsupported.Code);
+        Assert.Equal(saved, await File.ReadAllTextAsync(environment.App.Home.SettingsFile, Ct));
+        Assert.Equal(["GET http://example.com/old-host-probe HTTP/1.1"], forwarding.Requests);
+    }
+
+    private sealed class OutboundOnlyNetwork(IRemoteNetworkBackend backend) : IRemoteNetworkBackend
+    {
+        public Task<RemoteOutboundProxyState> GetOutboundAsync(CancellationToken ct) => backend.GetOutboundAsync(ct);
+        public Task<RemoteOutboundProxyState> SetOutboundAsync(RemoteOutboundProxySetRequest request, CancellationToken ct) => backend.SetOutboundAsync(request, ct);
+        public Task<RemoteOutboundProxyProbeResult> ProbeOutboundAsync(RemoteOutboundProxyProbeRequest request, CancellationToken ct) => backend.ProbeOutboundAsync(request, ct);
+    }
+
+    private sealed class CoreOnlyBackend(IRemoteHostBackend backend, IRemoteNetworkBackend? network = null) : IRemoteHostBackend
     {
         public HostPendingDecisions Pending => backend.Pending;
         public HostSessionRegistry Sessions => backend.Sessions;
@@ -277,8 +324,7 @@ public sealed class RemoteHostCapabilityTests
         public HostNotificationCenter? Notifications => null;
         public IRemoteSessionEditingBackend? SessionEditing => null;
         public IRemotePluginsBackend? Plugins => null;
-        public IRemoteModelsBackend? Models => null;
-        public IRemoteNetworkBackend? Network => null;
+        public IRemoteNetworkBackend? Network => network;
     }
 
     private static async Task WaitForAsync(Func<bool> condition, CancellationToken cancellationToken)
@@ -292,8 +338,8 @@ public sealed class RemoteHostCapabilityTests
     internal sealed class FakeBackend : IRemoteHostBackend, IRemoteSessionBackend, IRemotePtyBackend, IAsyncDisposable
     {
         private readonly string _directory;
-        private readonly Dictionary<string, RemoteSessionInfo> _sessions = [];
-        private readonly Dictionary<string, Channel<RemoteEventInfo>> _events = [];
+        private readonly Dictionary<string, RemoteSessionSummary> _sessions = [];
+        private readonly Dictionary<string, Channel<RemoteSessionEvent>> _events = [];
         private readonly Dictionary<string, long> _sequences = [];
         private readonly Dictionary<string, Channel<RemotePtyOutput>> _pty = [];
 
@@ -304,7 +350,7 @@ public sealed class RemoteHostCapabilityTests
             Sessions = sessions;
             Notifications = notifications;
             Files = new HostFileSystem(new HostPathPolicy([directory], () => []));
-            Git = new HostGitService(Files.Policy);
+        Git = new HostGitService(Files.Policy, new GitService());
         }
 
         public static async Task<FakeBackend> CreateAsync(CancellationToken cancellationToken)
@@ -331,7 +377,6 @@ public sealed class RemoteHostCapabilityTests
         public HostGitService Git { get; }
         public IRemoteSessionEditingBackend? SessionEditing => null;
         public IRemotePluginsBackend? Plugins => null;
-        public IRemoteModelsBackend? Models => null;
         public IRemoteNetworkBackend? Network => null;
 
         public HostNotificationCenter Notifications { get; }
@@ -342,32 +387,24 @@ public sealed class RemoteHostCapabilityTests
         public Task<HostInfo> InfoAsync(CancellationToken cancellationToken)
             => Task.FromResult(new HostInfo(HostProtocol.Version, "fake", "test", "/home"));
 
-        public Task<IReadOnlyList<RemoteSessionInfo>> ListSessionsAsync(CancellationToken cancellationToken)
-            => Task.FromResult<IReadOnlyList<RemoteSessionInfo>>([.. _sessions.Values]);
+        public Task<IReadOnlyList<RemoteSessionSummary>> ListSessionsAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<RemoteSessionSummary>>([.. _sessions.Values]);
 
-        public Task<RemoteSessionInfo> CreateSessionAsync(string cwd, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken)
+        public Task<RemoteSessionSummary> CreateSessionAsync(string cwd, CancellationToken cancellationToken)
         {
-            LastSelection = selection;
-            LastProvider = provider;
-            var session = new RemoteSessionInfo($"session-{_sessions.Count + 1}", cwd, "Idle", 0, null, null, 0);
+            var session = new RemoteSessionSummary($"session-{_sessions.Count + 1}", cwd, "Idle", 0, null, null, 0);
             _sessions[session.Id] = session;
             // Events are kept from creation on, like a real session log that a subscription from seq 0 replays.
-            _events[session.Id] = Channel.CreateUnbounded<RemoteEventInfo>();
+            _events[session.Id] = Channel.CreateUnbounded<RemoteSessionEvent>();
             return Task.FromResult(session);
         }
 
-        public Task<RemoteSessionInfo> ResumeSessionAsync(string sessionId, RemoteModelSelection? selection, RemoteProviderSpec? provider, CancellationToken cancellationToken)
+        public Task<RemoteSessionSummary> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken)
         {
-            LastSelection = selection;
-            LastProvider = provider;
             return Task.FromResult(_sessions.TryGetValue(sessionId, out var session) ? session : throw new KeyNotFoundException(sessionId));
         }
 
         public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public RemoteModelSelection? LastSelection { get; private set; }
-
-        public RemoteProviderSpec? LastProvider { get; private set; }
 
         public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken)
         {
@@ -381,7 +418,7 @@ public sealed class RemoteHostCapabilityTests
                 Data = new UserMessagePayload(MessageFactory.CreateUserText(text)),
                 SurfaceOp = new SurfaceOp.Append(),
             };
-            _events[sessionId].Writer.TryWrite(new RemoteEventInfo(sessionId, DshJson.Serialize(item), seq));
+            _events[sessionId].Writer.TryWrite(new RemoteSessionEvent(sessionId, item));
             return Task.CompletedTask;
         }
 
@@ -413,13 +450,13 @@ public sealed class RemoteHostCapabilityTests
             return Task.CompletedTask;
         }
 
-        public Task<RemoteHostStream<RemoteEventInfo>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
+        public Task<RemoteHostStream<RemoteSessionEvent>> SubscribeAsync(string sessionId, long fromSeq, CancellationToken cancellationToken)
         {
             var channel = _events.TryGetValue(sessionId, out var existing)
                 ? existing
-                : _events[sessionId] = Channel.CreateUnbounded<RemoteEventInfo>();
+                : _events[sessionId] = Channel.CreateUnbounded<RemoteSessionEvent>();
             Subscribed.TrySetResult();
-            return Task.FromResult(new RemoteHostStream<RemoteEventInfo>(channel.Reader.ReadAllAsync(cancellationToken)));
+            return Task.FromResult(new RemoteHostStream<RemoteSessionEvent>(channel.Reader.ReadAllAsync(cancellationToken)));
         }
 
         public Task<RemoteHostStream<RemotePtyOutput>> AttachPtyAsync(string ptyId, CancellationToken cancellationToken)
@@ -521,3 +558,9 @@ public sealed class RemoteHostCapabilityTests
         }
     }
 }
+
+
+
+
+
+

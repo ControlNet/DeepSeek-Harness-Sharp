@@ -4,6 +4,14 @@ using System.Runtime.CompilerServices;
 
 namespace Dsh.Runtime;
 
+/// <summary>Signals an unexpected transport loss, excluding normal disposal and caller cancellation.</summary>
+public interface IOutboundTransportLifetime
+{
+    CancellationToken FailureToken { get; }
+    /// <summary>Stable identity of the failure source, whose lifetime may exceed one connection.</summary>
+    object FailureOwner { get; }
+}
+
 /// <summary>Keeps pools only for live route generations, never replaying a retired send.</summary>
 internal sealed class OutboundHttpHandler(
     OutboundProxy proxy,
@@ -18,6 +26,7 @@ internal sealed class OutboundHttpHandler(
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var snapshot = proxy.CaptureRoute(request.RequestUri!);
+        ValidateProtocol(snapshot, request);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, snapshot.CancellationToken);
         linked.Token.ThrowIfCancellationRequested();
         var pool = GetPool(snapshot);
@@ -30,11 +39,18 @@ internal sealed class OutboundHttpHandler(
     protected override HttpResponseMessage Send(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var snapshot = proxy.CaptureRoute(request.RequestUri!);
+        ValidateProtocol(snapshot, request);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, snapshot.CancellationToken);
         linked.Token.ThrowIfCancellationRequested();
         var response = GetPool(snapshot).Send(request, linked.Token);
         snapshot.Register(response);
         return response;
+    }
+
+    private static void ValidateProtocol(OutboundProxy.RouteSnapshot snapshot, HttpRequestMessage request)
+    {
+        if (snapshot.HasBorrowedTransport && request.Version.Major >= 3 && request.VersionPolicy != HttpVersionPolicy.RequestVersionOrLower)
+            throw new NotSupportedException("Borrowed SSH proxy routes support HTTP/1.1 and HTTP/2, not forced HTTP/3.");
     }
 
     private Pool GetPool(OutboundProxy.RouteSnapshot snapshot)
@@ -149,6 +165,7 @@ internal sealed class OutboundResourceLifetime
     private static readonly object Registered = new();
     private readonly object _gate = new();
     private readonly ConditionalWeakTable<IDisposable, object> _resources = new();
+    private ConditionalWeakTable<object, TransportFailureRegistration>? _transportFailures;
     private readonly CancellationTokenSource _cancellation = new();
     private bool _retired;
 
@@ -178,6 +195,40 @@ internal sealed class OutboundResourceLifetime
     {
         lock (_gate)
             _resources.Remove(resource);
+    }
+
+    internal void ObserveTransportFailure(IOutboundTransportLifetime transport, OutboundProxy.RouteGeneration route)
+    {
+        var owners = Volatile.Read(ref _transportFailures);
+        if (owners is null)
+        {
+            lock (_gate)
+                owners = _transportFailures ??= new();
+        }
+        var owner = transport.FailureOwner;
+        lock (owners)
+        {
+            if (owners.TryGetValue(owner, out _))
+                return;
+            var registration = new TransportFailureRegistration(transport.FailureToken, route);
+            Register(registration);
+            owners.Add(owner, registration);
+        }
+    }
+
+    private sealed class TransportFailureRegistration(CancellationToken failure, OutboundProxy.RouteGeneration route) : IDisposable
+    {
+        private CancellationTokenRegistration _registration = failure.UnsafeRegister(
+            static state => ((OutboundProxy.RouteGeneration)state!).ReportTransportFailure(), route);
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+            _registration.Unregister();
+            _registration = default;
+        }
     }
 
     internal IDisposable[] BeginRetirement()
@@ -242,23 +293,25 @@ internal sealed class OutboundConnectionStream : Stream
     internal static async ValueTask<Stream> ConnectAsync(
         SocketsHttpConnectionContext context,
         CancellationToken token,
-        OutboundResourceLifetime generation,
+        OutboundProxy.RouteGeneration route,
         OutboundResourceLifetime? connections,
-        Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>>? connector)
+        Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>>? connector,
+        Uri? proxyEndpoint)
     {
+        var generation = route.Lifetime;
         generation.ThrowIfRetired();
         connections?.ThrowIfRetired();
         using var linked = connections is null
             ? CancellationTokenSource.CreateLinkedTokenSource(token, generation.Token)
             : CancellationTokenSource.CreateLinkedTokenSource(token, generation.Token, connections.Token);
-        var stream = connector is null
-            ? await ConnectSocketAsync(context, linked.Token).ConfigureAwait(false)
-            : await connector(context, linked.Token).ConfigureAwait(false);
+        var stream = await ConnectTransportAsync(context, linked.Token, route, proxyEndpoint, connector).ConfigureAwait(false);
         var tracked = new OutboundConnectionStream(stream, generation, connections);
         try
         {
             generation.Register(tracked);
             connections?.Register(tracked);
+            if (stream is IOutboundTransportLifetime transport)
+                generation.ObserveTransportFailure(transport, route);
             generation.ThrowIfRetired();
             connections?.ThrowIfRetired();
             linked.Token.ThrowIfCancellationRequested();
@@ -269,6 +322,21 @@ internal sealed class OutboundConnectionStream : Stream
             tracked.Dispose();
             throw;
         }
+    }
+
+    private static ValueTask<Stream> ConnectTransportAsync(
+        SocketsHttpConnectionContext context, CancellationToken token,
+        OutboundProxy.RouteGeneration route, Uri? proxyEndpoint,
+        Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>>? connector)
+    {
+        if (route.Connect is { } borrowed && proxyEndpoint is not null)
+        {
+            if (context.DnsEndPoint.Port != proxyEndpoint.Port
+                || !context.DnsEndPoint.Host.AsSpan().Trim("[]").Equals(proxyEndpoint.IdnHost.AsSpan().Trim("[]"), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The borrowed connector can only open the captured proxy endpoint.");
+            return borrowed(context.DnsEndPoint, token);
+        }
+        return connector is null ? ConnectSocketAsync(context, token) : connector(context, token);
     }
 
     private static async ValueTask<Stream> ConnectSocketAsync(SocketsHttpConnectionContext context, CancellationToken token)

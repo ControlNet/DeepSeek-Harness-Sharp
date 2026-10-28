@@ -66,6 +66,31 @@ public sealed class MachineSettings
     /** iroh 专用 relay 地址, 留空使用上游默认列表。 */
     [YamlMember(Alias = "relayUrls")]
     public List<string>? RelayUrls { get; set; }
+
+    /** 本机 iroh-ssh 可执行文件路径; 留空时从 PATH 解析。 */
+    [YamlMember(Alias = "irohExecutablePath")]
+    public string? IrohExecutablePath { get; set; }
+
+    /** 传给 iroh-ssh 的其他参数。 */
+    [YamlMember(Alias = "irohArguments")]
+    public string? IrohArguments { get; set; }
+
+    /** Optional application egress borrowed through SSH, independent of the machine's SSH proxy. */
+    [YamlMember(Alias = "outboundTunnel")]
+    public OutboundTunnelSettings? OutboundTunnel { get; set; }
+}
+
+/** Omitted fields do not enable an outbound tunnel. */
+public sealed class OutboundTunnelSettings
+{
+    [YamlMember(Alias = "mode")]
+    public string? Mode { get; set; }
+
+    [YamlMember(Alias = "proxyUrl")]
+    public string? ProxyUrl { get; set; }
+
+    [YamlMember(Alias = "localPort")]
+    public int? LocalPort { get; set; }
 }
 
 /** 远端自动部署偏好; 省略的字段取默认值(自动部署开启、官方发布地址、latest、下载位置 auto)。 */

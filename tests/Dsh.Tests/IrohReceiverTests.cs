@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Dsh.Boot;
 using Dsh.Fleet;
+using Dsh.Fleet.Iroh;
 
 namespace Dsh.Tests;
 
@@ -28,7 +29,7 @@ public sealed class IrohReceiverTests
         }
     }
 
-    [Theory]
+    [Theory(Timeout = 5000)]
     [InlineData(false, false, true)]
     [InlineData(true, false, false)]
     [InlineData(false, true, false)]
@@ -40,10 +41,18 @@ public sealed class IrohReceiverTests
             return;
         }
         var root = TempTree.CreateDirectory("iroh-owned-process");
-        using var receiver = Process.Start("/bin/sleep", ["120"])!;
-        using var unrelated = Process.Start("/bin/sleep", ["120"])!;
+        using var receiver = TestProcessScope.Start(new ProcessStartInfo("/bin/cat")
+        {
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+        })!;
+        using var unrelated = TestProcessScope.Start("/bin/sleep", ["120"])!;
         try
         {
+            const string ReadyLine = "receiver-ready";
+            await receiver.StandardInput.WriteLineAsync(ReadyLine.AsMemory(), TestContext.Current.CancellationToken);
+            Assert.Equal(ReadyLine, await receiver.StandardOutput.ReadLineAsync(TestContext.Current.CancellationToken));
             var home = new HarnessHome(root);
             var state = IrohReceiver.ReceiverRoot(home);
             Directory.CreateDirectory(state);
@@ -67,8 +76,8 @@ public sealed class IrohReceiverTests
                 receiver.Kill();
             if (!unrelated.HasExited)
                 unrelated.Kill();
-            await receiver.WaitForExitAsync(TestContext.Current.CancellationToken);
-            await unrelated.WaitForExitAsync(TestContext.Current.CancellationToken);
+            await receiver.WaitForExitAsync(CancellationToken.None);
+            await unrelated.WaitForExitAsync(CancellationToken.None);
             TempTree.Delete(root);
         }
     }
@@ -93,13 +102,13 @@ public sealed class IrohReceiverTests
         }
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact(Timeout = 5000)]
     public async Task Incomplete_Systemd_Registration_Can_Be_Disabled_Without_Leaving_A_Blocked_Receiver()
     {
         if (!OperatingSystem.IsLinux() || !File.Exists("/usr/bin/systemctl"))
             Assert.Skip("Requires a systemd user manager.");
         var ct = TestContext.Current.CancellationToken;
-        using var manager = Process.Start(new ProcessStartInfo("/usr/bin/systemctl", ["--user", "show", "--property=Version"])
+        using var manager = TestProcessScope.Start(new ProcessStartInfo("/usr/bin/systemctl", ["--user", "show", "--property=Version"])
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,

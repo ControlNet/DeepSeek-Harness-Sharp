@@ -7,6 +7,9 @@ public sealed class NetworkSettings
 {
     [YamlMember(Alias = "outbound_proxy")]
     public OutboundProxySettings? OutboundProxy { get; set; }
+
+    [YamlMember(Alias = "borrowed_outbound_machine")]
+    public string? BorrowedOutboundMachine { get; set; }
 }
 
 /** This process's HTTP egress, shared by its workspaces, tools, model providers, and downloads. */

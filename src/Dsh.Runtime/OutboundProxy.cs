@@ -1,4 +1,8 @@
 using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace Dsh.Runtime;
@@ -7,7 +11,7 @@ namespace Dsh.Runtime;
 /// Process-local outbound routing.
 /// Configuration changes retire the previous generation; handlers reuse connection pools while a route is unchanged.
 /// </summary>
-public sealed partial class OutboundProxy : IWebProxy, ICredentials
+public sealed partial class OutboundProxy : IWebProxy, ICredentials, IDisposable
 {
     public const string PropName = "outboundProxy";
 
@@ -30,9 +34,17 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
 
     private readonly object _gate = new();
     private RouteGeneration _route = new(0, new Route(null, null, []));
+    private Route _configured = new(null, null, []);
+    private Route? _borrowed;
+    private Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? _borrowedConnect;
+    private bool _borrowedSuspended;
+    private bool _disposed;
 
     internal sealed record Route(Uri? Address, CredentialHolder? Credential, string[] Bypass)
     {
+        internal Route CopyForGeneration()
+            => Credential is null ? this : new Route(Address, Credential.CopyForGeneration(), Bypass);
+
         internal bool EquivalentTo(Route other)
             => Address == other.Address
                 && CredentialHolder.Equivalent(Credential, other.Credential)
@@ -41,36 +53,55 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
 
     internal sealed class RouteGeneration
     {
-        internal RouteGeneration(long number, Route configuration)
+        internal RouteGeneration(long number, Route configuration,
+            Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? connect = null,
+            Action<RouteGeneration>? transportFailed = null, bool unavailable = false)
         {
             Number = number;
             Configuration = configuration;
+            Connect = connect;
+            _transportFailed = transportFailed;
+            IsUnavailable = unavailable;
             if (configuration.Credential is { } credential)
                 Lifetime.Register(credential);
         }
 
+        private readonly Action<RouteGeneration>? _transportFailed;
+        internal Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? Connect { get; }
+        internal void ReportTransportFailure() => _transportFailed?.Invoke(this);
+
         internal long Number { get; }
         internal Route Configuration { get; }
         internal OutboundResourceLifetime Lifetime { get; } = new();
+        internal bool IsUnavailable { get; }
+
+        internal void ThrowIfUnavailable()
+        {
+            if (IsUnavailable)
+                throw new IOException("The selected outbound route is unavailable; acquire a consumer lease or correct and reload its saved selection.");
+        }
     }
 
     /** ctx 里没有登记时(未经 ConfigBoot 的测试或工具)返回一份跟随系统代理的独立实例。 */
     public static OutboundProxy FromContext(Context ctx) => ctx.GetProp(PropName) as OutboundProxy ?? new OutboundProxy();
 
-    /** 已配置的代理地址(不含用户名密码); null 表示跟随系统代理。 */
+    /** Active proxy address without credentials; null also covers a suspended route, so status surfaces use Describe(). */
     public Uri? Address => Volatile.Read(ref _route).Configuration.Address;
 
     /** 脱敏后的路由描述, 日志、错误与界面只用它。 */
     public string Describe()
     {
-        var route = Volatile.Read(ref _route).Configuration;
+        var generation = Volatile.Read(ref _route);
+        if (generation.IsUnavailable)
+            return "Borrowed route unavailable";
+        var route = generation.Configuration;
         if (route.Address is not { } address)
             return SystemProxyLabel;
         var userInfo = route.Credential is null ? "" : RedactedUserInfo;
         return $"{address.Scheme}://{userInfo}{address.Authority}";
     }
 
-    /// <summary>Parses before publishing; invalid or equivalent settings leave active requests alone.</summary>
+    /// <summary>Updates only the baseline; a selected borrowed route remains active.</summary>
     public void Configure(string? url, IReadOnlyList<string>? bypass)
     {
         var configuration = string.IsNullOrWhiteSpace(url)
@@ -80,15 +111,114 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         IDisposable[] retired;
         lock (_gate)
         {
-            previous = _route;
-            if (previous.Configuration.EquivalentTo(configuration))
+            if (_disposed)
+            {
+                configuration.Credential?.Dispose();
+                throw new ObjectDisposedException(nameof(OutboundProxy));
+            }
+            if (_configured.EquivalentTo(configuration))
             {
                 configuration.Credential?.Dispose();
                 return;
             }
-            var next = new RouteGeneration(previous.Number + 1, configuration);
+            _configured.Credential?.Dispose();
+            _configured = configuration;
+            if (_borrowed is not null || _borrowedSuspended)
+                return;
+            (previous, retired) = ReplaceRouteLocked(configuration, null);
+        }
+        previous.Lifetime.CompleteRetirement(retired);
+    }
+
+    /// <summary>Installs an immutable borrowed TCP route; both null values restore the latest baseline.</summary>
+    public void ConfigureBorrowed(string? proxyUrl, Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? connect)
+    {
+        if ((proxyUrl is null) != (connect is null))
+            throw new ArgumentException("The borrowed proxy address and connector must be supplied or cleared together.");
+        var configuration = proxyUrl is null ? null : Parse(proxyUrl.Trim(), []);
+        RouteGeneration previous;
+        IDisposable[] retired;
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                configuration?.Credential?.Dispose();
+                throw new ObjectDisposedException(nameof(OutboundProxy));
+            }
+            if (!_borrowedSuspended
+                && (_borrowed is null ? configuration is null : configuration is not null && _borrowed.EquivalentTo(configuration))
+                && Equals(_borrowedConnect, connect))
+            {
+                configuration?.Credential?.Dispose();
+                return;
+            }
+            _borrowed?.Credential?.Dispose();
+            _borrowed = configuration;
+            _borrowedConnect = connect;
+            _borrowedSuspended = false;
+            (previous, retired) = ReplaceRouteLocked(configuration ?? _configured, connect);
+        }
+        previous.Lifetime.CompleteRetirement(retired);
+    }
+
+    /// <summary>Retires a borrowed generation without revealing the baseline or retaining its credentials.</summary>
+    public void SuspendBorrowed()
+    {
+        RouteGeneration previous;
+        IDisposable[] retired;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_borrowedSuspended)
+                return;
+            _borrowed?.Credential?.Dispose();
+            _borrowed = null;
+            _borrowedConnect = null;
+            _borrowedSuspended = true;
+            (previous, retired) = ReplaceRouteLocked(new Route(null, null, []), null, unavailable: true);
+        }
+        previous.Lifetime.CompleteRetirement(retired);
+    }
+
+    private (RouteGeneration Previous, IDisposable[] Retired) ReplaceRouteLocked(
+        Route configuration, Func<DnsEndPoint, CancellationToken, ValueTask<Stream>>? connect, bool unavailable = false)
+    {
+        var previous = _route;
+        var next = new RouteGeneration(previous.Number + 1, configuration.CopyForGeneration(), connect,
+            connect is null ? null : TransportFailed, unavailable);
+        var retired = previous.Lifetime.BeginRetirement();
+        Volatile.Write(ref _route, next);
+        return (previous, retired);
+    }
+
+    private void TransportFailed(RouteGeneration generation)
+    {
+        RouteGeneration previous;
+        IDisposable[] retired;
+        lock (_gate)
+        {
+            if (_disposed || !ReferenceEquals(_route, generation) || _borrowed is null)
+                return;
+            (previous, retired) = ReplaceRouteLocked(_borrowed, _borrowedConnect);
+        }
+        previous.Lifetime.CompleteRetirement(retired);
+    }
+
+    public void Dispose()
+    {
+        RouteGeneration previous;
+        IDisposable[] retired;
+        lock (_gate)
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            previous = _route;
             retired = previous.Lifetime.BeginRetirement();
-            Volatile.Write(ref _route, next);
+            _configured.Credential?.Dispose();
+            _borrowed?.Credential?.Dispose();
+            _borrowed = null;
+            _borrowedConnect = null;
         }
         previous.Lifetime.CompleteRetirement(retired);
     }
@@ -104,6 +234,7 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
     {
         ArgumentNullException.ThrowIfNull(destination);
         var generation = Volatile.Read(ref _route);
+        generation.ThrowIfUnavailable();
         generation.Lifetime.ThrowIfRetired();
         var route = generation.Configuration;
         var systemProxy = route.Address is null ? HttpClient.DefaultProxy : null;
@@ -121,7 +252,9 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
     /// <summary>Returns the effective proxy endpoint, or null for a direct route.</summary>
     public Uri? ProxyFor(Uri destination)
     {
-        var route = Volatile.Read(ref _route).Configuration;
+        var generation = Volatile.Read(ref _route);
+        generation.ThrowIfUnavailable();
+        var route = generation.Configuration;
         return EffectiveProxy(route, route.Address is null ? HttpClient.DefaultProxy : null, destination);
     }
 
@@ -133,6 +266,15 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
             return null;
         var proxy = systemProxy.GetProxy(destination);
         return proxy == destination ? null : proxy;
+    }
+
+    private static Uri? ProxyForConnection(Route route, IWebProxy? systemProxy, SocketsHttpConnectionContext context)
+    {
+        var request = context.InitialRequestMessage;
+        // SocketsHttpHandler uses the proxy URI for its internal CONNECT request.
+        return request.Method == HttpMethod.Connect && request.RequestUri == route.Address
+            ? route.Address
+            : EffectiveProxy(route, systemProxy, request.RequestUri!);
     }
 
     /// <summary>An immutable route capture; its token and factories share generation ownership.</summary>
@@ -153,6 +295,7 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         public long Generation => _generation.Number;
         public Uri? ProxyUri { get; }
         public CancellationToken CancellationToken => _generation.Lifetime.Token;
+        internal bool HasBorrowedTransport => _generation.Connect is not null;
 
         public SocketsHttpHandler CreateHandler(bool allowAutoRedirect)
             => CreateHandlerCore(allowAutoRedirect, DecompressionMethods.None, null, null, false);
@@ -186,6 +329,9 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         {
             ThrowIfRetired();
             var lifetime = _generation.Lifetime;
+            var generation = _generation;
+            var systemProxy = _systemProxy;
+            var proxyEndpoint = ProxyUri;
             var handler = new SocketsHttpHandler
             {
                 AllowAutoRedirect = allowAutoRedirect,
@@ -195,7 +341,10 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
                     ? new CapturedProxy(_generation, _systemProxy, ProxyUri, _credentials)
                     : ProxyUri is { } endpoint ? new CapturedProxy(endpoint, _credentials) : null,
                 ConnectCallback = (context, token) => OutboundConnectionStream.ConnectAsync(
-                    context, token, lifetime, connections, connector),
+                    context, token, generation, connections, connector,
+                    routeRedirects
+                        ? ProxyForConnection(generation.Configuration, systemProxy, context)
+                        : proxyEndpoint),
             };
             if (cookies is not null)
                 handler.CookieContainer = cookies;
@@ -291,6 +440,9 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         private readonly Uri? _systemEndpoint;
 
         internal CredentialHolder(NetworkCredential credential) => _credential = credential;
+        internal CredentialHolder CopyForGeneration()
+            => new(Copy(_credential ?? throw new ObjectDisposedException(nameof(CredentialHolder))));
+
 
         private CredentialHolder(Uri endpoint, Dictionary<string, NetworkCredential> credentials)
         {
@@ -344,8 +496,154 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         }
     }
 
-    /** 把 URL 里的用户名密码替换为 ***, 供日志与错误信息使用(非法 URL 同样处理)。 */
-    public static string Redact(string url) => UserInfoPattern().Replace(url, RedactedUserInfo);
+    /** Removes URL user-info, authentication headers and known raw or encoded credentials from diagnostics. */
+    public static string Redact(string text, params ReadOnlySpan<string?> secrets)
+    {
+        text = RedactAuthorizationHeaders(text);
+        foreach (var secret in secrets)
+        {
+            if (string.IsNullOrEmpty(secret))
+                continue;
+            text = RedactSecret(text, secret);
+            if (!secret.Contains('@'))
+                continue;
+            foreach (Match match in UserInfoPattern().Matches(secret))
+            {
+                text = RedactUserInfoSecrets(text, match.Value[..^1]);
+            }
+        }
+        return UserInfoPattern().Replace(text, RedactedUserInfo);
+    }
+
+    /// <summary>Redacts credentials in configured URL contexts while retaining useful endpoint diagnostics.</summary>
+    public static string RedactUrlCredentials(string text, params ReadOnlySpan<string?> urls)
+    {
+        text = RedactAuthorizationHeaders(text);
+        foreach (var url in urls)
+        {
+            if (string.IsNullOrEmpty(url))
+                continue;
+            var address = url.Contains("://", StringComparison.Ordinal) ? url : $"{DefaultScheme}://{url}";
+            if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) || uri.Host.Length == 0)
+            {
+                text = Redact(text, url);
+                continue;
+            }
+            if (uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            {
+                text = RedactSecret(text, url);
+                text = RedactSecret(text, uri.AbsoluteUri);
+            }
+            text = RedactUserInfoSecrets(text, uri.UserInfo);
+        }
+        return UserInfoPattern().Replace(text, RedactedUserInfo);
+    }
+
+    /** Editable secret fields show a redacted value: keep the saved secret unless the user changed the text. */
+    public static string? ResolveEdited(string displayed, string? saved)
+        => saved is { Length: > 0 } && displayed == RedactUrlCredentials(saved, saved)
+            ? saved
+            : string.IsNullOrWhiteSpace(displayed) ? null : displayed.Trim();
+
+    private static string RedactUserInfoSecrets(string text, string userInfo)
+    {
+        var separator = userInfo.IndexOf(':');
+        if (separator < 0)
+            return RedactSecret(RedactSecret(text, userInfo), Uri.UnescapeDataString(userInfo));
+        var username = userInfo[..separator];
+        var password = userInfo[(separator + 1)..];
+        text = RedactSecret(RedactSecret(text, username), Uri.UnescapeDataString(username));
+        return RedactSecret(RedactSecret(text, password), Uri.UnescapeDataString(password));
+    }
+
+    private static string RedactSecret(string text, string secret)
+    {
+        if (secret.Length == 0)
+            return text;
+        if (secret.Contains('\''))
+            text = text.Replace(secret.Replace("'", "'\\''", StringComparison.Ordinal), "***", StringComparison.Ordinal);
+        var uriEncoded = Uri.EscapeDataString(secret);
+        if (!string.Equals(uriEncoded, secret, StringComparison.Ordinal))
+            text = text.Replace(uriEncoded, "***", StringComparison.OrdinalIgnoreCase);
+        var encoded = EncodeJsonSecret(secret, JavaScriptEncoder.Default);
+        if (!string.Equals(encoded, secret, StringComparison.Ordinal))
+            text = RedactJsonSecret(text, encoded);
+        var relaxed = EncodeJsonSecret(secret, JavaScriptEncoder.UnsafeRelaxedJsonEscaping);
+        if (!string.Equals(relaxed, secret, StringComparison.Ordinal) && !string.Equals(relaxed, encoded, StringComparison.Ordinal))
+            text = RedactJsonSecret(text, relaxed);
+        return text.Replace(secret, "***", StringComparison.Ordinal);
+    }
+
+    private static string RedactJsonSecret(string text, string encoded)
+    {
+        var nested = EncodeJsonSecret(encoded, JavaScriptEncoder.Default);
+        if (!string.Equals(nested, encoded, StringComparison.Ordinal))
+            text = text.Replace(nested, "***", StringComparison.Ordinal);
+        var relaxed = EncodeJsonSecret(encoded, JavaScriptEncoder.UnsafeRelaxedJsonEscaping);
+        if (!string.Equals(relaxed, nested, StringComparison.Ordinal) && !string.Equals(relaxed, encoded, StringComparison.Ordinal))
+            text = text.Replace(relaxed, "***", StringComparison.Ordinal);
+        return text.Replace(encoded, "***", StringComparison.Ordinal);
+    }
+
+    private static string EncodeJsonSecret(string secret, JavaScriptEncoder encoder)
+    {
+        foreach (var character in secret)
+            if (encoder.WillEncode(character))
+                return JsonEncodedText.Encode(secret, encoder).ToString();
+        return secret;
+    }
+
+    private static string RedactAuthorizationHeaders(string text)
+    {
+        var match = AuthorizationHeaderPattern().Match(text);
+        if (!match.Success)
+            return text;
+        var result = new StringBuilder(text.Length);
+        var copied = 0;
+        do
+        {
+            var valueStart = match.Index + match.Length;
+            result.Append(text.AsSpan(copied, valueStart - copied));
+            var quoteIndex = valueStart;
+            while (quoteIndex < text.Length && text[quoteIndex] == '\\')
+                quoteIndex++;
+            var end = text.IndexOfAny(['\r', '\n'], valueStart);
+            if (end < 0)
+                end = text.Length;
+            var escapeDepth = quoteIndex - valueStart;
+            var quoteWidth = quoteIndex < end && text[quoteIndex] is '"' or '\'' ? 1
+                : escapeDepth > 0 && quoteIndex + 5 <= end
+                    && (text.AsSpan(quoteIndex, 5).Equals("u0022", StringComparison.OrdinalIgnoreCase)
+                        || text.AsSpan(quoteIndex, 5).Equals("u0027", StringComparison.OrdinalIgnoreCase)) ? 5 : 0;
+            if (quoteWidth != 0)
+            {
+                var delimiterWidth = escapeDepth + quoteWidth;
+                result.Append(text.AsSpan(valueStart, delimiterWidth));
+                result.Append("***");
+                for (var index = quoteIndex + quoteWidth; index + quoteWidth <= end; index++)
+                {
+                    if (!text.AsSpan(index, quoteWidth).Equals(text.AsSpan(quoteIndex, quoteWidth), StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    var slashes = 0;
+                    for (var previous = index - 1; previous > quoteIndex && text[previous] == '\\'; previous--)
+                        slashes++;
+                    // JSON nesting doubles backslash runs, so only the opening escape depth closes the value.
+                    var escapePeriod = 2 * (escapeDepth + (quoteWidth == 1 ? 1 : 0));
+                    if (slashes % escapePeriod != escapeDepth)
+                        continue;
+                    result.Append(text.AsSpan(index - escapeDepth, delimiterWidth));
+                    end = index + quoteWidth;
+                    break;
+                }
+            }
+            else
+                result.Append("***");
+            copied = end;
+            match = AuthorizationHeaderPattern().Match(text, copied);
+        } while (match.Success);
+        result.Append(text.AsSpan(copied));
+        return result.ToString();
+    }
 
     public ICredentials? Credentials
     {
@@ -355,7 +653,9 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
 
     public Uri? GetProxy(Uri destination)
     {
-        var route = Volatile.Read(ref _route).Configuration;
+        var generation = Volatile.Read(ref _route);
+        generation.ThrowIfUnavailable();
+        var route = generation.Configuration;
         if (route.Address is null)
             return HttpClient.DefaultProxy.GetProxy(destination);
         return Bypassed(route, destination) ? null : route.Address;
@@ -363,13 +663,17 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
 
     public bool IsBypassed(Uri host)
     {
-        var route = Volatile.Read(ref _route).Configuration;
+        var generation = Volatile.Read(ref _route);
+        generation.ThrowIfUnavailable();
+        var route = generation.Configuration;
         return route.Address is null ? HttpClient.DefaultProxy.IsBypassed(host) : Bypassed(route, host);
     }
 
     public NetworkCredential? GetCredential(Uri uri, string authType)
     {
-        var route = Volatile.Read(ref _route).Configuration;
+        var generation = Volatile.Read(ref _route);
+        generation.ThrowIfUnavailable();
+        var route = generation.Configuration;
         return route.Address is null ? HttpClient.DefaultProxy.Credentials?.GetCredential(uri, authType) : route.Credential?.GetCredential(uri, authType);
     }
 
@@ -420,6 +724,9 @@ public sealed partial class OutboundProxy : IWebProxy, ICredentials
         return route.Bypass.Any(entry => entry == MatchAll || host == entry || host.EndsWith($".{entry}", StringComparison.Ordinal));
     }
 
-    [GeneratedRegex("""(?<=^|://)[^/@\s]*@""")]
+    [GeneratedRegex("""(?:(?<=^|://)[^/@\s]*@|(?<![\w/])[^\s/@"':]+:[^\s/@"']+@)""")]
     private static partial Regex UserInfoPattern();
+
+    [GeneratedRegex("""(?im)(?:\\+u002[27]|\\*["']|\b)(?:Proxy-)?Authorization(?:\\*["']|\\+u002[27])?\s*[:=][ \t]*""")]
+    private static partial Regex AuthorizationHeaderPattern();
 }

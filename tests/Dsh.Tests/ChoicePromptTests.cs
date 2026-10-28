@@ -364,6 +364,35 @@ public sealed class ChoicePromptTests : IDisposable
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task CallerCancellation_ClosesTheActualApprovalAndRestoresDraft(bool cancelBeforeUiDrain)
+    {
+        using var chat = await CreateChat();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var pane = chat.InputPane;
+        pane.Input = "saved approval draft";
+        pane.Cursor = 4;
+        pane.Agent.Session.Append(new TurnStartPayload(1));
+        var service = ApprovalService.Register(chat.Ctx);
+        var waiting = service.Request(new(pane.Agent, "bash", ToolCallId.Create("cancel-approval")), cancellation.Token);
+        if (!cancelBeforeUiDrain)
+        {
+            chat.DrainUi();
+            Assert.True(pane.HasChoicePrompt);
+        }
+        cancellation.Cancel();
+        Assert.Equal(ApprovalOutcome.Cancelled, await waiting.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        chat.DrainUi();
+        Assert.False(pane.HasChoicePrompt);
+        Assert.Null(pane.PendingApproval);
+        Assert.Equal("saved approval draft", pane.Input);
+        Assert.Equal(4, pane.Cursor);
+        Assert.False(chat.ExitRequested);
+        Assert.False(ApprovalService.HasGrant(pane.Agent.Session, "bash"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task ActualToolAndQuestionService_ConsumeTuiAnswersOrWholeGroupDismissal(bool dismiss)
     {
         using var chat = await CreateChat();

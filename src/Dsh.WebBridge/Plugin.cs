@@ -1,4 +1,5 @@
 using Dsh.Boot;
+using Dsh.Fleet;
 using Dsh.Plugins;
 using Dsh.Runtime;
 
@@ -13,7 +14,7 @@ public sealed class Plugin : IDshPlugin, IDshEntrypoint
     public string[] Inject => [];
     public IDisposable Apply(Context ctx, object? config)
     {
-        var runtime = new WebBridgeRuntime(OutboundProxy.FromContext(ctx));
+        var runtime = new WebBridgeRuntime(OutboundProxy.FromContext(ctx), FleetService.DefaultSshTransportAdapter);
         ctx.Provide(WebBridgeRuntime.ServiceName, runtime);
         return runtime;
     }
