@@ -35,6 +35,7 @@ public sealed record EditorDescriptor
     public EditorKind Kind { get; init; }
     public required string Command { get; init; }
     public string[] ExecutableCandidates { get; init; } = [];
+    public string[] RemoteExecutableCandidates { get; init; } = [];
     public IReadOnlyDictionary<EditorAction, string[]> Actions { get; init; } = new Dictionary<EditorAction, string[]>();
     public IReadOnlyDictionary<EditorAction, string[]> RemoteActions { get; init; } = new Dictionary<EditorAction, string[]>();
     public IReadOnlyList<EditorDiscoveryCommand> DiscoveryCommands { get; init; } = [];

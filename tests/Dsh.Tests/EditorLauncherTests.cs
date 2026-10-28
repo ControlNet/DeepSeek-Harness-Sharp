@@ -107,6 +107,47 @@ public sealed class EditorLauncherTests
     }
 
     [Fact]
+    public async Task Remote_Executables_Are_Detected_Before_Local_Candidates()
+    {
+        using var fixture = new FakeEditorFixture();
+        var descriptor = fixture.Profile("remote") with
+        {
+            Command = "missing-editor-for-remote-executable-test",
+            RemoteExecutableCandidates = [fixture.Executable],
+        };
+        var service = fixture.Service(descriptor);
+        var result = await service.LaunchAsync(new()
+        {
+            WorkspaceRoot = fixture.Root,
+            Path = "test.cs",
+            Action = EditorAction.OpenFile,
+            Editor = "remote",
+        }, TestContext.Current.CancellationToken);
+        Assert.True(result.Success, result.Message);
+        Assert.Equal("remote", result.Editor?.Value);
+    }
+
+    [Fact]
+    public void Remote_Executables_Are_Read_From_Editor_Configuration()
+    {
+        using var fixture = new FakeEditorFixture();
+        var options = EditorOptions.From(new Dictionary<string, object?>
+        {
+            ["editors"] = new object?[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["id"] = "remote",
+                    ["command"] = "remote-editor",
+                    ["remote_executables"] = new[] { fixture.Executable },
+                    ["actions"] = new Dictionary<string, object?> { ["open_file"] = new[] { "{path}" } },
+                },
+            },
+        });
+        Assert.Equal([fixture.Executable], options.Editors.Single().RemoteExecutableCandidates);
+    }
+
+    [Fact]
     public async Task Late_Registration_Invalidates_Detection_And_Disposal_Restores_Catalog()
     {
         using var fixture = new FakeEditorFixture();
