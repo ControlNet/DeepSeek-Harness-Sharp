@@ -45,7 +45,7 @@ public sealed class Plugin(string packageName) : IDshPlugin
         var reviews = new EditorReviewService(ctx, Path.Combine(paths.CachePath, "ide-review"));
         var launcher = new EditorLauncher(catalog, options, new EditorExecutor([terminal]), [reviews.SnapshotRoot],
             () => HarnessSettings.Load(new(paths.Root)).Plugins.GetValueOrDefault(Ide)?.Permissions?.Write != false);
-        var editors = RegisterBridge(ctx, launcher, options.ClientMappings, execution);
+        var editors = RegisterBridge(ctx, launcher, options.ClientMappings);
         if (options.Triggers.Count > 0)
         {
             var triggers = new EditorTriggerService(ctx, editors, options.Triggers, options.HostDetection);
@@ -60,13 +60,14 @@ public sealed class Plugin(string packageName) : IDshPlugin
         ctx.Effect(() => IdeTool.Register(ctx, editors));
     }
 
-    private static IEditorService RegisterBridge(Context ctx, IEditorService launcher, IReadOnlyList<EditorPathMapping> mappings, EditorExecutionContext execution)
+    private static IEditorService RegisterBridge(Context ctx, IEditorService launcher, IReadOnlyList<EditorPathMapping> mappings)
     {
         var clients = new EditorClientDispatcher();
         var mapper = new EditorPathMapper(mappings);
         ctx.Provide(EditorClientDispatcher.ServiceName, clients);
         ctx.Provide("editorClientRequestMapper", (Func<string, EditorRequest, EditorRequest>)mapper.Map);
+        ctx.Provide("editorClientHasMapping", (Func<string, string, bool>)mapper.HasMapping);
         ctx.Effect(() => clients);
-        return new EditorBridgeService(launcher, clients, execution);
+        return new EditorBridgeService(launcher, clients);
     }
 }

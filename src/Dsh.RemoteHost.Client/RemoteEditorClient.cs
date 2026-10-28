@@ -47,7 +47,7 @@ public sealed class RemoteEditorClient(RemoteHostClient host) : IAsyncDisposable
         => host.SendAsync(EditorProtocol.MethodCancel, Serialize(new RemoteEditorCancel(id), EditorProtocolJsonContext.Default.RemoteEditorCancel), EditorProtocolJsonContext.Default.Boolean, _lifetime.Token);
 
     /// <summary>The mapping is trusted local configuration; absence never treats remote filesystem paths as local.</summary>
-    public async Task<IAsyncDisposable> RegisterClientAsync(IEditorService localService, CancellationToken cancellationToken = default, Func<EditorRequest, EditorRequest>? map = null)
+    public async Task<IAsyncDisposable> RegisterClientAsync(IEditorService localService, CancellationToken cancellationToken = default, Func<EditorRequest, EditorRequest>? map = null, bool isLocalMachine = false, bool hasMappings = false)
     {
         lock (_gate)
         {
@@ -59,7 +59,7 @@ public sealed class RemoteEditorClient(RemoteHostClient host) : IAsyncDisposable
         }
         try
         {
-            await host.SendAsync(EditorProtocol.MethodRegister, Serialize(new RemoteEditorClientRegistration(), EditorProtocolJsonContext.Default.RemoteEditorClientRegistration), EditorProtocolJsonContext.Default.Boolean, cancellationToken).ConfigureAwait(false);
+            await host.SendAsync(EditorProtocol.MethodRegister, Serialize(new RemoteEditorClientRegistration(IsLocalMachine: isLocalMachine, HasMappings: hasMappings), EditorProtocolJsonContext.Default.RemoteEditorClientRegistration), EditorProtocolJsonContext.Default.Boolean, cancellationToken).ConfigureAwait(false);
             return new Registration(this);
         }
         catch

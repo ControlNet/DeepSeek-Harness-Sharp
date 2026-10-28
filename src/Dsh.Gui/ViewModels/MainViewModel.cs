@@ -122,7 +122,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _editors = editors is null ? null
             : _ctx.Get<EditorExecutionContext>(EditorExecutionContext.ServiceName, false)!.BindTerminal(editors, _editorTerminalHost);
         _editorClientBinding = new GuiEditorClientBinding(_editors,
-            _ctx.Get<Func<string, EditorRequest, EditorRequest>>("editorClientRequestMapper", false));
+            _ctx.Get<Func<string, EditorRequest, EditorRequest>>("editorClientRequestMapper", false),
+            _ctx.Get<Func<string, string, bool>>("editorClientHasMapping", false));
         chat.Fleet.Changed += OnFleetChanged;
         chat.Reset += ShowSession;
         chat.Received += ApplyEvents;

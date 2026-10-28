@@ -6,7 +6,7 @@ using Dsh.RemoteHost;
 namespace Dsh.Gui.Services;
 
 /// <summary>Owns the selected chat's authenticated, typed IDE client registration.</summary>
-public sealed class GuiEditorClientBinding(IEditorService? local, Func<string, EditorRequest, EditorRequest>? trustedMap = null) : IAsyncDisposable
+public sealed class GuiEditorClientBinding(IEditorService? local, Func<string, EditorRequest, EditorRequest>? trustedMap = null, Func<string, string, bool>? hasMapping = null) : IAsyncDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
@@ -40,7 +40,9 @@ public sealed class GuiEditorClientBinding(IEditorService? local, Func<string, E
                     _machine = machineName;
                     if (client is null || machineName is null || !client.Supports(EditorProtocol.Capability)) return;
                     _registration = await client.Editor.RegisterClientAsync(local, _lifetime.Token,
-                        trustedMap is { } map ? request => map(machineName, request) : null);
+                        trustedMap is { } map ? request => map(machineName, request) : null,
+                        isLocalMachine: machine?.Machine.IsLocal == true,
+                        hasMappings: hasMapping?.Invoke(machineName, workspace) == true);
                     _client = client;
                 }
                 if (_client is not null && _session != session)

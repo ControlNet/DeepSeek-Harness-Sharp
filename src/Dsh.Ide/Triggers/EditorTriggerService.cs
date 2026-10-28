@@ -104,8 +104,13 @@ public sealed partial class EditorTriggerService : IAsyncDisposable
             Column = location?.Column ?? 1,
             SessionId = agent.Id.Value,
             TurnId = (turn ?? EditorSessionContext.CurrentTurn(_ctx, agent.Session)).ToString(System.Globalization.CultureInfo.InvariantCulture),
-        }) { SessionSource = source, MachineType = _ctx.Get<EditorExecutionContext>(EditorExecutionContext.ServiceName, false)?.IsRemoteHost == true ? "remote" : "local" };
+        }) { SessionSource = source, MachineType = MachineTypeFor(agent.Id.Value) };
     }
+
+    private string MachineTypeFor(string? sessionId)
+        => _ctx.Get<EditorClientDispatcher>(EditorClientDispatcher.ServiceName, false)?.TryIsLocalMachine(sessionId) is { } local
+            ? local ? "local" : "remote"
+            : _ctx.Get<EditorExecutionContext>(EditorExecutionContext.ServiceName, false)?.IsRemoteHost == true ? "remote" : "local";
 
 
     private void Enqueue(EditorTriggerContext context)
