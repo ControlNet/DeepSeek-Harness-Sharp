@@ -317,8 +317,9 @@ public sealed class RemoteHostServer(
                 }
                 case HostProtocol.MethodSessionSnapshot:
                 {
-                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionRef, "snapshot requires sessionId");
-                    return Serialize(await backend.Session.GetSessionSnapshotAsync(request.SessionId, cancellationToken).ConfigureAwait(false), HostProtocolJsonContext.Default.RemoteSessionSnapshot);
+                    var request = Require(message, HostProtocolJsonContext.Default.RemoteSessionSnapshotRequest, "snapshot requires sessionId");
+                    var snapshot = await backend.Session.GetSessionSnapshotAsync(request.SessionId, cancellationToken).ConfigureAwait(false);
+                    return Serialize(RemoteSnapshotPage.Slice(snapshot, request.FromEvent, request.MaxBytes), HostProtocolJsonContext.Default.RemoteSessionSnapshot);
                 }
                 case HostProtocol.MethodSessionMessage:
                 {

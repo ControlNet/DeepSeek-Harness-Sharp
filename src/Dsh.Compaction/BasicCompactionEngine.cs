@@ -112,7 +112,7 @@ public class BasicCompactionEngine : CompactionEngine, IDisposable
         if (contextWindow is null)
             throw new TargetPressureConfigError(
                 targetKey,
-                $"compaction-basic: no context capacity for {targetKey}; configure contextWindow on that adapter model");
+                $"compaction-basic: no context window for {targetKey}; automatic compaction takes the model's models.dev limit.context, which this model does not declare");
         var spec = CompactionConfigResolver.ResolveCompactSpec(policy, contextWindow.Value);
         if (measurement.TotalTokens < spec.ThresholdTokens)
             return null;

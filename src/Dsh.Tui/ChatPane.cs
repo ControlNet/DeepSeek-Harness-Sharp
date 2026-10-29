@@ -28,6 +28,8 @@ public sealed class ChatPane : ITuiPane
     private string? _stashedInput;
     private int _stashedCursor;
     private IReadOnlyList<string> _mentionCandidates = [];
+    /** 会话的上下文占用(最近一次请求提示词 / 模型窗口), 显示在状态行。 */
+    private readonly ContextUsage _context = new();
     private int _mentionIndex;
     private int _mentionEnd;
     private int _mentionStart;
@@ -152,7 +154,14 @@ public sealed class ChatPane : ITuiPane
 
     public bool Busy { get; private set; }
 
-    public string StatusText { get; set; }
+    private string _statusText = "";
+
+    /** 状态行文本; 读取时自动拼上上下文占用, 因此用量一更新(无需额外刷新)就会显示出来。 */
+    public string StatusText
+    {
+        get => ContextStatusOf(_statusText);
+        set => _statusText = value;
+    }
 
     public string? DeleteConfirmSessionId { get; set; }
 
@@ -513,6 +522,7 @@ public sealed class ChatPane : ITuiPane
         if (sessionEvent.Seq < RenderedSeq)
             return;
         RenderedSeq = sessionEvent.Seq + 1;
+        TrackContextUsage(sessionEvent.Data);
         switch (sessionEvent.Data)
         {
             case TurnStartPayload:
@@ -567,6 +577,23 @@ public sealed class ChatPane : ITuiPane
             return false;
         child = _window.Subagents.FindChildByLabel(Agent.Id, description);
         return child is not null;
+    }
+
+    /** 上下文占用: 请求上下文给容量分母, 流式/最终用量给分子(只认最近一次请求的提示词)。 */
+    private void TrackContextUsage(SessionEventPayload payload)
+    {
+        switch (payload)
+        {
+            case RequestContextPayload context:
+                _context.ObserveRequest(context.ContextWindow);
+                break;
+            case AssistantChunkPayload { Chunk: StreamChunk.Usage usage }:
+                _context.ObserveUsage(usage.Value);
+                break;
+            case AssistantMessagePayload { Usage: { } messageUsage }:
+                _context.ObserveUsage(messageUsage);
+                break;
+        }
     }
 
     /** 把子会话自身的工具调用/结果摘要追加进 fold 区间, 展开委派调用即可内联查看。 */
@@ -1451,6 +1478,10 @@ public sealed class ChatPane : ITuiPane
         => StatusText = Busy
             ? "working~ (Esc to cancel)"
             : ReadyStatus;
+
+    /** 上下文占用跟在状态行前面; 还没有任何用量时(_context 为空)保持原样, 不给状态行添乱。 */
+    private string ContextStatusOf(string status)
+        => _context.Label == ContextUsage.Empty ? status : $"{_context.Label} | {status}";
 
     private void SetBusy(bool busy)
     {

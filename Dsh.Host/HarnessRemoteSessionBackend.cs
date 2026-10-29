@@ -53,18 +53,23 @@ internal sealed class HarnessRemoteSessionBackend(HarnessRemoteRuntime runtime, 
         return Describe(handle.Agent);
     }
 
+    /** 返回整段历史; 分页由 RemoteHostServer 按帧预算切, 所以这里的 TotalEventCount 就是整段条数。 */
     public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken)
     {
         var id = SessionId.Create(sessionId);
         var approvals = runtime.App.Ctx.Get<ApprovalService>(ApprovalService.ServiceName, false);
         if (runtime.Store.Get(id) is { } session)
-            return Task.FromResult(new RemoteSessionSnapshot(session.Header, session.SnapshotEvents(),
+        {
+            var live = session.SnapshotEvents();
+            return Task.FromResult(new RemoteSessionSnapshot(session.Header, live, live.Count,
                 approvals?.EffectivePolicy(session).ToString()));
+        }
         using var handle = runtime.Persistence?.Open(id, SessionAccess.Read)
             ?? throw new InvalidOperationException($"unknown session: {sessionId}");
         var events = handle.Read();
         var restored = Session.FromRestore(id, events, handle.Header, handle.InheritedEventCount);
-        return Task.FromResult(new RemoteSessionSnapshot(handle.Header, events, approvals?.EffectivePolicy(restored).ToString()));
+        return Task.FromResult(new RemoteSessionSnapshot(handle.Header, events, events.Count,
+            approvals?.EffectivePolicy(restored).ToString()));
     }
 
     public Task SendMessageAsync(string sessionId, string text, IReadOnlyList<RemoteImageBlock> images, CancellationToken cancellationToken)

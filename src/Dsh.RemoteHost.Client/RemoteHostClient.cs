@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
+using Dsh.Core;
 using Dsh.Transport;
 
 namespace Dsh.RemoteHost;
@@ -118,8 +119,29 @@ public sealed class RemoteHostClient : IAsyncDisposable
     public Task<RemoteSessionSummary> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken = default)
         => SendAsync(HostProtocol.MethodSessionResume, Serialize(new RemoteSessionRef(sessionId), HostProtocolJsonContext.Default.RemoteSessionRef), HostProtocolJsonContext.Default.RemoteSessionSummary, cancellationToken);
 
-    public Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken = default)
-        => SendAsync(HostProtocol.MethodSessionSnapshot, Serialize(new RemoteSessionRef(sessionId), HostProtocolJsonContext.Default.RemoteSessionRef), HostProtocolJsonContext.Default.RemoteSessionSnapshot, cancellationToken);
+    /** 整段历史按字节预算分页取完再拼成一个快照, 调用方看到的历史与单次响应时一致。 */
+    public async Task<RemoteSessionSnapshot> GetSessionSnapshotAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        var snapshot = await FetchSnapshotPageAsync(sessionId, 0, cancellationToken).ConfigureAwait(false);
+        var events = new List<SessionEvent>(snapshot.Events);
+        while (events.Count < snapshot.TotalEventCount)
+        {
+            var next = await FetchSnapshotPageAsync(sessionId, events.Count, cancellationToken).ConfigureAwait(false);
+            // 分页期间历史被截断时整段也就到此为止。
+            if (next.Events.Count == 0)
+                break;
+            events.AddRange(next.Events);
+            snapshot = next;
+        }
+        // 拼好的快照就是整段历史: 条数按实到的事件重算, 免得把中途的旧总数带出去。
+        return snapshot with { Events = events, TotalEventCount = events.Count };
+    }
+
+    private Task<RemoteSessionSnapshot> FetchSnapshotPageAsync(string sessionId, long fromEvent, CancellationToken cancellationToken)
+        => SendAsync(HostProtocol.MethodSessionSnapshot,
+            Serialize(new RemoteSessionSnapshotRequest(sessionId, fromEvent), HostProtocolJsonContext.Default.RemoteSessionSnapshotRequest),
+            HostProtocolJsonContext.Default.RemoteSessionSnapshot,
+            cancellationToken);
 
     public async IAsyncEnumerable<RemoteSessionEvent> SubscribeAsync(string sessionId, long fromSeq, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {

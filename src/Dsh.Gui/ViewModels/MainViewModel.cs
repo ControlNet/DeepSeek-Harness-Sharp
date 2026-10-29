@@ -1610,6 +1610,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 break;
             case RequestContextPayload context:
                 // 请求元数据(provider/model)只在轨迹里出现, 进正文会和运行时上下文注入行重复。
+                TokenStats.ObserveRequestContext(context.ContextWindow);
                 AddTrace(sessionEvent.Seq, TraceKind.Context, $"请求上下文 · {context.Provider}/{context.Model}", context.SystemPromptUpdate ?? "");
                 break;
             case CommandRunPayload run:

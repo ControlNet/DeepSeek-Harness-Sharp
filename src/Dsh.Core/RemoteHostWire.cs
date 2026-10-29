@@ -19,7 +19,15 @@ public sealed record RemoteSubscriptionRef(string SubscriptionId);
 public readonly record struct RemoteEventFrame(string SubscriptionId, RemoteSessionEvent Event);
 
 
-public sealed record RemoteSessionSnapshot(SessionHeader Header, IReadOnlyList<SessionEvent> Events, string? ApprovalPolicy = null);
+/** 会话历史分页请求: 从 FromEvent 起返回装得进 MaxBytes 的一段; 响应里的 TotalEventCount 让客户端接着取下一页。 */
+public sealed record RemoteSessionSnapshotRequest(string SessionId, long FromEvent = 0, int MaxBytes = HostProtocol.SnapshotPageBytes);
+
+/** 会话历史的一页; TotalEventCount 是整段历史的条数, 客户端据此取完剩余各页。 */
+public sealed record RemoteSessionSnapshot(
+    SessionHeader Header,
+    IReadOnlyList<SessionEvent> Events,
+    long TotalEventCount,
+    string? ApprovalPolicy = null);
 
 
 /** 远端发起的审批/问答: 需本地决策, 用 RequestId 回填。 */

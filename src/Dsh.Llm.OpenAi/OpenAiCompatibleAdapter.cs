@@ -67,7 +67,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
             .Select(model => new LlmModelInfo(_providerId, model.Id, model.Name ?? model.Id, null, _modelsDev.InputModalitiesFor(model.Id)))
             .ToList();
 
-    /** 推理强度解析顺序: 端点 /models 的实时元数据 → 内置 models.dev 快照(baseUrl 主机名命中 provider); 输入模态取自 models.dev 快照。 */
+    /** 推理强度解析顺序: 端点 /models 的实时元数据 → 内置 models.dev 快照(baseUrl 主机名命中 provider); 上下文窗口与输入模态取自 models.dev 快照。 */
     public override LlmResolvedModelInfo ResolveModel(string model)
     {
         var reasoning = _metadata.ReasoningFor(model) ?? _modelsDev.ReasoningFor(model);
@@ -77,7 +77,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
             model,
             null,
             _modelsDev.InputModalitiesFor(model),
-            null,
+            _modelsDev.ContextWindowFor(model),
             null,
             reasoning);
     }

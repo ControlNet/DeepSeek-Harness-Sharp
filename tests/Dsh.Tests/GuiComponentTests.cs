@@ -144,6 +144,45 @@ public sealed class GuiComponentTests
         Assert.Equal(TokenStatsViewModel.Empty, stats.Totals);
     }
 
+    /** 上下文占用取最近一次请求的提示词, 与累计 in/out 是两条独立的口径。 */
+    [Fact]
+    public void TokenStats_ShowContextOccupancySeparatelyFromTotals()
+    {
+        var stats = new TokenStatsViewModel();
+        Assert.Equal(TokenStatsViewModel.Empty, stats.ContextText);
+
+        stats.ObserveRequestContext(128_000);
+        stats.ObserveUsage(new TokenUsage(10_000, 200));
+        stats.ObserveUsage(new TokenUsage(20_000, 300));
+
+        Assert.Equal("上下文 20.0k/128.0k (16%)", stats.ContextText);
+        // 累计口径不受影响: 两次请求的输入相加。
+        Assert.Equal("in 30.0k / out 500", stats.Totals);
+    }
+
+    [Fact]
+    public void TokenStats_ContextOmitsPercentage_WhenWindowUnknown()
+    {
+        var stats = new TokenStatsViewModel();
+
+        stats.ObserveRequestContext(null);
+        stats.ObserveUsage(new TokenUsage(7_200, 10));
+
+        Assert.Equal("上下文 7.2k", stats.ContextText);
+    }
+
+    [Fact]
+    public void TokenStats_Reset_ClearsContextOccupancy()
+    {
+        var stats = new TokenStatsViewModel();
+        stats.ObserveRequestContext(64_000);
+        stats.ObserveUsage(new TokenUsage(1_000, 10));
+
+        stats.Reset();
+
+        Assert.Equal(TokenStatsViewModel.Empty, stats.ContextText);
+    }
+
     [Fact]
     public async Task DecisionViewModel_ApprovalOutcomes_FollowTheClickedAction()
     {

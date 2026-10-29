@@ -469,6 +469,7 @@
 
     <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="22,0,22,10" Spacing="8">
       <TextBlock Text="{Binding StatusText}" Classes="Tertiary" VerticalAlignment="Center" />
+      <TextBlock Text="{Binding TokenStats.ContextText}" Classes="Tertiary" />
       <TextBlock Text="{Binding TokenStats.Rounds}" Classes="Tertiary" />
       <TextBlock Text="{Binding TokenStats.FirstToken}" Classes="Tertiary" />
       <TextBlock Text="{Binding TokenStats.TokensPerSecond}" Classes="Tertiary" />
