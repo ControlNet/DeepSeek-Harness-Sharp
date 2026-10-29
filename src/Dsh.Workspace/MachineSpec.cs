@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace Dsh.Fleet;
+namespace Dsh.Workspace;
 
 /** How the client reaches a machine's host. */
 public static class MachineKinds

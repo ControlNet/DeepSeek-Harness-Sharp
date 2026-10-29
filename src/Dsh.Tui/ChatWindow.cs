@@ -106,27 +106,49 @@ public sealed partial class ChatWindow : IDisposable
             QueueSessionEvent(target, notification.Event);
         });
 
-        _approvalSubscription = ctx.OnWaterfall<ApprovalRequestNotification>((notification, _) =>
+        _approvalSubscription = ctx.OnWaterfall<ApprovalRequestNotification>(async (notification, _) =>
         {
             var answer = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var registration = notification.Signal.UnsafeRegister(
+                static state => ((TaskCompletionSource<object?>)state!).TrySetResult(ApprovalOutcome.Cancelled), answer);
             QueueAction(() =>
             {
+                if (answer.Task.IsCompleted)
+                    return;
                 var target = FindPaneByAgent(notification.Request.Agent) ?? InputPane;
                 target.ShowApprovalPrompt(notification.Request, answer);
             });
-            return new ValueTask<object?>(answer.Task);
+            try
+            {
+                return await answer.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                WakeHook?.Invoke();
+            }
         }, new EventOptions { Global = true });
 
-        _questionsSubscription = ctx.OnWaterfall<UserQuestionsRequestNotification>((notification, _) =>
+        _questionsSubscription = ctx.OnWaterfall<UserQuestionsRequestNotification>(async (notification, _) =>
         {
             var answer = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var registration = notification.Signal.UnsafeRegister(
+                static state => ((TaskCompletionSource<object?>)state!).TrySetCanceled(), answer);
             QueueAction(() =>
             {
+                if (answer.Task.IsCompleted)
+                    return;
                 var requested = notification.Request.Agent;
                 var target = (requested is not null ? FindPaneByAgent(requested) : null) ?? InputPane;
                 target.ShowQuestionPrompt(notification.Request, answer);
             });
-            return new ValueTask<object?>(answer.Task);
+            try
+            {
+                return await answer.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                WakeHook?.Invoke();
+            }
         }, new EventOptions { Global = true });
 
         _skillChangeSubscription = ctx.On<SkillsChangedNotification>(_ =>
@@ -191,6 +213,7 @@ public sealed partial class ChatWindow : IDisposable
     internal ChatPane InputPane => (ChatPane)_panes[_inputPaneId];
 
     private ITuiPane FocusedPane => _panes[_focusedPaneId];
+    private ChatPane? ChoicePane => _panes.Values.OfType<ChatPane>().FirstOrDefault(pane => pane.HasChoicePrompt);
 
     public void DrainUi()
     {
@@ -203,6 +226,9 @@ public sealed partial class ChatWindow : IDisposable
 
         foreach (var action in actions)
             action();
+        foreach (var pane in _panes.Values.OfType<ChatPane>())
+            if (pane.SynchronizeChoicePrompt())
+                RenderVersion++;
 
         List<(ITuiPane Pane, SessionEvent Event)> sessionEvents = [];
         lock (_gate)
@@ -225,7 +251,7 @@ public sealed partial class ChatWindow : IDisposable
     public void HandlePaste(string text)
     {
         RenderVersion++;
-        InputPane.HandlePaste(text);
+        (ChoicePane ?? InputPane).HandlePaste(text);
     }
 
     /** 切窗格的一组动作: 提示里合写成 `方向键/O`。 */
@@ -273,6 +299,11 @@ public sealed partial class ChatWindow : IDisposable
         // 无键名也无字符的事件(纯修饰键按下等)不携带任何意图, 放行会误消费等待中的前缀与审批态。
         if (key.Key == ConsoleKey.NoName && key.KeyChar == '\0')
             return;
+        if (ChoicePane is { } choice)
+        {
+            choice.HandleKey(key);
+            return;
+        }
         if (_overviewActive)
         {
             HandleOverviewKey(key);
@@ -293,19 +324,12 @@ public sealed partial class ChatWindow : IDisposable
             return;
         }
 
-        var input = InputPane;
-        if (input.PendingApproval is not null || input.PendingQuestions is not null)
-        {
-            input.HandleKey(key);
-            return;
-        }
-
         if (TryDispatchKey(key, KeyContext.Chat))
             return;
         ClearExitConfirm();
         if (FocusedPane is SubagentPane subagent && subagent.HandleKey(key))
             return;
-        input.HandleKey(key);
+        InputPane.HandleKey(key);
     }
 
     /** 前缀等待超时则收起提示; 主循环空闲时调用(超时为 0 时什么也不做)。 */
@@ -478,6 +502,11 @@ public sealed partial class ChatWindow : IDisposable
     public void InsertText(string text)
     {
         RenderVersion++;
+        if (ChoicePane is { } choice)
+        {
+            choice.InsertText(text);
+            return;
+        }
         // 焦点在 shell 窗格时粘贴内容直达 PTY(对齐终端行为), 不进 AI 输入行。
         if (FocusedPane is ShellPane shell)
         {
@@ -490,6 +519,11 @@ public sealed partial class ChatWindow : IDisposable
     public void HandleMouseWheel(float delta)
     {
         RenderVersion++;
+        if (ChoicePane is { } choice)
+        {
+            choice.HandleMouseWheel(delta);
+            return;
+        }
         FocusedPane.HandleMouseWheel(delta);
     }
 
@@ -497,6 +531,11 @@ public sealed partial class ChatWindow : IDisposable
     public void HandleMouseWheel(float delta, int cellX, int cellY, UiLayout layout)
     {
         RenderVersion++;
+        if (ChoicePane is { } choice)
+        {
+            choice.HandleMouseWheel(delta);
+            return;
+        }
         layout = Effective(layout);
         // pty 层视图: 整屏就是那一层, 滚轮只滚它(不命中窗格树, 也不滚侧栏/浮层)。
         if (_ptyLayer is { } layer)
@@ -520,13 +559,16 @@ public sealed partial class ChatWindow : IDisposable
     public void HandleMouseClick(int cellX, int cellY, UiLayout layout)
     {
         RenderVersion++;
+        if (ChoicePane is { } choice)
+        {
+            choice.HandleChoicePointer(cellX, cellY, click: true);
+            return;
+        }
         layout = Effective(layout);
         // pty 层视图整屏就是那一层: 点击不碰窗格树/分隔线(拖拽也没有意义)。
         if (_ptyLayer is not null)
             return;
         var input = InputPane;
-        if (input.PendingApproval is not null)
-            return;
         if (input.TryBeginMentionScrollDrag(cellX, cellY))
             return;
         if (_panes.Count > 1 && FindDividerAt(cellX, cellY) is { } divider)
@@ -588,10 +630,24 @@ public sealed partial class ChatWindow : IDisposable
         FocusedPane.StickToBottom = false;
     }
 
-    /** 指针拖动: 分隔线上按下则调整窗格比例, 否则扩展文本选择(阶段 3.2)。 */
+    /** Hover belongs only to the active prompt and never extends transcript selection. */
+    public void HandleMouseMove(int cellX, int cellY)
+    {
+        if (ChoicePane is not { } choice)
+            return;
+        if (choice.HandleChoicePointer(cellX, cellY, click: false))
+            RenderVersion++;
+    }
+
+    /** Drag a divider or extend transcript selection unless a prompt owns the pointer. */
     public void HandleMouseDrag(int cellX, int cellY, UiLayout layout)
     {
         RenderVersion++;
+        if (ChoicePane is { } choice)
+        {
+            choice.HandleChoicePointer(cellX, cellY, click: false);
+            return;
+        }
         layout = Effective(layout);
         if (InputPane.DragMentionScrollDrag(cellY))
             return;
@@ -618,6 +674,11 @@ public sealed partial class ChatWindow : IDisposable
     public string? HandleMouseRelease(int cellX, int cellY, UiLayout layout)
     {
         RenderVersion++;
+        if (ChoicePane is not null)
+        {
+            CancelPointerGestures();
+            return null;
+        }
         layout = Effective(layout);
         if (InputPane.EndMentionScrollDrag())
             return null;
@@ -644,6 +705,20 @@ public sealed partial class ChatWindow : IDisposable
         if (text is not null)
             _ = Clipboard.TrySetTextAsync(text);
         return text;
+    }
+
+    internal void CancelPointerGestures()
+    {
+        _inputDrag = false;
+        _rightPanelDrag = false;
+        _dividerDrag = null;
+        foreach (var pane in _panes.Values)
+        {
+            if (pane is not ChatPane chat)
+                continue;
+            chat.EndMentionScrollDrag();
+            chat.ClearSelection();
+        }
     }
 
     /** 控制台总列数: 正文宽 + 竖分割线 + 右栏宽(没有右栏就没有竖线)。 */
@@ -790,6 +865,7 @@ public sealed partial class ChatWindow : IDisposable
                 DrawOverview(grid);
             if (_agentsActive)
                 DrawAgentList(grid);
+            ChoicePane?.DrawChoicePrompt(grid);
             return;
         }
 
@@ -822,6 +898,7 @@ public sealed partial class ChatWindow : IDisposable
         if (_agentsActive)
             DrawAgentList(grid);
         DrawPaneOverlays(grid, layout);
+        ChoicePane?.DrawChoicePrompt(grid);
     }
 
     /**

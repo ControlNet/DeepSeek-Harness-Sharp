@@ -22,8 +22,7 @@ public sealed class ChatPane : ITuiPane
     private readonly Dictionary<ToolCallId, (int Start, string Arguments)> _pendingSubagentCalls = [];
     private AskUserQuestionRequest? _questionRequest;
     private readonly List<AskUserQuestionAnswerItem> _questionAnswers = [];
-    private readonly HashSet<int> _questionSelection = [];
-    private readonly Dictionary<int, string> _questionDrafts = [];
+    private ChoicePromptControl? _choicePrompt;
     private int _questionIndex;
     private string? _stashedInput;
     private int _stashedCursor;
@@ -171,20 +170,21 @@ public sealed class ChatPane : ITuiPane
 
     public void HandleKey(ConsoleKeyInfo key)
     {
-        if (PendingApproval is not null)
+        if (_choicePrompt is not null)
         {
-            if (key.Key == ConsoleKey.Y)
+            if (PendingApproval is not null && (key.Modifiers & (ConsoleModifiers.Control | ConsoleModifiers.Alt)) != 0)
+                return;
+            var approvalShortcut = PendingApproval is not null;
+            if (approvalShortcut && (key.Key == ConsoleKey.Y || key.KeyChar is 'y' or 'Y'))
                 AnswerApproval(ApprovalOutcome.AllowedOnce);
-            else if (key.Key == ConsoleKey.N)
+            else if (approvalShortcut && (key.Key == ConsoleKey.A || key.KeyChar is 'a' or 'A'))
+                AnswerApproval(ApprovalOutcome.AllowedForSession);
+            else if (approvalShortcut && (key.Key == ConsoleKey.N || key.KeyChar is 'n' or 'N'))
                 AnswerApproval(ApprovalOutcome.Rejected);
-            else if (key.Key == ConsoleKey.C || key.Key == ConsoleKey.Escape)
+            else if (approvalShortcut && (key.Key == ConsoleKey.C || key.KeyChar is 'c' or 'C'))
                 AnswerApproval(ApprovalOutcome.Cancelled);
-            return;
-        }
-
-        if (PendingQuestions is not null)
-        {
-            HandleQuestionKey(key);
+            else
+                _choicePrompt.HandleKey(key);
             return;
         }
 
@@ -427,8 +427,13 @@ public sealed class ChatPane : ITuiPane
 
     public void InsertText(string text)
     {
-        if (string.IsNullOrEmpty(text) || PendingApproval is not null)
+        if (string.IsNullOrEmpty(text))
             return;
+        if (_choicePrompt is not null)
+        {
+            _choicePrompt.InsertText(text);
+            return;
+        }
         var sanitized = text.Replace('\r', ' ').Replace('\n', ' ');
         if (sanitized.Length == 0)
             return;
@@ -440,6 +445,11 @@ public sealed class ChatPane : ITuiPane
     /** 括号粘贴: 本地图片路径转附件; 空粘贴尝试读 OS 剪贴板图片; 其余按文本插入。 */
     internal void HandlePaste(string text)
     {
+        if (_choicePrompt is not null)
+        {
+            _choicePrompt.InsertText(text);
+            return;
+        }
         if (text.Length == 0)
         {
             TryAttachClipboardImage();
@@ -476,8 +486,11 @@ public sealed class ChatPane : ITuiPane
     /** 鼠标滚轮只作用于收到的 pane; 由调用方按命中测试路由。 */
     public void HandleMouseWheel(float delta)
     {
-        if (PendingApproval is not null)
+        if (_choicePrompt is not null)
+        {
+            _choicePrompt.Scroll(delta > 0 ? -3 : delta < 0 ? 3 : 0);
             return;
+        }
         var lines = _wheel.Scroll(delta);
         if (lines > 0)
         {
@@ -864,6 +877,8 @@ public sealed class ChatPane : ITuiPane
     {
         if (rect.Width <= 0 || rect.Height <= 0)
             return;
+        if (_choicePrompt is not null)
+            return;
 
         var prompt = PendingApproval is not null ? "approval (y/n/c) " : InputPrompt;
         var caret = Math.Clamp(Cursor, 0, Input.Length);
@@ -913,18 +928,75 @@ public sealed class ChatPane : ITuiPane
             CellText.Draw(grid, rect.Right - profileWidth, infoY, profile, AnsiColor.Default, AnsiColor.Default, CellStyle.Dim);
     }
 
+    public bool HasChoicePrompt => _choicePrompt is not null;
+
+    public void DrawChoicePrompt(CellGrid grid)
+    {
+        if (_choicePrompt is not null)
+            _choicePrompt.Draw(grid, new ConsoleRect(0, 0, grid.Width, grid.Height));
+    }
+
+    public bool HandleChoicePointer(int x, int y, bool click)
+        => _choicePrompt?.HandlePointer(x, y, click) ?? false;
+
+    public bool SynchronizeChoicePrompt()
+    {
+        if (_choicePrompt is null || PendingApproval?.Task.IsCompleted != true && PendingQuestions?.Task.IsCompleted != true)
+            return false;
+        PendingApproval = null;
+        PendingQuestions = null;
+        _questionRequest = null;
+        _questionAnswers.Clear();
+        CloseChoicePrompt();
+        return true;
+    }
+
+    private void StashDraft()
+    {
+        _window.CancelPointerGestures();
+        if (_stashedInput is not null)
+            return;
+        _stashedInput = Input;
+        _stashedCursor = Cursor;
+        Input = "";
+        Cursor = 0;
+        CloseMentionMenu();
+        CommandMenu = null;
+    }
+
+    private void CloseChoicePrompt()
+    {
+        _choicePrompt = null;
+        if (_stashedInput is not null)
+        {
+            Input = _stashedInput;
+            Cursor = _stashedCursor;
+            _stashedInput = null;
+        }
+        SetStatusReady();
+    }
+
     public void ShowApprovalPrompt(ApprovalRequest request, TaskCompletionSource<object?> answer)
     {
+        if (PendingApproval is not null)
+            AnswerApproval(ApprovalOutcome.Cancelled);
+        if (PendingQuestions is not null)
+            CompleteQuestions(AskUserQuestionAnswer.Dismissed);
+        StashDraft();
         PendingApproval = answer;
-        var argument = ApprovalHints.PrimaryArgument(request.ToolName, request.Arguments);
-        var impact = ApprovalHints.Impact(request.ToolName, request.Arguments);
-        var line = $"  ⚠ approve tool \"{request.ToolName}\"?"
-            + (request.Reason is null ? "" : $" {request.Reason}")
-            + (argument.Length == 0 ? "" : $" - {argument}")
-            + (impact.Length == 0 ? "" : $" {impact}")
-            + " [y]es/[n]o/[c]ancel turn\n";
-        AppendRaw(line);
-        StatusText = $"approval pending for \"{request.ToolName}\" - y/n/c";
+        _choicePrompt = new ChoicePromptControl(ChoicePrompt.ForApproval(request.ToolName, request.Arguments, request.Reason));
+        _choicePrompt.Completed += dismissed =>
+        {
+            var value = _choicePrompt?.State.SelectedValues().FirstOrDefault();
+            AnswerApproval(dismissed ? ApprovalOutcome.Cancelled : value switch
+            {
+                "once" => ApprovalOutcome.AllowedOnce,
+                "session" => ApprovalOutcome.AllowedForSession,
+                "reject" => ApprovalOutcome.Rejected,
+                _ => ApprovalOutcome.Cancelled,
+            });
+        };
+        StatusText = $"approval pending for \"{request.ToolName}\" - y/a/n/c";
     }
 
     private void AnswerApproval(ApprovalOutcome outcome)
@@ -933,148 +1005,54 @@ public sealed class ChatPane : ITuiPane
         if (pending is null)
             return;
         PendingApproval = null;
+        CloseChoicePrompt();
         AppendRaw($"  approval: {outcome}\n");
-        SetStatusReady();
         pending.TrySetResult(outcome);
     }
 
     public void ShowQuestionPrompt(AskUserQuestionRequest request, TaskCompletionSource<object?> answer)
     {
+        if (PendingApproval is not null)
+            AnswerApproval(ApprovalOutcome.Cancelled);
         if (PendingQuestions is not null)
-            CompleteQuestions(null);
+            CompleteQuestions(AskUserQuestionAnswer.Dismissed);
+        StashDraft();
         PendingQuestions = answer;
         _questionRequest = request;
         _questionIndex = 0;
         _questionAnswers.Clear();
-        _questionSelection.Clear();
-        _questionDrafts.Clear();
-        _stashedInput = Input;
-        _stashedCursor = Cursor;
-        Input = "";
-        Cursor = 0;
-        AppendRaw("  ? 智能体需要你回答:\n");
+
         ShowCurrentQuestion();
     }
 
     private void ShowCurrentQuestion()
     {
         var question = _questionRequest!.Questions[_questionIndex];
-        AppendRaw($"  ? {question.Question}\n");
-        if (question.Detail is { } detail)
-            AppendRaw($"    {detail}\n");
-        if (question.Options is { Count: > 0 } options)
+        _choicePrompt = new ChoicePromptControl(ChoicePrompt.FromQuestion(question));
+        _choicePrompt.Completed += dismissed =>
         {
-            for (var index = 0; index < options.Count && index < 9; index++)
+            if (dismissed)
             {
-                var option = options[index];
-                AppendRaw($"    [{index + 1}] {option.Label}{(option.Description is null ? "" : $" - {option.Description}")}\n");
-            }
-        }
-        Input = _questionDrafts.GetValueOrDefault(_questionIndex, "");
-        Cursor = Input.Length;
-        RefreshQuestionStatus();
-    }
-
-    private void RefreshQuestionStatus()
-    {
-        var question = _questionRequest!.Questions[_questionIndex];
-        var total = _questionRequest.Questions.Count;
-        var prefix = total > 1 ? $"问题 {_questionIndex + 1}/{total} - " : "";
-        StatusText = question.Options is { Count: > 0 }
-            ? question.MultiSelect
-                ? $"{prefix}1-9 切换选项(已选 {_questionSelection.Count}) - 输入框可补充 - Enter 确认 - Esc 取消"
-                : $"{prefix}1-9 选择 - 输入框可补充 - Enter 确认 - Esc 取消"
-            : $"{prefix}输入回答 - Enter 确认 - Esc 取消";
-    }
-
-    private void HandleQuestionKey(ConsoleKeyInfo key)
-    {
-        var question = _questionRequest!.Questions[_questionIndex];
-        if (key.Key == ConsoleKey.Escape)
-        {
-            AppendRaw("  x 已取消\n");
-            CompleteQuestions(null);
-            return;
-        }
-        if (key.Key == ConsoleKey.Enter)
-        {
-            SubmitCurrentQuestion(question);
-            return;
-        }
-        if (key.Key == ConsoleKey.Backspace)
-        {
-            if (Cursor > 0)
-            {
-                Input = Input.Remove(Cursor - 1, 1);
-                Cursor--;
-            }
-            return;
-        }
-        if (question.Options is { Count: > 0 } options && key.KeyChar >= '1' && key.KeyChar <= '9')
-        {
-            var index = key.KeyChar - '1';
-            if (index >= options.Count)
+                CompleteQuestions(AskUserQuestionAnswer.Dismissed);
                 return;
-            if (question.MultiSelect)
-            {
-                if (!_questionSelection.Remove(index))
-                    _questionSelection.Add(index);
             }
+            _questionAnswers.Add(_choicePrompt!.State.BuildAnswer(question.Id));
+            _questionIndex++;
+            if (_questionIndex < _questionRequest!.Questions.Count)
+                ShowCurrentQuestion();
             else
-            {
-                _questionSelection.Clear();
-                _questionSelection.Add(index);
-            }
-            RefreshQuestionStatus();
-            return;
-        }
-        if (!char.IsControl(key.KeyChar))
-        {
-            Input = Input.Insert(Cursor, key.KeyChar.ToString());
-            Cursor++;
-        }
+                CompleteQuestions(new AskUserQuestionAnswer([.. _questionAnswers]));
+        };
+        StatusText = $"question {_questionIndex + 1}/{_questionRequest.Questions.Count} - Tab custom - Enter submit - Esc dismiss all";
     }
 
-    private void SubmitCurrentQuestion(AskUserQuestionItem question)
-    {
-        IReadOnlyList<string> selected = question.Options is { Count: > 0 } options
-            ? _questionSelection.Where(index => index < options.Count).Order().Select(index => options[index].Label).ToList()
-            : [];
-        var custom = Input.Trim();
-        if (selected.Count == 0 && custom.Length == 0)
-        {
-            StatusText = "请先选择选项或输入回答";
-            return;
-        }
-        _questionDrafts[_questionIndex] = Input;
-        _questionAnswers.Add(new AskUserQuestionAnswerItem(question.Id, selected, custom.Length > 0 ? custom : null));
-        _questionSelection.Clear();
-        Input = "";
-        Cursor = 0;
-        _questionIndex++;
-        if (_questionIndex < _questionRequest!.Questions.Count)
-        {
-            ShowCurrentQuestion();
-            return;
-        }
-        AppendRaw("  + 已回答\n");
-        CompleteQuestions(new AskUserQuestionAnswer([.. _questionAnswers]));
-    }
-
-    private void CompleteQuestions(object? result)
+    private void CompleteQuestions(AskUserQuestionAnswer result)
     {
         var pending = PendingQuestions;
         PendingQuestions = null;
-        _questionDrafts.Clear();
         _questionRequest = null;
-        _questionSelection.Clear();
-        if (_stashedInput is not null)
-        {
-            Input = _stashedInput;
-            Cursor = _stashedCursor;
-            _stashedInput = null;
-        }
-        SetStatusReady();
+        _questionAnswers.Clear();
+        CloseChoicePrompt();
         pending?.TrySetResult(result);
     }
 
@@ -2123,6 +2101,6 @@ public sealed class ChatPane : ITuiPane
     {
         UnsubscribeSessionRenamed();
         PendingApproval?.TrySetResult(ApprovalOutcome.Cancelled);
-        PendingQuestions?.TrySetResult(null);
+        PendingQuestions?.TrySetResult(AskUserQuestionAnswer.Dismissed);
     }
 }

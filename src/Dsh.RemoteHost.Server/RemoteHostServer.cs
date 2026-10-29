@@ -37,7 +37,7 @@ public sealed class RemoteHostServer(
     {
         if (backend is null)
             return [];
-        List<string> capabilities = [HostProtocol.PendingBroadcastCapability, HostProtocol.SessionRegistryCapability];
+        List<string> capabilities = [HostProtocol.PendingBroadcastCapability, HostProtocol.SessionRegistryCapability, DecisionProtocol.Capability];
         if (backend.Agent is not null) capabilities.Add(AgentProtocol.Capability);
         if (backend.Pty is not null) capabilities.AddRange([PtyProtocol.Capability, PtyProtocol.ResizeCapability]);
         if (backend.Files is not null) capabilities.Add(FilesProtocol.Capability);
