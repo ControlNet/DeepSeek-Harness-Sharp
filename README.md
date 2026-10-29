@@ -73,6 +73,18 @@ plugins:
 ```
 </details>
 
+<details>
+<summary>0.4.0 待发布：ChoicePrompt 问答与审批</summary>
+
+- 问答与审批接管键盘和鼠标，不向聊天、全局快捷键或 shell 穿透；关闭后恢复聊天草稿、光标和焦点。
+- 方向键与 `Home` / `End` 导航，`Space` 或 `1-9` 选择，`Tab` / `Shift+Tab` 切换选项、自定义输入、提交和取消，`Enter` 确认；滚轮或 `PageUp` / `PageDown` 浏览长内容，支持中文折行后的点击与悬停。
+- 问答 `Esc` 取消整个题组并丢弃部分答案，返回 `{"status":"dismissed","answers":[],"reason":"user_cancelled"}`，区别于没有问答提供者或服务错误。
+- 审批提供 `Allow once` (`y`)、`Always` (`a`，仅当前会话的该工具，fork 不继承)、`Reject` (`n`) 和 `Cancel` (`c` / `Esc`)；取消不放行工具或取消整个回合，带 `Ctrl` / `Alt` 的快捷键不授权。
+- GUI/Web 使用相同的选项和结果契约；Host 待决投影与 request id 为唯一权威，先答者生效。GUI 主聊天只自动打开当前机器、当前会话的提示，其他提示可从通知中心回答；调用方撤销等待会移除自己的请求。
+- 仅在 Host 宣告 `decision-cancellation-v1` 时启用问答整组取消与审批 Cancel；旧 v2 Host 显示 Unsupported、保留未决项，正常回答与拒绝仍可用。ACP 按实际提供的选项启用按钮，不代用更高权限，未被接受的响应保留待决状态。
+
+</details>
+
 ### GUI
 
 本项目的 GUI 使用 Avalonia UI 原生实现，与 TUI 共用配置、会话和命令，双击安装包里的`dsh-gui.exe`即可打开，也可以从命令行启动。
@@ -283,6 +295,15 @@ sandbox:
 支持搜索会话内容。
 
 ## 各版本新增功能
+
+<details>
+<summary><b>0.4.0 待发布</b> — ChoicePrompt 问答与审批</summary>
+
+- TUI 问答与既有审批共用键鼠选择控件，支持多选、自定义输入、禁用/默认、中文折行命中、长内容滚动和草稿光标恢复。
+- 问答整组取消返回结构化 `dismissed`，审批保留当前会话工具授权边界，GUI/Web 复用选择与结果契约及 Host 先答者生效生命周期。
+- 决策取消采用显式 Host 能力门禁：旧 v2 Host 不会把取消误读为空答案或拒绝；GUI/Web 显示 Unsupported、保留未决项，既有回答与拒绝继续可用。
+
+</details>
 
 <details>
 <summary><b>未发布</b> — GUI 后端解耦</summary>

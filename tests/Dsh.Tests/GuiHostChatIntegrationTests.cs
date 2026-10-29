@@ -205,11 +205,87 @@ public sealed class GuiHostChatIntegrationTests
             Assert.True(await observer.RespondApprovalAsync(request.RequestId, true, cancellationToken: Ct));
             Assert.Equal(ApprovalOutcome.Cancelled, await GuiTestEnvironment.PumpAsync(closed.Task.WaitAsync(TimeSpan.FromSeconds(5), Ct)));
             Assert.Equal(ApprovalOutcome.AllowedOnce, await waiting.WaitAsync(TimeSpan.FromSeconds(5), Ct));
+            Assert.True(dialog.IsClosed);
+            Assert.True(dialog.IsSuperseded);
+            dialog.AllowAlwaysCommand.Execute(null);
+            Assert.Equal(ApprovalOutcome.Cancelled, dialog.Result);
             Assert.False(await observer.RespondApprovalAsync(request.RequestId, false, cancellationToken: Ct));
             var change = await RemoteHostMultiClientTests.NextAsync(observer.PendingChangesAsync(Ct), item => item.Resolution?.RequestId == request.RequestId);
             Assert.Empty(change.Pending.Approvals);
             Assert.Empty(change.Pending.Questions);
             Assert.Equal(("answering-client", PendingResolutions.Allowed), (change.Resolution!.ResolvedBy, change.Resolution.Resolution));
+        });
+    }
+
+    [Theory(Timeout = 120000)]
+    [InlineData("answered")]
+    [InlineData("dismissed")]
+    [InlineData("remote")]
+    public async Task OrdinaryChat_QuestionResultsCarryStatus_AndResolvedDialogsCannotSubmitAgain(string resolution)
+    {
+        await using var host = await HarnessHostFixture.CreateAsync("gqq", TestContext.Current.CancellationToken);
+        await using var gui = await GuiTestEnvironment.CreateIsolatedAsync();
+        var observer = await host.ConnectAsync("question-peer", Ct);
+        await HeadlessGui.RunAsync(async () =>
+        {
+            await using var fleet = Fleet(host, gui);
+            var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Ct);
+            await using var viewModel = new MainViewModel(gui.App, chat);
+            var shown = new TaskCompletionSource<DecisionViewModel>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var closed = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            viewModel.DecisionRequested += decision =>
+            {
+                decision.Closed += value => closed.TrySetResult(value.Result);
+                shown.TrySetResult(decision);
+                return closed.Task;
+            };
+            var agent = host.Environment.App.Ctx.Get<AgentRegistry>(AgentRegistry.ServiceName)!.Get(viewModel.CurrentSessionId)!;
+            var service = host.Environment.App.Ctx.Get<UserQuestionService>(UserQuestionService.ServiceName)!;
+            var other = service.Ask(new([new("other", "Another session", Options: [new("Leave pending")])], host.Environment.Agent), Ct);
+            await GuiTestEnvironment.WaitForAsync(viewModel.Workspace.Notifications.Pending,
+                () => viewModel.Workspace.Notifications.Pending.Any(item => item.SessionId == host.Environment.Agent.Id.Value));
+            Assert.False(shown.Task.IsCompleted);
+            var waiting = service.Ask(new AskUserQuestionRequest(
+            [
+                new("choice", "Choose", Options: [new("Go", Value: "go", Default: true)], AllowCustom: false),
+                new("notes", "Explain"),
+            ], agent), Ct);
+            var dialog = await GuiTestEnvironment.PumpAsync(shown.Task.WaitAsync(TimeSpan.FromSeconds(20), Ct));
+            var request = Assert.Single((await observer.ListPendingAsync(Ct)).Questions, item => item.SessionId == viewModel.CurrentSessionId.Value);
+            Assert.Equal(request.RequestId, dialog.RequestId);
+            Assert.Equal(request.RequestId, dialog.Questions[0].State.Prompt.RequestId);
+            dialog.Questions[1].CustomText = "Local answer";
+            if (resolution == "remote")
+                Assert.True(await observer.RespondQuestionAsync(request.RequestId,
+                    [new("choice", ["go"], null), new("notes", [], "Peer answer")], Ct));
+            else if (resolution == "dismissed")
+                dialog.CancelCommand.Execute(null);
+            else
+                dialog.SubmitCommand.Execute(null);
+            var answer = await GuiTestEnvironment.PumpAsync(waiting.WaitAsync(TimeSpan.FromSeconds(20), Ct));
+            await GuiTestEnvironment.PumpAsync(closed.Task.WaitAsync(TimeSpan.FromSeconds(20), Ct));
+            Assert.True(dialog.IsClosed);
+            Assert.False(dialog.CanSubmit);
+            var original = dialog.Result;
+            dialog.SubmitCommand.Execute(null);
+            Assert.Same(original, dialog.Result);
+            Assert.False(await observer.RespondQuestionAsync(request.RequestId, [], Ct, "dismissed", "user_cancelled"));
+            Assert.Equal(resolution == "dismissed", answer.IsDismissed);
+            if (answer.IsDismissed)
+            {
+                Assert.Empty(answer.Answers);
+                Assert.Equal("user_cancelled", answer.Reason);
+            }
+            else
+            {
+                Assert.Equal(["go"], answer.Answers[0].Selected);
+                Assert.Equal(resolution == "remote" ? "Peer answer" : "Local answer", answer.Answers[1].Custom);
+            }
+            var otherRequest = Assert.Single((await observer.ListPendingAsync(Ct)).Questions);
+            Assert.Equal(host.Environment.Agent.Id.Value, otherRequest.SessionId);
+            Assert.False(other.IsCompleted);
+            Assert.True(await observer.RespondQuestionAsync(otherRequest.RequestId, [], Ct, "dismissed", "user_cancelled"));
+            Assert.True((await other.WaitAsync(TimeSpan.FromSeconds(5), Ct)).IsDismissed);
         });
     }
 

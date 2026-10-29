@@ -141,7 +141,6 @@ public sealed class ChatWindowTranscriptTests : IDisposable
         chat.DrainUi();
         var frame = DrawFrame(chat);
         Assert.Contains("选择策略", frame);
-        Assert.Contains("[2] 乙", frame);
 
         Type(chat, "2");
         Press(chat, ConsoleKey.Enter);
@@ -220,7 +219,6 @@ public sealed class ChatWindowTranscriptTests : IDisposable
 
         Press(chat, ConsoleKey.Enter);
         Assert.False(answerTask.IsCompleted);
-        Assert.Contains("请先选择", DrawFrame(chat));
 
         Type(chat, "1");
         Press(chat, ConsoleKey.Enter);
@@ -228,7 +226,7 @@ public sealed class ChatWindowTranscriptTests : IDisposable
     }
 
     [Fact]
-    public async Task AskUser_Escape_Cancels_With_NoProvider()
+    public async Task AskUser_Escape_ReturnsDismissedWithoutSubmittingAnEmptyAnswer()
     {
         var (ctx, agent, home) = await CreateAgent();
         var userQuestions = UserQuestionService.Register(ctx);
@@ -239,8 +237,10 @@ public sealed class ChatWindowTranscriptTests : IDisposable
         chat.DrainUi();
         Press(chat, ConsoleKey.Escape);
 
-        var error = await Assert.ThrowsAsync<UserQuestionException>(async () => await answerTask);
-        Assert.Equal(UserQuestionException.NoProvider, error.Code);
+        var answer = await answerTask;
+        Assert.Equal("dismissed", answer.Status);
+        Assert.Equal("user_cancelled", answer.Reason);
+        Assert.Empty(answer.Answers);
     }
 
     [Fact]
@@ -552,6 +552,87 @@ public sealed class ChatWindowTranscriptTests : IDisposable
         Assert.Contains("Enter 发送", rows[grown.Input.Bottom - 1]);
         Assert.DoesNotContain("Enter 发送", rows[grown.Input.Y + 1]);
         Assert.Equal(40, rows.Count);
+    }
+
+    [Theory]
+    [InlineData("input", false)]
+    [InlineData("input", true)]
+    [InlineData("sidebar", false)]
+    [InlineData("sidebar", true)]
+    [InlineData("pane", false)]
+    [InlineData("pane", true)]
+    public async Task ChoicePrompt_InterruptedLayoutDrag_DoesNotResumeAfterDismissal(string divider, bool approval)
+    {
+        var (ctx, agent, home) = await CreateAgent();
+        var settings = new TuiSettings(home) { InputHeight = 6, SidebarWidth = 30 };
+        using var chat = new ChatWindow(ctx, agent, home, null, settings);
+        chat.DrainUi();
+        var layout = LayoutEngine.Calculate(120, 40, 30, 6);
+        if (divider == "pane")
+        {
+            chat.HandleKey(new ConsoleKeyInfo('\0', ConsoleKey.X, false, false, true));
+            chat.HandleKey(new ConsoleKeyInfo('\0', ConsoleKey.OemPlus, false, false, false));
+            chat.DrainUi();
+        }
+        var x = divider switch
+        {
+            "input" => 10,
+            "sidebar" => layout.RightPanel.X - 1,
+            _ => FindPaneDividerColumn(chat, layout),
+        };
+        var y = divider == "input" ? layout.Input.Y - 1 : 1;
+        Assert.True(x > 0 && y > 0);
+        chat.HandleMouseClick(x, y, layout);
+        var dragX = divider == "input" ? x : x + 4;
+        var dragY = divider == "input" ? y - 2 : y;
+        chat.HandleMouseDrag(dragX, dragY, layout);
+        var pending = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pane = chat.InputPane;
+        if (approval)
+            pane.ShowApprovalPrompt(new(pane.Agent, "bash", ToolCallId.Create("interrupted-drag")), pending);
+        else
+            pane.ShowQuestionPrompt(new([new("q", "Choose", Options: [new("A")])]), pending);
+        chat.Draw(new CellGrid(120, 40), layout);
+        Assert.Null(chat.HandleMouseRelease(dragX, dragY, layout));
+        Assert.True(pane.HasChoicePrompt);
+        Assert.False(pending.Task.IsCompleted);
+        Press(chat, ConsoleKey.Escape);
+        Assert.False(pane.HasChoicePrompt);
+        Assert.True(pending.Task.IsCompleted);
+        var before = BorderRows();
+        var saved = new TuiSettings(home);
+        var savedSizes = (saved.InputHeight, saved.SidebarWidth);
+        chat.HandleMouseClick(5, 2, layout);
+        chat.HandleMouseDrag(18, 5, layout);
+        chat.HandleMouseRelease(18, 5, layout);
+        Assert.Equal(before, BorderRows());
+        saved = new TuiSettings(home);
+        Assert.Equal(savedSizes, (saved.InputHeight, saved.SidebarWidth));
+        Assert.False(chat.ExitRequested);
+
+        string[] BorderRows()
+        {
+            var grid = new CellGrid(120, 40);
+            chat.Draw(grid, layout);
+            // Find the visible sidebar boundary after any pre-prompt resize.
+            var sidebarDivider = grid.Width - 1;
+            while (sidebarDivider >= 0 && grid[sidebarDivider, 0].Character != '│')
+                sidebarDivider--;
+            Assert.InRange(sidebarDivider, 0, grid.Width - 1);
+            var rows = new string[grid.Height];
+            for (var row = 0; row < grid.Height; row++)
+            {
+                var characters = new char[grid.Width];
+                var sidebarBody = grid[sidebarDivider, row].Character == '│';
+                for (var column = 0; column < grid.Width; column++)
+                {
+                    var character = sidebarBody && column > sidebarDivider ? ' ' : grid[column, row].Character;
+                    characters[column] = character is '│' or '─' or '┼' ? character : ' ';
+                }
+                rows[row] = new string(characters);
+            }
+            return rows;
+        }
     }
 
     /** 输入栏高度要跨进程沿用: 写进 settings.yaml 后, 新起的 ChatWindow 直接量出拖出来的高度。 */

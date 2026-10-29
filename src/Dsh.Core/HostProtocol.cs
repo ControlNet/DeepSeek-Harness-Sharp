@@ -365,6 +365,7 @@ public static class HostProtocolCatalog
         new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["PendingBroadcast"] = HostProtocol.PendingBroadcastCapability,
+            ["DecisionCancellation"] = DecisionProtocol.Capability,
             ["SessionRegistry"] = HostProtocol.SessionRegistryCapability,
             ["PtyDaemon"] = PtyProtocol.Capability,
             ["PtyResize"] = PtyProtocol.ResizeCapability,
