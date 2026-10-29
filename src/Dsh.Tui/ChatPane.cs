@@ -29,6 +29,12 @@ public sealed class ChatPane : ITuiPane
     private IReadOnlyList<string> _mentionCandidates = [];
     /** 会话的上下文占用(最近一次请求提示词 / 模型窗口), 显示在状态行。 */
     private readonly ContextUsage _context = new();
+
+    /** 上下文整理是否在跑: 它不属于回合, 需要单独的状态位才能在状态行上显示出来。 */
+    private bool _maintaining;
+
+    /** 由插件提供的中立呈现接缝; 没安装该插件时为 null, 只是不显示整理进度。 */
+    private readonly IContextMaintenancePresenter? _maintenance;
     private int _mentionIndex;
     private int _mentionEnd;
     private int _mentionStart;
@@ -61,6 +67,9 @@ public sealed class ChatPane : ITuiPane
     public ChatPane(ChatWindow window, int id, AgentLoopAgent agent)
     {
         _window = window;
+        _maintenance = window.MaintenancePresenter;
+        // 字段初始器早于本构造函数执行, 那时还拿不到接缝, 因此在这里重建一次。
+        Renderer = new TranscriptRenderer(_maintenance);
         StatusText = ReadyStatus;
         Id = id;
         Agent = agent;
@@ -514,9 +523,11 @@ public sealed class ChatPane : ITuiPane
         UnsubscribeSessionRenamed();
         Agent = agent;
         SubscribeSessionRenamed();
-        Renderer = new TranscriptRenderer();
+        Renderer = new TranscriptRenderer(_maintenance);
         SelectedFoldKey = null;
         RenderedSeq = 0;
+        // 切会话/重放时先清整理状态: 历史里可能残留未闭合的开始标记, 那种整理早已随进程退出。
+        _maintaining = false;
         ScrollOffset = 0;
         StickToBottom = true;
         InvalidateWrapCache();
@@ -545,6 +556,12 @@ public sealed class ChatPane : ITuiPane
                 SetBusy(false);
                 break;
         }
+
+        // 上下文整理可能长达数分钟, 期间必须让状态行显示出来; 否则用户只会看到界面没反应,
+        // 然后再触发一次 —— 那次必然撞上"已在进行"。只认实时事件: 重放里残留的未闭合标记
+        // 属于早已退出的进程, 不能把界面卡在"进行中"。
+        if (!replay && _maintenance?.Describe(sessionEvent) is { } maintenance)
+            TrackMaintenance(maintenance);
 
         if (sessionEvent.Data is ToolCallPayload call)
             _pendingSubagentCalls[call.CallId] = (Renderer.CurrentLength, call.Arguments);
@@ -1452,14 +1469,32 @@ public sealed class ChatPane : ITuiPane
     private string ReadyStatus
         => $"ready - Enter to send, ^ history, Esc cancels a running turn, {_window.KeyBindings.Keys(TuiAction.Interrupt)}×2 quits";
 
+    private string BusyStatus => _maintaining ? "compacting context~ (Esc to cancel)" : "working~ (Esc to cancel)";
+
     public void SetStatusReady()
-        => StatusText = Busy
-            ? "working~ (Esc to cancel)"
+        => StatusText = Busy || _maintaining
+            ? BusyStatus
             : ReadyStatus;
 
     /** 上下文占用跟在状态行前面; 还没有任何用量时(_context 为空)保持原样, 不给状态行添乱。 */
     private string ContextStatusOf(string status)
         => _context.Label == ContextUsage.Empty ? status : $"{_context.Label} | {status}";
+
+    /** 整理的开始/结束单独记账, 与回合的忙碌位分开: 整理结束后不能替回合清掉忙碌。 */
+    private void TrackMaintenance(ContextMaintenanceEvent maintenance)
+    {
+        switch (maintenance)
+        {
+            case ContextMaintenanceEvent.Started:
+                _maintaining = true;
+                SetStatusReady();
+                break;
+            case ContextMaintenanceEvent.Finished or ContextMaintenanceEvent.Failed:
+                _maintaining = false;
+                SetStatusReady();
+                break;
+        }
+    }
 
     private void SetBusy(bool busy)
     {

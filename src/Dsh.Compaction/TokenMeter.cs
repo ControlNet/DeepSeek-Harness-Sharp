@@ -126,8 +126,9 @@ public sealed class TokenMeter : Service, IDisposable
             nodes);
     }
 
+    /** 真实用量: InputTokens 已含缓存命中(见 TokenUsage), 再加缓存会把同一批 token 算两遍、把占用虚高近一倍。 */
     private static double UsageTokens(TokenUsage usage)
-        => usage.InputTokens + (usage.CacheReadTokens ?? 0) + (usage.CacheWriteTokens ?? 0) + usage.OutputTokens;
+        => usage.InputTokens + usage.OutputTokens;
 
     private static bool HeaderEquals(EpochHeader? left, EpochHeader? right)
     {

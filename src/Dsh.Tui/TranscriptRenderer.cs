@@ -12,6 +12,7 @@ public sealed class TranscriptRenderer
     public const int SystemMessageFoldChars = 140;
     public const string DeliverablesHint = "/deliverables 列出本会话交付物, /deliverables open <编号> 用默认程序打开";
 
+    private readonly IContextMaintenancePresenter? _maintenance;
     private readonly StringBuilder _buffer = new();
     private readonly List<TranscriptFold> _folds = [];
     private readonly List<string> _lines = [];
@@ -27,6 +28,9 @@ public sealed class TranscriptRenderer
     private int _reasoningFoldStart;
     private int? _codeFenceStart;
     private string? _codeFenceKind;
+
+    /** 呈现接缝可为空: 没装提供该能力的插件时这些进度行不出现, 其余渲染不受影响。 */
+    public TranscriptRenderer(IContextMaintenancePresenter? maintenance = null) => _maintenance = maintenance;
 
     /** 已完成行(不含换行符)与每行在全文中的起始偏移, 随 Append 增量维护; 供 wrap 缓存免物化全文。UI 线程亲和, 与 Version 同一时序读取。 */
     public IReadOnlyList<string> CompletedLines => _lines;
@@ -118,8 +122,18 @@ public sealed class TranscriptRenderer
     /** replay=true 用于会话切换后的历史回放: 用户消息平时由输入回显渲染, 只在回放时从事件补渲染。 */
     public void AppendSessionEvent(SessionEvent sessionEvent, bool replay = false, bool foldToolResult = true)
     {
+        // 上下文整理(压缩)的进度由提供方翻译成中立视图; 渲染器只按视图出图, 不引用产生它的插件。
+        if (_maintenance?.Describe(sessionEvent) is { } maintenance)
+        {
+            AppendMaintenance(maintenance, replay);
+            return;
+        }
         switch (sessionEvent.Data)
         {
+            // 整理产生的检查点正文已由摘要事件渲染过, 再当消息画一遍会出现两段同样的摘要。
+            case UserMessagePayload user when _maintenance?.IsCheckpointMessage(user.Message.Source) == true:
+                Append("  （更早的历史已由上面这段摘要取代, 不再发送给模型）\n");
+                break;
             case UserMessagePayload user when replay && user.Message.Source is UserMessageSource:
                 AppendUserMessage(user.Message);
                 break;
@@ -181,6 +195,61 @@ public sealed class TranscriptRenderer
                 Append("\n");
                 break;
         }
+    }
+
+    /** 上下文整理的进度行: 只按中立视图出图, 因此这里不出现任何压缩实现类型。 */
+    private void AppendMaintenance(ContextMaintenanceEvent maintenance, bool replay)
+    {
+        switch (maintenance)
+        {
+            // 重放时不画"进行中": 历史上那次整理要么已有结果行, 要么是残留的未闭合标记。
+            case ContextMaintenanceEvent.Started when !replay:
+                CloseReasoning();
+                CloseAssistant();
+                _assistantStreamed = false;
+                Append("\n⏳ 正在压缩上下文…\n");
+                break;
+            case ContextMaintenanceEvent.Pruned pruned:
+                Append($"✂ 已裁剪 {pruned.Items} 条过大的工具结果 (~{pruned.Tokens} tokens)\n");
+                break;
+            case ContextMaintenanceEvent.Summarized summarized:
+                AppendSummarized(summarized);
+                break;
+            case ContextMaintenanceEvent.Failed failed:
+                _pendingTint = TranscriptTint.Error;
+                Append($"x 压缩失败: {Preview(failed.Error, ToolResultPreviewChars)}\n");
+                _pendingTint = TranscriptTint.None;
+                break;
+        }
+    }
+
+    /**
+     * 整理结果: 标题行给出"收起了多少历史、省了多少 token", 摘要正文放进折叠块。
+     * 折叠是必要的 —— 摘要可能长达数千字符, 直接铺开会把用户正在看的内容顶出屏幕。
+     */
+    private void AppendSummarized(ContextMaintenanceEvent.Summarized summarized)
+    {
+        var headline = $"✔ 上下文已压缩: 收起 {summarized.Items} 条历史 (~{summarized.Tokens} tokens)";
+        var start = _buffer.Length;
+        Append(headline + "\n");
+        _folds.Add(new TranscriptFold
+        {
+            Start = start,
+            End = _buffer.Length,
+            Label = "compacted summary",
+            Preview = headline,
+        });
+        if (summarized.Summary.Length == 0)
+            return;
+        var bodyStart = _buffer.Length;
+        Append(summarized.Summary + "\n");
+        _folds.Add(new TranscriptFold
+        {
+            Start = bodyStart,
+            End = _buffer.Length,
+            Label = "summary",
+            Preview = Preview(summarized.Summary, SystemMessageFoldChars),
+        });
     }
 
     /** 助手最终消息只在没有任何流式文本时补渲染(非流式适配器), 否则正文已由 chunk 渲染过。 */

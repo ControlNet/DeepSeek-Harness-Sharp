@@ -76,6 +76,7 @@ public sealed partial class ChatWindow : IDisposable
     public ChatWindow(Context ctx, AgentLoopAgent agent, HarnessHome home, ISessionPersistence? persistence = null, TuiSettings? settings = null)
     {
         _ctx = ctx;
+        MaintenancePresenter = ctx.Get<IContextMaintenancePresenter>(IContextMaintenancePresenter.ServiceName, false);
         _home = home;
         _persistence = persistence;
         _settings = settings;
@@ -183,6 +184,9 @@ public sealed partial class ChatWindow : IDisposable
     public int CursorScreenY => InputPane.CursorScreenY;
 
     internal Context Ctx => _ctx;
+
+    /** 上下文整理的中立呈现接缝; 未安装提供该能力的插件时为 null。 */
+    internal IContextMaintenancePresenter? MaintenancePresenter { get; }
 
     internal HarnessHome Home => _home;
 
@@ -1086,7 +1090,7 @@ public sealed partial class ChatWindow : IDisposable
         var session = _subagents.FindSession(id);
         if (session is null)
             return null;
-        var renderer = new TranscriptRenderer();
+        var renderer = new TranscriptRenderer(MaintenancePresenter);
         foreach (var sessionEvent in session.SnapshotEvents())
             renderer.AppendSessionEvent(sessionEvent, replay: true);
         return renderer.SnapshotLines();

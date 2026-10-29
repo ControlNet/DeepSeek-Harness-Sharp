@@ -67,6 +67,12 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private long _renderedSeq;
     private MessageViewModel? _openAssistant;
     private MessageViewModel? _openReasoning;
+
+    /** 忙碌位是否由上下文整理置上: 自动压缩在回合内, 结束后不能替回合清掉 IsBusy。 */
+    private bool _compactionBusy;
+
+    /** 由插件提供的中立呈现接缝; 未安装该插件时为 null, 只是不显示整理进度。 */
+    private readonly IContextMaintenancePresenter? _maintenance;
     private bool _disposed;
     private Task? _disposal;
     private readonly IEditorService? _editors;
@@ -82,6 +88,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public MainViewModel(HarnessApp app, HostChatSession chat)
     {
         _ctx = app.Ctx;
+        _maintenance = _ctx.Get<IContextMaintenancePresenter>(IContextMaintenancePresenter.ServiceName, false);
         _chat = chat;
         Home = app.Home;
         Subagents = new SubagentPanelViewModel(chat);
@@ -126,7 +133,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             _ctx.Get<Func<string, string, bool>>("editorClientHasMapping", false));
         chat.Fleet.Changed += OnFleetChanged;
         chat.Reset += ShowSession;
-        chat.Received += ApplyEvents;
+        chat.Received += OnChatReceived;
         chat.Failed += SetStatus;
         ShowSession();
         chat.Follow();
@@ -1138,7 +1145,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _pendingDialogs.Clear();
         _chat.Fleet.Changed -= OnFleetChanged;
         _chat.Reset -= ShowSession;
-        _chat.Received -= ApplyEvents;
+        _chat.Received -= OnChatReceived;
         _chat.Failed -= SetStatus;
         _contentSearch?.Cancel();
         _contentSearch?.Dispose();
@@ -1487,6 +1494,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         UpdateCurrentWorkspace();
         _ = _editorClientBinding.UpdateAsync(_chat.Fleet.Find(_chat.Machine), _chat.Id.Value, _chat.Header.Cwd ?? Home.Root);
         _renderedSeq = 0;
+        // 上一个进程可能留下未闭合的 compaction/start: 重放它会把界面卡在"正在压缩",
+        // 而那次压缩早已随进程退出。
+        _compactionBusy = false;
         _openAssistant = null;
         _openReasoning = null;
         Messages.Clear();
@@ -1497,7 +1507,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _pendingToolCalls.Clear();
         SessionTitle = _chat.Header.Title ?? _chat.Id.Value;
         IsBusy = false;
-        ApplyEvents(_chat.Events);
+        ApplyEvents(_chat.Events, replay: true);
         RefreshMode();
         RefreshPreset();
         RefreshModelLabels();
@@ -1572,7 +1582,11 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         RefreshFilteredModels();
     }
 
-    private void ApplyEvents(IReadOnlyList<SessionEvent> batch)
+    /** 实时事件: 不是重放, 因此压缩状态要按真实生命周期切换。 */
+    private void OnChatReceived(IReadOnlyList<SessionEvent> batch) => ApplyEvents(batch);
+
+    /** replay=true 表示在重放既有历史(切会话/重新加载), 而不是收到了实时事件。 */
+    private void ApplyEvents(IReadOnlyList<SessionEvent> batch, bool replay = false)
     {
         if (_disposed)
             return;
@@ -1581,17 +1595,23 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             if (sessionEvent.Seq < _renderedSeq)
                 continue;
             _renderedSeq = sessionEvent.Seq + 1;
-            ApplyEvent(sessionEvent);
+            ApplyEvent(sessionEvent, replay);
         }
     }
 
-    private void ApplyEvent(SessionEvent sessionEvent)
+    private void ApplyEvent(SessionEvent sessionEvent, bool replay)
     {
         if (sessionEvent.Type == PresetEventType)
             RefreshPreset();
         if (sessionEvent.Data is TurnStartPayload or TurnEndPayload)
             foreach (var node in AllSessions().Where(node => node.SessionId == _chat.Id))
                 node.IsRunning = sessionEvent.Data is TurnStartPayload;
+        // 上下文整理(压缩)的进度由插件经由中立视图给出, 界面层因此不引用该插件。
+        if (_maintenance?.Describe(sessionEvent) is { } maintenance)
+        {
+            ApplyMaintenance(sessionEvent.Seq, maintenance, replay);
+            return;
+        }
         switch (sessionEvent.Data)
         {
             case TurnStartPayload turn:
@@ -1657,6 +1677,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 var user = AppendMessage(new MessageViewModel("你", text, MessageKind.User, false));
                 _lastUserMessages.Add(user);
                 break;
+            // 压缩检查点的正文已经由 compaction/summary 那一行渲染过, 再当成上下文注入会重复一遍摘要。
+            case PluginMessageSource source when _maintenance?.IsCheckpointMessage(source) == true:
+                break;
             case PluginMessageSource plugin:
                 var label = $"上下文注入 · {plugin.Plugin}";
                 var injected = AppendMessage(new MessageViewModel("", label, MessageKind.Context, false));
@@ -1675,6 +1698,59 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _openReasoning = null;
         if (reason is TurnEndReason.Error error)
             AppendMessage(new MessageViewModel("错误", $"{error.Failure.Code}: {error.Failure.Message}", MessageKind.System, false));
+    }
+
+    /** 上下文整理(压缩)的进度落在正文与轨迹里; 只用中立视图, 因此这里不出现压缩插件的类型。 */
+    private void ApplyMaintenance(long seq, ContextMaintenanceEvent maintenance, bool replay)
+    {
+        switch (maintenance)
+        {
+            // 重放时不当作进行中: 历史里未闭合的开始标记属于早已退出的进程。
+            case ContextMaintenanceEvent.Started when !replay:
+                BeginMaintenance(seq);
+                break;
+            case ContextMaintenanceEvent.Started:
+                break;
+            case ContextMaintenanceEvent.Pruned pruned:
+                AddTrace(seq, TraceKind.Context, $"裁剪 {pruned.Items} 条过大的工具结果", $"~{pruned.Tokens} tokens");
+                break;
+            case ContextMaintenanceEvent.Summarized summarized:
+                ApplySummarized(seq, summarized);
+                break;
+            case ContextMaintenanceEvent.Failed failed:
+                EndMaintenance();
+                AppendMessage(new MessageViewModel("错误", $"压缩失败: {failed.Error}", MessageKind.System, false));
+                AddTrace(seq, TraceKind.Context, "压缩失败", failed.Error);
+                break;
+            case ContextMaintenanceEvent.Finished:
+                EndMaintenance();
+                break;
+        }
+    }
+
+    private void BeginMaintenance(long seq)
+    {
+        // 自动压缩发生在回合内部: 那种情况忙碌位已经由 turn/start 置上, 结束后不能替回合清掉。
+        _compactionBusy = !IsBusy;
+        IsBusy = true;
+        StatusText = "正在压缩上下文…";
+        AppendMessage(new MessageViewModel("压缩", "正在压缩上下文，摘要生成可能需要几分钟…", MessageKind.Context, false));
+        AddTrace(seq, TraceKind.Context, "压缩开始");
+    }
+
+    private void ApplySummarized(long seq, ContextMaintenanceEvent.Summarized summarized)
+    {
+        var label = $"上下文已压缩 · 收起 {summarized.Items} 条历史 (~{summarized.Tokens} tokens)";
+        AppendMessage(new MessageViewModel("", label, MessageKind.Context, false)).Detail = summarized.Summary;
+        AddTrace(seq, TraceKind.Context, label, summarized.Summary);
+    }
+
+    private void EndMaintenance()
+    {
+        if (!_compactionBusy)
+            return;
+        _compactionBusy = false;
+        IsBusy = false;
     }
 
     private void ApplyChunk(long seq, StreamChunk chunk)

@@ -1,4 +1,5 @@
 using Dsh.Boot;
+using Dsh.Compaction;
 using Dsh.Core;
 using Dsh.Interaction;
 using Dsh.Llm;
@@ -71,6 +72,92 @@ public sealed class ChatWindowTranscriptTests : IDisposable
         chat.DrainUi();
 
         Assert.Equal(1, Count(DrawFrame(chat), "非流式回答戊"));
+    }
+
+    /**
+     * 压缩期间必须看得见"正在压缩"。摘要要发若干次模型请求, 一次压缩可能持续数分钟;
+     * 界面完全没反应时用户只会再按一次 /compact, 而那次必然被"压缩已在进行"挡回来。
+     */
+    [Fact]
+    public async Task CompactionStart_ShowsProgressInTranscriptAndStatus()
+    {
+        var (ctx, agent, home) = await CreateAgent();
+        using var chat = new ChatWindow(ctx, agent, home);
+        agent.Session.Append(new TurnStartPayload(1));
+        agent.Session.Append(new TurnEndPayload(1, new TurnEndReason.Completed()));
+        // 实时事件(不是重放): 只有真实开始的整理才应显示进行中。
+        agent.Session.Append(new CompactionStartPayload(CompactionId.Create("cmp-1"), null, null));
+
+        chat.DrainUi();
+
+        var frame = DrawFrame(chat);
+        Assert.Contains("正在压缩上下文", frame, StringComparison.Ordinal);
+        Assert.Contains("compacting context", frame, StringComparison.Ordinal);
+    }
+
+    /** 压缩结果要渲染出摘要与统计, 且检查点消息不重复渲染一遍同样的正文。 */
+    [Fact]
+    public async Task CompactionSummary_RendersOnceAndHidesDuplicateCheckpointBody()
+    {
+        var (ctx, agent, home) = await CreateAgent();
+        using var chat = new ChatWindow(ctx, agent, home);
+        var compactionId = CompactionId.Create("cmp-2");
+        agent.Session.Append(new CompactionStartPayload(compactionId, null, null));
+        agent.Session.Append(new CompactionSummaryPayload(
+            compactionId,
+            null,
+            [new TextBlock("压缩摘要正文丁")],
+            new ShadowedRange(0, 10),
+            [0, 1, 2],
+            1234,
+            "deepseek-official",
+            "deepseek-v4-flash"));
+        agent.Session.Append(
+            new UserMessagePayload(new UserMessage
+            {
+                Id = MessageFactory.NewId(),
+                Content = [new TextBlock("压缩摘要正文丁")],
+                Source = CompactionCheckpoint.Source(compactionId),
+            }),
+            new SurfaceOp.Append());
+        agent.Session.Append(new CompactionEndPayload(compactionId, null, null));
+
+        chat.DrainUi();
+
+        var frame = DrawFrame(chat);
+        Assert.Equal(1, Count(frame, "压缩摘要正文丁"));
+        Assert.Contains("收起 3 条历史", frame, StringComparison.Ordinal);
+    }
+
+    /** 会话里残留未闭合的 compaction/start(上一个进程没结束)时, 重放不能把界面永久留在"压缩中"。 */
+    [Fact]
+    public async Task DanglingCompactionMarker_DoesNotLeaveThePaneStuckCompacting()
+    {
+        var (ctx, agent, home) = await CreateAgent();
+        agent.Session.Append(new CompactionStartPayload(CompactionId.Create("cmp-dangling"), null, null));
+
+        using var chat = new ChatWindow(ctx, agent, home);
+        chat.DrainUi();
+
+        Assert.DoesNotContain("compacting context", DrawFrame(chat), StringComparison.Ordinal);
+    }
+
+    /** 压缩失败要显示失败原因, 并把状态位交还给"就绪"。 */
+    [Fact]
+    public async Task CompactionFailure_ShowsTheErrorAndClearsBusy()
+    {
+        var (ctx, agent, home) = await CreateAgent();
+        using var chat = new ChatWindow(ctx, agent, home);
+        var compactionId = CompactionId.Create("cmp-3");
+        agent.Session.Append(new CompactionStartPayload(compactionId, null, null));
+        agent.Session.Append(new CompactionEndPayload(compactionId, null, null, "upstream exploded"));
+
+        chat.DrainUi();
+
+        var frame = DrawFrame(chat);
+        Assert.Contains("压缩失败", frame, StringComparison.Ordinal);
+        Assert.Contains("upstream exploded", frame, StringComparison.Ordinal);
+        Assert.DoesNotContain("compacting context", frame, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -282,6 +369,8 @@ public sealed class ChatWindowTranscriptTests : IDisposable
     {
         var ctx = new Context();
         _ = new SessionStore(ctx);
+        // 上下文整理的进度行由插件提供的中立接缝驱动; 测试里显式装上它, 才能断言这些行。
+        _ = CompactionMaintenancePresenter.Register(ctx);
         var agents = new AgentRegistry(ctx);
         _ = new AgentLoop(ctx);
         CommandsService.Register(ctx);
