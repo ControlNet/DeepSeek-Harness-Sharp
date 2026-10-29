@@ -102,10 +102,12 @@ public sealed class GuiHostChatIntegrationTests
         var observer = await host.ConnectAsync("survivor", Ct);
         string id = "";
         Task<ApprovalOutcome>? waiting = null;
+        WorkspaceHostLease detachedLease = default;
         await HeadlessGui.RunAsync(async () =>
         {
             await using var fleet = Fleet(host, gui);
             var chat = await HostChatSession.OpenAsync(fleet, host.Environment.Agent.Session.Header.Cwd!, null, Ct);
+            detachedLease = await fleet.Find(MachineSpec.LocalName)!.WaitConnectedAsync(Ct);
             await using (var viewModel = new MainViewModel(gui.App, chat))
             {
                 id = viewModel.CurrentSessionId.Value;
@@ -117,6 +119,8 @@ public sealed class GuiHostChatIntegrationTests
             }
             Dispatcher.UIThread.RunJobs();
         });
+        Assert.True(detachedLease.Lifetime.IsCancellationRequested);
+        await detachedLease.Closed.WaitAsync(Ct);
         Assert.NotNull(waiting);
         Assert.False(waiting.IsCompleted);
         var request = Assert.Single((await observer.ListPendingAsync(Ct)).Approvals, item => item.SessionId == id);
@@ -278,7 +282,6 @@ public sealed class GuiHostChatIntegrationTests
     private static FleetWorkspace Fleet(HarnessHostFixture host, GuiTestEnvironment gui)
     {
         var options = FleetConnectionTests.TestOptions with { ClientName = "ordinary-gui-chat" };
-        return new FleetWorkspace(new MachineStore(gui.App.Home), options,
-            () => new FleetClient([MachineSpec.Local(host.Root)], options));
+        return new FleetWorkspace(new FleetWorkspaceServices(new MachineStore(gui.App.Home), options, () => new FleetClient([MachineSpec.Local(host.Root)], options)));
     }
 }

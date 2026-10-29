@@ -8,7 +8,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dsh.Boot;
 using Dsh.Core;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Gui.Services;
 using Dsh.Ide.Bridge;
 using Dsh.Interaction;
@@ -503,7 +503,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         {
             var connection = _chat.Fleet.Find(machine) ?? throw new InvalidOperationException("The editor host is unavailable.");
             var lease = await connection.WaitConnectedAsync(cancellationToken);
-            var service = new RemoteEditorService(lease.Client.Editor);
+            var editors = lease.Client.GetCapability<IRemoteEditors>()
+                ?? throw new NotSupportedException("The selected Host does not provide IDE integration.");
+            var service = new HostEditorService(editors);
             await service.RefreshAsync(workspace, cancellationToken, sessionId);
             return service;
         }, workspace, machine, sessionId, turn);

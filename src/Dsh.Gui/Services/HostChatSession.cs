@@ -1,6 +1,6 @@
 using Avalonia.Threading;
 using Dsh.Core;
-using Dsh.Fleet;
+using Dsh.Workspace;
 using Dsh.Llm;
 using Dsh.RemoteHost;
 
@@ -15,7 +15,7 @@ public sealed class HostChatSession : IDisposable
     private long _generation;
     private long _navigationGeneration;
     private long _reloadGeneration;
-    private MachineConnection? _followingMachine;
+    private IWorkspaceMachine? _followingMachine;
     private string _machine = MachineSpec.LocalName;
     private string _kind = HostSessionKinds.Harness;
 
@@ -78,7 +78,7 @@ public sealed class HostChatSession : IDisposable
             Follow();
     }
 
-    private async Task FollowAsync(MachineConnection machine, string id, long generation, CancellationToken cancellationToken)
+    private async Task FollowAsync(IWorkspaceMachine machine, string id, long generation, CancellationToken cancellationToken)
     {
         var events = new DispatcherBridge<SessionEvent>(batch =>
         {
@@ -109,7 +109,7 @@ public sealed class HostChatSession : IDisposable
         }
     }
 
-    public async Task<RemoteHostClient> ClientAsync(CancellationToken cancellationToken = default)
+    public async Task<IWorkspaceHost> ClientAsync(CancellationToken cancellationToken = default)
         => (await Fleet.Find(_machine)!.WaitConnectedAsync(cancellationToken)).Client;
 
     public async Task SwitchAsync(string id, CancellationToken cancellationToken = default)
@@ -248,8 +248,8 @@ public sealed class HostChatSession : IDisposable
     }
 
     private static async Task<RemoteSessionSummary> ResumeAgentAsync(
-        MachineConnection connection,
-        RemoteHostClient client,
+        IWorkspaceMachine connection,
+        IWorkspaceHost client,
         string id,
         CancellationToken cancellationToken)
     {

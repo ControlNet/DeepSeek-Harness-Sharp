@@ -1,4 +1,4 @@
-namespace Dsh.Fleet;
+namespace Dsh.Workspace;
 
 /** Where the release archive is downloaded during automatic deployment. */
 public static class DownloadVia
