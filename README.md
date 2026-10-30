@@ -314,6 +314,7 @@ plugins:
 ```
 
 `run_csx` 接收 `script` 文件路径与可选的 `arguments` 数组，`run_csharp_repl` 接收 `code` 和 `description`；两者支持 `workdir`、`timeoutMs`，均不提供 `run_code` 的工具 SDK。
+Windows 的 `run_csx` 在可写的 `workdir` 内创建临时 `.dsh-csx-*` 目录，通过真实 `#load` 先初始化 UTF-8 输出再加载原文件；原始脚本不改写，引导脚本和独立编译缓存随执行结束清理。
 CSharpRepl 工具保留 OS 退出码和完整托管退出码，避免 Unix 截断错误码后将异常当作成功；普通 stderr 输出不会被误判为失败。
 
 Creative 对用户插件和预置 `Dsh.*` 插件使用相同的开发指导：独立子进程、构建输出与中间目录，以及不共享现有实例状态的运行时 home。
@@ -366,7 +367,7 @@ sandbox:
 - 检查能力统一使用 Creative 命名，并提供隔离构建与进程指导：默认询问用户，也支持明确授权的任务级自动操作。
 - 增加默认关闭的 PTC `debug_batching`，仅调整独立工具调用的批量生成偏好，不改变执行门禁。
 - 增加真实 dotnet-script 与 CSharpRepl 前端工具，独立执行 C# 脚本或输入，保留诊断、取消和自有进程清理。
-- 修复 SDK 返回值组合时的 JSON 节点所有权、无反射宿主中的 csx 失败诊断，以及 CSharpRepl 相对可执行路径解析。
+- 修复 SDK 返回值组合时的 JSON 节点所有权、无反射宿主中的 csx 失败诊断、Windows csx 中文输出，以及 CSharpRepl 相对可执行路径解析。
 
 </details>
 

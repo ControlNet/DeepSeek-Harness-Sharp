@@ -129,6 +129,12 @@ public sealed class ToolRunCsx
         {
             throw FrontendUnavailable(error.Message);
         }
+        using var bootstrap = OperatingSystem.IsWindows() ? new CsxUtf8Bootstrap(script, workdir) : null;
+        if (bootstrap is not null)
+        {
+            argv[1] = bootstrap.ScriptPath;
+            argv.InsertRange(1, ["--cache-path", bootstrap.CachePath]);
+        }
         SubprocessHandle handle;
         try
         {

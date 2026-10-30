@@ -23,8 +23,9 @@ public sealed class CsxToolsTests
             #load "library.csx"
             await Console.Out.WriteLineAsync(Add(19, 23).ToString(System.Globalization.CultureInfo.InvariantCulture));
             await Console.Out.WriteLineAsync(string.Join("|", Args));
+            await File.WriteAllTextAsync("arguments.txt", string.Join("|", Args));
             await Console.Out.WriteLineAsync(await File.ReadAllTextAsync("working-directory.txt"));
-            await Console.Error.WriteLineAsync("csx-stderr");
+            await Console.Error.WriteLineAsync("csx-stderr 中文");
             """, TestContext.Current.CancellationToken);
         var workdir = Directory.CreateDirectory(Path.Combine(harness.Root, "work")).FullName;
         await File.WriteAllTextAsync(Path.Combine(workdir, "working-directory.txt"), "csx-cwd", TestContext.Current.CancellationToken);
@@ -40,7 +41,8 @@ public sealed class CsxToolsTests
         var value = Assert.IsType<ToolExecutionResult.Success>(result).Value;
         Assert.Equal(0, value.GetProperty("exitCode").GetInt32());
         Assert.Equal("42\ntwo words|--literal|中文||$(not-a-shell)\ncsx-cwd\n", Normalize(value.GetProperty("stdout").GetString()!));
-        Assert.Equal("csx-stderr\n", Normalize(value.GetProperty("stderr").GetString()!));
+        Assert.Equal("two words|--literal|中文||$(not-a-shell)", await File.ReadAllTextAsync(Path.Combine(workdir, "arguments.txt"), TestContext.Current.CancellationToken));
+        Assert.Equal("csx-stderr 中文\n", Normalize(value.GetProperty("stderr").GetString()!));
         Assert.False(value.GetProperty("stdoutTruncated").GetBoolean());
         Assert.False(value.GetProperty("stderrTruncated").GetBoolean());
     }

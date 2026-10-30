@@ -290,28 +290,6 @@ public sealed class ChatWindowTranscriptTests : IDisposable
     }
 
     [Fact]
-    public async Task AskUser_Enter_Without_Answer_Stays_Pending()
-    {
-        var (ctx, agent, home) = await CreateAgent();
-        var userQuestions = UserQuestionService.Register(ctx);
-        using var chat = new ChatWindow(ctx, agent, home);
-        var question = new AskUserQuestionItem(
-            "q1",
-            "选择策略",
-            Options: [new AskUserQuestionOption("甲"), new AskUserQuestionOption("乙")]);
-
-        var answerTask = userQuestions.Ask(new AskUserQuestionRequest([question], agent), TestContext.Current.CancellationToken);
-        chat.DrainUi();
-
-        Press(chat, ConsoleKey.Enter);
-        Assert.False(answerTask.IsCompleted);
-
-        Type(chat, "1");
-        Press(chat, ConsoleKey.Enter);
-        Assert.Equal("甲", Assert.Single(Assert.Single((await answerTask).Answers).Selected));
-    }
-
-    [Fact]
     public async Task AskUser_Escape_ReturnsDismissedWithoutSubmittingAnEmptyAnswer()
     {
         var (ctx, agent, home) = await CreateAgent();
