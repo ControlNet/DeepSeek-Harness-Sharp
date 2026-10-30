@@ -277,11 +277,51 @@ storage:
 | 插件 | 能力 | 使用边界 |
 |---|---|---|
 | `@deepseek-ai/dsh-ptc` | `run_code` 执行 C#，并通过 SDK 调用当前可见工具 | 可与原生工具调用混用，不改变 Workflow 生命周期 |
-| `@deepseek-ai/dsh-tool-cordis` | `cordis_inspect_list`、`cordis_inspect_query` 只读检查服务、配置和工具 | 事件检查仍不可用 |
-| `@deepseek-ai/dsh-plugin-manager` | `plugin_manager` 管理插件 | 保留既有审批门禁，不由 Cordis 自动启用 |
+| `@deepseek-ai/dsh-csx` | `run_csx` 执行现有 `.csx` 文件，保留 `#load` 和脚本参数 | 需要已安装的 dotnet-script，不提供 PTC SDK |
+| `@deepseek-ai/dsh-csharprepl` | `run_csharp_repl` 通过真实 CSharpRepl 计算一份完整 C# 输入 | 每次使用独立进程，保留输入内状态但不跨调用持久化 |
+| `@deepseek-ai/dsh-tool-creative` | `creative_inspect_list`、`creative_inspect_query` 只读检查服务、配置和工具 | 事件检查仍不可用 |
+| `@deepseek-ai/dsh-plugin-manager` | `plugin_manager` 管理插件 | 保留既有审批门禁，不由检查插件自动启用 |
 
 通过 C# SDK 发起的工具子调用仍遵循当前 scope、审批与审计；`run_code` 本身不是 C# 安全沙箱，也不限制用户项目采用的外部工具链。
-升级后首次加载配置会移除旧 `@deepseek-ai/dsh-presets` 项并保留原配置备份 `.bak`；旧会话中的交互模式事件保留为历史记录，不再影响工具暴露。
+SDK 返回的 JSON 根节点可以直接组合进新的 `JsonObject` 或 `JsonArray`；工具返回的图片会作为模型上下文单独交付。
+
+PTC 的临时调试开关默认关闭，启用后会提示模型优先将独立、非交互的工具操作归并到一次 C# `run_code`，而不是分别发起原生调用（包括并行调用）。
+这只是生成偏好，不强制工具路由。
+关闭时仍可正常选择原生工具或 PTC；批量调用不跳过依赖、审批或用户决策。
+
+```yaml
+plugins:
+  "@deepseek-ai/dsh-ptc":
+    debug_batching: false
+```
+
+独立 C# 前端按需安装，dsharp 不自动下载或捆绑它们；缺少前端时，对应工具返回可操作的错误，其他能力仍可使用。
+以下命令将已验证的 [dotnet-script 2.0.1](https://github.com/dotnet-script/dotnet-script/tree/2.0.1) 和 [CSharpRepl 0.9.2](https://github.com/waf/CSharpRepl/releases/tag/v0.9.2) 安装到当前工作区：
+
+```sh
+dotnet tool install dotnet-script --version 2.0.1 --tool-path .artifacts/csharp-frontends --allow-roll-forward
+dotnet tool install csharprepl --version 0.9.2 --tool-path .artifacts/csharp-frontends --allow-roll-forward
+```
+
+通过 `settings.yaml` 指定可执行文件；相对路径基于宿主启动目录，Windows 请使用安装后对应的 `.exe` 文件名。
+
+```yaml
+plugins:
+  "@deepseek-ai/dsh-csx":
+    executable: .artifacts/csharp-frontends/dotnet-script
+  "@deepseek-ai/dsh-csharprepl":
+    executable: .artifacts/csharp-frontends/csharprepl
+```
+
+`run_csx` 接收 `script` 文件路径与可选的 `arguments` 数组，`run_csharp_repl` 接收 `code` 和 `description`；两者支持 `workdir`、`timeoutMs`，均不提供 `run_code` 的工具 SDK。
+CSharpRepl 工具保留 OS 退出码和完整托管退出码，避免 Unix 截断错误码后将异常当作成功；普通 stderr 输出不会被误判为失败。
+
+Creative 对用户插件和预置 `Dsh.*` 插件使用相同的开发指导：独立子进程、构建输出与中间目录，以及不共享现有实例状态的运行时 home。
+模型默认通过 `ask_user_question` 询问进程处理方式，可选择隔离新实例、重启明确授权的自有实例，或为当前任务预授权自动处理；原有工具审批仍然生效。
+只读检查工具本身不会构建、启动或终止进程，实际操作使用既有执行和自有终端工具。
+
+不提供退役预设包的配置或历史兼容；升级前请自行从 `plugins` 配置中删除 `@deepseek-ai/dsh-presets`。
+含旧预设事件且未标记为可忽略的会话，仍按通用未知事件规则拒绝读取。
 会话起始模板（`.agent-presets`）和计划模式不受影响。
 
 <details>
@@ -321,8 +361,12 @@ sandbox:
 <summary><b>未发布</b> — 交互模式能力化</summary>
 
 - 移除 `Dsh.Presets`、四种互斥交互模式及 GUI/TUI 预设入口，`run_code` 与原生工具可直接组合。
-- Cordis 检查和插件管理独立注册工具与提示，不再依赖创造模式，也不互相自动启用。
-- 迁移废弃插件配置，保留旧会话模式事件的原始数据与消息历史；现有 scope、审批、审计及 Workflow 生命周期保持不变。
+- 运行时检查和插件管理独立注册工具与提示，不再依赖创造模式，也不互相自动启用。
+- 直接移除退役预设包，不提供专用配置迁移或旧事件兼容；现有 scope、审批、审计及 Workflow 生命周期保持不变。
+- 检查能力统一使用 Creative 命名，并提供隔离构建与进程指导：默认询问用户，也支持明确授权的任务级自动操作。
+- 增加默认关闭的 PTC `debug_batching`，仅调整独立工具调用的批量生成偏好，不改变执行门禁。
+- 增加真实 dotnet-script 与 CSharpRepl 前端工具，独立执行 C# 脚本或输入，保留诊断、取消和自有进程清理。
+- 修复 SDK 返回值组合时的 JSON 节点所有权、无反射宿主中的 csx 失败诊断，以及 CSharpRepl 相对可执行路径解析。
 
 </details>
 

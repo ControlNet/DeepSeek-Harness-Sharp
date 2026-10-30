@@ -105,36 +105,6 @@ public class SessionPersistenceTests : IDisposable
         AssertEventsEqual(events, reader.Read().ToArray());
     }
 
-    [Theory]
-    [InlineData(JsonlCompression.None)]
-    [InlineData(JsonlCompression.Zstd)]
-    public void RetiredPresetHistory_PreservesPayloadMessagesAndForwarding(JsonlCompression compression)
-    {
-        const string retiredType = "preset/mode";
-        using var data = JsonDocument.Parse("""{"preset":"minimal","note":"retain this history"}""");
-        var source = BuildSourceSession(TestCwd);
-        var annotation = source.Append(new UnknownSessionEventPayload(retiredType, data.RootElement.Clone()));
-        using var persistence = new JsonlSessionPersistence(NewRoot(), compression: compression);
-        using (var writer = persistence.Create(source.Header))
-            writer.Append(source.SnapshotEvents());
-        using var reader = persistence.Open(source.Id, SessionAccess.Read);
-        var events = reader.Read().ToArray();
-        var migrated = events[(int)annotation.Seq];
-        Assert.True(migrated.Ignorable);
-        Assert.Equal(annotation.Seq, migrated.Seq);
-        Assert.Equal(annotation.Time, migrated.Time);
-        var payload = Assert.IsType<UnknownSessionEventPayload>(migrated.Data);
-        Assert.Equal(retiredType, payload.Type);
-        Assert.Equal(data.RootElement.GetRawText(), payload.Raw.GetRawText());
-        var restored = Session.Create(source.Id, events, source.Header);
-        Assert.Equal(
-            JsonSerializer.Serialize(source.DeriveMessages(), DshJson.Options),
-            JsonSerializer.Serialize(restored.DeriveMessages(), DshJson.Options));
-        var forwarded = DshJson.Deserialize<SessionEvent>(DshJson.Serialize(migrated))!;
-        Assert.True(forwarded.Ignorable);
-        Assert.Equal(payload.Raw.GetRawText(), Assert.IsType<UnknownSessionEventPayload>(forwarded.Data).Raw.GetRawText());
-    }
-
     [Fact]
     public void TornTail_PlainText_TruncatedOnNextAppend()
     {

@@ -18,6 +18,8 @@
     <Project Path="src/Dsh.Checkpoints/Dsh.Checkpoints.csproj" />
     <Project Path="src/Dsh.Compaction/Dsh.Compaction.csproj" />
     <Project Path="src/Dsh.Core/Dsh.Core.csproj" />
+    <Project Path="src/Dsh.CSharpRepl/Dsh.CSharpRepl.csproj" />
+    <Project Path="src/Dsh.Csx/Dsh.Csx.csproj" />
     <Project Path="src/Dsh.Deliverables/Dsh.Deliverables.csproj" />
     <Project Path="src/Dsh.E2b/Dsh.E2b.csproj" />
     <Project Path="src/Dsh.Fleet.Iroh/Dsh.Fleet.Iroh.csproj" />

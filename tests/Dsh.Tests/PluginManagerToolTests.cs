@@ -140,7 +140,7 @@ public sealed class PluginManagerToolTests
         var agent = InspectionTestAgent.Open(harness.Ctx);
         Assert.IsType<ToolExecutionResult.Success>(await harness.Execute("""{"action":"list"}""", agent));
 
-        foreach (var name in new[] { "cordis_inspect_list", "cordis_inspect_query" })
+        foreach (var name in new[] { "creative_inspect_list", "creative_inspect_query" })
         {
             var failure = Assert.IsType<ToolExecutionResult.Failure>(
                 await harness.ExecuteTool(name, "{}", agent));
@@ -158,7 +158,7 @@ public sealed class PluginManagerToolTests
         var agent = InspectionTestAgent.Open(harness.Ctx);
         using var answerer = ApprovalAnswerers.DenyAll(harness.Ctx);
         Assert.IsType<ToolExecutionResult.Success>(
-            await harness.ExecuteTool("cordis_inspect_list", "{}", agent));
+            await harness.ExecuteTool("creative_inspect_list", "{}", agent));
 
         await inspection.DeactivateAsync();
 

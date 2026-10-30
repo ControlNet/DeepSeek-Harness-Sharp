@@ -17,7 +17,7 @@ public sealed class InspectionToolsTests
         var agent = InspectionTestAgent.Open(harness.Ctx);
 
         var success = Assert.IsType<ToolExecutionResult.Success>(
-            await harness.Execute("cordis_inspect_list", "{}", agent));
+            await harness.Execute("creative_inspect_list", "{}", agent));
         var categories = JsonNode.Parse(success.Value.GetRawText())!["categories"]!.AsArray();
 
         Assert.Equal(
@@ -46,8 +46,8 @@ public sealed class InspectionToolsTests
 
         var tool = Category(categories, "tool");
         Assert.True(tool["available"]!.GetValue<bool>());
-        Assert.Contains(tool["items"]!.AsArray(), item => item!["name"]!.GetValue<string>() == "cordis_inspect_list");
-        Assert.Contains(tool["items"]!.AsArray(), item => item!["name"]!.GetValue<string>() == "cordis_inspect_query");
+        Assert.Contains(tool["items"]!.AsArray(), item => item!["name"]!.GetValue<string>() == "creative_inspect_list");
+        Assert.Contains(tool["items"]!.AsArray(), item => item!["name"]!.GetValue<string>() == "creative_inspect_query");
     }
 
     [Fact]
@@ -71,9 +71,9 @@ public sealed class InspectionToolsTests
         await harness.ComposeAsync();
         var agent = InspectionTestAgent.Open(harness.Ctx);
 
-        var data = await Query(harness, agent, """{"category":"tool","name":"cordis_inspect_query"}""");
+        var data = await Query(harness, agent, """{"category":"tool","name":"creative_inspect_query"}""");
 
-        Assert.Equal("cordis_inspect_query", data["name"]!.GetValue<string>());
+        Assert.Equal("creative_inspect_query", data["name"]!.GetValue<string>());
         Assert.False(string.IsNullOrWhiteSpace(data["description"]!.GetValue<string>()));
         Assert.NotNull(data["parameters"]);
     }
@@ -125,7 +125,7 @@ public sealed class InspectionToolsTests
         await harness.ComposeAsync();
         var agent = InspectionTestAgent.Open(harness.Ctx);
 
-        var result = await harness.Execute("cordis_inspect_query", """{"category":"event","name":"anything"}""", agent);
+        var result = await harness.Execute("creative_inspect_query", """{"category":"event","name":"anything"}""", agent);
 
         var failure = Assert.IsType<ToolExecutionResult.Failure>(result);
         Assert.Contains("not wired yet", string.Concat(failure.Content.OfType<TextBlock>().Select(block => block.Text)));
@@ -138,7 +138,7 @@ public sealed class InspectionToolsTests
         await harness.ComposeAsync();
         var agent = InspectionTestAgent.Open(harness.Ctx);
 
-        var result = await harness.Execute("cordis_inspect_query", """{"category":"service","name":"no-such-service"}""", agent);
+        var result = await harness.Execute("creative_inspect_query", """{"category":"service","name":"no-such-service"}""", agent);
 
         Assert.IsType<ToolExecutionResult.Failure>(result);
     }
@@ -151,7 +151,7 @@ public sealed class InspectionToolsTests
         var agent = InspectionTestAgent.Open(harness.Ctx);
 
         Assert.IsType<ToolExecutionResult.Success>(
-            await harness.Execute("cordis_inspect_list", "{}", agent));
+            await harness.Execute("creative_inspect_list", "{}", agent));
         var failure = Assert.IsType<ToolExecutionResult.Failure>(
             await harness.Execute("plugin_manager", """{"action":"list"}""", agent));
 
@@ -166,17 +166,17 @@ public sealed class InspectionToolsTests
         var restricted = InspectionTestAgent.Open(harness.Ctx);
         var other = InspectionTestAgent.Open(harness.Ctx);
         using var restriction = harness.Tools.Restrict(
-            new ToolRestriction(Deny: ["cordis_inspect_query"]), restricted.ScopeKey);
+            new ToolRestriction(Deny: ["creative_inspect_query"]), restricted.ScopeKey);
 
         var failure = Assert.IsType<ToolExecutionResult.Failure>(await harness.Execute(
-            "cordis_inspect_query", """{"category":"service","name":"seed-service"}""", restricted));
+            "creative_inspect_query", """{"category":"service","name":"seed-service"}""", restricted));
         Assert.Equal(ToolErrorCodes.UnknownTool, failure.Error.Info?.Code);
         var categories = Assert.IsType<ToolExecutionResult.Success>(
-            await harness.Execute("cordis_inspect_list", """{"category":"tool"}""", restricted));
+            await harness.Execute("creative_inspect_list", """{"category":"tool"}""", restricted));
         var items = JsonNode.Parse(categories.Value.GetRawText())!["categories"]![0]!["items"]!.AsArray();
-        Assert.DoesNotContain(items, item => item!["name"]!.GetValue<string>() == "cordis_inspect_query");
-        Assert.Equal("cordis_inspect_query",
-            (await Query(harness, other, """{"category":"tool","name":"cordis_inspect_query"}"""))["name"]!.GetValue<string>());
+        Assert.DoesNotContain(items, item => item!["name"]!.GetValue<string>() == "creative_inspect_query");
+        Assert.Equal("creative_inspect_query",
+            (await Query(harness, other, """{"category":"tool","name":"creative_inspect_query"}"""))["name"]!.GetValue<string>());
     }
 
     [Fact]
@@ -186,11 +186,11 @@ public sealed class InspectionToolsTests
         var activation = await harness.ComposeAsync();
         var agent = InspectionTestAgent.Open(harness.Ctx);
         Assert.IsType<ToolExecutionResult.Success>(
-            await harness.Execute("cordis_inspect_list", "{}", agent));
+            await harness.Execute("creative_inspect_list", "{}", agent));
 
         await activation.DeactivateAsync();
 
-        foreach (var name in new[] { "cordis_inspect_list", "cordis_inspect_query" })
+        foreach (var name in new[] { "creative_inspect_list", "creative_inspect_query" })
         {
             var failure = Assert.IsType<ToolExecutionResult.Failure>(
                 await harness.Execute(name, "{}", agent));
@@ -201,7 +201,7 @@ public sealed class InspectionToolsTests
     private static async Task<JsonNode> Query(Harness harness, IAgent agent, string arguments)
     {
         var success = Assert.IsType<ToolExecutionResult.Success>(
-            await harness.Execute("cordis_inspect_query", arguments, agent));
+            await harness.Execute("creative_inspect_query", arguments, agent));
         return JsonNode.Parse(success.Value.GetRawText())!["data"]!;
     }
 
@@ -222,7 +222,7 @@ public sealed class InspectionToolsTests
                     options:
                       baseUrl: https://example.invalid
                 plugins:
-                  "@deepseek-ai/dsh-tool-cordis":
+                  "@deepseek-ai/dsh-tool-creative":
                     enabled: true
                 """);
             Ctx = new Context();

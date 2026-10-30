@@ -178,7 +178,7 @@ public sealed class EditorDurableFileChangesTests
             _subprocess = new SubprocessService(_ctx);
             _registrations =
             [
-                ToolRunCode.Register(_ctx, Root),
+                ToolRunCode.Register(_ctx, Root, debugBatching: false),
                 new Dsh.Persistence.Plugin("@deepseek-ai/dsh-persistence").Apply(_ctx, null),
                 new Dsh.Toon.Plugin().Apply(_ctx, null),
                 WriteTool.Register(_ctx),

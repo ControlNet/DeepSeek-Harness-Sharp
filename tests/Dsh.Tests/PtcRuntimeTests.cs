@@ -62,8 +62,8 @@ public sealed class PtcRuntimeTests
         var beta = new ToolSchema("beta", "Beta tool", ObjectSchema(("y", "integer", false)));
         var runCode = new ToolSchema(ToolRunCode.ToolName, "run code", new JsonObject());
 
-        var first = PtcSdkRenderer.Render([beta, runCode, alpha]);
-        var second = PtcSdkRenderer.Render([alpha, beta, runCode]);
+        var first = PtcSdkRenderer.Render([beta, runCode, alpha], debugBatching: false);
+        var second = PtcSdkRenderer.Render([alpha, beta, runCode], debugBatching: false);
 
         Assert.Equal(first, second);
         var alphaAt = first.IndexOf("public static Task<JsonNode?> alpha(", StringComparison.Ordinal);
@@ -78,7 +78,7 @@ public sealed class PtcRuntimeTests
         var odd = new ToolSchema("my-tool", "Odd tool", ObjectSchema(("x", "string", true)));
         var alpha = new ToolSchema("alpha", "Alpha tool", ObjectSchema(("x", "string", true)));
 
-        var rendered = PtcSdkRenderer.Render([odd, alpha]);
+        var rendered = PtcSdkRenderer.Render([odd, alpha], debugBatching: false);
 
         Assert.Contains("public static Task<JsonNode?> alpha(", rendered);
         Assert.DoesNotContain("public static Task<JsonNode?> my-tool(", rendered);
@@ -101,6 +101,31 @@ public sealed class PtcRuntimeTests
         Assert.False(result.IsError, TextOf(result));
         var value = Assert.IsType<ToolExecutionResult.Success>(result).Value;
         Assert.Equal("hi", value.GetProperty("result").GetProperty("echoed").GetString());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RunCode_NativeToolResultsCanBeComposedIntoNewJsonValues(bool namedBinding)
+    {
+        using var home = new CompositionHome("");
+        using var harness = new Harness();
+        using var write = Dsh.Tools.WriteTool.Register(harness.Ctx);
+        var agent = new FakeAgent(harness.Ctx);
+        var path = Path.Combine(home.Root, "composed-result.txt");
+        var invocation = namedBinding ? "tools.write(arguments)" : """tools.call("write", arguments)""";
+        var result = await RunCode(harness.Tools, agent, $$"""
+            var arguments = new JsonObject { ["file_path"] = {{JsonSerializer.Serialize(path)}}, ["content"] = "sdk-owned-result" };
+            var written = await {{invocation}};
+            return new JsonObject { ["nested"] = written };
+            """, timeoutMs: 20000);
+
+        Assert.False(result.IsError, TextOf(result));
+        var nested = Assert.IsType<ToolExecutionResult.Success>(result).Value.GetProperty("result").GetProperty("nested");
+        Assert.Equal(path, nested.GetProperty("path").GetString());
+        Assert.Equal("create", nested.GetProperty("operation").GetString());
+        Assert.Equal("sdk-owned-result", nested.GetProperty("after").GetString());
+        Assert.Equal("sdk-owned-result", await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
     }
 
     private sealed class CompositionHome : IDisposable

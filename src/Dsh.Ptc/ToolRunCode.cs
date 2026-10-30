@@ -14,6 +14,10 @@ public sealed class ToolRunCode
     public const string ToolName = "run_code";
     public const long DefaultTimeoutMs = 120_000;
     public const long MaxTimeoutMs = 600_000;
+    private const string Description = """
+        Run a C# program through the listed tool SDK, returning printed output and a JSON value.
+        Image outputs from tool calls are delivered separately for you to inspect.
+        """;
 
     private readonly ToolRuntime _tools;
     private readonly SubprocessService _subprocess;
@@ -28,16 +32,16 @@ public sealed class ToolRunCode
         _cwd = cwd;
     }
 
-    public static IDisposable Register(Context ctx, string cwd)
+    public static IDisposable Register(Context ctx, string cwd, bool debugBatching)
     {
         var tool = new ToolRunCode(ctx, cwd);
-        return tool._tools.Register(tool.BuildRunCodeDefinition());
+        return tool._tools.Register(tool.BuildRunCodeDefinition(debugBatching));
     }
 
-    private ToolDefinition BuildRunCodeDefinition() => new()
+    private ToolDefinition BuildRunCodeDefinition(bool debugBatching) => new()
     {
         Name = ToolName,
-        Description = "Run a C# program that can call other tools; only printed output and the returned value come back.",
+        Description = debugBatching ? $"{Description}\n{PtcSdkRenderer.BatchingInstructions}" : Description,
         Parameters = BuildParameters(),
         Output = new ToolOutputDefinition(BuildOutputSchema(), RenderRunCode),
         Execute = ExecuteRunCodeAsync,

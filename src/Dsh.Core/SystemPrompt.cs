@@ -77,7 +77,7 @@ public static class PromptSpine
         "tool:memory_save",
         "tool:workflow",
         "tool:ralph",
-        "tool:cordis",
+        "tool:creative",
         "tool:plugin_manager",
         "tools:sdk",
     ];
