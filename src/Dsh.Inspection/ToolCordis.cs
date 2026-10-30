@@ -6,7 +6,7 @@ using Dsh.Runtime;
 
 namespace Dsh.Inspection;
 
-/** cordis_inspect_list / cordis_inspect_query:创造模式的运行时只读检查工具(保留上游工具名以对齐生态)。 */
+/** Read-only runtime inspection through the existing Cordis tool names. */
 public static class ToolCordis
 {
     public const string ListToolName = "cordis_inspect_list";
@@ -27,8 +27,17 @@ public static class ToolCordis
         + "never modifies runtime state and cannot invoke services or tools. For config, name is a path key: it " 
         + "returns the settings.yaml value, or the schema default when unset.";
 
-    internal static IReadOnlyList<ToolDefinition> Definitions(Context ctx)
-        => [ListDefinition(ctx), QueryDefinition(ctx)];
+    internal static IDisposable Register(Context ctx)
+    {
+        var tools = ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)!;
+        var prompt = ctx.Get<SystemPrompt>(SystemPrompt.ServiceName)!;
+        return new DisposableBundle(
+            tools.Register(ListDefinition(ctx)),
+            tools.Register(QueryDefinition(ctx)),
+            prompt.Section(PromptSection.Literal(
+                "tool:cordis",
+                "Use cordis_inspect_list and cordis_inspect_query for read-only inspection of services, settings, and scope-visible tools; event inspection is unavailable.")));
+    }
 
     private static ToolDefinition ListDefinition(Context ctx) => new()
     {

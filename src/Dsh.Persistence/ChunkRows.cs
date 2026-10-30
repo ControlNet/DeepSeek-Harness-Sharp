@@ -13,6 +13,7 @@ internal static class ChunkRows
     public const string ReasoningChunksTag = "reasoning-chunks";
     public const string ToolCallChunksTag = "tool-call-chunks";
     private const int MinRunLength = 3;
+    private const string RetiredPresetEventType = "preset/mode";
 
     private enum DeltaKind
     {
@@ -50,6 +51,11 @@ internal static class ChunkRows
         ExpandProvenance(record);
         var type = ReadTypeTag(record);
         if (IsChunkRowTag(type)) return ExpandRow(record, type!);
+        // Retired interaction choices remain readable as log-only history without the removed plugin codec.
+        if (type == RetiredPresetEventType
+            && (!record.ContainsKey("ignorable")
+                || record["ignorable"] is JsonValue marker && marker.TryGetValue<bool>(out _)))
+            record["ignorable"] = true;
         if (type is not null && !SessionEventCodec.IsRegistered(type) && !IsIgnorable(record))
             throw new SessionFormatUnsupportedException(
                 $"session log contains event type \"{type}\" unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness");

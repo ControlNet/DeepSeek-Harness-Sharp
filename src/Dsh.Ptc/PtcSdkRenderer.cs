@@ -5,16 +5,16 @@ using Dsh.ScriptHost;
 
 namespace Dsh.Ptc;
 
-/** 把某 scope 可见工具的 JSON Schema 投影成 C# 声明风味的 SDK 文本; 工具按名字典序, 输出字节级确定。 */
+/** Renders scope-visible tool schemas as deterministic C# SDK declarations. */
 public static class PtcSdkRenderer
 {
     private const int MaxTypeDepth = 4;
 
     private const string Instructions = """
         Programmatic tool calling: `run_code` executes a C# program statement body.
-        Only `run_code` can be called directly; every other tool is callable only from inside the program.
+        Native tools remain directly callable; use `run_code` when a program is useful for composing tool calls.
         The body may use `await` and may `return` a `JsonNode`; print with `Console.WriteLine`. Only what you print or return is returned to you.
-        A tool call looks like `await tools.bash(new JsonObject { ["command"] = "..." })`; it returns `JsonNode?` and throws `ToolCallError` (with a `ToolName` property) when the tool fails.
+        Call a listed tool with `await tools.<name>(new JsonObject { ... })`; it returns `JsonNode?` and throws `ToolCallError` (with a `ToolName` property) when the tool fails.
         Tools whose names are not valid C# identifiers have no method; call them as `await tools.call("<name>", new JsonObject { ... })`.
         The program runs under a wall-clock timeout; an unhandled exception is reported back to you as a failure so you can correct the program.
         """;
@@ -22,7 +22,7 @@ public static class PtcSdkRenderer
     public static string Render(IReadOnlyList<ToolSchema> schemas)
     {
         var ordered = schemas
-            .Where(schema => schema.Name != PtcTransport.RunCodeName)
+            .Where(schema => schema.Name != ToolRunCode.ToolName)
             .OrderBy(schema => schema.Name, StringComparer.Ordinal)
             .ToList();
         var builder = new StringBuilder();

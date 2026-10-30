@@ -3,7 +3,6 @@ using Dsh.Compaction;
 using Dsh.Core;
 using Dsh.Interaction;
 using Dsh.Llm;
-using Dsh.Presets;
 using Dsh.Runtime;
 using Dsh.Tui;
 using Dsh.Tui.Services;
@@ -330,21 +329,6 @@ public sealed class ChatWindowTranscriptTests : IDisposable
         Assert.Empty(answer.Answers);
     }
 
-    [Fact]
-    public async Task Input_Info_Line_Shows_Current_Preset()
-    {
-        var (ctx, agent, home) = await CreateAgent();
-        PresetModePayload.RegisterCodec();
-        using var chat = new ChatWindow(ctx, agent, home);
-        chat.DrainUi();
-
-        Assert.Contains("standard - deepseek-official - deepseek-v4-flash", DrawFrame(chat));
-
-        agent.Session.Append(new PresetModePayload(InteractionPreset.Minimal));
-        chat.DrainUi();
-
-        Assert.Contains("minimal - deepseek-official - deepseek-v4-flash", DrawFrame(chat));
-    }
 
     /** present 成功后的交付物事件在会话流里渲染为卡片: 绝对路径可直接复制, 并提示 /deliverables 打开; 历史回放同样出现一次。 */
     [Fact]

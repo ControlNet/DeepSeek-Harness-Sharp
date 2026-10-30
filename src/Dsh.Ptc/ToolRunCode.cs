@@ -8,49 +8,35 @@ using Dsh.ScriptHost;
 
 namespace Dsh.Ptc;
 
-/** PTC 呈现的传输接缝实现: 提供 run_code 定义、SDK 段文本与 C# script-host 执行。 */
-public sealed class PtcTransport : Service, IToolPresentation
+/** Executes code through the shared script host and the normal tool dispatcher. */
+public sealed class ToolRunCode
 {
-    public const string RunCodeName = "run_code";
+    public const string ToolName = "run_code";
     public const long DefaultTimeoutMs = 120_000;
     public const long MaxTimeoutMs = 600_000;
-
-    private const string PtcOnlyText = """
-        Only `run_code` can be called directly in this mode; calling any other tool directly fails.
-        Call other tools from inside a `run_code` program with `await tools.<name>(new JsonObject { ... })`.
-        """;
 
     private readonly ToolRuntime _tools;
     private readonly SubprocessService _subprocess;
     private readonly string _cwd;
 
-    public PtcTransport(Context ctx, string cwd) : base(ctx, IToolPresentation.ServiceName)
+    private ToolRunCode(Context ctx, string cwd)
     {
         _tools = ctx.Get<ToolRuntime>(ToolRuntime.ServiceName)
-            ?? throw new InvalidOperationException("the PTC transport requires the tools service");
+            ?? throw new InvalidOperationException("run_code requires the tools service");
         _subprocess = ctx.Get<SubprocessService>(SubprocessService.ServiceName)
-            ?? throw new InvalidOperationException("the PTC transport requires the subprocess service");
+            ?? throw new InvalidOperationException("run_code requires the subprocess service");
         _cwd = cwd;
-        TransportDefinition = BuildRunCodeDefinition();
     }
 
-    public ToolDefinition TransportDefinition { get; }
-
-    public string TransportToolName => RunCodeName;
-
-    public bool IsAvailable => PtcScriptHostClient.ResolveHostCommand() is not null;
-
-    public string SdkSection(ScopeKey? scope)
-        => _tools.PresentationMode(scope) == ToolPresentationMode.Native
-            ? ""
-            : PtcSdkRenderer.Render(_tools.Schemas(scope));
-
-    public string TransportOnlySection(ScopeKey? scope)
-        => _tools.PresentationMode(scope) == ToolPresentationMode.Ptc ? PtcOnlyText : "";
+    public static IDisposable Register(Context ctx, string cwd)
+    {
+        var tool = new ToolRunCode(ctx, cwd);
+        return tool._tools.Register(tool.BuildRunCodeDefinition());
+    }
 
     private ToolDefinition BuildRunCodeDefinition() => new()
     {
-        Name = RunCodeName,
+        Name = ToolName,
         Description = "Run a C# program that can call other tools; only printed output and the returned value come back.",
         Parameters = BuildParameters(),
         Output = new ToolOutputDefinition(BuildOutputSchema(), RenderRunCode),
@@ -103,7 +89,7 @@ public sealed class PtcTransport : Service, IToolPresentation
         var timeoutMs = ResolveTimeout(arguments);
         var bindings = _tools.Schemas(exec.Agent?.ScopeKey)
             .Select(schema => schema.Name)
-            .Where(name => name != RunCodeName)
+            .Where(name => name != ToolName)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
         var dispatcher = new PtcSubDispatch(_tools, exec);

@@ -12,6 +12,8 @@ namespace Dsh.Boot;
 [DshSettingsDocument]
 public sealed class HarnessSettings
 {
+    private const string RetiredPresetPackage = "@deepseek-ai/dsh-presets";
+
     [YamlMember(Alias = "global_default_model")]
     public string? GlobalDefaultModel { get; set; }
 
@@ -75,7 +77,10 @@ public sealed class HarnessSettings
     {
         Directory.CreateDirectory(home.Root);
         using var transaction = new SettingsWriteLock(home.SettingsFile);
-        return LoadSnapshot(home.SettingsFile, transaction.CanonicalPath);
+        var settings = LoadSnapshot(home.SettingsFile, transaction.CanonicalPath);
+        if (settings.Plugins.Remove(RetiredPresetPackage))
+            settings._savedDocument = settings.SavePluginsSnapshot(home.SettingsFile, settings._savedDocument!);
+        return settings;
     }
 
     private static HarnessSettings LoadSnapshot(string path, string canonicalPath)
@@ -153,6 +158,11 @@ public sealed class HarnessSettings
         Directory.CreateDirectory(home.Root);
         using var transaction = new SettingsWriteLock(path);
         var text = File.Exists(path) ? ReadSettingsTextShared(path) : LoadTemplate();
+        SavePluginsSnapshot(path, text);
+    }
+
+    private string SavePluginsSnapshot(string path, string text)
+    {
         _ = Parse(text);
         var updated = SettingsDocument.MergePlugins(text, Plugins);
         _ = Parse(updated);
@@ -161,6 +171,7 @@ public sealed class HarnessSettings
             WriteAtomic($"{path}.bak", text);
             WriteAtomic(path, updated);
         }
+        return updated;
     }
 
     /** Validate independently, persist only the owned child, then publish the route to existing clients. */

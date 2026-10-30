@@ -7,8 +7,7 @@ using Dsh.Runtime;
 
 namespace Dsh.Inspection;
 
-/** 创造模式运行时能力:@deepseek-ai/dsh-tool-cordis 暴露两个只读检查工具,
- *  @deepseek-ai/dsh-plugin-manager 暴露 plugin_manager 写工具(每个操作逐次审批)。 */
+/** Independent runtime inspection and approval-gated plugin management capabilities. */
 public sealed class Plugin(string packageName) : IDshPlugin
 {
     public const string InspectTools = "@deepseek-ai/dsh-tool-cordis";
@@ -23,8 +22,8 @@ public sealed class Plugin(string packageName) : IDshPlugin
 
     public IDisposable Apply(Context ctx, object? config) => packageName switch
     {
-        InspectTools => CreativeToolset.Register(ctx),
-        PluginManager => CreativeToolset.Register(ctx),
+        InspectTools => ToolCordis.Register(ctx),
+        PluginManager => ToolPluginManager.Register(ctx),
         _ => throw new InvalidOperationException($"Unknown DSH package '{packageName}'."),
     };
 }

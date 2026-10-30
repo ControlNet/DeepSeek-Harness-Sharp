@@ -207,7 +207,7 @@ network:
 - 工具：`subagent`、`list_subagent_models`、`send_message`、`interrupt_agent`、`list_agents`。
 - 共享看板：`board_post`、`board_read`、`board_claim`、`board_release`。
 - 看板软行锁：按路径和行区间声明编辑意图，以防其他 SubAgent 乱改，`ttl` 到期自动失效；重叠声明返回冲突，只作 advisory。
-- 大规模编排：`workflow`(Dsh.Workflow) 或 PTC 模式，用 C# 程序批量启动子 Agent。
+- 大规模编排：使用 `workflow`(Dsh.Workflow) 管理持久工作流，或用 `run_code`(Dsh.Ptc) 通过 C# 批量启动子 Agent；代码调用与原生工具可以在同一会话中组合，无需切换模式。
 - A2A支持：带有`a2a_card`、`a2a_send`、`a2a_get`、`a2a_list`、`a2a_cancel`工具，可作 A2A server 或连接远端 Agent。
 - 外部 Agent：目前支持 Codex、Claude Code、OpenCode、Kilo Code 或任意 ACP Agent。
 
@@ -272,6 +272,18 @@ storage:
 
 支持 C# JIT 编译和 AOT 编译两种插件，使用 `/plugins` 命令管理，将符合规范的插件放入 `<安装目录>/plugins/` 也可以自动加载。
 
+交互能力通过现有插件独立启用，不再选择四种互斥预设，也不再提供 `/preset` 命令。
+
+| 插件 | 能力 | 使用边界 |
+|---|---|---|
+| `@deepseek-ai/dsh-ptc` | `run_code` 执行 C#，并通过 SDK 调用当前可见工具 | 可与原生工具调用混用，不改变 Workflow 生命周期 |
+| `@deepseek-ai/dsh-tool-cordis` | `cordis_inspect_list`、`cordis_inspect_query` 只读检查服务、配置和工具 | 事件检查仍不可用 |
+| `@deepseek-ai/dsh-plugin-manager` | `plugin_manager` 管理插件 | 保留既有审批门禁，不由 Cordis 自动启用 |
+
+通过 C# SDK 发起的工具子调用仍遵循当前 scope、审批与审计；`run_code` 本身不是 C# 安全沙箱，也不限制用户项目采用的外部工具链。
+升级后首次加载配置会移除旧 `@deepseek-ai/dsh-presets` 项并保留原配置备份 `.bak`；旧会话中的交互模式事件保留为历史记录，不再影响工具暴露。
+会话起始模板（`.agent-presets`）和计划模式不受影响。
+
 <details>
 <summary>插件配置</summary>
 
@@ -302,6 +314,15 @@ sandbox:
 - TUI 问答与既有审批共用键鼠选择控件，支持多选、自定义输入、禁用/默认、中文折行命中、长内容滚动和草稿光标恢复。
 - 问答整组取消返回结构化 `dismissed`，审批保留当前会话工具授权边界，GUI/Web 复用选择与结果契约及 Host 先答者生效生命周期。
 - 决策取消采用显式 Host 能力门禁：旧 v2 Host 不会把取消误读为空答案或拒绝；GUI/Web 显示 Unsupported、保留未决项，既有回答与拒绝继续可用。
+
+</details>
+
+<details>
+<summary><b>未发布</b> — 交互模式能力化</summary>
+
+- 移除 `Dsh.Presets`、四种互斥交互模式及 GUI/TUI 预设入口，`run_code` 与原生工具可直接组合。
+- Cordis 检查和插件管理独立注册工具与提示，不再依赖创造模式，也不互相自动启用。
+- 迁移废弃插件配置，保留旧会话模式事件的原始数据与消息历史；现有 scope、审批、审计及 Workflow 生命周期保持不变。
 
 </details>
 

@@ -2,7 +2,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dsh.Core;
 using Dsh.Llm;
-using Dsh.Presets;
 using Dsh.Runtime;
 using static Dsh.Inspection.Plugin;
 
@@ -15,7 +14,7 @@ public sealed class InspectionToolsTests
     {
         using var harness = new Harness();
         await harness.ComposeAsync();
-        var agent = harness.OpenCreative();
+        var agent = InspectionTestAgent.Open(harness.Ctx);
 
         var success = Assert.IsType<ToolExecutionResult.Success>(
             await harness.Execute("cordis_inspect_list", "{}", agent));
@@ -56,7 +55,7 @@ public sealed class InspectionToolsTests
     {
         using var harness = new Harness();
         await harness.ComposeAsync();
-        var agent = harness.OpenCreative();
+        var agent = InspectionTestAgent.Open(harness.Ctx);
 
         var data = await Query(harness, agent, """{"category":"service","name":"seed-provided"}""");
 
@@ -70,7 +69,7 @@ public sealed class InspectionToolsTests
     {
         using var harness = new Harness();
         await harness.ComposeAsync();
-        var agent = harness.OpenCreative();
+        var agent = InspectionTestAgent.Open(harness.Ctx);
 
         var data = await Query(harness, agent, """{"category":"tool","name":"cordis_inspect_query"}""");
 
@@ -84,7 +83,7 @@ public sealed class InspectionToolsTests
     {
         using var harness = new Harness();
         await harness.ComposeAsync();
-        var agent = harness.OpenCreative();
+        var agent = InspectionTestAgent.Open(harness.Ctx);
 
         var data = await Query(harness, agent, """{"category":"config","name":"global_default_model"}""");
 
@@ -98,7 +97,7 @@ public sealed class InspectionToolsTests
     {
         using var harness = new Harness();
         await harness.ComposeAsync();
-        var agent = harness.OpenCreative();
+        var agent = InspectionTestAgent.Open(harness.Ctx);
 
         var data = await Query(harness, agent, """{"category":"config","name":"providers.my-provider.options.baseUrl"}""");
 
@@ -111,7 +110,7 @@ public sealed class InspectionToolsTests
     {
         using var harness = new Harness();
         await harness.ComposeAsync();
-        var agent = harness.OpenCreative();
+        var agent = InspectionTestAgent.Open(harness.Ctx);
 
         var data = await Query(harness, agent, """{"category":"config","name":"plugins.\"@deepseek-ai/dsh-toon\".output"}""");
 
@@ -124,7 +123,7 @@ public sealed class InspectionToolsTests
     {
         using var harness = new Harness();
         await harness.ComposeAsync();
-        var agent = harness.OpenCreative();
+        var agent = InspectionTestAgent.Open(harness.Ctx);
 
         var result = await harness.Execute("cordis_inspect_query", """{"category":"event","name":"anything"}""", agent);
 
@@ -137,11 +136,66 @@ public sealed class InspectionToolsTests
     {
         using var harness = new Harness();
         await harness.ComposeAsync();
-        var agent = harness.OpenCreative();
+        var agent = InspectionTestAgent.Open(harness.Ctx);
 
         var result = await harness.Execute("cordis_inspect_query", """{"category":"service","name":"no-such-service"}""", agent);
 
         Assert.IsType<ToolExecutionResult.Failure>(result);
+    }
+
+    [Fact]
+    public async Task InspectionPlugin_DoesNotEnablePluginManagement()
+    {
+        using var harness = new Harness();
+        await harness.ComposeAsync();
+        var agent = InspectionTestAgent.Open(harness.Ctx);
+
+        Assert.IsType<ToolExecutionResult.Success>(
+            await harness.Execute("cordis_inspect_list", "{}", agent));
+        var failure = Assert.IsType<ToolExecutionResult.Failure>(
+            await harness.Execute("plugin_manager", """{"action":"list"}""", agent));
+
+        Assert.Equal(ToolErrorCodes.UnknownTool, failure.Error.Info?.Code);
+    }
+
+    [Fact]
+    public async Task InspectionTools_RespectAgentRestrictions()
+    {
+        using var harness = new Harness();
+        await harness.ComposeAsync();
+        var restricted = InspectionTestAgent.Open(harness.Ctx);
+        var other = InspectionTestAgent.Open(harness.Ctx);
+        using var restriction = harness.Tools.Restrict(
+            new ToolRestriction(Deny: ["cordis_inspect_query"]), restricted.ScopeKey);
+
+        var failure = Assert.IsType<ToolExecutionResult.Failure>(await harness.Execute(
+            "cordis_inspect_query", """{"category":"service","name":"seed-service"}""", restricted));
+        Assert.Equal(ToolErrorCodes.UnknownTool, failure.Error.Info?.Code);
+        var categories = Assert.IsType<ToolExecutionResult.Success>(
+            await harness.Execute("cordis_inspect_list", """{"category":"tool"}""", restricted));
+        var items = JsonNode.Parse(categories.Value.GetRawText())!["categories"]![0]!["items"]!.AsArray();
+        Assert.DoesNotContain(items, item => item!["name"]!.GetValue<string>() == "cordis_inspect_query");
+        Assert.Equal("cordis_inspect_query",
+            (await Query(harness, other, """{"category":"tool","name":"cordis_inspect_query"}"""))["name"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task DeactivatingInspectionPlugin_RemovesItsTools()
+    {
+        using var harness = new Harness();
+        var activation = await harness.ComposeAsync();
+        var agent = InspectionTestAgent.Open(harness.Ctx);
+        Assert.IsType<ToolExecutionResult.Success>(
+            await harness.Execute("cordis_inspect_list", "{}", agent));
+
+        await activation.DeactivateAsync();
+
+        foreach (var name in new[] { "cordis_inspect_list", "cordis_inspect_query" })
+        {
+            var failure = Assert.IsType<ToolExecutionResult.Failure>(
+                await harness.Execute(name, "{}", agent));
+            Assert.Equal(ToolErrorCodes.UnknownTool, failure.Error.Info?.Code);
+        }
     }
 
     private static async Task<JsonNode> Query(Harness harness, IAgent agent, string arguments)
@@ -175,23 +229,14 @@ public sealed class InspectionToolsTests
             Ctx.SetOwn("dshHomePath", Root);
             _ = new SystemPrompt(Ctx, new SystemPromptConfig());
             Tools = new ToolRuntime(Ctx);
-            Presets = PresetController.Register(Ctx);
             Ctx.Provide("seed-service", new object());
         }
 
         public string Root { get; }
         public Context Ctx { get; }
         public ToolRuntime Tools { get; }
-        public PresetController Presets { get; }
 
-        public InspectionTestAgent OpenCreative()
-        {
-            var agent = InspectionTestAgent.Open(Ctx);
-            Presets.Set(agent, "creative");
-            return agent;
-        }
-
-        public async Task ComposeAsync()
+        public async Task<PluginActivation> ComposeAsync()
         {
             Ctx.Plugin(new PluginDefinition
             {
@@ -202,8 +247,9 @@ public sealed class InspectionToolsTests
                     return Task.FromResult<object?>(null);
                 },
             });
-            Ctx.Plugin(InspectionTestPlugin.Definition(InspectTools));
+            var activation = Ctx.Plugin(InspectionTestPlugin.Definition(InspectTools));
             await Ctx.Scheduler.SettleAsync();
+            return activation;
         }
 
         public Task<ToolExecutionResult> Execute(string name, string arguments, IAgent? agent = null)

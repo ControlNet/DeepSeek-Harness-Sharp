@@ -108,6 +108,45 @@ public sealed class HarnessSettingsSaveTests
         }
     }
 
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public async Task Load_RetiresPresetPluginWithoutLosingOtherConfiguration(string newline)
+    {
+        const string originalYaml = """
+            # Keep this comment.
+            custom_key: kept
+            plugins:
+              "@deepseek-ai/dsh-presets": true
+              "@deepseek-ai/dsh-memory": false
+              third-party/tool:
+                enabled: true
+                marker: kept
+            """;
+        var home = CreateHome(newline);
+        var original = originalYaml.ReplaceLineEndings(newline);
+        try
+        {
+            await File.WriteAllTextAsync(home.SettingsFile, original);
+            var settings = HarnessSettings.Load(home);
+            Assert.DoesNotContain("@deepseek-ai/dsh-presets", settings.Plugins.Keys);
+            Assert.False(settings.Plugins["@deepseek-ai/dsh-memory"].Enabled);
+            Assert.Equal("kept", settings.Plugins["third-party/tool"].Parameters["marker"]);
+            var migrated = await File.ReadAllTextAsync(home.SettingsFile);
+            Assert.DoesNotContain("@deepseek-ai/dsh-presets", migrated);
+            Assert.Contains("# Keep this comment.", migrated);
+            Assert.Contains("custom_key: kept", migrated);
+            Assert.Equal(migrated.ReplaceLineEndings(newline), migrated);
+            _ = HarnessSettings.Load(home);
+            Assert.Equal(migrated, await File.ReadAllTextAsync(home.SettingsFile));
+            Assert.Equal(original, await File.ReadAllTextAsync($"{home.SettingsFile}.bak"));
+        }
+        finally
+        {
+            TempTree.Delete(home.Root);
+        }
+    }
+
 
     [Theory]
     [InlineData("\n")]
