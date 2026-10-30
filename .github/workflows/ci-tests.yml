@@ -206,11 +206,6 @@ jobs:
             -class Dsh.Tests.TuiRawModeEndToEndTests \
             -trait- "Category=LlmSmoke" -failSkips
 
-      - name: Prepare bounded macOS stall diagnostics
-        if: runner.os == 'macOS' && inputs.suite == 'quick' && inputs.quick-cohort == 'fleet-iroh'
-        shell: bash
-        run: dotnet tool install dotnet-stack --version 10.0.750501 --tool-path .artifacts/ci-diagnostics --allow-roll-forward
-
       - name: Run quick tests (excluding GpuStress / OnlyGpu / LlmSmoke / RenderBench)
         if: inputs.suite == 'quick'
         shell: bash
@@ -254,21 +249,12 @@ jobs:
             "${ARGS[@]}" </dev/null &
             TESTPID=$!
             set +m
-            DIAGNOSTICS=
-            if ${{ inputs.quick-cohort == 'fleet-iroh' }}; then
-              python3 scripts/ci-macos-stall-diagnostics.py "$TESTPID" 540 &
-              DIAGNOSTICS=$!
-            fi
-            ( sleep 600; echo "CI_MACOS_WATCHDOG_FIRED runner=$TESTPID"; kill -9 "$TESTPID" 2>/dev/null ) &
+            ( sleep 600; kill -9 "$TESTPID" 2>/dev/null ) &
             WATCH=$!
             set +e
             wait "$TESTPID"
             CODE=$?
             kill "$WATCH" 2>/dev/null || true
-            if [ -n "$DIAGNOSTICS" ]; then
-              kill "$DIAGNOSTICS" 2>/dev/null || true
-              wait "$DIAGNOSTICS" 2>/dev/null || true
-            fi
             exit $CODE
           fi
           if command -v timeout >/dev/null 2>&1; then
@@ -276,15 +262,6 @@ jobs:
           fi
           echo "Running: ${ARGS[*]}"
           "${ARGS[@]}"
-
-      - name: Retain bounded macOS stall diagnostics
-        if: failure() && runner.os == 'macOS' && inputs.suite == 'quick' && inputs.quick-cohort == 'fleet-iroh'
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-fleet-stall-${{ github.run_id }}-${{ github.run_attempt }}
-          path: plans/验证产物/CI-macOS-*.txt
-          if-no-files-found: ignore
-          retention-days: 5
 
       - name: Run root-cause regression (${{ inputs.suite }}, no retries)
         if: startsWith(inputs.suite, 'regression-')

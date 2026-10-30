@@ -314,7 +314,7 @@ plugins:
 ```
 
 `run_csx` 接收 `script` 文件路径与可选的 `arguments` 数组，`run_csharp_repl` 接收 `code` 和 `description`；两者支持 `workdir`、`timeoutMs`，均不提供 `run_code` 的工具 SDK。
-Windows 的 `run_csx` 在可写的 `workdir` 内创建临时 `.dsh-csx-*` 目录，通过真实 `#load` 先初始化 UTF-8 输出再加载原文件；原始脚本不改写，引导脚本和独立编译缓存随执行结束清理。
+Windows 的 `run_csx` 在可写的 `workdir` 内创建临时 `.dsh-csx-*` 目录，通过真实 `#load` 执行未经改写的原文件，并在原脚本执行前初始化 UTF-8 脚本输出；引导目录随执行结束清理，编译缓存由原生前端管理。
 CSharpRepl 工具保留 OS 退出码和完整托管退出码，避免 Unix 截断错误码后将异常当作成功；普通 stderr 输出不会被误判为失败。
 
 Creative 对用户插件和预置 `Dsh.*` 插件使用相同的开发指导：独立子进程、构建输出与中间目录，以及不共享现有实例状态的运行时 home。

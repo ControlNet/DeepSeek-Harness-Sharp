@@ -1,10 +1,8 @@
-using System.Runtime.Versioning;
 using Dsh.Transport;
 
 namespace Dsh.Csx;
 
-/** Initializes redirected Windows script output before loading the original, unmodified source file. */
-[SupportedOSPlatform("windows")]
+/** Initializes redirected Windows script output before the original, unmodified script executes. */
 internal sealed class CsxUtf8Bootstrap : IDisposable
 {
     private readonly string _directory;
@@ -13,7 +11,6 @@ internal sealed class CsxUtf8Bootstrap : IDisposable
     {
         _directory = Path.Combine(workdir, $".dsh-csx-{Guid.NewGuid():N}");
         ScriptPath = Path.Combine(_directory, "entry.csx");
-        CachePath = Path.Combine(_directory, "cache");
         OwnerOnlyFiles.EnsureDirectory(_directory);
         try
         {
@@ -33,7 +30,6 @@ internal sealed class CsxUtf8Bootstrap : IDisposable
     }
 
     public string ScriptPath { get; }
-    public string CachePath { get; }
 
     public void Dispose() => Directory.Delete(_directory, recursive: true);
 }

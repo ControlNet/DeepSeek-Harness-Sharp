@@ -252,15 +252,8 @@ public sealed class FleetProxyCommandEgressTests
     [InlineData("localForward")]
     public async Task KillingTheOwnedSsh_AbortsWithoutReplay_AndOnlyANewRequestRebuilds(string mode)
     {
-        async Task PhaseAsync(string phase, int sshPid = 0)
-        {
-            await Console.Error.WriteLineAsync($"CI_SSH_PHASE mode={mode} phase={phase} runner={Environment.ProcessId} ssh={sshPid}");
-            await Console.Error.FlushAsync(TestContext.Current.CancellationToken);
-        }
-        await PhaseAsync("fixture_start");
         FleetSshEndToEndTests.RequireEnvironment();
         await using var ssh = await TestSshServer.StartAsync(TestContext.Current.CancellationToken);
-        await PhaseAsync("fixture_ready");
         await using var remoteProxy = new TestForwardProxy(pauseResponses: true);
         await using var tunnel = new SshOutboundTunnel(CreateMachine(ssh, remoteProxy, authenticated: false, mode: mode));
         var connections = new ConcurrentQueue<SshProxyStream>();
@@ -276,26 +269,19 @@ public sealed class FleetProxyCommandEgressTests
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         deadline.CancelAfter(SignalTimeout);
         var originalRoute = outbound.CaptureRoute(new Uri(Target));
-        await PhaseAsync("first_request");
         var paused = client.GetStringAsync($"{Target}interrupted", Ct);
         await remoteProxy.WaitForRequestAsync(deadline.Token);
         var owned = Assert.Single(connections);
-        var ownedPid = owned.Process.Id;
         var originalPort = tunnel.LocalPort;
-        await PhaseAsync("first_request_received", ownedPid);
         var exited = owned.Process.WaitForExitAsync(deadline.Token);
         var retiredAtExit = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         owned.Process.Exited += (_, _) => retiredAtExit.TrySetResult(originalRoute.CancellationToken.IsCancellationRequested);
-        await PhaseAsync("before_ssh_kill", ownedPid);
         owned.Process.Kill(entireProcessTree: true);
-        await PhaseAsync("after_ssh_kill", ownedPid);
         await exited;
-        await PhaseAsync("ssh_exited", ownedPid);
         Assert.True(await retiredAtExit.Task.WaitAsync(deadline.Token),
             "An unexpected SSH exit must retire the captured HTTP route before exit observers can release a pending response.");
         remoteProxy.ReleaseResponse();
         var failure = await Record.ExceptionAsync(async () => await paused.WaitAsync(deadline.Token));
-        await PhaseAsync("interrupted_request_completed", ownedPid);
         Assert.True(failure is HttpRequestException or IOException or OperationCanceledException, "The interrupted request must fail rather than fall back or time out.");
         Assert.False(deadline.IsCancellationRequested, "The interrupted send must fail before the watchdog.");
         Assert.Equal([$"GET {Target}interrupted HTTP/1.1"], remoteProxy.Requests.ToArray());
@@ -310,7 +296,6 @@ public sealed class FleetProxyCommandEgressTests
         Assert.Equal(2, recovered.Length);
         Assert.NotSame(recovered[0].Process, recovered[1].Process);
         Assert.NotEqual(originalRoute.Generation, outbound.CaptureRoute(new Uri(Target)).Generation);
-        await PhaseAsync("assertions_complete");
     }
 
     [Theory]
