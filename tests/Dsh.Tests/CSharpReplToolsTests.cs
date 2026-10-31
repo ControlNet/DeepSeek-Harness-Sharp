@@ -21,7 +21,7 @@ public sealed class CSharpReplToolsTests
             int Sum() => System.Linq.Enumerable.Sum(values);
             await Console.Out.WriteLineAsync($"frontend-state:{Sum()}");
             Sum() * 2
-            """);
+            """, TestContext.Current.CancellationToken);
 
         var value = Success(result);
         var stdout = value.GetProperty("stdout").GetProperty("text").GetString()!;
@@ -48,7 +48,7 @@ public sealed class CSharpReplToolsTests
         var result = await harness.RunAsync("""
             await Console.Out.WriteLineAsync("real-output-中文");
             await Console.Error.WriteLineAsync("real-error-stream");
-            """);
+            """, TestContext.Current.CancellationToken);
 
         var value = Success(result);
         Assert.Contains("real-output-中文", value.GetProperty("stdout").GetProperty("text").GetString());
@@ -59,9 +59,9 @@ public sealed class CSharpReplToolsTests
     public async Task SeparateCalls_DoNotClaimPersistentState()
     {
         using var harness = await Harness.CreateAsync();
-        Success(await harness.RunAsync("int submittedOnly = 19; submittedOnly"));
+        Success(await harness.RunAsync("int submittedOnly = 19; submittedOnly", TestContext.Current.CancellationToken));
 
-        var result = await harness.RunAsync("submittedOnly + 1");
+        var result = await harness.RunAsync("submittedOnly + 1", TestContext.Current.CancellationToken);
 
         Failure(result, "CSHARP_REPL_FAILED");
         Assert.Contains("submittedOnly", Text(result));
@@ -72,7 +72,7 @@ public sealed class CSharpReplToolsTests
     public async Task InvalidSyntax_ReturnsFrontendDiagnosticsAsFailure()
     {
         using var harness = await Harness.CreateAsync();
-        var result = await harness.RunAsync("int invalidValue = ;");
+        var result = await harness.RunAsync("int invalidValue = ;", TestContext.Current.CancellationToken);
 
         Failure(result, "CSHARP_REPL_FAILED");
         Assert.Contains("CS1525", Text(result));
@@ -87,7 +87,7 @@ public sealed class CSharpReplToolsTests
         var result = await harness.RunAsync($$"""
             await Console.Out.WriteLineAsync("before-frontend-exception");
             throw new {{exceptionType}}("real-frontend-runtime-failure");
-            """);
+            """, TestContext.Current.CancellationToken);
 
         Failure(result, "CSHARP_REPL_FAILED");
         Assert.Contains("before-frontend-exception", Text(result));
@@ -152,10 +152,10 @@ public sealed class CSharpReplToolsTests
             Executable = Path.Combine(available.Root, "not-installed-csharprepl"),
         });
 
-        var result = await missing.RunAsync("1 + 1");
+        var result = await missing.RunAsync("1 + 1", TestContext.Current.CancellationToken);
 
         Failure(result, "CSHARP_REPL_MISSING");
-        Assert.Equal("42", Success(await available.RunAsync("6 * 7")).GetProperty("stdout").GetProperty("text").GetString()?.Trim());
+        Assert.Equal("42", Success(await available.RunAsync("6 * 7", TestContext.Current.CancellationToken)).GetProperty("stdout").GetProperty("text").GetString()?.Trim());
     }
 
     private const string BlockingProgram = """

@@ -42,9 +42,9 @@ public sealed class CapabilityGuidanceLlmSmokeTests
         await fixture.Agent.WhenIdle().WaitAsync(ModelBudget, TestContext.Current.CancellationToken);
         var history = fixture.Agent.Session.SnapshotEvents().Select(entry => entry.Data).ToArray();
         Assert.IsType<TurnEndReason.Completed>(history.OfType<TurnEndPayload>().Last().Reason);
-        var program = Assert.Single(history.OfType<ToolCallPayload>().Where(call => call.Name == ToolRunCode.ToolName));
-        var programResult = Assert.Single(history.OfType<ToolResultPayload>()
-            .Where(result => result.Message.Block.ToolCallId == program.CallId));
+        var program = Assert.Single(history.OfType<ToolCallPayload>(), call => call.Name == ToolRunCode.ToolName);
+        var programResult = Assert.Single(history.OfType<ToolResultPayload>(),
+            result => result.Message.Block.ToolCallId == program.CallId);
         Assert.False(programResult.Message.Block.IsError == true, MessageText.Flatten(programResult.Message.Block.Content));
         var reads = history.OfType<PtcDispatchPayload>().Where(entry => entry.ToolName == ReadImageTool.ToolName && !entry.IsError).ToArray();
         Assert.Single(reads.Select(entry => entry.RunId).Distinct(StringComparer.Ordinal));

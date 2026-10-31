@@ -67,7 +67,7 @@ public sealed class TuiRawModeEndToEndTests(ITestOutputHelper output)
                 && ReadCompletedAssistantReply(terminal.Home) is not null
                 && scenario.ContainsVisible("323"),
             TimeSpan.FromSeconds(90), "The real TUI did not complete the tool turn and display the computed result.");
-        Assert.Equal("323", (await File.ReadAllTextAsync(resultPath)).Trim());
+        Assert.Equal("323", (await File.ReadAllTextAsync(resultPath, TestContext.Current.CancellationToken)).Trim());
         using var persistence = new JsonlSessionPersistence(new HarnessHome(terminal.Home).SessionsPath);
         var history = new List<SessionEventPayload>();
         foreach (var stored in persistence.List())

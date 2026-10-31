@@ -17,7 +17,7 @@ public sealed class PluginManagerToolTests
         await harness.ComposeAsync();
         var agent = InspectionTestAgent.Open(harness.Ctx);
 
-        var result = await harness.Execute("""{"action":"list"}""", agent);
+        var result = await harness.Execute("""{"action":"list"}""", agent, TestContext.Current.CancellationToken);
 
         var failure = Assert.IsType<ToolExecutionResult.Failure>(result);
         Assert.Contains("no approval channel is available", string.Concat(failure.Content.OfType<TextBlock>().Select(block => block.Text)));
@@ -31,7 +31,7 @@ public sealed class PluginManagerToolTests
         await harness.ComposeAsync();
         var agent = InspectionTestAgent.Open(harness.Ctx);
 
-        var result = await harness.Execute("""{"action":"disable","target":"sample-plugin"}""", agent);
+        var result = await harness.Execute("""{"action":"disable","target":"sample-plugin"}""", agent, TestContext.Current.CancellationToken);
 
         Assert.IsType<ToolExecutionResult.Failure>(result);
         Assert.Empty(harness.Manager.Calls);
@@ -45,7 +45,7 @@ public sealed class PluginManagerToolTests
         using var answerer = ApprovalAnswerers.AutoApprove(harness.Ctx);
         var agent = InspectionTestAgent.Open(harness.Ctx);
 
-        var success = Assert.IsType<ToolExecutionResult.Success>(await harness.Execute("""{"action":"list"}""", agent));
+        var success = Assert.IsType<ToolExecutionResult.Success>(await harness.Execute("""{"action":"list"}""", agent, TestContext.Current.CancellationToken));
 
         var result = success.Value.GetProperty("result").GetString();
         Assert.Contains("sample-plugin", result);
@@ -61,7 +61,7 @@ public sealed class PluginManagerToolTests
         var agent = InspectionTestAgent.Open(harness.Ctx);
 
         Assert.IsType<ToolExecutionResult.Success>(
-            await harness.Execute("""{"action":"disable","target":"sample-plugin"}""", agent));
+            await harness.Execute("""{"action":"disable","target":"sample-plugin"}""", agent, TestContext.Current.CancellationToken));
 
         Assert.Contains("disable:sample-plugin", harness.Manager.Calls);
         Assert.Equal(ApprovalOutcome.AllowedOnce,
@@ -83,7 +83,7 @@ public sealed class PluginManagerToolTests
         var agent = InspectionTestAgent.Open(harness.Ctx);
 
         var failure = Assert.IsType<ToolExecutionResult.Failure>(await harness.Execute(
-            JsonSerializer.Serialize(new { action, target = "sample-plugin", force = true }), agent));
+            JsonSerializer.Serialize(new { action, target = "sample-plugin", force = true }), agent, TestContext.Current.CancellationToken));
 
         Assert.Contains("rejected", failure.Error.Message);
         Assert.Empty(harness.Manager.Calls);
@@ -138,12 +138,12 @@ public sealed class PluginManagerToolTests
         await harness.ComposeAsync();
         using var answerer = ApprovalAnswerers.AutoApprove(harness.Ctx);
         var agent = InspectionTestAgent.Open(harness.Ctx);
-        Assert.IsType<ToolExecutionResult.Success>(await harness.Execute("""{"action":"list"}""", agent));
+        Assert.IsType<ToolExecutionResult.Success>(await harness.Execute("""{"action":"list"}""", agent, TestContext.Current.CancellationToken));
 
         foreach (var name in new[] { "creative_inspect_list", "creative_inspect_query" })
         {
             var failure = Assert.IsType<ToolExecutionResult.Failure>(
-                await harness.ExecuteTool(name, "{}", agent));
+                await harness.ExecuteTool(name, "{}", agent, TestContext.Current.CancellationToken));
             Assert.Equal(ToolErrorCodes.UnknownTool, failure.Error.Info?.Code);
         }
     }
@@ -158,19 +158,19 @@ public sealed class PluginManagerToolTests
         var agent = InspectionTestAgent.Open(harness.Ctx);
         using var answerer = ApprovalAnswerers.DenyAll(harness.Ctx);
         Assert.IsType<ToolExecutionResult.Success>(
-            await harness.ExecuteTool("creative_inspect_list", "{}", agent));
+            await harness.ExecuteTool("creative_inspect_list", "{}", agent, TestContext.Current.CancellationToken));
 
         await inspection.DeactivateAsync();
 
         var rejected = Assert.IsType<ToolExecutionResult.Failure>(
-            await harness.Execute("""{"action":"disable","target":"sample-plugin"}""", agent));
+            await harness.Execute("""{"action":"disable","target":"sample-plugin"}""", agent, TestContext.Current.CancellationToken));
         Assert.Contains("rejected", rejected.Error.Message);
         Assert.Empty(harness.Manager.Calls);
 
         await manager.DeactivateAsync();
 
         var missing = Assert.IsType<ToolExecutionResult.Failure>(
-            await harness.Execute("""{"action":"list"}""", agent));
+            await harness.Execute("""{"action":"list"}""", agent, TestContext.Current.CancellationToken));
         Assert.Equal(ToolErrorCodes.UnknownTool, missing.Error.Info?.Code);
         Assert.Single(agent.Session.SnapshotEvents().Select(item => item.Data).OfType<ApprovalAskedPayload>());
     }
