@@ -25,9 +25,11 @@ jobs:
           Set-StrictMode -Version Latest
           $private = Join-Path (Get-Location).Path ('.artifacts/wpr-inventory-' + [guid]::NewGuid().ToString('N'))
           $null = New-Item -ItemType Directory -Path $private
+          $inventoryExit = 0
           try {
-            $command = Get-Command wpr.exe -CommandType Application -ErrorAction SilentlyContinue
-            Write-Host "WPR_INVENTORY onPath=$([int]($null -ne $command))"
+            $commands = @(Get-Command wpr.exe -CommandType Application -ErrorAction SilentlyContinue)
+            $command = $commands | Select-Object -First 1
+            Write-Host "WPR_INVENTORY onPath=$([int]($null -ne $command)) commandMatches=$($commands.Count) selected=$([int]($null -ne $command))"
             $candidates = @(
               (Join-Path ([Environment]::SystemDirectory) 'wpr.exe'),
               (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)) 'Windows Kits\10\Windows Performance Toolkit\wpr.exe'),
@@ -74,10 +76,24 @@ jobs:
               foreach ($operation in @('inventory', 'details')) {
                 $arguments = if ($operation -eq 'inventory') { @('-profiles', $profilePath) } else { @('-profiledetails', ($profilePath + '!NativeWait.Verbose')) }
                 $output = Join-Path $private ($operation + '.txt')
-                & $command.Source @arguments *> $output
-                $code = $LASTEXITCODE
+                try {
+                  & $command.Source @arguments *> $output
+                  $code = $LASTEXITCODE
+                }
+                catch {
+                  Write-Host "WPR_READ_ONLY_INVOCATION stage=$operation failed=1 hresult=$($_.Exception.HResult)"
+                  $inventoryExit = 1
+                  continue
+                }
+                if ($code -ne 0) { $inventoryExit = 1 }
                 $text = [IO.File]::ReadAllText($output)
                 Write-Host "WPR_READ_ONLY_COMMAND stage=$operation exit=$code bytes=$((Get-Item -LiteralPath $output).Length)"
+                if ($operation -eq 'details') {
+                  foreach ($keyword in @('ProcessThread', 'CSwitch', 'ReadyThread', 'FileIO', 'FileIOInit', 'DiskIO', 'DiskIOInit', 'FileDirEnum', 'FileOpEnd', 'DiskReadInit', 'DiskWriteInit')) {
+                    $present = $text -match ('\b' + $keyword + '\b')
+                    Write-Host "WPR_PROFILE_KEYWORD keyword=$keyword present=$([int]$present)"
+                  }
+                }
                 foreach ($match in [regex]::Matches($text, '\b0x[0-9a-fA-F]{8}\b')) {
                   Write-Host "WPR_READ_ONLY_CODE stage=$operation hresult=$($match.Value)"
                 }
@@ -88,3 +104,4 @@ jobs:
           finally {
             Remove-Item -LiteralPath $private -Recurse -Force
           }
+          exit $inventoryExit
