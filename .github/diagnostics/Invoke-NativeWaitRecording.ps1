@@ -229,7 +229,7 @@ function Measure-PrivateTrace {
 
 try {
     try {
-        $wpr = (Get-Command wpr.exe -CommandType Application -ErrorAction Stop).Source
+        $wpr = (Get-Command wpr.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         [xml]$definition = [IO.File]::ReadAllText($profilePath)
         $collectors = @($definition.WindowsPerformanceRecorder.Profiles.SystemCollector)
         $profiles = @($definition.WindowsPerformanceRecorder.Profiles.Profile)
