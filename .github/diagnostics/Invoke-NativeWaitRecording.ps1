@@ -28,34 +28,44 @@ function Invoke-PrivateWpr([string[]] $Arguments, [string] $Label) {
     return @{ Code = $code; Text = [IO.File]::ReadAllText($output) }
 }
 
-function Read-Schema([string] $Name, [string] $Guid, [int[]] $Opcodes, [string[]] $Names) {
-    $class = Get-CimClass -Namespace root/wmi -ClassName $Name
-    $properties = @($class.CimClassProperties | Where-Object { $null -ne $_.Qualifiers['WmiDataId'] } |
+function Read-Schema($Class, [string] $Guid, [int[]] $Opcodes, [hashtable] $Required, [hashtable] $Optional = @{}) {
+    $properties = @($Class.CimClassProperties | Where-Object { $null -ne $_.Qualifiers['WmiDataId'] } |
         Sort-Object { [int]$_.Qualifiers['WmiDataId'].Value })
-    if (($properties.Name -join ',') -cne ($Names -join ',')) { throw 'Schema mismatch.' }
-    $map = @{}
+    if ($properties.Count -eq 0 -or $properties.Count -gt 64) { throw 'Schema size unsupported.' }
     for ($index = 0; $index -lt $properties.Count; $index++) {
         if ([int]$properties[$index].Qualifiers['WmiDataId'].Value -ne $index + 1) { throw 'Schema order unavailable.' }
-        $map[$properties[$index].Name] = $index
+    }
+    $map = @{}
+    foreach ($fields in @($Required, $Optional)) {
+        foreach ($name in $fields.Keys) {
+            $matches = @($properties | Where-Object { $_.Name -ceq $name })
+            if ($matches.Count -eq 0 -and -not $Required.ContainsKey($name)) { continue }
+            if ($matches.Count -ne 1 -or $matches[0].CimType -ne [Microsoft.Management.Infrastructure.CimType]($fields[$name])) {
+                throw 'Required numeric schema unavailable.'
+            }
+            $map[$name] = [int]$matches[0].Qualifiers['WmiDataId'].Value - 1
+        }
     }
     $version = $null
     $provider = $null
-    $types = $class.CimClassQualifiers['EventType']
+    $types = $Class.CimClassQualifiers['EventType']
     if ($null -eq $types) { throw 'Schema opcode unavailable.' }
     foreach ($opcode in $Opcodes) {
         if ($opcode -notin @($types.Value)) { throw 'Schema opcode mismatch.' }
     }
-    while ($null -ne $class) {
-        if ($null -eq $version -and $null -ne $class.CimClassQualifiers['EventVersion']) {
-            $version = [int]$class.CimClassQualifiers['EventVersion'].Value
+    $complete = $false
+    for ($depth = 0; $depth -lt 8; $depth++) {
+        if ($null -eq $version -and $null -ne $Class.CimClassQualifiers['EventVersion']) {
+            $version = [int]$Class.CimClassQualifiers['EventVersion'].Value
         }
-        if ($null -eq $provider -and $null -ne $class.CimClassQualifiers['Guid']) {
-            $provider = [guid]$class.CimClassQualifiers['Guid'].Value
+        if ($null -eq $provider -and $null -ne $Class.CimClassQualifiers['Guid']) {
+            $provider = [guid]$Class.CimClassQualifiers['Guid'].Value
         }
-        if ([string]::IsNullOrEmpty($class.CimSuperClassName)) { break }
-        $class = Get-CimClass -Namespace root/wmi -ClassName $class.CimSuperClassName
+        if ([string]::IsNullOrEmpty($Class.CimSuperClassName)) { $complete = $true; break }
+        $Class = Get-CimClass -Namespace root/wmi -ClassName $Class.CimSuperClassName
     }
-    if ($null -eq $version -or $null -eq $provider -or $provider -ne [guid]$Guid) { throw 'Schema identity unavailable.' }
+    if (-not $complete -or $null -eq $version -or $version -lt 0 -or $version -gt 255 -or
+        $null -eq $provider -or $provider -ne [guid]$Guid) { throw 'Schema identity unavailable.' }
     return @{ Provider = $provider; Version = $version; PropertyCount = $properties.Count; Map = $map }
 }
 
@@ -87,6 +97,58 @@ function Write-OriginalResult {
     Write-Host "NATIVE_WAIT_ORIGINAL_RESULT logFiles=$logsRead recognizedOriginalDeadline=$([int]$deadlineRecognized)"
 }
 
+function Read-KernelSchemas {
+    $threadGuid = '3d6fa8d1-fe05-11d0-9dda-00c04fd7ba7c'
+    $fileGuid = '90cbdc39-4a3e-11d1-84f4-0000f80464e3'
+    $diskGuid = '3d6fa8d4-fe05-11d0-9dda-00c04fd7ba7c'
+    $switches = @{}
+    $candidates = @(Get-CimClass -Namespace root/wmi -QualifierName EventType -PropertyName OldThreadId |
+        Where-Object { $null -ne $_.CimClassQualifiers['EventType'] -and 36 -in @($_.CimClassQualifiers['EventType'].Value) } |
+        Select-Object -First 9)
+    if ($candidates.Count -gt 8) { throw 'Switch discovery limit exceeded.' }
+    for ($candidate = 0; $candidate -lt $candidates.Count; $candidate++) {
+        try {
+            $schema = Read-Schema $candidates[$candidate] $threadGuid @(36) @{
+                OldThreadId = 'UInt32'; OldThreadState = 'SInt8'; OldThreadWaitReason = 'SInt8'
+            } @{ OldThreadWaitMode = 'SInt8' }
+        }
+        catch {
+            Write-Host "NATIVE_WAIT_SWITCH_CANDIDATE index=$candidate available=0"
+            continue
+        }
+        $key = '{0}:{1}' -f $schema.Version, $schema.PropertyCount
+        if ($switches.ContainsKey($key)) { throw 'Ambiguous switch schema.' }
+        $switches[$key] = $schema
+        Write-Host "NATIVE_WAIT_SWITCH_SCHEMA version=$($schema.Version) properties=$($schema.PropertyCount) modeAvailable=$([int]$schema.Map.ContainsKey('OldThreadWaitMode'))"
+    }
+    if ($switches.Count -eq 0) { throw 'Switch schemas unavailable.' }
+    $directory = Read-Schema (Get-CimClass -Namespace root/wmi -ClassName FileIo_DirEnum) $fileGuid @(72) @{ IrpPtr = 'UInt32'; TTID = 'UInt32' }
+    $end = Read-Schema (Get-CimClass -Namespace root/wmi -ClassName FileIo_OpEnd) $fileGuid @(76) @{ IrpPtr = 'UInt32'; NtStatus = 'UInt32' }
+    Write-Host "NATIVE_WAIT_SCHEMA switchSchemas=$($switches.Count) directory=$($directory.Version) directoryProperties=$($directory.PropertyCount) opend=$($end.Version) opendProperties=$($end.PropertyCount)"
+    $diskAvailable = $false
+    $diskStart = $null
+    $diskEnd = $null
+    try {
+        $diskStart = Read-Schema (Get-CimClass -Namespace root/wmi -ClassName DiskIo_TypeGroup2) $diskGuid @(12, 13) @{ Irp = 'UInt32'; IssuingThreadId = 'UInt32' }
+        $diskEnd = Read-Schema (Get-CimClass -Namespace root/wmi -ClassName DiskIo_TypeGroup1) $diskGuid @(10, 11) @{ Irp = 'UInt32' }
+        $diskAvailable = $true
+        Write-Host "NATIVE_WAIT_DISK_SCHEMA available=1 init=$($diskStart.Version) end=$($diskEnd.Version)"
+    }
+    catch { Write-Host 'NATIVE_WAIT_DISK_SCHEMA available=0' }
+    $headerAvailable = $false
+    $header = $null
+    try {
+        $header = Read-Schema (Get-CimClass -Namespace root/wmi -ClassName EventTrace_Header) '68fdd900-4a3e-11d1-84f4-0000f80464e3' @(0) @{
+            EventsLost = 'UInt32'; BuffersLost = 'UInt32'; StartTime = 'UInt64'; EndTime = 'UInt64'; PerfFreq = 'UInt64'
+        }
+        $headerAvailable = $true
+    }
+    catch { Write-Host 'NATIVE_WAIT_HEADER_SCHEMA available=0' }
+    return @{ ThreadProvider = $threadGuid; Switches = $switches; Directory = $directory; End = $end;
+        DiskAvailable = $diskAvailable; DiskStart = $diskStart; DiskEnd = $diskEnd;
+        HeaderAvailable = $headerAvailable; Header = $header }
+}
+
 function Measure-PrivateTrace {
     $targets = [Collections.Generic.HashSet[uint32]]::new()
     foreach ($file in @('test-out.txt', 'test-error.txt')) {
@@ -94,41 +156,29 @@ function Measure-PrivateTrace {
             $match = [regex]::Match($line, '^SANDBOX_NATIVE pid=(\d+) owner=\d+ observation=\d+ snapshot=\d+ operation=\S+ tid=(\d+) ')
             if ($match.Success -and [int]$match.Groups[1].Value -eq $test.Id) {
                 $null = $targets.Add([uint32]$match.Groups[2].Value)
+                if ($targets.Count -gt 64) { return 31 }
             }
         }
     }
     Write-Host "NATIVE_WAIT_TARGET pid=$($test.Id) tids=$($targets.Count)"
     foreach ($tid in $targets) { Write-Host "NATIVE_WAIT_THREAD pid=$($test.Id) tid=$tid" }
     if ($targets.Count -eq 0) { return 31 }
-    try {
-        $threadGuid = '3d6fa8d1-fe05-11d0-9dda-00c04fd7ba7c'
-        $fileGuid = '90cbdc39-4a3e-11d1-84f4-0000f80464e3'
-        $diskGuid = '3d6fa8d4-fe05-11d0-9dda-00c04fd7ba7c'
-        $switch = Read-Schema 'CSwitch' $threadGuid @(36) @('NewThreadId', 'OldThreadId', 'NewThreadPriority', 'OldThreadPriority', 'PreviousCState', 'SpareByte', 'OldThreadWaitReason', 'OldThreadWaitMode', 'OldThreadState', 'OldThreadWaitIdealProcessor', 'NewThreadWaitTime', 'Reserved')
-        $directory = Read-Schema 'FileIo_DirEnum' $fileGuid @(72) @('IrpPtr', 'TTID', 'FileObject', 'FileKey', 'Length', 'InfoClass', 'FileIndex', 'FileName')
-        $end = Read-Schema 'FileIo_OpEnd' $fileGuid @(76) @('IrpPtr', 'ExtraInfo', 'NtStatus')
-    }
+    try { $schemas = Read-KernelSchemas }
     catch { return 32 }
-    Write-Host "NATIVE_WAIT_SCHEMA cswitch=$($switch.Version) directory=$($directory.Version) opend=$($end.Version)"
-    $diskAvailable = $false
-    try {
-        $diskStart = Read-Schema 'DiskIo_TypeGroup2' $diskGuid @(12, 13) @('Irp', 'IssuingThreadId')
-        $diskEnd = Read-Schema 'DiskIo_TypeGroup1' $diskGuid @(10, 11) @('DiskNumber', 'IrpFlags', 'TransferSize', 'Reserved', 'ByteOffset', 'FileObject', 'Irp', 'HighResResponseTime', 'IssuingThreadId')
-        $diskAvailable = $true
-        Write-Host "NATIVE_WAIT_DISK_SCHEMA available=1 init=$($diskStart.Version) end=$($diskEnd.Version)"
-    }
-    catch { Write-Host 'NATIVE_WAIT_DISK_SCHEMA available=0' }
-    $headerAvailable = $false
-    try {
-        $header = Read-Schema 'EventTrace_Header' '68fdd900-4a3e-11d1-84f4-0000f80464e3' @(0) @('BufferSize', 'Version', 'ProviderVersion', 'NumberOfProcessors', 'EndTime', 'TimerResolution', 'MaxFileSize', 'LogFileMode', 'BuffersWritten', 'StartBuffers', 'PointerSize', 'EventsLost', 'CPUSpeed', 'LoggerName', 'LogFileName', 'TimeZoneInformation', 'BootTime', 'PerfFreq', 'StartTime', 'ReservedFlags', 'BuffersLost')
-        $headerAvailable = $true
-    }
-    catch { Write-Host 'NATIVE_WAIT_HEADER_SCHEMA available=0' }
+    $threadGuid = $schemas.ThreadProvider
+    $switches = $schemas.Switches
+    $directory = $schemas.Directory
+    $end = $schemas.End
+    $diskAvailable = $schemas.DiskAvailable
+    $diskStart = $schemas.DiskStart
+    $diskEnd = $schemas.DiskEnd
+    $headerAvailable = $schemas.HeaderAvailable
+    $header = $schemas.Header
     $waits = @{}
     $statuses = @{}
     $pendingFile = @{}
     $pendingDisk = @{}
-    $statistics = @{ Switch = 0L; Directory = 0L; FileEnd = 0L; FileTicks = 0L; DiskInit = 0L; DiskEnd = 0L; DiskTicks = 0L; Unknown = 0L; Events = 0L; Headers = 0L }
+    $statistics = @{ Switch = 0L; Directory = 0L; FileEnd = 0L; FileTicks = 0L; DiskInit = 0L; DiskEnd = 0L; DiskTicks = 0L; Unknown = 0L; SwitchUnknown = 0L; ModeMissing = 0L; Events = 0L; Headers = 0L }
     $decodeFailed = $false
     try {
         Get-WinEvent -Path $etl -Oldest -ErrorAction Stop | ForEach-Object {
@@ -137,7 +187,12 @@ function Measure-PrivateTrace {
                 $statistics.Events++
                 $schema = $null
                 $kind = 0
-                if ($event.ProviderId -eq $switch.Provider -and $event.Opcode -eq 36) { $schema = $switch; $kind = 1 }
+                if ($event.ProviderId -eq [guid]$threadGuid -and $event.Opcode -eq 36) {
+                    $key = '{0}:{1}' -f $event.Version, $event.Properties.Count
+                    if (-not $switches.ContainsKey($key)) { $statistics.Unknown++; $statistics.SwitchUnknown++; return }
+                    $schema = $switches[$key]
+                    $kind = 1
+                }
                 elseif ($event.ProviderId -eq $directory.Provider -and $event.Opcode -eq 72) { $schema = $directory; $kind = 2 }
                 elseif ($event.ProviderId -eq $end.Provider -and $event.Opcode -eq 76) { $schema = $end; $kind = 3 }
                 elseif ($diskAvailable -and $event.ProviderId -eq $diskStart.Provider -and $event.Opcode -in @(12, 13)) { $schema = $diskStart; $kind = 4 }
@@ -164,11 +219,15 @@ function Measure-PrivateTrace {
                     if ($targets.Contains($tid)) {
                         $statistics.Switch++
                         $state = [int](Read-Number $event $schema 'OldThreadState')
+                        if ($state -lt 0 -or $state -gt 127) { throw 'Thread state unsupported.' }
                         if ($state -eq 5) {
                             $reason = [int](Read-Number $event $schema 'OldThreadWaitReason')
-                            $mode = [int](Read-Number $event $schema 'OldThreadWaitMode')
-                            if ($reason -lt 0 -or $reason -gt 255 -or $mode -notin @(0, 1)) { throw 'Wait value unsupported.' }
-                            $key = "$tid $reason $mode"
+                            $modeAvailable = $schema.Map.ContainsKey('OldThreadWaitMode')
+                            $mode = if ($modeAvailable) { [int](Read-Number $event $schema 'OldThreadWaitMode') } else { -1 }
+                            if ($reason -lt 0 -or $reason -gt 127 -or ($modeAvailable -and $mode -notin @(0, 1))) { throw 'Wait value unsupported.' }
+                            if (-not $modeAvailable) { $statistics.ModeMissing++ }
+                            $key = "$tid $reason $mode $([int]$modeAvailable) $($schema.Version)"
+                            if (-not $waits.ContainsKey($key) -and $waits.Count -ge 4096) { throw 'Wait aggregation limit exceeded.' }
                             $waits[$key] = 1L + $waits[$key]
                         }
                     }
@@ -198,6 +257,7 @@ function Measure-PrivateTrace {
                             $statistics.FileEnd++
                             $statistics.FileTicks += $ticks
                             $status = [uint32](Read-Number $event $schema 'NtStatus')
+                            if (-not $statuses.ContainsKey($status) -and $statuses.Count -ge 4096) { throw 'Status aggregation limit exceeded.' }
                             $statuses[$status] = 1L + $statuses[$status]
                         }
                         else { $statistics.DiskEnd++; $statistics.DiskTicks += $ticks }
@@ -211,10 +271,10 @@ function Measure-PrivateTrace {
     Write-Host "NATIVE_WAIT_EVIDENCE partial=1 decoderFailed=$([int]$decodeFailed) headersDecoded=$($statistics.Headers) retainedWindowKnown=0 stacksDecoded=0"
     foreach ($key in $waits.Keys) {
         $numbers = $key.Split(' ')
-        Write-Host "NATIVE_WAIT_CSWITCH tid=$($numbers[0]) reason=$($numbers[1]) mode=$($numbers[2]) count=$($waits[$key])"
+        Write-Host "NATIVE_WAIT_CSWITCH tid=$($numbers[0]) state=5 reason=$($numbers[1]) mode=$($numbers[2]) modeAvailable=$($numbers[3]) version=$($numbers[4]) count=$($waits[$key])"
     }
     foreach ($status in $statuses.Keys) { Write-Host "NATIVE_WAIT_NTSTATUS value=$status count=$($statuses[$status])" }
-    Write-Host "NATIVE_WAIT_EVENTS total=$($statistics.Events) switches=$($statistics.Switch) undecoded=$($statistics.Unknown)"
+    Write-Host "NATIVE_WAIT_EVENTS total=$($statistics.Events) switches=$($statistics.Switch) undecoded=$($statistics.Unknown) unsupportedSwitchEvents=$($statistics.SwitchUnknown) waitingModeUnavailable=$($statistics.ModeMissing)"
     Write-Host "NATIVE_WAIT_FILE starts=$($statistics.Directory) ends=$($statistics.FileEnd) duration100ns=$($statistics.FileTicks) unmatched=$($pendingFile.Count)"
     if ($diskAvailable) {
         Write-Host "NATIVE_WAIT_DISK starts=$($statistics.DiskInit) ends=$($statistics.DiskEnd) duration100ns=$($statistics.DiskTicks) unmatched=$($pendingDisk.Count)"
