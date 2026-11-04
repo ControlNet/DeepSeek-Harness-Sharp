@@ -13,7 +13,7 @@ namespace Dsh.Sandbox;
 internal sealed class WindowsAclLease : IDisposable
 {
     private const int ReadProbeParallelism = 4;
-    private const int ReadProbeBatchSize = 128;
+    private const int ReadProbeBatchSize = 1024;
     private const int ReadExecute = 0x1200a9;
     private const int Modify = 0x1301bf;
     private const int Delete = 0x10000;
@@ -119,38 +119,42 @@ internal sealed class WindowsAclLease : IDisposable
                 policy.AllowNetwork, denyWrite ? effectiveRead : null, cancellationToken);
         };
         var options = new ParallelOptions { MaxDegreeOfParallelism = ReadProbeParallelism, CancellationToken = cancellationToken };
-        var reusable = 1;
         Action<int, ParallelLoopState> probe = (index, state) =>
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!_entries[offset + index].CanReuseReadGrant(_sid, ReadExecute, ReadExecute, ordered[index].Value.Directory,
                     true, policy.AllowNetwork, effectiveRead))
-            {
-                Interlocked.Exchange(ref reusable, 0);
-                state.Stop();
-            }
+                state.Break();
         };
         try
         {
             // The caller holds the gate until every pure probe finishes; mutations keep their stable serial order.
             for (var start = 0; start < ordered.Length;)
             {
-                var end = start + Math.Min(ReadProbeBatchSize, ordered.Length - start);
-                var readOnly = effectiveRead is not null;
-                for (var index = start; readOnly && index < end; index++)
-                    readOnly = !ordered[index].Value.Write;
                 lock (AclGate)
                 {
-                    if (readOnly)
+                    if (effectiveRead is null || ordered[start].Value.Write)
                     {
-                        reusable = 1;
-                        Parallel.For(start, end, options, probe);
+                        grant(start++);
+                        continue;
                     }
-                    if (!readOnly || reusable == 0)
-                        for (var index = start; index < end; index++)
-                            grant(index);
+                    var end = start + Math.Min(ReadProbeBatchSize, ordered.Length - start);
+                    for (var index = start + 1; index < end; index++)
+                        if (ordered[index].Value.Write)
+                        {
+                            end = index;
+                            break;
+                        }
+                    var result = Parallel.For(start, end, options, probe);
+                    // A completed prefix is reusable before the first write; every suffix is probed again after that write.
+                    if (result.LowestBreakIteration is { } firstEdit)
+                    {
+                        start = checked((int)firstEdit);
+                        grant(start++);
+                    }
+                    else
+                        start = end;
                 }
-                start = end;
             }
         }
         catch (AggregateException failure)
