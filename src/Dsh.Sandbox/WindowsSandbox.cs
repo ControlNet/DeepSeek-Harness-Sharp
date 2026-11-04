@@ -40,16 +40,20 @@ internal sealed class WindowsSandbox : ISandboxLifetime
     {
         cancellationToken.ThrowIfCancellationRequested();
         var profile = $"Dsh.Sandbox.{Guid.NewGuid():N}";
+        WindowsSandboxTiming.Mark(policy, "profile-start");
         var result = WindowsNative.CreateAppContainerProfile(profile, "Dsh sandbox", "Ephemeral isolated process", 0, 0, out var sid);
         if (result < 0)
             Marshal.ThrowExceptionForHR(result);
+        WindowsSandboxTiming.Mark(policy, "profile-complete");
         WindowsAclLease? acl = null;
         SafeFileHandle? job = null, process = null;
         WindowsPipe? input = null, output = null, error = null;
         Stream? inputStream = null, outputStream = null, errorStream = null;
         try
         {
+            WindowsSandboxTiming.Mark(policy, "bootstrap-start");
             acl = WindowsAclLease.CreateBootstrap(sid, policy, cancellationToken);
+            WindowsSandboxTiming.Mark(acl, "bootstrap-complete");
             cancellationToken.ThrowIfCancellationRequested();
             job = WindowsNative.CreateJobObject(0, null);
             CheckHandle(job, "create the sandbox job");
@@ -76,8 +80,10 @@ internal sealed class WindowsSandbox : ISandboxLifetime
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 // Keep the canonical DOS working directory: cmd treats a forced extended-length prefix as UNC and changes directories.
+                WindowsSandboxTiming.Mark(acl, "process-create-start");
                 Check(WindowsNative.CreateProcess(WindowsNative.PathForNative(policy.Executable), command, 0, 0, true,
                     0x00000004 | 0x00000400 | 0x00080000 | DetachedProcess, environment, policy.WorkingDirectory, ref startup, out information), "create the suspended AppContainer process");
+                WindowsSandboxTiming.Mark(acl, "process-create-complete");
             }
             finally { Marshal.FreeHGlobal(environment); }
             process = new SafeFileHandle(information.Process, ownsHandle: true);
@@ -96,6 +102,7 @@ internal sealed class WindowsSandbox : ISandboxLifetime
                 cancellationToken.ThrowIfCancellationRequested();
                 if (WindowsNative.ResumeThread(thread) == uint.MaxValue)
                     throw NativeError("resume the AppContainer process");
+                WindowsSandboxTiming.Mark(acl, "process-resumed");
                 return new WindowsSandbox((int)information.ProcessId, process, job, acl, profile,
                     inputStream, outputStream, errorStream);
             }

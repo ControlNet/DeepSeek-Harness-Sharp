@@ -69,7 +69,10 @@ internal sealed class WindowsAclLease : IDisposable
 
     public void Apply(SandboxPolicy policy, SafeFileHandle process, CancellationToken cancellationToken)
     {
+        WindowsSandboxTiming.Mark(this, "read-context-start");
         using var effectiveRead = EffectiveRead.TryCreate(process);
+        WindowsSandboxTiming.Mark(this, "read-context-complete");
+        WindowsSandboxTiming.Mark(this, "collect-all-start");
         var paths = new Dictionary<string, (bool Write, bool Directory)>(StringComparer.OrdinalIgnoreCase);
         var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         foreach (var grant in policy.Writable.OrderBy(static grant => grant.Source.Length))
@@ -85,6 +88,8 @@ internal sealed class WindowsAclLease : IDisposable
             else if (policy.Writable.Any(write => SandboxPolicy.Contains(write.Source, denied)))
                 throw new NotSupportedException("A denied path within a writable grant must exist before launch.");
         }
+        WindowsSandboxTiming.Mark(this, "collect-all-complete", paths.Count);
+        WindowsSandboxTiming.Mark(this, "ancestors-start", paths.Count);
         var checkedAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var path in paths.Keys)
             for (var parent = Path.GetDirectoryName(path); parent is not null; parent = Path.GetDirectoryName(parent))
@@ -94,7 +99,10 @@ internal sealed class WindowsAclLease : IDisposable
                     break;
                 Entry.DemandAmbientAncestorGrant(parent, policy.AllowNetwork);
             }
+        WindowsSandboxTiming.Mark(this, "ancestors-complete", paths.Count);
+        WindowsSandboxTiming.Mark(this, "grants-start", paths.Count);
         ApplyGrants(policy, paths, effectiveRead, cancellationToken);
+        WindowsSandboxTiming.Mark(this, "grants-complete", paths.Count);
     }
 
     private void ApplyGrants(SandboxPolicy policy, Dictionary<string, (bool Write, bool Directory)> paths,
@@ -110,6 +118,7 @@ internal sealed class WindowsAclLease : IDisposable
         }
         Action<int> grant = index =>
         {
+            WindowsSandboxTiming.Progress(this, "grant-entry", index);
             var (path, access) = ordered[index];
             var denyWrite = !access.Write;
             var denyDelete = access.Write && access.Directory && ContainsProtectedDescendant(policy, path);
@@ -139,17 +148,22 @@ internal sealed class WindowsAclLease : IDisposable
                 var readOnly = effectiveRead is not null;
                 for (var index = start; readOnly && index < end; index++)
                     readOnly = !ordered[index].Value.Write;
+                WindowsSandboxTiming.Progress(this, "acl-lock-wait", start);
                 lock (AclGate)
                 {
+                    WindowsSandboxTiming.Progress(this, "acl-lock-acquired", start);
                     if (readOnly)
                     {
                         reusable = 1;
+                        WindowsSandboxTiming.Progress(this, "probe-start", start);
                         Parallel.For(start, end, options, probe);
+                        WindowsSandboxTiming.Progress(this, "probe-complete", end);
                     }
                     if (!readOnly || reusable == 0)
                         for (var index = start; index < end; index++)
                             grant(index);
                 }
+                WindowsSandboxTiming.Progress(this, "batch-complete", end);
                 start = end;
             }
         }
@@ -187,8 +201,12 @@ internal sealed class WindowsAclLease : IDisposable
             return;
         paths[root] = (write, directory);
         if (directory)
+        {
+            WindowsSandboxTiming.Mark(this, write ? "collect-write-start" : "collect-read-start", paths.Count);
             WindowsDirectoryCollector.Collect(root, (path, isDirectory) => paths[path] = (write, isDirectory),
                 cancellationToken);
+            WindowsSandboxTiming.Mark(this, write ? "collect-write-complete" : "collect-read-complete", paths.Count);
+        }
     }
 
     public void Dispose()
