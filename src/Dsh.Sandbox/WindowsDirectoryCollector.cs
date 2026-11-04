@@ -227,16 +227,8 @@ internal static class WindowsDirectoryCollector
             {
                 ThrowIfStopped();
                 CancellationToken.ThrowIfCancellationRequested();
-                // Each worker reopens the root as an independent file object.
-                Timing?.OpenStarted();
-                using var rootOpen = Timing?.ObserveNative(WindowsSandboxTiming.NativeStage.CollectorOpen) ?? default;
-                var openStarted = Stopwatch.GetTimestamp();
-                workerRoot = ReOpenFile(_root, ListDirectory, ShareAll, BackupSemantics);
-                var openError = Marshal.GetLastPInvokeError();
-                rootOpen.Dispose();
-                Timing?.Open(openStarted);
-                if (workerRoot.IsInvalid)
-                    throw DirectoryError(openError, _rootPath, openingDirectory: true);
+                // An empty root-relative name reopens the directory as an independent file object.
+                workerRoot = OpenDirectorySegment(_root, ReadOnlySpan<char>.Empty, _rootPath, Timing);
                 buffer = Marshal.AllocHGlobal(BufferSize);
                 while (Take() is { } directory)
                 {
@@ -422,9 +414,6 @@ internal static class WindowsDirectoryCollector
         public nint Status;
         public nuint Information;
     }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern SafeFileHandle ReOpenFile(SafeFileHandle original, uint access, uint share, uint flags);
 
     [DllImport("ntdll.dll")]
     private static extern int NtQueryDirectoryFile(SafeFileHandle handle, nint completionEvent, nint apcRoutine,
