@@ -312,6 +312,7 @@ internal static class WindowsSandboxTiming
         private readonly long _started = Stopwatch.GetTimestamp();
         private readonly RuntimeCounters _runtime = new();
         private readonly MachineCounters _machine = new();
+        private readonly WindowsPhysicalDiskCounters _disk;
         private readonly Timer _timer;
         private int _snapshots;
         private int _snapshotRunning;
@@ -319,6 +320,7 @@ internal static class WindowsSandboxTiming
 
         public Observation()
         {
+            _disk = new WindowsPhysicalDiskCounters(_id);
             _timer = new Timer(static state => ((Observation)state!).Snapshot(), this,
                 TimeSpan.FromSeconds(SnapshotIntervalSeconds), TimeSpan.FromSeconds(SnapshotIntervalSeconds));
             lock (ObserverGate)
@@ -365,6 +367,7 @@ internal static class WindowsSandboxTiming
                     costs.Snapshot(_id, snapshot);
                 _runtime.Emit(_id, snapshot);
                 _machine.Emit(_id, snapshot);
+                _disk.Emit(snapshot);
             }
             catch (Exception) { }
             finally { Volatile.Write(ref _snapshotRunning, 0); }
@@ -377,13 +380,17 @@ internal static class WindowsSandboxTiming
                     _observer = null;
             lock (_gate)
             {
+                // Only the first disposer may drain and release the native diagnostic query.
+                if (_disposed)
+                    return;
                 _disposed = true;
                 _owners.Clear();
             }
-            // Join queued/running callbacks before the test removes its numeric trace sink.
+            // Join queued/running callbacks before closing the PDH query or removing the trace sink.
             using var drained = new ManualResetEvent(false);
             if (_timer.Dispose(drained))
                 drained.WaitOne();
+            _disk.Dispose();
             _runtime.Dispose();
         }
 
