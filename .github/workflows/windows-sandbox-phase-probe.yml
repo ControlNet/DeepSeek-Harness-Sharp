@@ -42,11 +42,19 @@ jobs:
             -class Dsh.Tests.WindowsDirectoryCollectorTests -class Dsh.Tests.WindowsSandboxAuthorityTests \
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
-      - name: Original owned MCP consumer with its original deadline
+      - name: Original failed shared-worker crash and cancellation consumers
         shell: bash
         run: |
           set -euo pipefail
           tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
-            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_PreservesToolOutput_ButNeverMutatesSettings \
+            -method Dsh.Tests.PluginSandboxIntegrationTests.FailedWorkerCall_RetiresSharedWorker_AndExplicitEnableDoesNotReplay \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: All three original owned MCP consumers with their original deadlines
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method 'Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_*' \
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
