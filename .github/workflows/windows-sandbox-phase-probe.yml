@@ -1,14 +1,14 @@
-name: Windows sandbox formal regression context probe
+name: Windows sandbox independent worker root file objects
 
 on:
   push:
-    branches: [probe/windows-context-42]
+    branches: [perf/native-root-fileobject-48]
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-context-${{ github.ref }}
+  group: native-root-fileobject-48-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
