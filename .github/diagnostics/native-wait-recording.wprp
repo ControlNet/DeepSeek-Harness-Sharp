@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0" Author="Diagnostics">
+  <Profiles>
+    <SystemCollector Id="NativeWaitCollector" Name="NT Kernel Logger">
+      <BufferSize Value="1024" />
+      <Buffers Value="128" PercentageOfTotalMemory="false" />
+    </SystemCollector>
+    <SystemProvider Id="NativeWaitProvider">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="CSwitch" />
+        <Keyword Value="ReadyThread" />
+        <Keyword Value="FileIO" />
+        <Keyword Value="FileIOInit" />
+        <Keyword Value="DiskIO" />
+        <Keyword Value="DiskIOInit" />
+      </Keywords>
+      <Stacks>
+        <Stack Value="CSwitch" />
+        <Stack Value="ReadyThread" />
+        <Stack Value="FileDirEnum" />
+        <Stack Value="FileOpEnd" />
+        <Stack Value="DiskReadInit" />
+        <Stack Value="DiskWriteInit" />
+      </Stacks>
+    </SystemProvider>
+    <Profile Id="NativeWait.Verbose.Memory" Name="NativeWait" Description="Bounded native wait recording" LoggingMode="Memory" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="NativeWaitCollector">
+          <SystemProviderId Value="NativeWaitProvider" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

@@ -1,14 +1,14 @@
-name: Windows sandbox formal regression context probe
+name: Windows sandbox bounded native wait recording
 
 on:
   push:
-    branches: [probe/windows-context-42]
+    branches: [probe/native-wait-trace-44]
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-context-${{ github.ref }}
+  group: native-wait-trace-44-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -106,6 +106,7 @@ jobs:
           done
           exit 1
       - name: Run the genuine predecessor root-cause regression (regression-1, no retries)
+        id: original_regression
         if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
         shell: bash
         run: |
@@ -149,13 +150,7 @@ jobs:
           ARGS+=(-trait- Category=GpuStress -trait- Category=OnlyGpu
             -trait- Category=RenderBench -trait- Category=LlmSmoke)
           "$EXE" "${ARGS[@]}"
-      - name: Run the original owned MCP consumer once after the formal regression
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe"
-          "$EXE" -noColor -parallelMode none -reporter verbose \
-            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_PreservesToolOutput_ButNeverMutatesSettings \
-            -trait- Category=GpuStress -trait- Category=OnlyGpu \
-            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Record bounded native waits around the unchanged original MCP consumer
+        if: ${{ !cancelled() && steps.original_regression.outcome == 'success' }}
+        shell: pwsh
+        run: ./.github/diagnostics/Invoke-NativeWaitRecording.ps1
