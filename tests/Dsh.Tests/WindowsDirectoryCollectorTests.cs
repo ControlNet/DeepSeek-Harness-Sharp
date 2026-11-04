@@ -10,6 +10,7 @@ namespace Dsh.Tests;
 [Trait("Category", "SandboxNative")]
 public sealed class WindowsDirectoryCollectorTests : IDisposable
 {
+    private const int DefaultFilesPerBranch = 96;
     private readonly string _root = TempTree.CreateDirectory("windows-directory-collector");
 
     public void Dispose() => TempTree.Delete(_root);
@@ -18,7 +19,9 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     public void CompleteTree_PreservesRecursiveEnumerationAndStableGrantOrder()
     {
         RequireWindows();
-        var expectedCount = PopulateTree();
+        const int multiBatchFilesPerBranch = 384;
+        // Long UTF-16 names in each branch span multiple 64 KiB native result batches.
+        var expectedCount = PopulateTree(multiBatchFilesPerBranch);
         var hidden = Path.Combine(_root, "hidden-system.txt");
         File.WriteAllText(hidden, "included");
         File.SetAttributes(hidden, FileAttributes.Hidden | FileAttributes.System);
@@ -313,15 +316,14 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         }
     }
 
-    private int PopulateTree()
+    private int PopulateTree(int filesPerBranch = DefaultFilesPerBranch)
     {
         var count = 0;
         for (var branch = 0; branch < 7; branch++)
         {
             var directory = Directory.CreateDirectory(Path.Combine(_root, $"branch-{branch:00}")).FullName;
             count++;
-            // Force multiple 16 KiB native result buffers in every branch, with non-ASCII and long names.
-            for (var file = 0; file < 96; file++)
+            for (var file = 0; file < filesPerBranch; file++)
             {
                 File.WriteAllText(Path.Combine(directory, $"entry-{file:000}-λ-{new string('x', 80)}.txt"), "data");
                 count++;

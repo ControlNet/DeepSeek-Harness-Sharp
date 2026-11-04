@@ -11,13 +11,13 @@ namespace Dsh.Sandbox;
 [SupportedOSPlatform("windows")]
 internal static class WindowsDirectoryCollector
 {
-    private const int BufferSize = 16 * 1024;
+    private const int BufferSize = 64 * 1024;
     private const int WorkerCount = 4;
     private const uint ListDirectory = 1;
     private const uint Synchronize = 0x00100000;
     private const uint BackupSemantics = 0x02000000;
     private const uint SynchronousDirectoryOpen = 0x00004021;
-    private const int FileFullDirectoryInformation = 2;
+    private const int FileDirectoryInformation = 1;
     private const int NoMoreFiles = unchecked((int)0x80000006);
     private const int NoSuchFile = unchecked((int)0xc000000f);
     private const uint ShareAll = (uint)(FileShare.Read | FileShare.Write | FileShare.Delete);
@@ -26,6 +26,7 @@ internal static class WindowsDirectoryCollector
     private const int ErrorFileNotFound = 2;
     private const int ErrorPathNotFound = 3;
     private const int ErrorAccessDenied = 5;
+    private const int ErrorInsufficientBuffer = 122;
     private const int ErrorFilenameExceedsRange = 206;
     private const int ErrorOperationAborted = 995;
     private const int HResultHighWordMask = unchecked((int)0xffff0000);
@@ -38,7 +39,7 @@ internal static class WindowsDirectoryCollector
     /// </summary>
     /// <remarks>
     /// Root entries are read and published before any descendant is opened.
-    /// Four dedicated workers each own one 16 KiB buffer and normally one descendant handle.
+    /// Four dedicated workers each own one 64 KiB buffer and normally one descendant handle.
     /// Root-relative names exceeding the native counted-name limit are split at directory separators.
     /// Such opens transiently own two descendant handles per worker; queued directories own none.
     /// Paths, entry topology and discovery/publication queues cost O(entries).
@@ -143,7 +144,7 @@ internal static class WindowsDirectoryCollector
             using var query = timing?.ObserveNative(WindowsSandboxTiming.NativeStage.CollectorQuery) ?? default;
             var queryStarted = Stopwatch.GetTimestamp();
             var status = NtQueryDirectoryFile(handle, 0, 0, 0, out var ioStatus, buffer, BufferSize,
-                FileFullDirectoryInformation, 0, 0, 0);
+                FileDirectoryInformation, 0, 0, 0);
             query.Dispose();
             timing?.Query(queryStarted);
             if (status is NoMoreFiles or NoSuchFile)
@@ -151,7 +152,7 @@ internal static class WindowsDirectoryCollector
             if (status != 0)
                 throw DirectoryError((int)RtlNtStatusToDosError(status), directory.Path);
             if (ioStatus.Information == 0)
-                return;
+                throw DirectoryError(ErrorInsufficientBuffer, directory.Path);
             var entry = (DirectoryInformation*)buffer;
             while (true)
             {
@@ -379,7 +380,7 @@ internal static class WindowsDirectoryCollector
         public uint NextEntryOffset, FileIndex;
         public long CreationTime, LastAccessTime, LastWriteTime, ChangeTime, EndOfFile, AllocationSize;
         public FileAttributes Attributes;
-        public uint FileNameLength, EaSize;
+        public uint FileNameLength;
         public char FileName;
     }
 
