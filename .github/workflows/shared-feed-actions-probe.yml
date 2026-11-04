@@ -1,0 +1,59 @@
+name: Shared DryIoc same-run artifact proof
+
+on:
+  push:
+    branches: [probe/feed-actions-35]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-feed-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    uses: ./.github/workflows/ci-dryioc.yml
+    with:
+      checkout-ref: 0c2c067eba24a86e6be01c646a500f51317e12ab
+  legacy-consumer:
+    name: Verify and consume the shared package from an older checkout
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0c2c067eba24a86e6be01c646a500f51317e12ab
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/download-artifact@v4
+        with:
+          name: dryioc-feed
+          path: packages
+      - name: Verify the exact same-run artifact with its bundled verifier
+        shell: pwsh
+        env:
+          EXPECTED_DRYIOC_COMMIT: ${{ needs.prepare.outputs.commit }}
+          EXPECTED_DRYIOC_SHA256: ${{ needs.prepare.outputs.sha256 }}
+        run: |
+          & ./packages/fetch-dryioc-feed.ps1 -VerifyOnly -ExpectedCommit $env:EXPECTED_DRYIOC_COMMIT -ExpectedSha256 $env:EXPECTED_DRYIOC_SHA256
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Restore and build the real runtime with a task-owned package cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet restore src/Dsh.Runtime/Dsh.Runtime.csproj --packages "$PWD/.artifacts/feed-proof-cache" --disable-parallel --nologo
+          dotnet build src/Dsh.Runtime/Dsh.Runtime.csproj -c Debug --no-restore --nologo -m:1 -nodeReuse:false -p:UseSharedCompilation=false
+      - name: Confirm the runtime restored the exact shared package bytes
+        shell: pwsh
+        env:
+          EXPECTED_DRYIOC_SHA256: ${{ needs.prepare.outputs.sha256 }}
+        run: |
+          $packages = @(Get-ChildItem -LiteralPath packages -Filter 'DryIoc.dll.*.nupkg' -File)
+          if ($packages.Count -ne 1) { throw 'Expected one shared package.' }
+          $restored = @(Get-ChildItem -LiteralPath .artifacts/feed-proof-cache -Filter '*.nupkg' -File -Recurse | Where-Object { $_.Name.Equals($packages[0].Name, [StringComparison]::OrdinalIgnoreCase) })
+          if ($restored.Count -ne 1) { throw 'The real runtime did not restore exactly one matching shared package.' }
+          $actual = (Get-FileHash -LiteralPath $restored[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:EXPECTED_DRYIOC_SHA256) { throw 'The real runtime restored different DryIoc package bytes.' }
