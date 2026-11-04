@@ -38,7 +38,7 @@ internal static class WindowsDirectoryCollector
     /// </summary>
     /// <remarks>
     /// Root entries are read and published before any descendant is opened.
-    /// Four dedicated workers each own one 16 KiB buffer and normally one descendant handle.
+    /// Four dedicated workers each own one independently reopened root handle, one 16 KiB buffer and normally one descendant handle.
     /// Root-relative names exceeding the native counted-name limit are split at directory separators.
     /// Such opens transiently own two descendant handles per worker; queued directories own none.
     /// Paths, entry topology and discovery/publication queues cost O(entries).
@@ -198,6 +198,7 @@ internal static class WindowsDirectoryCollector
     {
         private readonly object _gate = new();
         private readonly SafeFileHandle _root;
+        private readonly string _rootPath;
         private readonly int _relativeStart;
         private readonly Queue<DirectoryWork> _pending;
         private int _outstanding;
@@ -210,6 +211,7 @@ internal static class WindowsDirectoryCollector
             CancellationToken cancellationToken, WindowsSandboxTiming.Collection? timing)
         {
             _root = root;
+            _rootPath = rootPath;
             _relativeStart = rootPath.Length + (Path.EndsInDirectorySeparator(rootPath) ? 0 : 1);
             _pending = new Queue<DirectoryWork>(directories);
             _outstanding = _pending.Count;
@@ -220,14 +222,27 @@ internal static class WindowsDirectoryCollector
         public void Run()
         {
             nint buffer = 0;
+            SafeFileHandle? workerRoot = null;
             try
             {
+                ThrowIfStopped();
+                CancellationToken.ThrowIfCancellationRequested();
+                // Each worker reopens the root as an independent file object.
+                Timing?.OpenStarted();
+                using var rootOpen = Timing?.ObserveNative(WindowsSandboxTiming.NativeStage.CollectorOpen) ?? default;
+                var openStarted = Stopwatch.GetTimestamp();
+                workerRoot = ReOpenFile(_root, ListDirectory, ShareAll, BackupSemantics);
+                var openError = Marshal.GetLastPInvokeError();
+                rootOpen.Dispose();
+                Timing?.Open(openStarted);
+                if (workerRoot.IsInvalid)
+                    throw DirectoryError(openError, _rootPath, openingDirectory: true);
                 buffer = Marshal.AllocHGlobal(BufferSize);
                 while (Take() is { } directory)
                 {
                     ThrowIfStopped();
                     CancellationToken.ThrowIfCancellationRequested();
-                    using (var handle = OpenRelativeDirectory(_root, directory.Path.AsSpan(_relativeStart), directory.Path, this))
+                    using (var handle = OpenRelativeDirectory(workerRoot, directory.Path.AsSpan(_relativeStart), directory.Path, this))
                     {
                         CollectDirectory(handle, directory, buffer, CancellationToken, Timing, this);
                     }
@@ -240,6 +255,7 @@ internal static class WindowsDirectoryCollector
             }
             finally
             {
+                workerRoot?.Dispose();
                 if (buffer != 0)
                     Marshal.FreeHGlobal(buffer);
             }
@@ -406,6 +422,9 @@ internal static class WindowsDirectoryCollector
         public nint Status;
         public nuint Information;
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeFileHandle ReOpenFile(SafeFileHandle original, uint access, uint share, uint flags);
 
     [DllImport("ntdll.dll")]
     private static extern int NtQueryDirectoryFile(SafeFileHandle handle, nint completionEvent, nint apcRoutine,
