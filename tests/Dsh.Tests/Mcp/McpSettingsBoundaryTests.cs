@@ -26,6 +26,7 @@ public sealed class McpSettingsBoundaryTests
         Mark("test-start");
         try
         {
+        using var observation = Dsh.Sandbox.WindowsSandboxTiming.Observe();
         using (var fixture = ProtectedFixture())
         {
             Mark("fixture-ready");
@@ -86,6 +87,8 @@ public sealed class McpSettingsBoundaryTests
             if (message is null || !(message.StartsWith("SANDBOX_PHASE ", StringComparison.Ordinal)
                 || message.StartsWith("SANDBOX_COST ", StringComparison.Ordinal)
                 || message.StartsWith("SANDBOX_COLLECTION ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_SNAPSHOT ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_RUNTIME ", StringComparison.Ordinal)
                 || message.StartsWith("MCP_DIAGNOSTIC ", StringComparison.Ordinal)))
                 return;
             // Only numeric diagnostic records reach stderr, including during test cancellation.

@@ -2,7 +2,7 @@ name: Windows sandbox startup phase probe
 
 on:
   push:
-    branches: [probe/native-cost-39]
+    branches: [probe/native-cost-41]
 
 permissions:
   contents: read
@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   native:
-    name: Original standalone Windows MCP with current numeric operation costs
+    name: Original standalone Windows MCP with runtime and in-flight native I/O evidence
     runs-on: windows-latest
     timeout-minutes: 25
     steps:

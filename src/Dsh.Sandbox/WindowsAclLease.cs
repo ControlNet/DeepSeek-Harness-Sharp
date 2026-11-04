@@ -32,6 +32,7 @@ internal sealed class WindowsAclLease : IDisposable
     private readonly List<Entry> _entries = [];
     private readonly SecurityIdentifier _sid;
     private readonly WindowsSandboxTiming.Costs _costs;
+    private IDisposable? _observation;
     private int _rootOrdinal;
     private int _probeEntriesCompleted, _grantEntriesCompleted, _ancestorsCompleted;
     private bool _disposed;
@@ -40,6 +41,7 @@ internal sealed class WindowsAclLease : IDisposable
     {
         _sid = sid;
         _costs = costs;
+        _observation = WindowsSandboxTiming.Register(costs);
     }
 
     public static WindowsAclLease CreateBootstrap(nint sid, SandboxPolicy policy, CancellationToken cancellationToken,
@@ -228,7 +230,7 @@ internal sealed class WindowsAclLease : IDisposable
     private void AddTree(Dictionary<string, (bool Write, bool Directory)> paths, string root, bool directory, bool write,
         CancellationToken cancellationToken)
     {
-        var timing = new WindowsSandboxTiming.Collection(_costs, ++_rootOrdinal);
+        using var timing = new WindowsSandboxTiming.Collection(_costs, ++_rootOrdinal);
         timing.Emit(write ? "collect-write-start" : "collect-read-start");
         try
         {
@@ -254,18 +256,25 @@ internal sealed class WindowsAclLease : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        WindowsSandboxTiming.Mark(_costs, "lease-dispose-start", _entries.Count);
-        List<Exception>? failures = null;
-        for (var index = _entries.Count - 1; index >= 0; index--)
+        try
         {
-            try { _entries[index].Remove(_sid); }
-            catch (Exception exception) { (failures ??= []).Add(exception); }
-            WindowsSandboxTiming.Progress(_costs, "lease-dispose-progress", _entries.Count - index);
+            WindowsSandboxTiming.Mark(_costs, "lease-dispose-start", _entries.Count);
+            List<Exception>? failures = null;
+            for (var index = _entries.Count - 1; index >= 0; index--)
+            {
+                try { _entries[index].Remove(_sid); }
+                catch (Exception exception) { (failures ??= []).Add(exception); }
+                WindowsSandboxTiming.Progress(_costs, "lease-dispose-progress", _entries.Count - index);
+            }
+            _costs.Emit("lease-dispose-final");
+            WindowsSandboxTiming.Mark(_costs, "lease-dispose-final", _entries.Count);
+            if (failures is not null)
+                throw new AggregateException("Removing the AppContainer filesystem grants failed.", failures);
         }
-        _costs.Emit("lease-dispose-final");
-        WindowsSandboxTiming.Mark(_costs, "lease-dispose-final", _entries.Count);
-        if (failures is not null)
-            throw new AggregateException("Removing the AppContainer filesystem grants failed.", failures);
+        finally
+        {
+            Interlocked.Exchange(ref _observation, null)?.Dispose();
+        }
     }
 
     private sealed class WritableLabel(byte[]? original)

@@ -56,6 +56,7 @@ internal static class WindowsDirectoryCollector
             && !rootPath.StartsWith(@"\\?\", StringComparison.Ordinal)
             ? $@"\\?\UNC\{rootPath.AsSpan(2)}" : rootPath;
         cancellationToken.ThrowIfCancellationRequested();
+        timing?.OpenStarted();
         var openStarted = Stopwatch.GetTimestamp();
         using var rootHandle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics, 0);
         var openError = Marshal.GetLastPInvokeError();
@@ -136,6 +137,7 @@ internal static class WindowsDirectoryCollector
         {
             cancellationToken.ThrowIfCancellationRequested();
             work?.ThrowIfStopped();
+            timing?.QueryStarted();
             var queryStarted = Stopwatch.GetTimestamp();
             var status = NtQueryDirectoryFile(handle, 0, 0, 0, out var ioStatus, buffer, BufferSize,
                 FileFullDirectoryInformation, 0, 0, 0);
@@ -336,6 +338,7 @@ internal static class WindowsDirectoryCollector
                 ObjectName = &nativeName,
                 Attributes = CaseInsensitive
             };
+            timing?.OpenStarted();
             var openStarted = Stopwatch.GetTimestamp();
             var status = NtOpenFile(out var handle, ListDirectory | Synchronize, ref attributes, out _, ShareAll, SynchronousDirectoryOpen);
             timing?.Open(openStarted);
