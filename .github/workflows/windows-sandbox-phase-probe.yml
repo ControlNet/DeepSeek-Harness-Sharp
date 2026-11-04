@@ -1,14 +1,14 @@
-name: Windows sandbox formal regression context probe
+name: Windows sandbox bounded machine disk observation
 
 on:
   push:
-    branches: [probe/windows-context-42]
+    branches: [probe/native-disk-cost-47]
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-context-${{ github.ref }}
+  group: native-disk-cost-47-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
