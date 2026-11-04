@@ -13,7 +13,7 @@ namespace Dsh.Sandbox;
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsAclLease : IDisposable
 {
-    private const int ReadProbeParallelism = 8;
+    private const int ReadProbeParallelism = 4;
     private const int ReadProbeBatchSize = 128;
     private const int ReadExecute = 0x1200a9;
     private const int Modify = 0x1301bf;
@@ -467,12 +467,14 @@ internal sealed class WindowsAclLease : IDisposable
         private SafeFileHandle Open(bool readOnly = false)
         {
             using var measurement = WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.EntryOpen);
+            using var nativeOpen = readOnly ? costs.ObserveNative(WindowsSandboxTiming.NativeStage.ReadEntryOpen) : default;
             // Read proofs use a direct native open; bootstrap and policy edits keep their distinct Win32 ACL rights.
             var handle = readOnly ? WindowsNative.OpenReadAcl(path)
                 : WindowsNative.CreateFile(path, bootstrap ? BootstrapAclAccess : PolicyAclAccess, 7, 0, 3, 0x02000000, 0);
+            var error = Marshal.GetLastPInvokeError();
+            nativeOpen.Dispose();
             if (!handle.IsInvalid)
                 return handle;
-            var error = Marshal.GetLastPInvokeError();
             handle.Dispose();
             throw new Win32Exception(error, $"Cannot open an AppContainer filesystem grant (Win32 error {error}).");
         }

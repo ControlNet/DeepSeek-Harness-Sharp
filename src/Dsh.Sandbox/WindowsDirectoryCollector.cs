@@ -12,7 +12,7 @@ namespace Dsh.Sandbox;
 internal static class WindowsDirectoryCollector
 {
     private const int BufferSize = 16 * 1024;
-    private const int WorkerCount = 8;
+    private const int WorkerCount = 4;
     private const uint ListDirectory = 1;
     private const uint Synchronize = 0x00100000;
     private const uint BackupSemantics = 0x02000000;
@@ -38,7 +38,7 @@ internal static class WindowsDirectoryCollector
     /// </summary>
     /// <remarks>
     /// Root entries are read and published before any descendant is opened.
-    /// Eight dedicated workers each own one 16 KiB buffer and normally one descendant handle.
+    /// Four dedicated workers each own one 16 KiB buffer and normally one descendant handle.
     /// Root-relative names exceeding the native counted-name limit are split at directory separators.
     /// Such opens transiently own two descendant handles per worker; queued directories own none.
     /// Paths, entry topology and discovery/publication queues cost O(entries).
@@ -57,9 +57,11 @@ internal static class WindowsDirectoryCollector
             ? $@"\\?\UNC\{rootPath.AsSpan(2)}" : rootPath;
         cancellationToken.ThrowIfCancellationRequested();
         timing?.OpenStarted();
+        using var rootOpen = timing?.ObserveNative(WindowsSandboxTiming.NativeStage.CollectorOpen) ?? default;
         var openStarted = Stopwatch.GetTimestamp();
         using var rootHandle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics, 0);
         var openError = Marshal.GetLastPInvokeError();
+        rootOpen.Dispose();
         timing?.Open(openStarted);
         if (rootHandle.IsInvalid)
             throw DirectoryError(openError, rootPath, openingDirectory: true);
@@ -138,9 +140,11 @@ internal static class WindowsDirectoryCollector
             cancellationToken.ThrowIfCancellationRequested();
             work?.ThrowIfStopped();
             timing?.QueryStarted();
+            using var query = timing?.ObserveNative(WindowsSandboxTiming.NativeStage.CollectorQuery) ?? default;
             var queryStarted = Stopwatch.GetTimestamp();
             var status = NtQueryDirectoryFile(handle, 0, 0, 0, out var ioStatus, buffer, BufferSize,
                 FileFullDirectoryInformation, 0, 0, 0);
+            query.Dispose();
             timing?.Query(queryStarted);
             if (status is NoMoreFiles or NoSuchFile)
                 return;
@@ -339,8 +343,10 @@ internal static class WindowsDirectoryCollector
                 Attributes = CaseInsensitive
             };
             timing?.OpenStarted();
+            using var open = timing?.ObserveNative(WindowsSandboxTiming.NativeStage.CollectorOpen) ?? default;
             var openStarted = Stopwatch.GetTimestamp();
             var status = NtOpenFile(out var handle, ListDirectory | Synchronize, ref attributes, out _, ShareAll, SynchronousDirectoryOpen);
+            open.Dispose();
             timing?.Open(openStarted);
             GC.KeepAlive(parent);
             if (status == 0)
