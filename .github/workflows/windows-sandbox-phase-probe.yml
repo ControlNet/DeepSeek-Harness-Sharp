@@ -23,9 +23,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
       - name: Prepare the original local NuGet feed
         shell: pwsh
         env:
