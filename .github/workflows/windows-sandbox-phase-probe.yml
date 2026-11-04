@@ -12,7 +12,51 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  schema:
+    name: Validate the actual schema loader without building or recording
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse and invoke only the existing schema functions against real CIM metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $path = Join-Path (Get-Location).Path '.github/diagnostics/Invoke-NativeWaitRecording.ps1'
+          $tokens = $null
+          $parseErrors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors)
+          if (@($parseErrors).Count -ne 0) {
+            Write-Host "NATIVE_WAIT_SCHEMA_PREFLIGHT parsed=0 errors=$(@($parseErrors).Count)"
+            exit 32
+          }
+          $definitions = @($ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+              $node.Name -cin @('Read-Schema', 'Read-KernelSchemas')
+          }, $true))
+          if ($definitions.Count -ne 2) {
+            Write-Host "NATIVE_WAIT_SCHEMA_PREFLIGHT definitions=$($definitions.Count) status=32"
+            exit 32
+          }
+          foreach ($definition in $definitions) {
+            . ([scriptblock]::Create($definition.Extent.Text))
+          }
+          try {
+            $schemas = Read-KernelSchemas
+            if (-not $schemas.DiskAvailable) {
+              Write-Host 'NATIVE_WAIT_SCHEMA_PREFLIGHT status=37 diskAvailable=0'
+              exit 37
+            }
+            Write-Host "NATIVE_WAIT_SCHEMA_PREFLIGHT status=0 switchSchemas=$($schemas.Switches.Count) headerAvailable=$([int]$schemas.HeaderAvailable) recordingStarted=0 originalTestRun=0 buildRun=0"
+          }
+          catch {
+            Write-Host "NATIVE_WAIT_SCHEMA_PREFLIGHT status=32 hresult=$($_.Exception.HResult)"
+            exit 32
+          }
   native:
+    needs: schema
     name: Original Windows regression-1 context followed by owned MCP
     runs-on: windows-latest
     timeout-minutes: 25
