@@ -1,0 +1,96 @@
+name: Windows sandbox original failure-set comparison
+
+on:
+  push:
+    branches: [probe/native-queue-38, probe/native-combined-38]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-phase-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Original Windows sandbox consumers without observers
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Prepare the original local NuGet feed
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & ./scripts/fetch-dryioc-feed.ps1 -UseGhArtifact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the original uninstrumented test graph
+        run: >
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
+          -m:1 -nodeReuse:false -p:UseSharedCompilation=false -p:DshNativeCompiler=cl
+      - name: Observe the actual original OS read-control open access
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          using Microsoft.Win32.SafeHandles;
+          public static class NativeOpenAccessProof38
+          {
+              public const uint ReadControl = 0x00020000;
+              public const uint ShareAll = 7;
+              public const uint OpenExisting = 3;
+              public const uint BackupSemantics = 0x02000000;
+              public const int FileAccessInformation = 8;
+              public const uint AccessInformationSize = sizeof(uint);
+              [StructLayout(LayoutKind.Sequential)]
+              public struct IoStatusBlock { public nint Status; public nuint Information; }
+              [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern SafeFileHandle CreateFile(string path, uint access, uint share, nint attributes, uint disposition, uint flags, nint template);
+              [DllImport("ntdll.dll")]
+              public static extern int NtQueryInformationFile(SafeFileHandle handle, out IoStatusBlock status, out uint access, uint length, int informationClass);
+          }
+          '@
+          $target = Join-Path $PWD 'README.md'
+          $handle = [NativeOpenAccessProof38]::CreateFile($target, [NativeOpenAccessProof38]::ReadControl, [NativeOpenAccessProof38]::ShareAll, 0, [NativeOpenAccessProof38]::OpenExisting, [NativeOpenAccessProof38]::BackupSemantics, 0)
+          try {
+              if ($handle.IsInvalid) { throw "OS access proof open failed, error $([Runtime.InteropServices.Marshal]::GetLastPInvokeError())." }
+              $io = [NativeOpenAccessProof38+IoStatusBlock]::new()
+              [uint32]$access = 0
+              $status = [NativeOpenAccessProof38]::NtQueryInformationFile($handle, [ref]$io, [ref]$access, [NativeOpenAccessProof38]::AccessInformationSize, [NativeOpenAccessProof38]::FileAccessInformation)
+              if ($status -ne 0) { throw "OS access proof query failed, status $status." }
+              Write-Output ('WIN32_READ_CONTROL_ACTUAL_ACCESS=0x{0:X8}' -f $access)
+          } finally {
+              $handle.Dispose()
+          }
+      - name: Native directory and filesystem authority component gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -class Dsh.Tests.WindowsDirectoryCollectorTests -class Dsh.Tests.WindowsSandboxAuthorityTests \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Original failed shared-worker crash and cancellation consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.PluginSandboxIntegrationTests.FailedWorkerCall_RetiresSharedWorker_AndExplicitEnableDoesNotReplay \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: All three original owned MCP consumers with their original deadlines
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method 'Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_*' \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
