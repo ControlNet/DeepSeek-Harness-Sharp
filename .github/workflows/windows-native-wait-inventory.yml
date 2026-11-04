@@ -105,3 +105,118 @@ jobs:
             Remove-Item -LiteralPath $private -Recurse -Force
           }
           exit $inventoryExit
+      - name: Classify readonly kernel event MOF metadata prerequisites
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $specifications = @(
+            @{ Name = 'CSwitch'; Pattern = 'Thread*_CSwitch'; Provider = '3d6fa8d1-fe05-11d0-9dda-00c04fd7ba7c'; Opcodes = @(36); Properties = @('NewThreadId', 'OldThreadId', 'NewThreadPriority', 'OldThreadPriority', 'PreviousCState', 'SpareByte', 'OldThreadWaitReason', 'OldThreadWaitMode', 'OldThreadState', 'OldThreadWaitIdealProcessor', 'NewThreadWaitTime', 'Reserved') },
+            @{ Name = 'FileIo_DirEnum'; Pattern = 'FileIo*_DirEnum'; Provider = '90cbdc39-4a3e-11d1-84f4-0000f80464e3'; Opcodes = @(72); Properties = @('IrpPtr', 'TTID', 'FileObject', 'FileKey', 'Length', 'InfoClass', 'FileIndex', 'FileName') },
+            @{ Name = 'FileIo_OpEnd'; Pattern = 'FileIo*_OpEnd'; Provider = '90cbdc39-4a3e-11d1-84f4-0000f80464e3'; Opcodes = @(76); Properties = @('IrpPtr', 'ExtraInfo', 'NtStatus') },
+            @{ Name = 'DiskIo_TypeGroup2'; Pattern = 'DiskIo*_TypeGroup2'; Provider = '3d6fa8d4-fe05-11d0-9dda-00c04fd7ba7c'; Opcodes = @(12, 13); Properties = @('Irp', 'IssuingThreadId') },
+            @{ Name = 'DiskIo_TypeGroup1'; Pattern = 'DiskIo*_TypeGroup1'; Provider = '3d6fa8d4-fe05-11d0-9dda-00c04fd7ba7c'; Opcodes = @(10, 11); Properties = @('DiskNumber', 'IrpFlags', 'TransferSize', 'Reserved', 'ByteOffset', 'FileObject', 'Irp', 'HighResResponseTime', 'IssuingThreadId') },
+            @{ Name = 'EventTrace_Header'; Pattern = 'EventTrace*_Header'; Provider = '68fdd900-4a3e-11d1-84f4-0000f80464e3'; Opcodes = @(0); Properties = @('BufferSize', 'Version', 'ProviderVersion', 'NumberOfProcessors', 'EndTime', 'TimerResolution', 'MaxFileSize', 'LogFileMode', 'BuffersWritten', 'StartBuffers', 'PointerSize', 'EventsLost', 'CPUSpeed', 'LoggerName', 'LogFileName', 'TimeZoneInformation', 'BootTime', 'PerfFreq', 'StartTime', 'ReservedFlags', 'BuffersLost') }
+          )
+          $families = '^(?:CSwitch|Thread(?:_V[0-9]+)?_CSwitch|FileIo(?:_V[0-9]+)?_(?:DirEnum|OpEnd)|DiskIo(?:_V[0-9]+)?_TypeGroup[12]|EventTrace(?:_V[0-9]+)?_Header)$'
+          function Get-NumericMetadata($Value) {
+            try {
+              if ($null -ne $Value -and $Value -isnot [array]) { return [int]$Value }
+            }
+            catch { }
+            return -1
+          }
+          function Write-QueryFailure([string] $Name, $Exception) {
+            $status = -1
+            $property = $Exception.PSObject.Properties['StatusCode']
+            if ($null -ne $property) { $status = Get-NumericMetadata $property.Value }
+            Write-Host "CIM_METADATA_QUERY class=$Name available=0 statusCode=$status hresult=$($Exception.HResult)"
+          }
+          function Write-ClassMetadata($Specification, [string] $Name, $Class) {
+            if ($Name -cnotmatch $families) { return }
+            Write-Host "CIM_METADATA_QUERY class=$Name available=1"
+            try {
+              $all = @($Class.CimClassProperties)
+              $ordered = @($all | Where-Object { $null -ne $_.Qualifiers['WmiDataId'] } |
+                Sort-Object { Get-NumericMetadata $_.Qualifiers['WmiDataId'].Value })
+              $layout = ($ordered.Name -join ',') -ceq ($Specification.Properties -join ',')
+              $contiguous = $true
+              for ($index = 0; $index -lt $ordered.Count; $index++) {
+                if ((Get-NumericMetadata $ordered[$index].Qualifiers['WmiDataId'].Value) -ne $index + 1) { $contiguous = $false }
+              }
+              $unlisted = @($all | Where-Object { $_.Name -cnotin $Specification.Properties }).Count
+              Write-Host "CIM_METADATA_LAYOUT class=$Name properties=$($all.Count) dataProperties=$($ordered.Count) unlistedProperties=$unlisted layoutMatch=$([int]$layout) contiguous=$([int]$contiguous)"
+              for ($index = 0; $index -lt $Specification.Properties.Count; $index++) {
+                $propertyName = $Specification.Properties[$index]
+                $matches = @($all | Where-Object { $_.Name -ceq $propertyName })
+                if ($matches.Count -ne 1) {
+                  Write-Host "CIM_METADATA_PROPERTY class=$Name property=$propertyName present=0 expectedOrder=$($index + 1) dataId=-1 cimType=-1"
+                  continue
+                }
+                $property = $matches[0]
+                $dataId = -1
+                if ($null -ne $property.Qualifiers['WmiDataId']) { $dataId = Get-NumericMetadata $property.Qualifiers['WmiDataId'].Value }
+                Write-Host "CIM_METADATA_PROPERTY class=$Name property=$propertyName present=1 expectedOrder=$($index + 1) dataId=$dataId cimType=$([int]$property.CimType)"
+              }
+              $eventType = $Class.CimClassQualifiers['EventType']
+              $typePresent = $null -ne $eventType
+              $typeMatch = -1
+              if ($typePresent) {
+                $typeMatch = 1
+                $values = @($eventType.Value)
+                if ($values.Count -gt 16) { $typeMatch = -1 }
+                else {
+                  foreach ($value in $values) {
+                    $number = Get-NumericMetadata $value
+                    if ($number -lt 0) { $typeMatch = -1 }
+                    Write-Host "CIM_METADATA_EVENTTYPE class=$Name value=$number"
+                  }
+                  foreach ($expected in $Specification.Opcodes) {
+                    if ($typeMatch -ne -1 -and $expected -notin $values) { $typeMatch = 0 }
+                  }
+                }
+              }
+              $version = -1
+              $versionPresent = $false
+              $providerPresent = $false
+              $providerMatch = -1
+              $depth = 0
+              $chainComplete = $false
+              while ($null -ne $Class -and $depth -lt 8) {
+                if (-not $versionPresent -and $null -ne $Class.CimClassQualifiers['EventVersion']) {
+                  $versionPresent = $true
+                  $version = Get-NumericMetadata $Class.CimClassQualifiers['EventVersion'].Value
+                }
+                if (-not $providerPresent -and $null -ne $Class.CimClassQualifiers['Guid']) {
+                  $providerPresent = $true
+                  try { $providerMatch = [int]([guid]$Class.CimClassQualifiers['Guid'].Value -eq [guid]$Specification.Provider) }
+                  catch { $providerMatch = -1 }
+                }
+                $depth++
+                if ([string]::IsNullOrEmpty($Class.CimSuperClassName)) { $chainComplete = $true; break }
+                $Class = Get-CimClass -Namespace root/wmi -ClassName $Class.CimSuperClassName
+              }
+              Write-Host "CIM_METADATA_IDENTITY class=$Name eventTypePresent=$([int]$typePresent) eventTypeMatch=$typeMatch explicitVersionPresent=$([int]$versionPresent) eventVersion=$version providerPresent=$([int]$providerPresent) providerMatch=$providerMatch ancestors=$depth chainComplete=$([int]$chainComplete)"
+            }
+            catch { Write-Host "CIM_METADATA_INSPECTION class=$Name complete=0 hresult=$($_.Exception.HResult)" }
+          }
+          foreach ($specification in $specifications) {
+            $class = $null
+            $queryFailed = $false
+            try { $class = Get-CimClass -Namespace root/wmi -ClassName $specification.Name }
+            catch { $queryFailed = $true; Write-QueryFailure $specification.Name $_.Exception }
+            if ($null -ne $class) {
+              Write-ClassMetadata $specification $specification.Name $class
+              continue
+            }
+            if (-not $queryFailed) { Write-Host "CIM_METADATA_QUERY class=$($specification.Name) available=0 statusCode=-1 hresult=-1" }
+            try {
+              $candidates = @(Get-CimClass -Namespace root/wmi -ClassName $specification.Pattern |
+                Where-Object { $_.CimClassName -cmatch $families } | Select-Object -First 4)
+              Write-Host "CIM_METADATA_ALTERNATIVES requested=$($specification.Name) matches=$($candidates.Count) limit=4 atLimit=$([int]($candidates.Count -eq 4))"
+              foreach ($candidate in $candidates) { Write-ClassMetadata $specification $candidate.CimClassName $candidate }
+            }
+            catch { Write-Host "CIM_METADATA_ALTERNATIVES requested=$($specification.Name) available=0 hresult=$($_.Exception.HResult)" }
+          }
+          Write-Host 'CIM_METADATA_COMPLETE metadataOnly=1 instancesRead=0 recordingStarted=0 originalTestRun=0 buildRun=0'
