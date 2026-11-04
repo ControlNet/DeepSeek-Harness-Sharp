@@ -1,19 +1,19 @@
-name: Windows bounded directory I/O capacity proof
+name: Windows bounded native I/O proof
 
 on:
   push:
-    branches: [perf/directory-io-44]
+    branches: [perf/native-io-45]
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-directory-io-${{ github.ref }}
+  group: windows-native-io-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   native:
-    name: Original formal regression and MCP with bounded sixteen directory I/O lanes
+    name: Original formal regression and MCP with bounded directory and read-proof I/O
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
