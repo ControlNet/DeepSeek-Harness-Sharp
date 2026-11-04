@@ -1,0 +1,69 @@
+name: Windows ordered ACL read-prefix proof
+
+on:
+  push:
+    branches: [perf/read-batches-42]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: read-prefix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Original Windows consumers with four-way ordered read prefixes and no observers
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Prepare the original local NuGet feed
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & ./scripts/fetch-dryioc-feed.ps1 -UseGhArtifact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the original uninstrumented test graph
+        run: >
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
+          -m:1 -nodeReuse:false -p:UseSharedCompilation=false -p:DshNativeCompiler=cl
+      - name: Original standalone owned MCP first with its original deadline
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_PreservesToolOutput_ButNeverMutatesSettings \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Native directory and filesystem authority component gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -class Dsh.Tests.WindowsDirectoryCollectorTests -class Dsh.Tests.WindowsSandboxAuthorityTests \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Original failed shared-worker crash and cancellation consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.PluginSandboxIntegrationTests.FailedWorkerCall_RetiresSharedWorker_AndExplicitEnableDoesNotReplay \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Remaining original owned MCP crash and cancellation consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_CrashDoesNotReplay \
+            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_CancellationDoesNotRestart \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
