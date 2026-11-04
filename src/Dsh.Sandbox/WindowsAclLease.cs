@@ -12,7 +12,7 @@ namespace Dsh.Sandbox;
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsAclLease : IDisposable
 {
-    private const int ReadProbeParallelism = 4;
+    private const int ReadProbeParallelism = 8;
     private const int ReadProbeBatchSize = 128;
     private const int ReadExecute = 0x1200a9;
     private const int Modify = 0x1301bf;
