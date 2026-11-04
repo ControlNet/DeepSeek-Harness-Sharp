@@ -1,14 +1,14 @@
-name: Windows sandbox formal regression context probe
+name: Windows sandbox bounded current-parent traversal
 
 on:
   push:
-    branches: [probe/windows-context-42]
+    branches: [perf/native-parent-walk-51]
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-context-${{ github.ref }}
+  group: windows-native-parent-walk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -157,5 +157,33 @@ jobs:
           EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe"
           "$EXE" -noColor -parallelMode none -reporter verbose \
             -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_PreservesToolOutput_ButNeverMutatesSettings \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Native directory and filesystem authority components including deep traversal boundaries
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -class Dsh.Tests.WindowsDirectoryCollectorTests -class Dsh.Tests.WindowsSandboxAuthorityTests \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Original failed shared-worker crash and cancellation consumers
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.PluginSandboxIntegrationTests.FailedWorkerCall_RetiresSharedWorker_AndExplicitEnableDoesNotReplay \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Remaining original owned MCP crash and cancellation consumers
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_CrashDoesNotReplay \
+            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_CancellationDoesNotRestart \
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
