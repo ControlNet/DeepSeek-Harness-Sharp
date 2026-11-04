@@ -94,6 +94,7 @@ public sealed class McpSettingsBoundaryTests
                 || message.StartsWith("SANDBOX_PROCESS_CPU ", StringComparison.Ordinal)
                 || message.StartsWith("SANDBOX_MACHINE_MEMORY ", StringComparison.Ordinal)
                 || message.StartsWith("SANDBOX_MACHINE_COMMIT ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_MACHINE_DISK ", StringComparison.Ordinal)
                 || message.StartsWith("MCP_DIAGNOSTIC ", StringComparison.Ordinal)))
                 return;
             // Only numeric diagnostic records reach stderr, including during test cancellation.
