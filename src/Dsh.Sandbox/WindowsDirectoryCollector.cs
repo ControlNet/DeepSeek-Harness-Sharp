@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.ComponentModel;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
@@ -44,7 +45,8 @@ internal static class WindowsDirectoryCollector
     /// All workers join before descendant publication; callbacks retain native entry and FIFO directory order.
     /// Native calls are synchronous, with cancellation checked before opens, between entries and after completion.
     /// </remarks>
-    public static unsafe void Collect(string root, Action<string, bool> accept, CancellationToken cancellationToken)
+    public static unsafe void Collect(string root, Action<string, bool> accept, CancellationToken cancellationToken,
+        WindowsSandboxTiming.Collection? timing = null)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(accept);
@@ -54,24 +56,29 @@ internal static class WindowsDirectoryCollector
             && !rootPath.StartsWith(@"\\?\", StringComparison.Ordinal)
             ? $@"\\?\UNC\{rootPath.AsSpan(2)}" : rootPath;
         cancellationToken.ThrowIfCancellationRequested();
+        var openStarted = Stopwatch.GetTimestamp();
         using var rootHandle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics, 0);
+        var openError = Marshal.GetLastPInvokeError();
+        timing?.Open(openStarted);
         if (rootHandle.IsInvalid)
-            throw DirectoryError(Marshal.GetLastPInvokeError(), rootPath, openingDirectory: true);
+            throw DirectoryError(openError, rootPath, openingDirectory: true);
         var rootDirectory = new DirectoryWork(rootPath);
         var pending = new Queue<DirectoryWork>();
         var buffer = Marshal.AllocHGlobal(BufferSize);
         try
         {
-            CollectDirectory(rootHandle, rootDirectory, buffer, cancellationToken);
+            CollectDirectory(rootHandle, rootDirectory, buffer, cancellationToken, timing);
         }
         finally
         {
             Marshal.FreeHGlobal(buffer);
         }
-        PublishDirectory(rootDirectory, pending, accept, cancellationToken);
+        timing?.Emit("collect-root-enumerated");
+        PublishDirectory(rootDirectory, pending, accept, cancellationToken, timing);
+        timing?.Emit("collect-root-published");
         if (pending.Count != 0)
         {
-            var work = new WorkQueue(rootHandle, rootPath, pending, cancellationToken);
+            var work = new WorkQueue(rootHandle, rootPath, pending, cancellationToken, timing);
             var workers = new Thread[WorkerCount];
             var started = 0;
             using var registration = cancellationToken.UnsafeRegister(static state =>
@@ -81,6 +88,7 @@ internal static class WindowsDirectoryCollector
             }, work);
             try
             {
+                timing?.Emit("collect-workers-start");
                 for (; started < workers.Length; started++)
                 {
                     work.ThrowIfStopped();
@@ -111,24 +119,27 @@ internal static class WindowsDirectoryCollector
                     }
                 }
             }
+            timing?.Emit("collect-workers-joined");
             work.ThrowIfStopped();
         }
         while (pending.TryDequeue(out var directory))
         {
-            PublishDirectory(directory, pending, accept, cancellationToken);
+            PublishDirectory(directory, pending, accept, cancellationToken, timing);
         }
         cancellationToken.ThrowIfCancellationRequested();
     }
 
     private static unsafe void CollectDirectory(SafeFileHandle handle, DirectoryWork directory, nint buffer,
-        CancellationToken cancellationToken, WorkQueue? work = null)
+        CancellationToken cancellationToken, WindowsSandboxTiming.Collection? timing, WorkQueue? work = null)
     {
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             work?.ThrowIfStopped();
+            var queryStarted = Stopwatch.GetTimestamp();
             var status = NtQueryDirectoryFile(handle, 0, 0, 0, out var ioStatus, buffer, BufferSize,
                 FileFullDirectoryInformation, 0, 0, 0);
+            timing?.Query(queryStarted);
             if (status is NoMoreFiles or NoSuchFile)
                 return;
             if (status != 0)
@@ -146,6 +157,7 @@ internal static class WindowsDirectoryCollector
                     var path = Path.Join(directory.Path.AsSpan(), name);
                     var child = (entry->Attributes & FileAttributes.Directory) != 0 ? new DirectoryWork(path) : null;
                     directory.Entries.Add(new Entry(path, child));
+                    timing?.Entry(child is not null);
                 }
                 if (entry->NextEntryOffset == 0)
                     break;
@@ -155,12 +167,13 @@ internal static class WindowsDirectoryCollector
     }
 
     private static void PublishDirectory(DirectoryWork directory, Queue<DirectoryWork> pending,
-        Action<string, bool> accept, CancellationToken cancellationToken)
+        Action<string, bool> accept, CancellationToken cancellationToken, WindowsSandboxTiming.Collection? timing)
     {
         foreach (var entry in directory.Entries)
         {
             cancellationToken.ThrowIfCancellationRequested();
             accept(entry.Path, entry.Directory is not null);
+            timing?.Published();
             cancellationToken.ThrowIfCancellationRequested();
             if (entry.Directory is { } child)
                 pending.Enqueue(child);
@@ -185,15 +198,17 @@ internal static class WindowsDirectoryCollector
         private ExceptionDispatchInfo? _failure;
 
         public CancellationToken CancellationToken { get; }
+        public WindowsSandboxTiming.Collection? Timing { get; }
 
         public WorkQueue(SafeFileHandle root, string rootPath, Queue<DirectoryWork> directories,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, WindowsSandboxTiming.Collection? timing)
         {
             _root = root;
             _relativeStart = rootPath.Length + (Path.EndsInDirectorySeparator(rootPath) ? 0 : 1);
             _pending = new Queue<DirectoryWork>(directories);
             _outstanding = _pending.Count;
             CancellationToken = cancellationToken;
+            Timing = timing;
         }
 
         public void Run()
@@ -208,7 +223,7 @@ internal static class WindowsDirectoryCollector
                     CancellationToken.ThrowIfCancellationRequested();
                     using (var handle = OpenRelativeDirectory(_root, directory.Path.AsSpan(_relativeStart), directory.Path, this))
                     {
-                        CollectDirectory(handle, directory, buffer, CancellationToken, this);
+                        CollectDirectory(handle, directory, buffer, CancellationToken, Timing, this);
                     }
                     Complete(directory);
                 }
@@ -272,7 +287,7 @@ internal static class WindowsDirectoryCollector
     {
         const int maximumNameLength = ushort.MaxValue / sizeof(char);
         if (relativePath.Length <= maximumNameLength)
-            return OpenDirectorySegment(root, relativePath, path);
+            return OpenDirectorySegment(root, relativePath, path, work.Timing);
 
         SafeFileHandle? current = null;
         try
@@ -288,7 +303,7 @@ internal static class WindowsDirectoryCollector
                     if (segmentLength <= 0)
                         throw new PathTooLongException($"Unable to open directory '{path}'.");
                 }
-                var next = OpenDirectorySegment(current ?? root, relativePath[..segmentLength], path);
+                var next = OpenDirectorySegment(current ?? root, relativePath[..segmentLength], path, work.Timing);
                 if (segmentLength == relativePath.Length)
                     return next;
                 var previous = current;
@@ -303,7 +318,8 @@ internal static class WindowsDirectoryCollector
         }
     }
 
-    private static unsafe SafeFileHandle OpenDirectorySegment(SafeFileHandle parent, ReadOnlySpan<char> relativePath, string path)
+    private static unsafe SafeFileHandle OpenDirectorySegment(SafeFileHandle parent, ReadOnlySpan<char> relativePath, string path,
+        WindowsSandboxTiming.Collection? timing)
     {
         fixed (char* text = relativePath)
         {
@@ -320,7 +336,9 @@ internal static class WindowsDirectoryCollector
                 ObjectName = &nativeName,
                 Attributes = CaseInsensitive
             };
+            var openStarted = Stopwatch.GetTimestamp();
             var status = NtOpenFile(out var handle, ListDirectory | Synchronize, ref attributes, out _, ShareAll, SynchronousDirectoryOpen);
+            timing?.Open(openStarted);
             GC.KeepAlive(parent);
             if (status == 0)
                 return handle;
