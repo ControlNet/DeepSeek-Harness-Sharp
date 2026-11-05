@@ -67,36 +67,47 @@ internal sealed class WindowsAclLease : IDisposable
 
     public void Apply(SandboxPolicy policy, SafeFileHandle process, CancellationToken cancellationToken)
     {
-        using var effectiveRead = EffectiveRead.TryCreate(process);
-        var paths = new Dictionary<string, (bool Write, bool Directory)>(StringComparer.OrdinalIgnoreCase);
-        var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        foreach (var grant in policy.Writable.OrderBy(static grant => grant.Source.Length))
-            if (!SandboxPolicy.Contains(windows, grant.Source))
-                AddTree(paths, grant.Source, grant.IsDirectory, true, cancellationToken);
-        foreach (var grant in policy.Readable.OrderBy(static grant => grant.Source.Length))
-            if (!SandboxPolicy.Contains(windows, grant.Source))
-                AddTree(paths, grant.Source, grant.IsDirectory, false, cancellationToken);
-        foreach (var denied in policy.Denied)
+        var timing = WindowsIoStageTiming.BeginApply();
+        try
         {
-            if (File.Exists(denied) || Directory.Exists(denied))
-                AddTree(paths, denied, Directory.Exists(denied), false, cancellationToken);
-            else if (policy.Writable.Any(write => SandboxPolicy.Contains(write.Source, denied)))
-                throw new NotSupportedException("A denied path within a writable grant must exist before launch.");
-        }
-        var checkedAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in paths.Keys)
-            for (var parent = Path.GetDirectoryName(path); parent is not null; parent = Path.GetDirectoryName(parent))
+            using var effectiveRead = EffectiveRead.TryCreate(process);
+            timing?.Mark(WindowsIoStageTiming.Phase.CollectionStart);
+            var paths = new Dictionary<string, (bool Write, bool Directory)>(StringComparer.OrdinalIgnoreCase);
+            var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            foreach (var grant in policy.Writable.OrderBy(static grant => grant.Source.Length))
+                if (!SandboxPolicy.Contains(windows, grant.Source))
+                    AddTree(paths, grant.Source, grant.IsDirectory, true, cancellationToken, timing);
+            foreach (var grant in policy.Readable.OrderBy(static grant => grant.Source.Length))
+                if (!SandboxPolicy.Contains(windows, grant.Source))
+                    AddTree(paths, grant.Source, grant.IsDirectory, false, cancellationToken, timing);
+            foreach (var denied in policy.Denied)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (paths.ContainsKey(parent) || !checkedAncestors.Add(parent))
-                    break;
-                Entry.DemandAmbientAncestorGrant(parent, policy.AllowNetwork);
+                if (File.Exists(denied) || Directory.Exists(denied))
+                    AddTree(paths, denied, Directory.Exists(denied), false, cancellationToken, timing);
+                else if (policy.Writable.Any(write => SandboxPolicy.Contains(write.Source, denied)))
+                    throw new NotSupportedException("A denied path within a writable grant must exist before launch.");
             }
-        ApplyGrants(policy, paths, effectiveRead, cancellationToken);
+            timing?.Mark(WindowsIoStageTiming.Phase.CollectionComplete, paths.Count);
+            timing?.Mark(WindowsIoStageTiming.Phase.AncestorsStart);
+            var checkedAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var path in paths.Keys)
+                for (var parent = Path.GetDirectoryName(path); parent is not null; parent = Path.GetDirectoryName(parent))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (paths.ContainsKey(parent) || !checkedAncestors.Add(parent))
+                        break;
+                    Entry.DemandAmbientAncestorGrant(parent, policy.AllowNetwork);
+                }
+            timing?.Mark(WindowsIoStageTiming.Phase.AncestorsComplete);
+            timing?.Mark(WindowsIoStageTiming.Phase.GrantsStart);
+            ApplyGrants(policy, paths, effectiveRead, cancellationToken, timing);
+            timing?.Mark(WindowsIoStageTiming.Phase.GrantsComplete);
+        }
+        finally { timing?.Mark(WindowsIoStageTiming.Phase.ApplyFinal); }
     }
 
     private void ApplyGrants(SandboxPolicy policy, Dictionary<string, (bool Write, bool Directory)> paths,
-        EffectiveRead? effectiveRead, CancellationToken cancellationToken)
+        EffectiveRead? effectiveRead, CancellationToken cancellationToken, WindowsIoStageTiming.Apply? timing)
     {
         // AddTree joins all directory workers before proof workers start.
         var ordered = paths.OrderBy(static entry => entry.Key.Length).ToArray();
@@ -115,13 +126,22 @@ internal sealed class WindowsAclLease : IDisposable
             var inheritedMask = access.Write ? Modify : ReadExecute;
             var mask = denyDelete ? inheritedMask & ~Delete : inheritedMask;
             _entries[offset + index].Grant(_sid, mask, inheritedMask, access.Directory, denyWrite || denyDelete,
-                policy.AllowNetwork, denyWrite ? effectiveRead : null, cancellationToken);
+                policy.AllowNetwork, denyWrite ? effectiveRead : null, cancellationToken, timing);
+            timing?.Granted();
         };
         WindowsReadProofCoordinator? proofs = null;
         Func<int, bool>? probe = null;
         Exception? applyFailure = null;
-        bool Probe(int index) => _entries[offset + index].CanReuseReadGrant(_sid, ReadExecute, ReadExecute,
-            ordered[index].Value.Directory, true, policy.AllowNetwork, effectiveRead);
+        bool Probe(int index)
+        {
+            timing?.ProofEntered();
+            try
+            {
+                return _entries[offset + index].CanReuseReadGrant(_sid, ReadExecute, ReadExecute,
+                    ordered[index].Value.Directory, true, policy.AllowNetwork, effectiveRead);
+            }
+            finally { timing?.ProofExited(); }
+        }
         try
         {
             // The caller holds the gate until every pure probe finishes; mutations keep their stable serial order.
@@ -180,7 +200,7 @@ internal sealed class WindowsAclLease : IDisposable
     }
 
     private void AddTree(Dictionary<string, (bool Write, bool Directory)> paths, string root, bool directory, bool write,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, WindowsIoStageTiming.Apply? timing = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         // Earlier trees already include every descendant with the same access.
@@ -190,7 +210,7 @@ internal sealed class WindowsAclLease : IDisposable
         paths[root] = (write, directory);
         if (directory)
             WindowsDirectoryCollector.Collect(root, (path, isDirectory) => paths[path] = (write, isDirectory),
-                cancellationToken);
+                cancellationToken, timing);
     }
 
     public void Dispose()
@@ -391,7 +411,7 @@ internal sealed class WindowsAclLease : IDisposable
         }
 
         public void Grant(SecurityIdentifier sid, int access, int inheritedAccess, bool directory, bool restrict, bool network,
-            EffectiveRead? effectiveRead, CancellationToken cancellationToken)
+            EffectiveRead? effectiveRead, CancellationToken cancellationToken, WindowsIoStageTiming.Apply? timing = null)
         {
             // SetSecurityInfo propagates to descendants; serialize the complete read/modify/write, not just one native write, so another lease cannot overwrite or revoke this SID.
             lock (AclGate)
@@ -400,7 +420,7 @@ internal sealed class WindowsAclLease : IDisposable
                 if (!bootstrap && (access & WriteData) == 0
                     && CanReuseReadGrant(sid, access, inheritedAccess, directory, restrict, network, effectiveRead))
                     return;
-                GrantCore(sid, access, inheritedAccess, directory, restrict, network, effectiveRead);
+                GrantCore(sid, access, inheritedAccess, directory, restrict, network, effectiveRead, timing);
             }
         }
 
@@ -417,7 +437,7 @@ internal sealed class WindowsAclLease : IDisposable
         }
 
         private void GrantCore(SecurityIdentifier sid, int access, int inheritedAccess, bool directory, bool restrict, bool network,
-            EffectiveRead? effectiveRead)
+            EffectiveRead? effectiveRead, WindowsIoStageTiming.Apply? timing)
         {
             using var handle = Open();
             var (acl, protectedDacl, reuseRead) = ReadGrantAcl(handle, sid, directory, effectiveRead);
@@ -455,7 +475,7 @@ internal sealed class WindowsAclLease : IDisposable
                 if (directory && inheritedAccess != access)
                     acl.InsertAce(insertion, new CommonAce(inherited | AceFlags.InheritOnly, AceQualifier.AccessAllowed, inheritedAccess, sid, false, null));
                 _sidGranted = true;
-                WriteAcl(handle, acl, protectDacl ? ProtectDacl : 0);
+                WriteAcl(handle, acl, protectDacl ? ProtectDacl : 0, timing);
             }
             if ((access & WriteData) == 0)
                 return;
@@ -472,7 +492,7 @@ internal sealed class WindowsAclLease : IDisposable
             {
                 if (!WindowsNative.GetSecurityDescriptorSacl(descriptor, out _, out var sacl, out _))
                     throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot read the AppContainer writable label.");
-                WriteLabel(handle, sacl);
+                WriteLabel(handle, sacl, timing);
                 _label = new WritableLabel(originalLabel);
                 WritableLabels.Add(path, _label);
             }
@@ -655,17 +675,24 @@ internal sealed class WindowsAclLease : IDisposable
             finally { WindowsNative.LocalFree(descriptor); }
         }
 
-        private static unsafe void WriteAcl(SafeFileHandle handle, RawAcl acl, uint inheritance)
+        private static unsafe void WriteAcl(SafeFileHandle handle, RawAcl acl, uint inheritance,
+            WindowsIoStageTiming.Apply? timing = null)
         {
             var bytes = new byte[acl.BinaryLength];
             acl.GetBinaryForm(bytes, 0);
             fixed (byte* pointer = bytes)
-                Check(WindowsNative.SetSecurityInfo(handle, 1, 4 | inheritance, 0, 0, (nint)pointer, 0));
+            {
+                timing?.MutationEntered();
+                try { Check(WindowsNative.SetSecurityInfo(handle, 1, 4 | inheritance, 0, 0, (nint)pointer, 0)); }
+                finally { timing?.MutationExited(); }
+            }
         }
 
-        private static void WriteLabel(SafeFileHandle handle, nint label)
+        private static void WriteLabel(SafeFileHandle handle, nint label, WindowsIoStageTiming.Apply? timing = null)
         {
-            Check(WindowsNative.SetSecurityInfo(handle, 1, 0x10, 0, 0, 0, label));
+            timing?.MutationEntered();
+            try { Check(WindowsNative.SetSecurityInfo(handle, 1, 0x10, 0, 0, 0, label)); }
+            finally { timing?.MutationExited(); }
         }
 
         private static void Check(uint error)

@@ -21,23 +21,39 @@ public sealed class McpSettingsBoundaryTests
     [Trait("Category", "SandboxNative")]
     public async Task OwnedStdio_PreservesToolOutput_ButNeverMutatesSettings()
     {
+        await using var ioStages = Dsh.Sandbox.WindowsIoStageTiming.Observe();
+        ioStages?.MarkTest(Dsh.Sandbox.WindowsIoStageTiming.TestPhase.Start);
+        if (ioStages is null)
+        {
+            try { await Console.Error.WriteLineAsync("IO_STAGE observerAvailable=0 dataUnknown=1"); }
+            catch (Exception) { }
+        }
         using (var fixture = ProtectedFixture())
         {
+            ioStages?.MarkTest(Dsh.Sandbox.WindowsIoStageTiming.TestPhase.BackendStart);
             await SandboxTestBackend.RequireAsync();
+            ioStages?.MarkTest(Dsh.Sandbox.WindowsIoStageTiming.TestPhase.BackendComplete);
             var tools = Tools(fixture);
             await using (var service = new McpService(fixture.Context, workingDirectory: fixture.Root))
             {
                 var output = Path.Combine(fixture.Root, "mcp-output");
                 var initialSettings = await File.ReadAllBytesAsync(fixture.SettingsPath, TestContext.Current.CancellationToken);
+                ioStages?.MarkTest(Dsh.Sandbox.WindowsIoStageTiming.TestPhase.ConnectStart);
                 await Connect(service);
+                ioStages?.MarkTest(Dsh.Sandbox.WindowsIoStageTiming.TestPhase.ConnectComplete);
+                ioStages?.MarkTest(Dsh.Sandbox.WindowsIoStageTiming.TestPhase.PermittedStart);
                 var permitted = await Execute(tools, "write_file", new { path = output, content = "workspace 中文" }, TestContext.Current.CancellationToken);
+                ioStages?.MarkTest(Dsh.Sandbox.WindowsIoStageTiming.TestPhase.PermittedComplete);
                 Assert.False(permitted.IsError, Text(permitted));
                 Assert.Equal("workspace 中文", Text(permitted));
                 Assert.Equal("workspace 中文", await File.ReadAllTextAsync(output, TestContext.Current.CancellationToken));
+                ioStages?.MarkTest(Dsh.Sandbox.WindowsIoStageTiming.TestPhase.DeniedStart);
                 var denied = await Execute(tools, "write_file", new { path = fixture.SettingsPath, content = "bad" }, TestContext.Current.CancellationToken);
+                ioStages?.MarkTest(Dsh.Sandbox.WindowsIoStageTiming.TestPhase.DeniedComplete);
                 var currentSettings = await File.ReadAllBytesAsync(fixture.SettingsPath, TestContext.Current.CancellationToken);
                 Assert.Equal(initialSettings, currentSettings);
                 Assert.True(denied.IsError, $"The owned MCP server reported success for the protected settings write. Output: {Text(denied)}");
+                ioStages?.MarkTest(Dsh.Sandbox.WindowsIoStageTiming.TestPhase.AssertionsComplete);
             }
         }
     }
