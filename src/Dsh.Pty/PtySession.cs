@@ -33,6 +33,43 @@ public sealed class PtySession : IDisposable, ITerminalConnection
     private bool _subscriptionsClosed;
     private PtySessionStatus _status = PtySessionStatus.Running;
     private int? _exitCode;
+    private FirstOutputObservation _firstOutput;
+
+    // This temporary scalar observation is written only by the dedicated pump and never stores output payloads.
+    private struct FirstOutputObservation
+    {
+        public long PumpStartedTick;
+        public long FirstReadEnteredTick;
+        public long FirstReadCompletedTick;
+        public long LastReadEnteredTick;
+        public long LastReadCompletedTick;
+        public long ReadEnteredCount;
+        public long ReadCompletedCount;
+        public long ReadBytes;
+        public long FeedCompletedCount;
+        public long SubscriberPublishCompletedCount;
+        public long OutputPublishCompletedCount;
+        public long FirstFeedCompletedTick;
+        public long FirstOutputPublishCompletedTick;
+        public long TerminatedTick;
+        public int Phase;
+        public int LastReadBytes;
+        public int LastOutputAccepted;
+        public int FailureKnown;
+        public int FailureHResult;
+        public int FailurePhase;
+    }
+
+    // Each scalar is read atomically, but this failure-only snapshot is not coherent across fields even when both phase values agree.
+    internal string FirstOutputDiagnostics
+    {
+        get
+        {
+            var snapshotStartedTick = Stopwatch.GetTimestamp();
+            var phaseBefore = Volatile.Read(ref _firstOutput.Phase);
+            return $"snapshotCoherent=0,snapshotStartedTick={snapshotStartedTick},clockFrequency={Stopwatch.Frequency},phaseBefore={phaseBefore},pumpStartedTick={Volatile.Read(ref _firstOutput.PumpStartedTick)},firstManagedReadEnteredTick={Volatile.Read(ref _firstOutput.FirstReadEnteredTick)},firstManagedReadCompletedTick={Volatile.Read(ref _firstOutput.FirstReadCompletedTick)},lastManagedReadEnteredTick={Volatile.Read(ref _firstOutput.LastReadEnteredTick)},lastManagedReadCompletedTick={Volatile.Read(ref _firstOutput.LastReadCompletedTick)},managedReadEnteredCount={Volatile.Read(ref _firstOutput.ReadEnteredCount)},managedReadCompletedCount={Volatile.Read(ref _firstOutput.ReadCompletedCount)},readBytes={Volatile.Read(ref _firstOutput.ReadBytes)},lastReadBytes={Volatile.Read(ref _firstOutput.LastReadBytes)},feedCompletedCount={Volatile.Read(ref _firstOutput.FeedCompletedCount)},subscriberPublishCompletedCount={Volatile.Read(ref _firstOutput.SubscriberPublishCompletedCount)},outputPublishCompletedCount={Volatile.Read(ref _firstOutput.OutputPublishCompletedCount)},lastOutputAccepted={Volatile.Read(ref _firstOutput.LastOutputAccepted)},firstFeedCompletedTick={Volatile.Read(ref _firstOutput.FirstFeedCompletedTick)},firstOutputPublishCompletedTick={Volatile.Read(ref _firstOutput.FirstOutputPublishCompletedTick)},terminatedTick={Volatile.Read(ref _firstOutput.TerminatedTick)},failureKnown={Volatile.Read(ref _firstOutput.FailureKnown)},failureHr={Volatile.Read(ref _firstOutput.FailureHResult)},failurePhase={Volatile.Read(ref _firstOutput.FailurePhase)},cancellationRequested={(_pumpCts.IsCancellationRequested ? 1 : 0)},phaseAfter={Volatile.Read(ref _firstOutput.Phase)},snapshotEndedTick={Stopwatch.GetTimestamp()}";
+        }
+    }
 
     internal PtySession(PtySessionId id, PtyStartInfo startInfo)
     {
@@ -165,33 +202,70 @@ public sealed class PtySession : IDisposable, ITerminalConnection
      */
     private void PumpLoop()
     {
+        Volatile.Write(ref _firstOutput.PumpStartedTick, Stopwatch.GetTimestamp());
+        // Phases are 0 unstarted, 1 starting, 2 managed read, 3 copying, 4 gate entry, 5 feeding, 6 subscriber publication, 7 output publication, 8 loop boundary, 9 cleanup, and 10 terminated.
+        Volatile.Write(ref _firstOutput.Phase, 1);
         var buffer = new byte[16 * 1024];
         try
         {
             while (!_pumpCts.IsCancellationRequested)
             {
+                var enteredTick = Stopwatch.GetTimestamp();
+                if (_firstOutput.FirstReadEnteredTick == 0)
+                    Volatile.Write(ref _firstOutput.FirstReadEnteredTick, enteredTick);
+                Volatile.Write(ref _firstOutput.LastReadEnteredTick, enteredTick);
+                Volatile.Write(ref _firstOutput.ReadEnteredCount, _firstOutput.ReadEnteredCount + 1);
+                // These boundaries surround ReadBackend and do not identify a native kernel read or its wait reason.
+                Volatile.Write(ref _firstOutput.Phase, 2);
                 var read = ReadBackend(buffer);
+                var completedTick = Stopwatch.GetTimestamp();
+                if (_firstOutput.FirstReadCompletedTick == 0)
+                    Volatile.Write(ref _firstOutput.FirstReadCompletedTick, completedTick);
+                Volatile.Write(ref _firstOutput.LastReadCompletedTick, completedTick);
+                Volatile.Write(ref _firstOutput.LastReadBytes, read);
+                Volatile.Write(ref _firstOutput.ReadBytes, _firstOutput.ReadBytes + Math.Max(0, read));
+                Volatile.Write(ref _firstOutput.ReadCompletedCount, _firstOutput.ReadCompletedCount + 1);
                 if (read <= 0)
                     break;
+                Volatile.Write(ref _firstOutput.Phase, 3);
                 var chunk = buffer.AsSpan(0, read).ToArray();
+                Volatile.Write(ref _firstOutput.Phase, 4);
                 lock (_gate)
                 {
+                    Volatile.Write(ref _firstOutput.Phase, 5);
                     _screen.Feed(chunk);
+                    if (_firstOutput.FirstFeedCompletedTick == 0)
+                        Volatile.Write(ref _firstOutput.FirstFeedCompletedTick, Stopwatch.GetTimestamp());
+                    Volatile.Write(ref _firstOutput.FeedCompletedCount, _firstOutput.FeedCompletedCount + 1);
+                    Volatile.Write(ref _firstOutput.Phase, 6);
                     foreach (var subscriber in _subscribers)
                         subscriber.Writer.TryWrite(chunk);
+                    Volatile.Write(ref _firstOutput.SubscriberPublishCompletedCount, _firstOutput.SubscriberPublishCompletedCount + 1);
                 }
 
-                _output.Writer.TryWrite(chunk);
+                Volatile.Write(ref _firstOutput.Phase, 7);
+                var accepted = _output.Writer.TryWrite(chunk);
+                Volatile.Write(ref _firstOutput.LastOutputAccepted, accepted ? 1 : 0);
+                if (_firstOutput.FirstOutputPublishCompletedTick == 0)
+                    Volatile.Write(ref _firstOutput.FirstOutputPublishCompletedTick, Stopwatch.GetTimestamp());
+                Volatile.Write(ref _firstOutput.OutputPublishCompletedCount, _firstOutput.OutputPublishCompletedCount + 1);
+                Volatile.Write(ref _firstOutput.Phase, 8);
             }
         }
-        catch (Exception)
+        catch (Exception error)
         {
+            Volatile.Write(ref _firstOutput.FailurePhase, Volatile.Read(ref _firstOutput.Phase));
+            Volatile.Write(ref _firstOutput.FailureHResult, error.HResult);
+            Volatile.Write(ref _firstOutput.FailureKnown, 1);
             // 后端读失败(进程退出/句柄关闭): 结束泵, 消费者读到 0 即认为流已结束。
         }
         finally
         {
+            Volatile.Write(ref _firstOutput.Phase, 9);
             CompleteSubscribers();
             _output.Writer.TryComplete();
+            Volatile.Write(ref _firstOutput.TerminatedTick, Stopwatch.GetTimestamp());
+            Volatile.Write(ref _firstOutput.Phase, 10);
         }
     }
 

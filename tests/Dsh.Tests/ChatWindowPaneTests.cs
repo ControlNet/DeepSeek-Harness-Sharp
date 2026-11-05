@@ -773,10 +773,11 @@ public sealed class ChatWindowPaneTests : IDisposable
 
     private static string DescribeMissingPrompt(PtySession session, string paneText)
     {
+        var firstOutputDiagnostics = session.FirstOutputDiagnostics;
         var hostText = session.SnapshotText();
         var conPtyField = typeof(PtySession).GetField("_conPty", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
         bool? conPty = conPtyField is null ? null : conPtyField.GetValue(session) is not null;
-        return $"The shell did not render its prompt before input (conPty={conPty?.ToString() ?? "unknown"}, status={session.Status}, exit={session.ExitCode?.ToString() ?? "none"}, hostPrompt={HasPrompt(hostText)}, hostChars={hostText.Length}, paneChars={paneText.AsSpan().TrimEnd().Length}).";
+        return $"The shell did not render its prompt before input (conPty={conPty?.ToString() ?? "unknown"}, status={session.Status}, exit={session.ExitCode?.ToString() ?? "none"}, hostPrompt={HasPrompt(hostText)}, hostChars={hostText.Length}, paneChars={paneText.AsSpan().TrimEnd().Length}, {firstOutputDiagnostics}).";
     }
 
     /**
