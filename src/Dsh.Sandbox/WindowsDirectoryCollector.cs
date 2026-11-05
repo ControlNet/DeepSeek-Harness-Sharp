@@ -11,7 +11,9 @@ namespace Dsh.Sandbox;
 internal static class WindowsDirectoryCollector
 {
     private const int BufferSize = 16 * 1024;
-    private const int WorkerCount = 255;
+    private const int WorkerCount = 511;
+    private const int MaximumBuffers = 256;
+    private const int MaximumNameLength = ushort.MaxValue / sizeof(char);
     private const int MaximumActiveRoots = 2;
     private const uint ListDirectory = 1;
     private const uint Synchronize = 0x00100000;
@@ -38,10 +40,10 @@ internal static class WindowsDirectoryCollector
     /// </summary>
     /// <remarks>
     /// Each root's entries are read and published on the caller before any of its descendants is opened.
-    /// At most two root anchors and 255 dedicated workers own handles; every native buffer is 16 KiB.
-    /// The caller scratch buffer and all worker buffers together are bounded by 4 MiB.
-    /// Root-relative names exceeding the native counted-name limit are split at directory separators.
-    /// Such opens transiently own two descendant handles per worker; queued directories own none.
+    /// At most two root anchors and 511 descendant handles are owned, including segmented opens.
+    /// The caller and workers share at most 256 lazily allocated, reusable 16 KiB query buffers (4 MiB).
+    /// Root-relative names exceeding the native counted-name limit reserve two handles before opening.
+    /// Queued directories own neither handles nor query buffers.
     /// Paths, entry topology and discovery/publication queues cost O(entries).
     /// All workers join before descendant publication; callbacks retain native entry and FIFO directory order.
     /// Native calls are synchronous, with cancellation checked before opens, between entries and after completion.
@@ -66,7 +68,6 @@ internal static class WindowsDirectoryCollector
         var active = new RootWork?[MaximumActiveRoots];
         Thread[]? workers = null;
         var started = 0;
-        nint buffer = 0;
         using var registration = cancellationToken.UnsafeRegister(static state =>
         {
             var queue = (WorkQueue)state!;
@@ -74,7 +75,6 @@ internal static class WindowsDirectoryCollector
         }, work);
         try
         {
-            buffer = Marshal.AllocHGlobal(BufferSize);
             foreach (var request in roots)
             {
                 work.ThrowIfStopped();
@@ -99,7 +99,20 @@ internal static class WindowsDirectoryCollector
                 root.Handle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics, 0);
                 if (root.Handle.IsInvalid)
                     throw DirectoryError(Marshal.GetLastPInvokeError(), root.Directory.Path, openingDirectory: true);
-                CollectDirectory(root.Handle, root.Directory, buffer, cancellationToken, work);
+                var buffer = work.RentBuffer();
+                try
+                {
+                    CollectDirectory(root.Handle, root.Directory, work.GetBuffer(buffer), cancellationToken, work);
+                }
+                catch (Exception error)
+                {
+                    work.Fail(error);
+                }
+                finally
+                {
+                    work.ReleaseResources(buffer, 0);
+                }
+                work.ThrowIfStopped();
                 PublishDirectory(root.Directory, root.Pending, root.Accept, cancellationToken, work);
                 work.Admit(root);
                 if (root.Pending.Count != 0 && workers is null)
@@ -137,8 +150,7 @@ internal static class WindowsDirectoryCollector
                 }
             foreach (var root in collected)
                 root.Handle?.Dispose();
-            if (buffer != 0)
-                Marshal.FreeHGlobal(buffer);
+            work.FreeBuffers();
         }
         work.ThrowIfStopped();
         foreach (var root in collected)
@@ -230,6 +242,11 @@ internal static class WindowsDirectoryCollector
         private int _outstanding;
         private bool _sealed;
         private ExceptionDispatchInfo? _failure;
+        private readonly nint[] _buffers = new nint[MaximumBuffers];
+        private readonly int[] _freeBuffers = new int[MaximumBuffers];
+        private int _createdBuffers;
+        private int _freeBufferCount;
+        private int _availableHandles = WorkerCount;
 
         public CancellationToken CancellationToken { get; }
 
@@ -279,19 +296,33 @@ internal static class WindowsDirectoryCollector
 
         public void Run()
         {
-            nint buffer = 0;
             try
             {
-                buffer = Marshal.AllocHGlobal(BufferSize);
                 while (Take() is { } directory)
                 {
-                    ThrowIfStopped();
-                    CancellationToken.ThrowIfCancellationRequested();
                     var root = directory.Root;
-                    using (var handle = OpenRelativeDirectory(root.Handle!, directory.Path.AsSpan(root.RelativeStart), directory.Path, this))
+                    var handles = directory.Path.Length - root.RelativeStart > MaximumNameLength ? 2 : 1;
+                    var reserved = false;
+                    var buffer = -1;
+                    SafeFileHandle? handle = null;
+                    try
                     {
-                        CollectDirectory(handle, directory, buffer, CancellationToken, this);
+                        RentHandles(handles);
+                        reserved = true;
+                        handle = OpenRelativeDirectory(root.Handle!, directory.Path.AsSpan(root.RelativeStart), directory.Path, this);
+                        buffer = RentBuffer();
+                        CollectDirectory(handle, directory, GetBuffer(buffer), CancellationToken, this);
                     }
+                    catch (Exception error)
+                    {
+                        Fail(error);
+                    }
+                    finally
+                    {
+                        handle?.Dispose();
+                        ReleaseResources(buffer, reserved ? handles : 0);
+                    }
+                    ThrowIfStopped();
                     Complete(directory);
                 }
             }
@@ -299,10 +330,79 @@ internal static class WindowsDirectoryCollector
             {
                 Fail(error);
             }
+        }
+
+        public void RentHandles(int count)
+        {
+            lock (_gate)
+            {
+                while (_availableHandles < count)
+                {
+                    ThrowIfStopped();
+                    Monitor.Wait(_gate);
+                }
+                ThrowIfStopped();
+                CancellationToken.ThrowIfCancellationRequested();
+                _availableHandles -= count;
+            }
+        }
+
+        public int RentBuffer()
+        {
+            lock (_gate)
+            {
+                while (_freeBufferCount == 0 && _createdBuffers == _buffers.Length)
+                {
+                    ThrowIfStopped();
+                    Monitor.Wait(_gate);
+                }
+                ThrowIfStopped();
+                CancellationToken.ThrowIfCancellationRequested();
+                if (_freeBufferCount != 0)
+                    return _freeBuffers[--_freeBufferCount];
+                var index = _createdBuffers;
+                _buffers[index] = Marshal.AllocHGlobal(BufferSize);
+                _createdBuffers++;
+                return index;
+            }
+        }
+
+        public nint GetBuffer(int index) => _buffers[index];
+
+        public void ReleaseResources(int buffer, int handles)
+        {
+            var interruption = EnterCleanupGate();
+            try
+            {
+                if (buffer >= 0)
+                    _freeBuffers[_freeBufferCount++] = buffer;
+                _availableHandles += handles;
+                if (interruption is not null && _failure is null)
+                    Volatile.Write(ref _failure, ExceptionDispatchInfo.Capture(interruption));
+                Monitor.PulseAll(_gate);
+            }
             finally
             {
-                if (buffer != 0)
-                    Marshal.FreeHGlobal(buffer);
+                Monitor.Exit(_gate);
+            }
+        }
+
+        public void FreeBuffers()
+        {
+            // The caller invokes this only after all started workers have joined.
+            var interruption = EnterCleanupGate();
+            try
+            {
+                if (interruption is not null && _failure is null)
+                    Volatile.Write(ref _failure, ExceptionDispatchInfo.Capture(interruption));
+                for (var index = 0; index < _createdBuffers; index++)
+                    Marshal.FreeHGlobal(_buffers[index]);
+                _createdBuffers = 0;
+                _freeBufferCount = 0;
+            }
+            finally
+            {
+                Monitor.Exit(_gate);
             }
         }
 
@@ -376,8 +476,7 @@ internal static class WindowsDirectoryCollector
     private static SafeFileHandle OpenRelativeDirectory(SafeFileHandle root, ReadOnlySpan<char> relativePath,
         string path, WorkQueue work)
     {
-        const int maximumNameLength = ushort.MaxValue / sizeof(char);
-        if (relativePath.Length <= maximumNameLength)
+        if (relativePath.Length <= MaximumNameLength)
             return OpenDirectorySegment(root, relativePath, path);
 
         SafeFileHandle? current = null;
@@ -388,9 +487,9 @@ internal static class WindowsDirectoryCollector
                 work.CancellationToken.ThrowIfCancellationRequested();
                 work.ThrowIfStopped();
                 var segmentLength = relativePath.Length;
-                if (segmentLength > maximumNameLength)
+                if (segmentLength > MaximumNameLength)
                 {
-                    segmentLength = relativePath[..(maximumNameLength + 1)].LastIndexOfAny('\\', '/');
+                    segmentLength = relativePath[..(MaximumNameLength + 1)].LastIndexOfAny('\\', '/');
                     if (segmentLength <= 0)
                         throw new PathTooLongException($"Unable to open directory '{path}'.");
                 }

@@ -563,6 +563,285 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         AssertDirectoriesReleased();
     }
 
+    [Fact]
+    public void WideTree_CollectsMoreDescendantsThanEitherResourceWindowInReferenceOrder()
+    {
+        RequireWindows();
+        for (var index = 0; index < 513; index++)
+        {
+            var child = Directory.CreateDirectory(Path.Combine(_root, $"child-{index:000}")).FullName;
+            File.WriteAllText(Path.Combine(child, "input.txt"), "included");
+        }
+        var expected = new FileSystemEnumerable<(string Path, bool Directory)>(_root,
+            static (ref FileSystemEntry entry) => (entry.ToFullPath(), entry.IsDirectory),
+            new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                AttributesToSkip = FileAttributes.ReparsePoint,
+                IgnoreInaccessible = false,
+                BufferSize = 16 * 1024
+            }).ToArray();
+        var actual = new List<(string Path, bool Directory)>();
+        var caller = Environment.CurrentManagedThreadId;
+
+        WindowsDirectoryCollector.Collect(_root, (path, directory) =>
+        {
+            Assert.Equal(caller, Environment.CurrentManagedThreadId);
+            actual.Add((path, directory));
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1026, actual.Count);
+        Assert.True(expected.SequenceEqual(actual), "Both resource windows must preserve native entry and FIFO directory order.");
+        AssertDirectoriesReleased();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ResourceWait_InterruptedWorkerRetiresAndReleasesItsDescendant(bool waitForHandle)
+    {
+        RequireWindows();
+        using var queue = CreateResourceQueue();
+        if (waitForHandle)
+            queue.RentHandles(511);
+        else
+            for (var index = 0; index < 256; index++)
+                queue.RentBuffer();
+        var worker = queue.StartWorker();
+        WaitUntilBlocked(worker);
+
+        worker.Interrupt();
+
+        Assert.True(worker.Join(TimeSpan.FromSeconds(5)), "Interrupting a resource wait must retire the native worker.");
+        Assert.IsType<ThreadInterruptedException>(Record.Exception(queue.Demand));
+        using var reopened = WindowsNative.CreateFile(queue.ChildPath, 1, 0, 0, 3, 0x02000000, 0);
+        Assert.False(reopened.IsInvalid, "An interrupted buffer waiter must close the descendant it already opened.");
+        Assert.Equal(0, queue.ChildEntryCount);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void ResourceWait_FirstFailureOrCancellationRetiresTheNativeWorker(bool waitForHandle, bool cancel)
+    {
+        RequireWindows();
+        using var queue = CreateResourceQueue();
+        using var cancellation = new CancellationTokenSource();
+        if (waitForHandle)
+            queue.RentHandles(511);
+        else
+            for (var index = 0; index < 256; index++)
+                queue.RentBuffer();
+        var worker = queue.StartWorker();
+        WaitUntilBlocked(worker);
+        if (!waitForHandle)
+        {
+            using var exclusive = WindowsNative.CreateFile(queue.ChildPath, 1, 0, 0, 3, 0x02000000, 0);
+            Assert.True(exclusive.IsInvalid, "The worker must open its descendant before waiting for a query buffer.");
+            Assert.Equal(32, Marshal.GetLastPInvokeError());
+        }
+        Exception failure;
+        if (cancel)
+        {
+            cancellation.Cancel();
+            failure = new OperationCanceledException(cancellation.Token);
+        }
+        else
+            failure = new IOException("The first native operation failed while another worker waited for resources.");
+
+        queue.Fail(failure);
+
+        Assert.True(worker.Join(TimeSpan.FromSeconds(5)), "A stopped resource waiter must retire.");
+        Assert.Same(failure, Record.Exception(queue.Demand));
+        using var reopened = WindowsNative.CreateFile(queue.ChildPath, 1, 0, 0, 3, 0x02000000, 0);
+        Assert.False(reopened.IsInvalid, "The waiting worker must release its actual descendant handle before returning.");
+        Assert.Equal(0, queue.ChildEntryCount);
+    }
+
+    [Fact]
+    public void QueryWindow_ReusesReturnedBufferToFinishAnAlreadyOpenDescendant()
+    {
+        RequireWindows();
+        using var queue = CreateResourceQueue();
+        Assert.Equal(0, queue.CreatedBufferCount);
+        var buffers = new int[256];
+        for (var index = 0; index < buffers.Length; index++)
+            buffers[index] = queue.RentBuffer();
+        Assert.Equal(256, buffers.Distinct().Count());
+        var worker = queue.StartWorker();
+        WaitUntilBlocked(worker);
+
+        queue.ReleaseResources(buffers[0], 0);
+
+        Assert.True(worker.Join(TimeSpan.FromSeconds(5)), "Returning one query buffer must unblock the native reader.");
+        queue.Demand();
+        Assert.Equal(1, queue.ChildEntryCount);
+        Assert.Equal(256, queue.CreatedBufferCount);
+        Assert.Equal(buffers[0], queue.RentBuffer());
+    }
+
+    [Fact]
+    public void SegmentedOpenReservation_WaitsForBothPermitsWithoutHoldingTheLastPermit()
+    {
+        RequireWindows();
+        using var queue = CreateResourceQueue();
+        queue.RentHandles(510);
+        Exception? reservationFailure = null;
+        var reserved = false;
+        var segmented = queue.Start(() =>
+        {
+            try
+            {
+                queue.RentHandles(2);
+                reserved = true;
+                queue.ReleaseResources(-1, 2);
+            }
+            catch (Exception error)
+            {
+                reservationFailure = error;
+            }
+        });
+        WaitUntilBlocked(segmented);
+        var worker = queue.StartWorker();
+
+        Assert.True(worker.Join(TimeSpan.FromSeconds(5)),
+            "A short native open must retain access to the last permit while a segmented open waits for two.");
+        queue.Demand();
+        Assert.Equal(1, queue.ChildEntryCount);
+        Assert.Equal(1, queue.CreatedBufferCount);
+        Assert.False(reserved);
+        queue.ReleaseResources(-1, 510);
+        Assert.True(segmented.Join(TimeSpan.FromSeconds(5)), "The atomic reservation must resume once both permits are available.");
+        Assert.True(reserved);
+        Assert.Null(reservationFailure);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InterruptedResourceReturn_ReleasesTheWindowAndPreservesTheFirstFailure(bool primaryFailure)
+    {
+        RequireWindows();
+        using var queue = CreateResourceQueue();
+        queue.RentHandles(511);
+        var buffer = queue.RentBuffer();
+        var worker = queue.StartWorker();
+        WaitUntilBlocked(worker);
+        var failure = new IOException("The primary native operation failed before returning its resources.");
+        if (primaryFailure)
+            queue.Fail(failure);
+        Thread returning;
+        lock (queue.Gate)
+        {
+            returning = queue.Start(() => queue.ReleaseResources(buffer, 511));
+            WaitUntilBlocked(returning);
+            returning.Interrupt();
+        }
+
+        Assert.True(returning.Join(TimeSpan.FromSeconds(5)), "An interrupted resource return must still release the cleanup gate.");
+        Assert.True(worker.Join(TimeSpan.FromSeconds(5)), "Resource return must retire waiting workers before propagation.");
+        var observed = Record.Exception(queue.Demand);
+        if (primaryFailure)
+            Assert.Same(failure, observed);
+        else
+            Assert.IsType<ThreadInterruptedException>(observed);
+        Assert.Equal(buffer, queue.LastFreeBuffer);
+        Assert.Equal(511, queue.AvailableHandles);
+        Assert.Equal(0, queue.ChildEntryCount);
+    }
+
+    private ResourceQueue CreateResourceQueue()
+    {
+        var child = Directory.CreateDirectory(Path.Combine(_root, "resource-child")).FullName;
+        File.WriteAllText(Path.Combine(child, "input.txt"), "included");
+        return new ResourceQueue(_root, child);
+    }
+
+    private static void WaitUntilBlocked(Thread thread)
+    {
+        Assert.True(SpinWait.SpinUntil(
+            () => (thread.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0, TimeSpan.FromSeconds(5)),
+            "The owned worker must reach the resource gate before the fixture changes availability.");
+    }
+
+    private sealed class ResourceQueue : IDisposable
+    {
+        private readonly Type _type = typeof(WindowsDirectoryCollector).GetNestedType("WorkQueue", BindingFlags.NonPublic)!;
+        private readonly object _queue;
+        private readonly object _child;
+        private readonly List<Thread> _threads = [];
+        private readonly Microsoft.Win32.SafeHandles.SafeFileHandle _anchor;
+        private readonly Action _run;
+        private readonly Action _freeBuffers;
+
+        public ResourceQueue(string root, string child)
+        {
+            ChildPath = child;
+            _queue = Activator.CreateInstance(_type, CancellationToken.None)!;
+            Gate = Field("_gate");
+            RentHandles = Method("RentHandles").CreateDelegate<Action<int>>(_queue);
+            RentBuffer = Method("RentBuffer").CreateDelegate<Func<int>>(_queue);
+            ReleaseResources = Method("ReleaseResources").CreateDelegate<Action<int, int>>(_queue);
+            Fail = Method("Fail").CreateDelegate<Action<Exception>>(_queue);
+            Demand = Method("ThrowIfStopped").CreateDelegate<Action>(_queue);
+            _run = Method("Run").CreateDelegate<Action>(_queue);
+            _freeBuffers = Method("FreeBuffers").CreateDelegate<Action>(_queue);
+            var rootType = typeof(WindowsDirectoryCollector).GetNestedType("RootWork", BindingFlags.NonPublic)!;
+            var rootWork = Activator.CreateInstance(rootType,
+                new object[] { new WindowsDirectoryCollector.RootRequest(root, static (_, _) => { }) })!;
+            var directoryType = typeof(WindowsDirectoryCollector).GetNestedType("DirectoryWork", BindingFlags.NonPublic)!;
+            _child = Activator.CreateInstance(directoryType, new[] { child, rootWork })!;
+            var pending = rootType.GetProperty("Pending")!.GetValue(rootWork)!;
+            pending.GetType().GetMethod("Enqueue")!.Invoke(pending, [_child]);
+            _anchor = WindowsNative.CreateFile(root, 1, 7, 0, 3, 0x02000000, 0);
+            if (_anchor.IsInvalid)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                _anchor.Dispose();
+                throw new Win32Exception(error, "The resource fixture could not open its root anchor.");
+            }
+            rootType.GetProperty("Handle")!.SetValue(rootWork, _anchor);
+            Method("Admit").Invoke(_queue, [rootWork]);
+            Method("Seal").CreateDelegate<Action>(_queue)();
+        }
+
+        public string ChildPath { get; }
+        public object Gate { get; }
+        public Action<int> RentHandles { get; }
+        public Func<int> RentBuffer { get; }
+        public Action<int, int> ReleaseResources { get; }
+        public Action<Exception> Fail { get; }
+        public Action Demand { get; }
+        public int CreatedBufferCount => (int)Field("_createdBuffers");
+        public int AvailableHandles => (int)Field("_availableHandles");
+        public int LastFreeBuffer => ((int[])Field("_freeBuffers"))[(int)Field("_freeBufferCount") - 1];
+        public int ChildEntryCount => ((System.Collections.ICollection)_child.GetType().GetProperty("Entries")!.GetValue(_child)!).Count;
+
+        public Thread StartWorker() => Start(_run);
+
+        public Thread Start(Action action)
+        {
+            var thread = new Thread(action.Invoke) { IsBackground = true };
+            _threads.Add(thread);
+            thread.Start();
+            return thread;
+        }
+
+        public void Dispose()
+        {
+            Fail(new OperationCanceledException());
+            foreach (var thread in _threads)
+                Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "Every owned queue participant must exit before freeing native memory.");
+            _anchor.Dispose();
+            _freeBuffers();
+        }
+
+        private MethodInfo Method(string name) => _type.GetMethod(name)!;
+        private object Field(string name) => _type.GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(_queue)!;
+    }
+
     private void AssertDirectoriesReleased()
     {
         // An exclusive consumer must be able to reopen both the active directory and queued descendants after failure.
