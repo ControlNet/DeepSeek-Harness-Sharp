@@ -7,23 +7,32 @@ namespace Dsh.Sandbox;
 // Formatting is confined to samples; call boundaries only update fixed numeric storage.
 internal static class WindowsIoStageTiming
 {
-    // At most 16 collections and one sampling buffer retain 1266176 bytes of numeric array payload.
-    // This excludes apply/test arrays, object headers, formatted output and BCL process snapshots.
+    // Numeric payload maximum: collections * (slots * (184 + 3 * operations * 8)
+    // + roots * 28) + threadSamples * 32 + provenance * 12 + categories * 4
+    // + applies * phases * 8 + testPhases * 8, using x64 CLR field layout.
+    // Reference arrays add (provenance + applies + collections) * IntPtr.Size bytes.
+    // This excludes object headers, existing work/path objects, formatting and BCL snapshots.
     // Each resource sample retains managed BCL thread objects for O(own-process threads).
     // Process.Threads internally queries a system-wide native process/thread buffer before filtering this process.
     // Its transient native allocation scales with system processes and threads, not the captured slot capacity.
     // The fixed numeric payload is therefore not a bound on total diagnostic allocation.
     // At most CollectionCapacity * SlotCapacity captured slots are searched, with one CPU query per matching stable slot.
     // One timer and one process-wide filtered listener exist only during the observed test scope.
-    // Every observed operation pair still adds two clock reads and seven atomic updates before sampling costs.
+    // Directory IDs add one atomic and a relative-name scan; entry accounting adds sequence atomics.
+    // Native operation pairs add two clock reads and seven atomic updates before sampling costs.
     private const int ApplyCapacity = 16;
     private const int CollectionCapacity = 16;
     private const int SlotCapacity = 257; // Caller 0, actual current-source workers 1..256.
     private const int RootCapacity = 256;
+    private const int ProvenanceCapacity = 4096;
     private const int ThreadSampleCapacity = CollectionCapacity * SlotCapacity;
     private const int MaximumNumericArrayBytes = CollectionCapacity
-        * (SlotCapacity * (64 + 3 * (int)Operation.Count * sizeof(long)) + RootCapacity * 20)
-        + ThreadSampleCapacity * 32;
+        * (SlotCapacity * (184 + 3 * (int)Operation.Count * sizeof(long))
+            + RootCapacity * 28)
+        + ThreadSampleCapacity * 32 + ProvenanceCapacity * 12 + (int)RootCategory.Count * sizeof(int)
+        + ApplyCapacity * (int)Phase.Count * sizeof(long) + (int)TestPhase.Count * sizeof(long);
+    private static readonly int MaximumReferenceArrayBytes =
+        (ProvenanceCapacity + ApplyCapacity + CollectionCapacity) * IntPtr.Size;
     private const int PreDeadlineSeconds = 59;
     private static Observation? _observation;
     [ThreadStatic] private static bool _threadIdAttempted;
@@ -53,6 +62,43 @@ internal static class WindowsIoStageTiming
     internal enum Operation { None, Open, Query, CloseDispose, QueueWait, RootAdmissionWait, RootName, WorkerJoin, Count }
     internal enum TestPhase { Start, BackendStart, BackendComplete, ConnectStart, ConnectComplete, PermittedStart, PermittedComplete, DeniedStart, DeniedComplete, AssertionsComplete, Count }
 
+    internal enum RootCategory
+    {
+        Unknown, Sdk, Packs, Manifests, Shared, Host, Executable,
+        ExplicitReadOnly, ExplicitWritable, ExplicitDenied, Count
+    }
+    internal readonly record struct Provenance(RootCategory Category, int SourceOrdinal);
+
+    internal static bool IsObserving => Volatile.Read(ref _observation) is not null;
+
+    internal static void RuntimeRoot(string original, RootCategory category)
+    {
+        var observation = Volatile.Read(ref _observation);
+        if (observation is null) return;
+        try { observation.RecordRuntimeRoot(original, category); }
+        catch (Exception error) when (error is not ThreadInterruptedException) { observation.Failed(); }
+    }
+
+    internal static void PolicyRoot(object key, string original, RootCategory category, int sourceOrdinal)
+    {
+        var observation = Volatile.Read(ref _observation);
+        if (observation is null) return;
+        try { observation.RecordPolicyRoot(key, original, category, sourceOrdinal); }
+        catch (Exception error) when (error is not ThreadInterruptedException) { observation.Failed(); }
+    }
+
+    internal static Provenance RootProvenance(object key, RootCategory knownCategory = RootCategory.Unknown)
+    {
+        var observation = Volatile.Read(ref _observation);
+        if (observation is null) return default;
+        try
+        {
+            var provenance = observation.FindProvenance(key);
+            return provenance.Category == RootCategory.Unknown ? new Provenance(knownCategory, 0) : provenance;
+        }
+        catch (Exception error) when (error is not ThreadInterruptedException) { observation.Failed(); return new Provenance(knownCategory, 0); }
+    }
+
     internal static Observation? Observe()
     {
         try { return new Observation(); }
@@ -81,6 +127,12 @@ internal static class WindowsIoStageTiming
         private readonly Collection?[] _collections = new Collection?[CollectionCapacity];
         private readonly long[] _testPhases = new long[(int)TestPhase.Count];
         private readonly ThreadSnapshot[] _threadSamples = new ThreadSnapshot[ThreadSampleCapacity];
+        private readonly object?[] _provenanceKeys = new object?[ProvenanceCapacity];
+        private readonly int[] _provenanceKinds = new int[ProvenanceCapacity];
+        private readonly Provenance[] _provenance = new Provenance[ProvenanceCapacity];
+        private readonly int[] _categoryOrdinals = new int[(int)RootCategory.Count];
+        private readonly object _provenanceGate = new();
+        private int _provenanceCount, _provenanceOverflow;
         private readonly Timer _timer;
         private readonly NumericTraceListener _listener = new();
         private readonly object _dumpGate = new();
@@ -128,6 +180,65 @@ internal static class WindowsIoStageTiming
         }
 
         internal void Failed() => Interlocked.Increment(ref _errors);
+
+        internal void RecordRuntimeRoot(string original, RootCategory category)
+        {
+            lock (_provenanceGate)
+            {
+                for (var index = 0; index < _provenanceCount; index++)
+                    if (_provenanceKinds[index] == 0 && _provenanceKeys[index] is string path
+                        && string.Equals(path, original, StringComparison.OrdinalIgnoreCase))
+                        return;
+                var ordinal = ++_categoryOrdinals[(int)category];
+                if (ordinal <= 0) { Failed(); StoreProvenance(original, 0, default); return; }
+                StoreProvenance(original, 0, new Provenance(category, ordinal));
+            }
+        }
+
+        internal void RecordPolicyRoot(object key, string original, RootCategory category, int sourceOrdinal)
+        {
+            lock (_provenanceGate)
+            {
+                var provenance = new Provenance(category, category == RootCategory.Unknown ? 0 : sourceOrdinal);
+                var runtimeCategory = category is RootCategory.Unknown or RootCategory.Host or RootCategory.Executable;
+                var matched = false;
+                if (runtimeCategory)
+                    for (var index = 0; index < _provenanceCount; index++)
+                        if (_provenanceKinds[index] == 0 && _provenanceKeys[index] is string path
+                            && string.Equals(path, original, StringComparison.OrdinalIgnoreCase)
+                            && (category == RootCategory.Unknown || _provenance[index].Category == category))
+                        {
+                            provenance = _provenance[index];
+                            matched = true;
+                            break;
+                        }
+                if (!matched && category is RootCategory.Host or RootCategory.Executable)
+                {
+                    var ordinal = ++_categoryOrdinals[(int)category];
+                    provenance = ordinal > 0 ? new Provenance(category, ordinal) : default;
+                    if (ordinal <= 0) Failed();
+                    StoreProvenance(original, 0, provenance);
+                }
+                StoreProvenance(key, 1, provenance);
+            }
+        }
+
+        private void StoreProvenance(object key, int kind, Provenance provenance)
+        {
+            if (_provenanceCount == ProvenanceCapacity) { _provenanceOverflow++; return; }
+            _provenanceKeys[_provenanceCount] = key;
+            _provenanceKinds[_provenanceCount] = kind;
+            _provenance[_provenanceCount++] = provenance;
+        }
+
+        internal Provenance FindProvenance(object key)
+        {
+            lock (_provenanceGate)
+                for (var index = 0; index < _provenanceCount; index++)
+                    if (_provenanceKinds[index] == 1 && ReferenceEquals(_provenanceKeys[index], key))
+                        return _provenance[index];
+            return default;
+        }
         internal void MarkTest(TestPhase phase) =>
             Volatile.Write(ref _testPhases[(int)phase], Stopwatch.GetTimestamp());
 
@@ -155,6 +266,7 @@ internal static class WindowsIoStageTiming
                 {
                     DumpResources(sample);
                     Trace.WriteLine($"IO_STAGE sample={sample} final={(sample == 5 ? 1 : 0)} requestedSeconds={(sample == 4 ? PreDeadlineSeconds : sample < 4 ? sample * 15 : -1)} algorithmSource=c8b2e8684dd7f1d37604549d6fedfb5ac260782b requiredPreConsumers=234 requiredMcpBudgetMs=60000 started={_started} ticks={Stopwatch.GetTimestamp()} frequency={Stopwatch.Frequency} applies={Volatile.Read(ref _applyCount)} applyOverflow={Math.Max(0, Volatile.Read(ref _applyCount) - ApplyCapacity)} collections={Volatile.Read(ref _collectionCount)} collectionOverflow={Math.Max(0, Volatile.Read(ref _collectionCount) - CollectionCapacity)} observerErrors={Volatile.Read(ref _errors)} listenerErrors={_listener.Errors} scope=managedNativeCallBoundary totals=overlapping notWallPartitions=1 unknownIdle=1 closeIsSafeHandleDisposeBoundary=1");
+                    Trace.WriteLine($"IO_STAGE_PROVENANCE sample={sample} retained={Volatile.Read(ref _provenanceCount)} capacity={ProvenanceCapacity} overflow={Volatile.Read(ref _provenanceOverflow)} preObservationRuntimeRootsUnknown=1 unknownCategory=0 unknownSourceOrdinal=0 categoryOrdinalScope=runtimeObservedSourcesOrExplicitCategoryInputs firstKnownRuntimeSourceWins=1 registryLookup=boundedLinear noPathHashes=1 numericArrayBytesMaximum={MaximumNumericArrayBytes} referenceArrayBytesMaximum={MaximumReferenceArrayBytes} headersAndOtherObservationObjectsExcluded=1");
                     for (var phase = 0; phase < _testPhases.Length; phase++)
                         Trace.WriteLine($"IO_STAGE_TEST sample={sample} phase={(TestPhase)phase} ticks={Volatile.Read(ref _testPhases[phase])} known={(Volatile.Read(ref _testPhases[phase]) == 0 ? 0 : 1)}");
                     foreach (var apply in _applies) apply?.Dump(sample);
@@ -342,7 +454,7 @@ internal static class WindowsIoStageTiming
 
     internal sealed class Collection(int ordinal, int apply)
     {
-        // No directory-specific observer objects, delegates, identifiers or native handles.
+        // Directory identity and progress live only in fixed active slots; no pending-work registry.
         private readonly Slot[] _slots = CreateSlots();
         private readonly long[] _enters = new long[SlotCapacity * (int)Operation.Count];
         private readonly long[] _exits = new long[SlotCapacity * (int)Operation.Count];
@@ -350,6 +462,9 @@ internal static class WindowsIoStageTiming
         private readonly long[] _rootEntered = new long[RootCapacity];
         private readonly long[] _rootCompleted = new long[RootCapacity];
         private readonly int[] _rootAdmission = new int[RootCapacity];
+        private readonly Provenance[] _rootProvenance = new Provenance[RootCapacity];
+        private long _nextDirectory;
+        private int _numericOverflow;
         private readonly long _started = Stopwatch.GetTimestamp();
         private long _finished;
         private int _workers, _roots, _errors, _slotOverflow, _stopKind;
@@ -358,7 +473,12 @@ internal static class WindowsIoStageTiming
         {
             internal int Sequence, Root, Admission, Operation, Assigned, Retired;
             internal uint ThreadId;
+            internal int Depth;
             internal long Entered, Exited, Entries, DirectoriesCompleted;
+            internal long Directory, DirectoryStarted, Queries, Returned, Accepted;
+            internal long QueryTicks, MaximumQueryTicks, LastQueryTicks, DirectoriesStarted;
+            internal long TotalQueries, TotalReturned, TotalQueryTicks, MaximumDirectoryQueries, MaximumDirectoryTicks;
+            internal long TotalMaximumQueryTicks;
         }
 
         private static Slot[] CreateSlots()
@@ -377,12 +497,13 @@ internal static class WindowsIoStageTiming
             return slot;
         }
 
-        internal int Root(int admission)
+        internal int Root(int admission, Provenance provenance)
         {
             var root = Interlocked.Increment(ref _roots);
             if (root <= RootCapacity)
             {
                 Volatile.Write(ref _rootAdmission[root - 1], admission);
+                _rootProvenance[root - 1] = provenance;
                 Volatile.Write(ref _rootEntered[root - 1], Stopwatch.GetTimestamp());
             }
             return root;
@@ -392,6 +513,53 @@ internal static class WindowsIoStageTiming
         {
             if (root > 0 && root <= RootCapacity)
                 Interlocked.CompareExchange(ref _rootCompleted[root - 1], Stopwatch.GetTimestamp(), 0);
+        }
+
+        // One ID atomic and one scan of the existing relative name per admitted directory.
+        // ID order is active admission/allocation order, not dequeue or discovery/publication order.
+        // Parent identity is unavailable.
+        internal void BeginDirectory(int slot, ReadOnlySpan<char> relativePath)
+        {
+            if ((uint)slot >= SlotCapacity) return;
+            var directory = Interlocked.Increment(ref _nextDirectory);
+            if (directory <= 0) Interlocked.Increment(ref _numericOverflow);
+            var depth = relativePath.IsEmpty ? 0 : 1;
+            foreach (var character in relativePath)
+                if (character == Path.DirectorySeparatorChar || character == Path.AltDirectorySeparatorChar)
+                    depth++;
+            ref var state = ref _slots[slot];
+            Interlocked.Increment(ref state.Sequence);
+            state.Directory = directory > 0 ? directory : 0;
+            state.Depth = depth;
+            state.DirectoryStarted = Stopwatch.GetTimestamp();
+            state.Queries = state.Returned = state.Accepted = state.QueryTicks = state.MaximumQueryTicks = state.LastQueryTicks = 0;
+            state.DirectoriesStarted++;
+            Interlocked.Increment(ref state.Sequence);
+        }
+
+        internal void EndDirectory(int slot)
+        {
+            if ((uint)slot >= SlotCapacity) return;
+            ref var state = ref _slots[slot];
+            if (state.DirectoryStarted == 0) return;
+            Interlocked.Increment(ref state.Sequence);
+            state.MaximumDirectoryQueries = Math.Max(state.MaximumDirectoryQueries, state.Queries);
+            state.MaximumDirectoryTicks = Math.Max(state.MaximumDirectoryTicks,
+                Stopwatch.GetTimestamp() - state.DirectoryStarted);
+            state.Directory = state.DirectoryStarted = 0;
+            state.Queries = state.Returned = state.Accepted = state.QueryTicks = state.MaximumQueryTicks = state.LastQueryTicks = 0;
+            state.Depth = -1;
+            Interlocked.Increment(ref state.Sequence);
+        }
+
+        internal void ReturnedEntry(int slot)
+        {
+            if ((uint)slot >= SlotCapacity) return;
+            ref var state = ref _slots[slot];
+            Interlocked.Increment(ref state.Sequence);
+            state.Returned++;
+            state.TotalReturned++;
+            Interlocked.Increment(ref state.Sequence);
         }
 
         internal void Bind(int slot, int root, int admission)
@@ -413,6 +581,7 @@ internal static class WindowsIoStageTiming
             if (state.Operation != 0) Interlocked.Increment(ref _errors);
             state.Entered = Stopwatch.GetTimestamp();
             state.Operation = (int)operation;
+            if (operation == Operation.Query) { state.Queries++; state.TotalQueries++; }
             Interlocked.Increment(ref _enters[slot * (int)Operation.Count + (int)operation]);
             Interlocked.Increment(ref state.Sequence);
         }
@@ -425,6 +594,15 @@ internal static class WindowsIoStageTiming
             var now = Stopwatch.GetTimestamp();
             if (state.Operation != (int)operation) Interlocked.Increment(ref _errors);
             var index = slot * (int)Operation.Count + (int)operation;
+            if (operation == Operation.Query)
+            {
+                var elapsed = now - state.Entered;
+                state.QueryTicks += elapsed;
+                state.TotalQueryTicks += elapsed;
+                state.LastQueryTicks = elapsed;
+                state.MaximumQueryTicks = Math.Max(state.MaximumQueryTicks, elapsed);
+                state.TotalMaximumQueryTicks = Math.Max(state.TotalMaximumQueryTicks, elapsed);
+            }
             Interlocked.Add(ref _elapsed[index], now - state.Entered);
             Interlocked.Increment(ref _exits[index]);
             state.Exited = now;
@@ -445,7 +623,12 @@ internal static class WindowsIoStageTiming
         internal void Stopped(int kind) => Interlocked.CompareExchange(ref _stopKind, kind, 0);
         internal void EntryCollected(int slot)
         {
-            if ((uint)slot < SlotCapacity) Interlocked.Increment(ref _slots[slot].Entries);
+            if ((uint)slot >= SlotCapacity) return;
+            ref var state = ref _slots[slot];
+            Interlocked.Increment(ref state.Sequence);
+            state.Entries++;
+            state.Accepted++;
+            Interlocked.Increment(ref state.Sequence);
         }
         internal void DirectoryCompleted(int slot)
         {
@@ -543,25 +726,44 @@ internal static class WindowsIoStageTiming
                 }
                 Trace.WriteLine($"IO_STAGE_TOTAL sample={sample} collection={ordinal} operation={(Operation)operation} entered={entered} exited={exited} completedTicks={elapsed} atomicSnapshot=0");
             }
+            long directoryStarts = 0, queries = 0, returned = 0, queryTicks = 0;
+            long maximumQueryTicks = 0, maximumDirectoryQueries = 0, maximumDirectoryTicks = 0;
+            var incoherentSlots = 0;
             for (var slot = 0; slot < SlotCapacity; slot++)
             {
                 ref var state = ref _slots[slot];
                 if (Volatile.Read(ref state.Assigned) == 0) continue;
                 var sequence = Volatile.Read(ref state.Sequence);
-                var root = Volatile.Read(ref state.Root);
-                var admission = Volatile.Read(ref state.Admission);
-                var operation = Volatile.Read(ref state.Operation);
-                var nativeThreadId = Volatile.Read(ref state.ThreadId);
-                var entered = Volatile.Read(ref state.Entered);
-                var exited = Volatile.Read(ref state.Exited);
-                var retired = Volatile.Read(ref state.Retired);
-                var coherent = (sequence & 1) == 0 && sequence == Volatile.Read(ref state.Sequence);
-                if (retired == 1 && operation == 0 && coherent) continue;
-                Trace.WriteLine($"IO_STAGE_SLOT sample={sample} collection={ordinal} slot={slot} root={root} admission={admission} operation={(Operation)operation} sequence={sequence} tid={nativeThreadId} tidKnown={(nativeThreadId == 0 ? 0 : 1)} entered={entered} exited={exited} retired={retired} coherent={(coherent ? 1 : 0)} ticks={Stopwatch.GetTimestamp()}");
+                var captured = state;
+                Thread.MemoryBarrier();
+                var sequenceAfter = Volatile.Read(ref state.Sequence);
+                var coherent = (sequence & 1) == 0 && sequence == sequenceAfter;
+                var now = Stopwatch.GetTimestamp();
+                if (!coherent) incoherentSlots++;
+                else
+                {
+                    directoryStarts += captured.DirectoriesStarted;
+                    queries += captured.TotalQueries;
+                    returned += captured.TotalReturned;
+                    queryTicks += captured.TotalQueryTicks;
+                    maximumQueryTicks = Math.Max(maximumQueryTicks, captured.TotalMaximumQueryTicks);
+                    maximumDirectoryQueries = Math.Max(maximumDirectoryQueries,
+                        Math.Max(captured.MaximumDirectoryQueries, captured.Directory == 0 ? 0 : captured.Queries));
+                    maximumDirectoryTicks = Math.Max(maximumDirectoryTicks,
+                        Math.Max(captured.MaximumDirectoryTicks, captured.Directory == 0 ? 0 : now - captured.DirectoryStarted));
+                }
+                if (captured.Retired == 1 && captured.Operation == 0 && coherent) continue;
+                if (!coherent) captured = default;
+                Trace.WriteLine($"IO_STAGE_SLOT sample={sample} collection={ordinal} slot={slot} root={captured.Root} admission={captured.Admission} operation={(Operation)captured.Operation} sequence={sequence} sequenceAfter={sequenceAfter} tid={captured.ThreadId} tidKnown={(coherent && captured.ThreadId != 0 ? 1 : 0)} entered={captured.Entered} exited={captured.Exited} retired={captured.Retired} coherent={(coherent ? 1 : 0)} directory={captured.Directory} directoryKnown={(coherent && captured.Directory > 0 ? 1 : 0)} parentKnown=0 parentIdentityNotRecorded=1 depth={(coherent && captured.Directory > 0 ? captured.Depth : -1)} directoryStarted={captured.DirectoryStarted} directoryAgeTicks={(coherent && captured.Directory > 0 ? now - captured.DirectoryStarted : -1)} directoryQueries={captured.Queries} parsedReturnedEntries={captured.Returned} acceptedEntries={captured.Accepted} directoryCompletedQueryTicks={captured.QueryTicks} directoryMaximumCompletedQueryTicks={captured.MaximumQueryTicks} lastCompletedQueryTicks={captured.LastQueryTicks} countsKnown={(coherent ? 1 : 0)} ticks={now}");
             }
+            Trace.WriteLine($"IO_STAGE_DIRECTORY_TOTAL sample={sample} collection={ordinal} directoryStarts={directoryStarts} queriesStarted={queries} parsedReturnedEntries={returned} completedQueryTicks={queryTicks} maximumCompletedQueryTicks={maximumQueryTicks} maximumDirectoryQueries={maximumDirectoryQueries} maximumDirectoryTicks={maximumDirectoryTicks} maximaIncludeActiveDirectories=1 activeQueryElapsedExcluded=1 incoherentSlotsExcluded={incoherentSlots} totalsKnown={(incoherentSlots == 0 ? 1 : 0)} atomicSnapshot=0 directoryIdOverflow={Volatile.Read(ref _numericOverflow)} otherNumericCounterOverflowUnknown=1 directoryIdScope=collection directoryIdOrder=admission parsedReturnedEntriesMayExcludeUnvisitedReturnedRecords=1");
             var roots = Math.Min(Volatile.Read(ref _roots), RootCapacity);
             for (var root = 0; root < roots; root++)
-                Trace.WriteLine($"IO_STAGE_ROOT sample={sample} collection={ordinal} root={root + 1} admission={Volatile.Read(ref _rootAdmission[root])} entered={Volatile.Read(ref _rootEntered[root])} completed={Volatile.Read(ref _rootCompleted[root])}");
+            {
+                var entered = Volatile.Read(ref _rootEntered[root]);
+                var provenance = entered == 0 ? default : _rootProvenance[root];
+                Trace.WriteLine($"IO_STAGE_ROOT sample={sample} collection={ordinal} root={root + 1} admission={Volatile.Read(ref _rootAdmission[root])} category={(int)provenance.Category} categoryKnown={(provenance.Category == RootCategory.Unknown ? 0 : 1)} sourceOrdinal={provenance.SourceOrdinal} sourceOrdinalKnown={(provenance.SourceOrdinal > 0 ? 1 : 0)} entered={entered} completed={Volatile.Read(ref _rootCompleted[root])}");
+            }
         }
     }
 

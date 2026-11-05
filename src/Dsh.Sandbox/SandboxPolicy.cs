@@ -28,12 +28,45 @@ internal sealed record SandboxPolicy(
             throw new ArgumentException("The sandbox executable must be a file.", nameof(options));
         if (OperatingSystem.IsMacOS() && (File.GetUnixFileMode(executable.Source) & (UnixFileMode.SetUser | UnixFileMode.SetGroup)) != 0)
             throw new NotSupportedException("A macOS sandbox executable cannot change credentials through set-user/group-ID execution.");
-        var protectedRuntime = options.RuntimePaths.Concat(options.ReadOnlyPaths).Append(executable.Source);
-        if (SandboxedProcess.BackendExecutablePath is { } backend)
-            protectedRuntime = protectedRuntime.Append(backend);
-        var readable = protectedRuntime.Select(ExistingPath).Distinct().ToArray();
-        var writable = options.WritablePaths.Select(ExistingPath).Distinct().ToArray();
-        var denied = options.DeniedWritePaths.Select(CanonicalDeniedPath).Distinct(StringComparerFromPlatform()).ToArray();
+        SandboxPath[] readable, writable;
+        string[] denied;
+        if (!WindowsIoStageTiming.IsObserving)
+        {
+            var protectedRuntime = options.RuntimePaths.Concat(options.ReadOnlyPaths).Append(executable.Source);
+            if (SandboxedProcess.BackendExecutablePath is { } backend)
+                protectedRuntime = protectedRuntime.Append(backend);
+            readable = protectedRuntime.Select(ExistingPath).Distinct().ToArray();
+            writable = options.WritablePaths.Select(ExistingPath).Distinct().ToArray();
+            denied = options.DeniedWritePaths.Select(CanonicalDeniedPath).Distinct(StringComparerFromPlatform()).ToArray();
+        }
+        else
+        {
+            var protectedRuntime = options.RuntimePaths.Select((path, index) =>
+                (Path: path, Category: WindowsIoStageTiming.RootCategory.Unknown, Ordinal: index + 1))
+                .Concat(options.ReadOnlyPaths.Select((path, index) =>
+                    (Path: path, Category: WindowsIoStageTiming.RootCategory.ExplicitReadOnly, Ordinal: index + 1)))
+                .Append((executable.Source, WindowsIoStageTiming.RootCategory.Executable, 1));
+            if (SandboxedProcess.BackendExecutablePath is { } backend)
+                protectedRuntime = protectedRuntime.Append((backend, WindowsIoStageTiming.RootCategory.Host, 1));
+            readable = protectedRuntime.Select(value =>
+            {
+                var path = ExistingPath(value.Path);
+                WindowsIoStageTiming.PolicyRoot(path, value.Path, value.Category, value.Ordinal);
+                return path;
+            }).Distinct().ToArray();
+            writable = options.WritablePaths.Select((value, index) =>
+            {
+                var path = ExistingPath(value);
+                WindowsIoStageTiming.PolicyRoot(path, value, WindowsIoStageTiming.RootCategory.ExplicitWritable, index + 1);
+                return path;
+            }).Distinct().ToArray();
+            denied = options.DeniedWritePaths.Select((value, index) =>
+            {
+                var path = CanonicalDeniedPath(value);
+                WindowsIoStageTiming.PolicyRoot(path, value, WindowsIoStageTiming.RootCategory.ExplicitDenied, index + 1);
+                return path;
+            }).Distinct(StringComparerFromPlatform()).ToArray();
+        }
         if (options.GuestOnlyWorkingDirectory && !OperatingSystem.IsLinux())
             throw new PlatformNotSupportedException("This backend cannot provide an empty guest-only working directory without exposing the host directory.");
         var working = options.WorkingDirectory is null ? Path.GetPathRoot(executable.Source)!

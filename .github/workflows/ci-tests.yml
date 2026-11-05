@@ -380,7 +380,7 @@ jobs:
           PY
 
       - name: Check current native directory and authority consumers after original MCP
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/diag/native-attribution97' }}
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/diag/native-directory-provenance98' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -390,7 +390,7 @@ jobs:
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
 
       - name: Check current read-proof coordination after original MCP
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/diag/native-attribution97' }}
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/diag/native-directory-provenance98' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -400,7 +400,7 @@ jobs:
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
 
       - name: Check current owned worker retirement after original MCP
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/diag/native-attribution97' }}
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/diag/native-directory-provenance98' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -410,7 +410,7 @@ jobs:
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
 
       - name: Check current other owned MCP boundaries after original MCP
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/diag/native-attribution97' }}
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/diag/native-directory-provenance98' }}
         shell: bash
         run: |
           set -euo pipefail

@@ -18,13 +18,15 @@ public static class SandboxRuntimePaths
         paths.UnionWith(ForCurrentHost());
         var full = Path.GetFullPath(executable);
         paths.Add(full);
+        WindowsIoStageTiming.RuntimeRoot(full, WindowsIoStageTiming.RootCategory.Executable);
         var resolved = new FileInfo(full).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? full;
         paths.Add(resolved);
+        WindowsIoStageTiming.RuntimeRoot(resolved, WindowsIoStageTiming.RootCategory.Executable);
         var muxer = Path.GetFileNameWithoutExtension(resolved).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
         if (!muxer)
         {
-            AddDirectory(paths, Path.GetDirectoryName(full));
-            AddDirectory(paths, Path.GetDirectoryName(resolved));
+            AddDirectory(paths, Path.GetDirectoryName(full), WindowsIoStageTiming.RootCategory.Executable);
+            AddDirectory(paths, Path.GetDirectoryName(resolved), WindowsIoStageTiming.RootCategory.Executable);
         }
         var dotnet = muxer ? Path.GetDirectoryName(resolved) : DotnetRoot();
         AddDotnet(paths, dotnet, includeSdk: true);
@@ -35,7 +37,11 @@ public static class SandboxRuntimePaths
     {
         var paths = NewSet();
         if (Environment.ProcessPath is { } executable)
-            paths.Add(Path.GetFullPath(executable));
+        {
+            var full = Path.GetFullPath(executable);
+            paths.Add(full);
+            WindowsIoStageTiming.RuntimeRoot(full, WindowsIoStageTiming.RootCategory.Host);
+        }
         AddDirectory(paths, AppContext.BaseDirectory);
         AddDirectory(paths, RuntimeEnvironment.GetRuntimeDirectory());
         AddDotnet(paths, DotnetRoot(), includeSdk: false);
@@ -52,7 +58,10 @@ public static class SandboxRuntimePaths
             }
         }
         if (SandboxedProcess.BackendExecutablePath is { } backend)
+        {
             paths.Add(backend);
+            WindowsIoStageTiming.RuntimeRoot(backend, WindowsIoStageTiming.RootCategory.Host);
+        }
         return paths.ToArray();
     }
 
@@ -61,13 +70,24 @@ public static class SandboxRuntimePaths
         if (root is null)
             return;
         foreach (var child in includeSdk ? new[] { "host", "shared", "sdk", "packs", "sdk-manifests" } : new[] { "host", "shared" })
-            AddDirectory(paths, Path.Combine(root, child));
+            AddDirectory(paths, Path.Combine(root, child), child switch
+            {
+                "sdk" => WindowsIoStageTiming.RootCategory.Sdk,
+                "packs" => WindowsIoStageTiming.RootCategory.Packs,
+                "sdk-manifests" => WindowsIoStageTiming.RootCategory.Manifests,
+                "shared" => WindowsIoStageTiming.RootCategory.Shared,
+                _ => WindowsIoStageTiming.RootCategory.Host
+            });
         var muxer = Path.Combine(root, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
         if (File.Exists(muxer))
+        {
             paths.Add(muxer);
+            WindowsIoStageTiming.RuntimeRoot(muxer, WindowsIoStageTiming.RootCategory.Executable);
+        }
     }
 
-    private static void AddDirectory(HashSet<string> paths, string? directory)
+    private static void AddDirectory(HashSet<string> paths, string? directory,
+        WindowsIoStageTiming.RootCategory category = WindowsIoStageTiming.RootCategory.Host)
     {
         if (directory is null || !Directory.Exists(directory))
             return;
@@ -77,6 +97,7 @@ public static class SandboxRuntimePaths
             || UserHome is not null && paths.Comparer.Equals(canonical, UserHome))
             return;
         paths.Add(full);
+        WindowsIoStageTiming.RuntimeRoot(full, category);
     }
 
     public static string? DotnetRoot()

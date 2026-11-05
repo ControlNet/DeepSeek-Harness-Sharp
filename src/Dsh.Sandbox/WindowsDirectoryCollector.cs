@@ -45,7 +45,7 @@ internal static class WindowsDirectoryCollector
     /// Native calls are synchronous, with cancellation checked before opens, between entries and after completion.
     /// </remarks>
     public static unsafe void Collect(string root, Action<string, bool> accept, CancellationToken cancellationToken,
-        WindowsIoStageTiming.Apply? timing = null)
+        WindowsIoStageTiming.Apply? timing = null, WindowsIoStageTiming.Provenance provenance = default)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(accept);
@@ -58,8 +58,9 @@ internal static class WindowsDirectoryCollector
                 && !rootPath.StartsWith(@"\\?\", StringComparison.Ordinal)
                 ? $@"\\?\UNC\{rootPath.AsSpan(2)}" : rootPath;
             cancellationToken.ThrowIfCancellationRequested();
-            var observationRoot = observation?.Root(0) ?? 0;
+            var observationRoot = observation?.Root(0, provenance) ?? 0;
             observation?.Bind(0, observationRoot, 0);
+            observation?.BeginDirectory(0, ReadOnlySpan<char>.Empty);
             SafeFileHandle rootHandle;
             int openError;
             observation?.Enter(0, WindowsIoStageTiming.Operation.Open);
@@ -83,6 +84,7 @@ internal static class WindowsDirectoryCollector
                 finally
                 {
                     Marshal.FreeHGlobal(buffer);
+                    observation?.EndDirectory(0);
                 }
                 PublishDirectory(rootDirectory, pending, accept, cancellationToken);
                 if (pending.Count != 0)
@@ -151,6 +153,7 @@ internal static class WindowsDirectoryCollector
         }
         finally
         {
+            observation?.EndDirectory(0);
             observation?.Retire(0);
             observation?.Finished();
         }
@@ -187,6 +190,7 @@ internal static class WindowsDirectoryCollector
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 work?.ThrowIfStopped();
+                observation?.ReturnedEntry(slot);
                 var name = new ReadOnlySpan<char>(&entry->FileName, checked((int)entry->FileNameLength / sizeof(char)));
                 if ((entry->Attributes & FileAttributes.ReparsePoint) == 0 && !name.SequenceEqual(".") && !name.SequenceEqual(".."))
                 {
@@ -258,9 +262,14 @@ internal static class WindowsDirectoryCollector
                     ThrowIfStopped();
                     CancellationToken.ThrowIfCancellationRequested();
                     Observation?.Bind(slot, ObservationRoot, 0);
-                    var handle = OpenRelativeDirectory(_root, directory.Path.AsSpan(_relativeStart), directory.Path, this, slot);
-                    try { CollectDirectory(handle, directory, buffer, CancellationToken, this, slot, Observation); }
-                    finally { Close(handle, Observation, slot); }
+                    Observation?.BeginDirectory(slot, directory.Path.AsSpan(_relativeStart));
+                    try
+                    {
+                        var handle = OpenRelativeDirectory(_root, directory.Path.AsSpan(_relativeStart), directory.Path, this, slot);
+                        try { CollectDirectory(handle, directory, buffer, CancellationToken, this, slot, Observation); }
+                        finally { Close(handle, Observation, slot); }
+                    }
+                    finally { Observation?.EndDirectory(slot); }
                     Complete(directory);
                 }
             }

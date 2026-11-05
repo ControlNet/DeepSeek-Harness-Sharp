@@ -76,14 +76,17 @@ internal sealed class WindowsAclLease : IDisposable
             var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
             foreach (var grant in policy.Writable.OrderBy(static grant => grant.Source.Length))
                 if (!SandboxPolicy.Contains(windows, grant.Source))
-                    AddTree(paths, grant.Source, grant.IsDirectory, true, cancellationToken, timing);
+                    AddTree(paths, grant.Source, grant.IsDirectory, true, cancellationToken, timing,
+                        WindowsIoStageTiming.RootProvenance(grant, WindowsIoStageTiming.RootCategory.ExplicitWritable));
             foreach (var grant in policy.Readable.OrderBy(static grant => grant.Source.Length))
                 if (!SandboxPolicy.Contains(windows, grant.Source))
-                    AddTree(paths, grant.Source, grant.IsDirectory, false, cancellationToken, timing);
+                    AddTree(paths, grant.Source, grant.IsDirectory, false, cancellationToken, timing,
+                        WindowsIoStageTiming.RootProvenance(grant));
             foreach (var denied in policy.Denied)
             {
                 if (File.Exists(denied) || Directory.Exists(denied))
-                    AddTree(paths, denied, Directory.Exists(denied), false, cancellationToken, timing);
+                    AddTree(paths, denied, Directory.Exists(denied), false, cancellationToken, timing,
+                        WindowsIoStageTiming.RootProvenance(denied, WindowsIoStageTiming.RootCategory.ExplicitDenied));
                 else if (policy.Writable.Any(write => SandboxPolicy.Contains(write.Source, denied)))
                     throw new NotSupportedException("A denied path within a writable grant must exist before launch.");
             }
@@ -200,7 +203,8 @@ internal sealed class WindowsAclLease : IDisposable
     }
 
     private void AddTree(Dictionary<string, (bool Write, bool Directory)> paths, string root, bool directory, bool write,
-        CancellationToken cancellationToken, WindowsIoStageTiming.Apply? timing = null)
+        CancellationToken cancellationToken, WindowsIoStageTiming.Apply? timing = null,
+        WindowsIoStageTiming.Provenance provenance = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         // Earlier trees already include every descendant with the same access.
@@ -210,7 +214,7 @@ internal sealed class WindowsAclLease : IDisposable
         paths[root] = (write, directory);
         if (directory)
             WindowsDirectoryCollector.Collect(root, (path, isDirectory) => paths[path] = (write, isDirectory),
-                cancellationToken, timing);
+                cancellationToken, timing, provenance);
     }
 
     public void Dispose()
