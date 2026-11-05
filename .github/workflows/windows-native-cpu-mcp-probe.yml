@@ -1,14 +1,14 @@
-name: Windows original MCP exact FileIO rejection branches
+name: Windows original MCP captured kernel stack capability
 
 on:
   push:
-    branches: [probe/native-file-mcp-75]
+    branches: [probe/native-kernel-stack-78]
 
 permissions:
   contents: read
 
 concurrency:
-  group: native-file-mcp-75-${{ github.ref }}
+  group: native-kernel-stack-78-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -150,7 +150,35 @@ jobs:
           ARGS+=(-trait- Category=GpuStress -trait- Category=OnlyGpu
             -trait- Category=RenderBench -trait- Category=LlmSmoke)
           "$EXE" "${ARGS[@]}"
-      - name: Observe a bounded startup CPU and file IO window inside the unchanged original MCP consumer
+      - name: Observe captured switch-out stack capability after the unchanged original MCP consumer
         if: ${{ !cancelled() && steps.original_regression.outcome == 'success' }}
         shell: pwsh
         run: ./.github/diagnostics/Invoke-TypedNativeWaitRecording.ps1
+      - name: Preserve original collector and authority gates after the consumer
+        if: ${{ !cancelled() && steps.original_regression.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -class Dsh.Tests.WindowsDirectoryCollectorTests -class Dsh.Tests.WindowsSandboxAuthorityTests \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Preserve original shared-worker no-replay gates
+        if: ${{ !cancelled() && steps.original_regression.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.PluginSandboxIntegrationTests.FailedWorkerCall_RetiresSharedWorker_AndExplicitEnableDoesNotReplay \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Preserve original owned-MCP crash and cancellation no-replay gates
+        if: ${{ !cancelled() && steps.original_regression.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_CrashDoesNotReplay \
+            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_CancellationDoesNotRestart \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips

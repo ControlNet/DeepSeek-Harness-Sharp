@@ -149,7 +149,15 @@ function Write-ApprovedTypedOutput([string] $Path, [ValidateSet('CPU', 'FILE')] 
           'unobservedTrailingIntervalsUnknown', 'contextSwitchRecords', 'readyThreadRecords', 'cpuTimeSliceRecords',
           'threadActivityRecords', 'pid', 'tid', 'identityInstances', 'identitySourceTypedRow', 'identityBoundaryUnknown',
           'activityCount', 'waitMissing', 'readyMissing', 'waitIntervals', 'waitComplete', 'waitIncomplete', 'waitDuplicateLinks',
-          'waitSeconds', 'readyIntervals', 'readyComplete', 'readyIncomplete', 'readyDuplicateLinks', 'readySeconds', 'reasonUnavailable')
+          'waitSeconds', 'readyIntervals', 'readyComplete', 'readyIncomplete', 'readyDuplicateLinks', 'readySeconds', 'reasonUnavailable',
+          'stackApiAvailable', 'stackDataAvailable', 'switchOutDirectStackApiAvailable', 'stackImageLoadCaptureRequested',
+          'symbolsRequested', 'stackLookupLimitPerThread', 'stackFrameLimit',
+          'modulePresenceIsCausality', 'stackEventAssociationUnknown', 'switchOutRecords', 'stackLookupBoundedOut',
+          'stackLifetimeUnknown', 'stackLifetimeRejected', 'stackExitBoundaryUnknown', 'switchOutStackMissing', 'switchOutStackKnown',
+          'stackIdentityRejected', 'stackTimestampRejected', 'stackEmpty', 'stackFramesBoundedOut',
+          'stackFrameImageMissing', 'stackFrameImageNameMissing', 'stackModuleNtoskrnl', 'stackModuleNtfs',
+          'stackModuleFltmgr', 'stackModuleStorport', 'stackModuleOther', 'stackCompletenessUnknown',
+          'stackModuleIdentityAuthenticityUnknown')
     }
     else {
         @('hresult', 'status', 'input_bytes', 'requested_threads', 'allow_lost_events', 'allow_time_inversion',
