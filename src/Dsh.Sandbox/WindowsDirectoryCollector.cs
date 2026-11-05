@@ -17,7 +17,7 @@ internal static class WindowsDirectoryCollector
     private const uint Synchronize = 0x00100000;
     private const uint BackupSemantics = 0x02000000;
     private const uint SynchronousDirectoryOpen = 0x00004021;
-    private const int FileFullDirectoryInformation = 2;
+    private const int FileDirectoryInformation = 1;
     private const int NoMoreFiles = unchecked((int)0x80000006);
     private const int NoSuchFile = unchecked((int)0xc000000f);
     private const uint ShareAll = (uint)(FileShare.Read | FileShare.Write | FileShare.Delete);
@@ -131,7 +131,7 @@ internal static class WindowsDirectoryCollector
             cancellationToken.ThrowIfCancellationRequested();
             work?.ThrowIfStopped();
             var status = NtQueryDirectoryFile(handle, 0, 0, 0, out var ioStatus, buffer, BufferSize,
-                FileFullDirectoryInformation, 0, 0, 0);
+                FileDirectoryInformation, 0, 0, 0);
             if (status is NoMoreFiles or NoSuchFile)
                 return;
             if (status != 0)
@@ -435,7 +435,7 @@ internal static class WindowsDirectoryCollector
         public uint NextEntryOffset, FileIndex;
         public long CreationTime, LastAccessTime, LastWriteTime, ChangeTime, EndOfFile, AllocationSize;
         public FileAttributes Attributes;
-        public uint FileNameLength, EaSize;
+        public uint FileNameLength;
         public char FileName;
     }
 
