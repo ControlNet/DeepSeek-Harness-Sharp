@@ -25,9 +25,10 @@ try {
     if (-not [IO.File]::Exists($CpuReader) -or -not [IO.File]::Exists($FileReader)) { throw [IO.FileNotFoundException]::new() }
     $null = New-Item -ItemType Directory -Path $private
     $created = $true
+    Add-Type -Namespace NativeTypedCapture -Name NativeThread -UsingNamespace System.Runtime.InteropServices -MemberDefinition '[DllImport("kernel32.dll", ExactSpelling = true)] public static extern uint GetCurrentThreadId();'
     $current = [Diagnostics.Process]::GetCurrentProcess()
     $targetProcessId = [uint32]$current.Id
-    $targetThreadId = [uint32][AppDomain]::GetCurrentThreadId()
+    $targetThreadId = [NativeTypedCapture.NativeThread]::GetCurrentThreadId()
     $threadVerified = $false
     try {
         foreach ($thread in $current.Threads) {
@@ -45,7 +46,7 @@ try {
     $data = [byte[]]::new(32768)
     $loadPath = Join-Path $private 'controlled-file.bin'
     for ($iteration = 0; $iteration -lt 16; $iteration++) {
-        if ([uint32][AppDomain]::GetCurrentThreadId() -ne $targetThreadId) { throw [InvalidOperationException]::new() }
+        if ([NativeTypedCapture.NativeThread]::GetCurrentThreadId() -ne $targetThreadId) { throw [InvalidOperationException]::new() }
         $stream = [IO.File]::Open($loadPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
         try { $stream.Write($data, 0, $data.Length); $stream.Flush($true) }
         finally { $stream.Dispose() }
@@ -55,7 +56,7 @@ try {
         [Threading.Thread]::Sleep(15)
     }
     if ($clock.ElapsedMilliseconds -lt $durationMs) { [Threading.Thread]::Sleep([int]($durationMs - $clock.ElapsedMilliseconds)) }
-    if ([uint32][AppDomain]::GetCurrentThreadId() -ne $targetThreadId) { throw [InvalidOperationException]::new() }
+    if ([NativeTypedCapture.NativeThread]::GetCurrentThreadId() -ne $targetThreadId) { throw [InvalidOperationException]::new() }
     Write-Host "NATIVE_TYPED_CALIBRATION controlledFileIterations=16 sameNativeThread=1 elapsedMs=$($clock.ElapsedMilliseconds)"
     $phase = 2
     $stopAttempted = $true
