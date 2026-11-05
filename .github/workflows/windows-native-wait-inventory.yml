@@ -17,9 +17,6 @@ jobs:
     timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect installed command-line analyzer help without recording or exporting
-        shell: pwsh
-        run: ./.github/diagnostics/Invoke-NativeEtlToolsInventory.ps1
       - name: Validate the private identity-key view with the real owned-thread capture
         shell: pwsh
         run: ./.github/diagnostics/Invoke-WpaInstalledProfileExport.ps1
