@@ -384,11 +384,19 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
 
     private int PopulateTree()
     {
+        const int earlyChildDirectoryCount = 40;
         var count = 0;
         for (var branch = 0; branch < 7; branch++)
         {
             var directory = Directory.CreateDirectory(Path.Combine(_root, $"branch-{branch:00}")).FullName;
             count++;
+            // Early child entries can run before the parent's later native result buffers have been read.
+            for (var child = 0; child < earlyChildDirectoryCount; child++)
+            {
+                var nested = Directory.CreateDirectory(Path.Combine(directory, $"child-{child:00}")).FullName;
+                File.WriteAllText(Path.Combine(nested, "input.txt"), "included");
+                count += 2;
+            }
             // Force multiple 16 KiB native result buffers in every branch, with non-ASCII and long names.
             for (var file = 0; file < 96; file++)
             {

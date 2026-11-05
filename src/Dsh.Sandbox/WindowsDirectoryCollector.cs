@@ -41,6 +41,7 @@ internal static class WindowsDirectoryCollector
     /// Root-relative names exceeding the native counted-name limit are split at directory separators.
     /// Such opens transiently own two descendant handles per worker; queued directories own none.
     /// Paths, entry topology and discovery/publication queues cost O(entries).
+    /// Discovered children become available while their parent is scanned.
     /// All workers join before descendant publication; callbacks retain native entry and FIFO directory order.
     /// Native calls are synchronous, with cancellation checked before opens, between entries and after completion.
     /// </remarks>
@@ -146,6 +147,8 @@ internal static class WindowsDirectoryCollector
                     var path = Path.Join(directory.Path.AsSpan(), name);
                     var child = (entry->Attributes & FileAttributes.Directory) != 0 ? new DirectoryWork(path) : null;
                     directory.Entries.Add(new Entry(path, child));
+                    if (child is not null)
+                        work?.Discovered(child);
                 }
                 if (entry->NextEntryOffset == 0)
                     break;
@@ -210,7 +213,7 @@ internal static class WindowsDirectoryCollector
                     {
                         CollectDirectory(handle, directory, buffer, CancellationToken, this);
                     }
-                    Complete(directory);
+                    Complete();
                 }
             }
             catch (Exception error)
@@ -247,22 +250,27 @@ internal static class WindowsDirectoryCollector
             }
         }
 
-        private void Complete(DirectoryWork directory)
+        public void Discovered(DirectoryWork directory)
         {
             lock (_gate)
             {
                 if (_failure is not null)
                     return;
-                // Outstanding counts queued plus active nodes. Publish children before retiring their parent.
-                foreach (var entry in directory.Entries)
-                {
-                    if (entry.Directory is not { } child)
-                        continue;
-                    _pending.Enqueue(child);
-                    _outstanding = checked(_outstanding + 1);
-                }
-                _outstanding--;
-                Monitor.PulseAll(_gate);
+                _pending.Enqueue(directory);
+                _outstanding = checked(_outstanding + 1);
+                Monitor.Pulse(_gate);
+            }
+        }
+
+        private void Complete()
+        {
+            lock (_gate)
+            {
+                if (_failure is not null)
+                    return;
+                // Active parents stay outstanding until their native handle has been released.
+                if (--_outstanding == 0)
+                    Monitor.PulseAll(_gate);
             }
         }
     }
