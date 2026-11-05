@@ -425,17 +425,10 @@ function Get-PrivateNativeWpaPrerequisites([string] $Child) {
         }
         if ($null -eq $command) { throw [IO.FileNotFoundException]::new() }
         $status = 41
-        $help = Invoke-PrivateWpaNative ([string]$command.Source) @('-h') $child 'help' 10000
-        $helpVerified = $help.Success -and $help.Bytes -gt 0
-        if ($helpVerified) {
-            $helpText = [IO.File]::ReadAllText((Join-Path $child 'help-out.txt')) + "`n" + [IO.File]::ReadAllText((Join-Path $child 'help-err.txt'))
-            foreach ($pattern in @('(?<!\w)-i\b', '(?<!\w)-profile\b', '(?<!\w)-outputfolder\b')) {
-                if (-not [regex]::IsMatch($helpText, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [TimeSpan]::FromMilliseconds(100))) { $helpVerified = $false }
-            }
-            $helpText = $null
-        }
-        Write-Host "WPA_TARGET_HELP verified=$([int]$helpVerified)"
-        if (-not $helpVerified) { throw [IO.InvalidDataException]::new() }
+        $version = [Diagnostics.FileVersionInfo]::GetVersionInfo([string]$command.Source)
+        $observedVersion = $version.FileMajorPart -eq 11 -and $version.FileMinorPart -eq 7 -and $version.FileBuildPart -eq 395 -and $version.FilePrivatePart -eq 48728
+        Write-Host "WPA_TARGET_TOOL fileMajor=$($version.FileMajorPart) fileMinor=$($version.FileMinorPart) fileBuild=$($version.FileBuildPart) filePrivate=$($version.FilePrivatePart) observedVersion=$([int]$observedVersion) helpInvoked=0 capabilityCheckDeferredToExport=1"
+        if (-not $observedVersion) { throw [NotSupportedException]::new() }
         $status = 42
         & (Join-Path $PSScriptRoot 'Invoke-WpaInstalledProfileInventory.ps1') -SelectionCopyPath $selection
         $inventoryExit = $LASTEXITCODE
