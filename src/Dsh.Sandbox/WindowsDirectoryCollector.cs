@@ -44,93 +44,143 @@ internal static class WindowsDirectoryCollector
     /// All workers join before descendant publication; callbacks retain native entry and FIFO directory order.
     /// Native calls are synchronous, with cancellation checked before opens, between entries and after completion.
     /// </remarks>
-    public static unsafe void Collect(string root, Action<string, bool> accept, CancellationToken cancellationToken)
+    public static unsafe void Collect(string root, Action<string, bool> accept, CancellationToken cancellationToken,
+        WindowsIoStageTiming.Apply? timing = null, WindowsIoStageTiming.Provenance provenance = default)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(accept);
         cancellationToken.ThrowIfCancellationRequested();
-        var rootPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-        var nativeRoot = rootPath.StartsWith(@"\\", StringComparison.Ordinal)
-            && !rootPath.StartsWith(@"\\?\", StringComparison.Ordinal)
-            ? $@"\\?\UNC\{rootPath.AsSpan(2)}" : rootPath;
-        cancellationToken.ThrowIfCancellationRequested();
-        using var rootHandle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics, 0);
-        if (rootHandle.IsInvalid)
-            throw DirectoryError(Marshal.GetLastPInvokeError(), rootPath, openingDirectory: true);
-        var rootDirectory = new DirectoryWork(rootPath);
-        var pending = new Queue<DirectoryWork>();
-        var buffer = Marshal.AllocHGlobal(BufferSize);
+        var observation = WindowsIoStageTiming.BeginCollection(timing);
         try
         {
-            CollectDirectory(rootHandle, rootDirectory, buffer, cancellationToken);
+            var rootPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+            var nativeRoot = rootPath.StartsWith(@"\\", StringComparison.Ordinal)
+                && !rootPath.StartsWith(@"\\?\", StringComparison.Ordinal)
+                ? $@"\\?\UNC\{rootPath.AsSpan(2)}" : rootPath;
+            cancellationToken.ThrowIfCancellationRequested();
+            var observationRoot = observation?.Root(0, provenance) ?? 0;
+            observation?.Bind(0, observationRoot, 0);
+            observation?.BeginDirectory(0, ReadOnlySpan<char>.Empty);
+            SafeFileHandle rootHandle;
+            int openError;
+            observation?.Enter(0, WindowsIoStageTiming.Operation.Open);
+            try
+            {
+                rootHandle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics, 0);
+                openError = Marshal.GetLastPInvokeError();
+            }
+            finally { observation?.Exit(0, WindowsIoStageTiming.Operation.Open); }
+            try
+            {
+                if (rootHandle.IsInvalid)
+                    throw DirectoryError(openError, rootPath, openingDirectory: true);
+                var rootDirectory = new DirectoryWork(rootPath);
+                var pending = new Queue<DirectoryWork>();
+                var buffer = Marshal.AllocHGlobal(BufferSize);
+                try
+                {
+                    CollectDirectory(rootHandle, rootDirectory, buffer, cancellationToken, observation: observation);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buffer);
+                    observation?.EndDirectory(0);
+                }
+                PublishDirectory(rootDirectory, pending, accept, cancellationToken);
+                if (pending.Count != 0)
+                {
+                    var work = new WorkQueue(rootHandle, rootPath, pending, cancellationToken)
+                    {
+                        Observation = observation,
+                        ObservationRoot = observationRoot
+                    };
+                    var workers = new Thread[WorkerCount];
+                    var started = 0;
+                    using var registration = cancellationToken.UnsafeRegister(static state =>
+                    {
+                        var queue = (WorkQueue)state!;
+                        queue.Fail(new OperationCanceledException(queue.CancellationToken));
+                    }, work);
+                    try
+                    {
+                        for (; started < workers.Length; started++)
+                        {
+                            work.ThrowIfStopped();
+                            var worker = new Thread(work.Run) { IsBackground = true };
+                            workers[started] = worker;
+                            worker.Start();
+                        }
+                    }
+                    catch (Exception error)
+                    {
+                        work.Fail(error);
+                    }
+                    finally
+                    {
+                        for (var index = 0; index < started; index++)
+                        {
+                            while (true)
+                            {
+                                try
+                                {
+                                    observation?.Enter(0, WindowsIoStageTiming.Operation.WorkerJoin);
+                                    try { workers[index].Join(); }
+                                    finally { observation?.Exit(0, WindowsIoStageTiming.Operation.WorkerJoin); }
+                                    break;
+                                }
+                                catch (ThreadInterruptedException error)
+                                {
+                                    work.Fail(error);
+                                }
+                            }
+                        }
+                    }
+                    work.ThrowIfStopped();
+                }
+                observation?.RootCompleted(observationRoot);
+                while (pending.TryDequeue(out var directory))
+                {
+                    PublishDirectory(directory, pending, accept, cancellationToken);
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            finally { Close(rootHandle, observation, 0); }
+        }
+        catch (Exception error)
+        {
+            observation?.Stopped(error is OperationCanceledException ? 1 : error is ThreadInterruptedException ? 2 : 3);
+            throw;
         }
         finally
         {
-            Marshal.FreeHGlobal(buffer);
+            observation?.EndDirectory(0);
+            observation?.Retire(0);
+            observation?.Finished();
         }
-        PublishDirectory(rootDirectory, pending, accept, cancellationToken);
-        if (pending.Count != 0)
-        {
-            var work = new WorkQueue(rootHandle, rootPath, pending, cancellationToken);
-            var workers = new Thread[WorkerCount];
-            var started = 0;
-            using var registration = cancellationToken.UnsafeRegister(static state =>
-            {
-                var queue = (WorkQueue)state!;
-                queue.Fail(new OperationCanceledException(queue.CancellationToken));
-            }, work);
-            try
-            {
-                for (; started < workers.Length; started++)
-                {
-                    work.ThrowIfStopped();
-                    var worker = new Thread(work.Run) { IsBackground = true };
-                    workers[started] = worker;
-                    worker.Start();
-                }
-            }
-            catch (Exception error)
-            {
-                work.Fail(error);
-            }
-            finally
-            {
-                for (var index = 0; index < started; index++)
-                {
-                    while (true)
-                    {
-                        try
-                        {
-                            workers[index].Join();
-                            break;
-                        }
-                        catch (ThreadInterruptedException error)
-                        {
-                            work.Fail(error);
-                        }
-                    }
-                }
-            }
-            work.ThrowIfStopped();
-        }
-        while (pending.TryDequeue(out var directory))
-        {
-            PublishDirectory(directory, pending, accept, cancellationToken);
-        }
-        cancellationToken.ThrowIfCancellationRequested();
     }
 
     private static unsafe void CollectDirectory(SafeFileHandle handle, DirectoryWork directory, nint buffer,
-        CancellationToken cancellationToken, WorkQueue? work = null)
+        CancellationToken cancellationToken, WorkQueue? work = null, int slot = 0,
+        WindowsIoStageTiming.Collection? observation = null)
     {
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             work?.ThrowIfStopped();
-            var status = NtQueryDirectoryFile(handle, 0, 0, 0, out var ioStatus, buffer, BufferSize,
-                FileFullDirectoryInformation, 0, 0, 0);
+            int status;
+            IoStatusBlock ioStatus;
+            observation?.Enter(slot, WindowsIoStageTiming.Operation.Query);
+            try
+            {
+                status = NtQueryDirectoryFile(handle, 0, 0, 0, out ioStatus, buffer, BufferSize,
+                    FileFullDirectoryInformation, 0, 0, 0);
+            }
+            finally { observation?.Exit(slot, WindowsIoStageTiming.Operation.Query); }
             if (status is NoMoreFiles or NoSuchFile)
+            {
+                observation?.DirectoryCompleted(slot);
                 return;
+            }
             if (status != 0)
                 throw DirectoryError((int)RtlNtStatusToDosError(status), directory.Path);
             if (ioStatus.Information == 0)
@@ -140,12 +190,14 @@ internal static class WindowsDirectoryCollector
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 work?.ThrowIfStopped();
+                observation?.ReturnedEntry(slot);
                 var name = new ReadOnlySpan<char>(&entry->FileName, checked((int)entry->FileNameLength / sizeof(char)));
                 if ((entry->Attributes & FileAttributes.ReparsePoint) == 0 && !name.SequenceEqual(".") && !name.SequenceEqual(".."))
                 {
                     var path = Path.Join(directory.Path.AsSpan(), name);
                     var child = (entry->Attributes & FileAttributes.Directory) != 0 ? new DirectoryWork(path) : null;
                     directory.Entries.Add(new Entry(path, child));
+                    observation?.EntryCollected(slot);
                 }
                 if (entry->NextEntryOffset == 0)
                     break;
@@ -185,6 +237,8 @@ internal static class WindowsDirectoryCollector
         private ExceptionDispatchInfo? _failure;
 
         public CancellationToken CancellationToken { get; }
+        public WindowsIoStageTiming.Collection? Observation { get; init; }
+        public int ObservationRoot { get; init; }
 
         public WorkQueue(SafeFileHandle root, string rootPath, Queue<DirectoryWork> directories,
             CancellationToken cancellationToken)
@@ -199,17 +253,23 @@ internal static class WindowsDirectoryCollector
         public void Run()
         {
             nint buffer = 0;
+            var slot = Observation?.Worker() ?? -1;
             try
             {
                 buffer = Marshal.AllocHGlobal(BufferSize);
-                while (Take() is { } directory)
+                while (Take(slot) is { } directory)
                 {
                     ThrowIfStopped();
                     CancellationToken.ThrowIfCancellationRequested();
-                    using (var handle = OpenRelativeDirectory(_root, directory.Path.AsSpan(_relativeStart), directory.Path, this))
+                    Observation?.Bind(slot, ObservationRoot, 0);
+                    Observation?.BeginDirectory(slot, directory.Path.AsSpan(_relativeStart));
+                    try
                     {
-                        CollectDirectory(handle, directory, buffer, CancellationToken, this);
+                        var handle = OpenRelativeDirectory(_root, directory.Path.AsSpan(_relativeStart), directory.Path, this, slot);
+                        try { CollectDirectory(handle, directory, buffer, CancellationToken, this, slot, Observation); }
+                        finally { Close(handle, Observation, slot); }
                     }
+                    finally { Observation?.EndDirectory(slot); }
                     Complete(directory);
                 }
             }
@@ -221,10 +281,18 @@ internal static class WindowsDirectoryCollector
             {
                 if (buffer != 0)
                     Marshal.FreeHGlobal(buffer);
+                Observation?.Retire(slot);
             }
         }
 
-        public void ThrowIfStopped() => Volatile.Read(ref _failure)?.Throw();
+        public void ThrowIfStopped()
+        {
+            var failure = Volatile.Read(ref _failure);
+            if (failure is null) return;
+            var error = failure.SourceException;
+            Observation?.Stopped(error is OperationCanceledException ? 1 : error is ThreadInterruptedException ? 2 : 3);
+            failure.Throw();
+        }
 
         public void Fail(Exception error)
         {
@@ -237,12 +305,17 @@ internal static class WindowsDirectoryCollector
             }
         }
 
-        private DirectoryWork? Take()
+        private DirectoryWork? Take(int slot)
         {
             lock (_gate)
             {
                 while (_failure is null && _pending.Count == 0 && _outstanding != 0)
-                    Monitor.Wait(_gate);
+                {
+                    Observation?.Bind(slot, 0, -1);
+                    Observation?.Enter(slot, WindowsIoStageTiming.Operation.QueueWait);
+                    try { Monitor.Wait(_gate); }
+                    finally { Observation?.Exit(slot, WindowsIoStageTiming.Operation.QueueWait); }
+                }
                 return _failure is not null || _outstanding == 0 ? null : _pending.Dequeue();
             }
         }
@@ -262,17 +335,19 @@ internal static class WindowsDirectoryCollector
                     _outstanding = checked(_outstanding + 1);
                 }
                 _outstanding--;
+                if (_outstanding == 0)
+                    Observation?.RootCompleted(ObservationRoot);
                 Monitor.PulseAll(_gate);
             }
         }
     }
 
     private static SafeFileHandle OpenRelativeDirectory(SafeFileHandle root, ReadOnlySpan<char> relativePath,
-        string path, WorkQueue work)
+        string path, WorkQueue work, int slot)
     {
         const int maximumNameLength = ushort.MaxValue / sizeof(char);
         if (relativePath.Length <= maximumNameLength)
-            return OpenDirectorySegment(root, relativePath, path);
+            return OpenDirectorySegment(root, relativePath, path, work.Observation, slot);
 
         SafeFileHandle? current = null;
         try
@@ -288,22 +363,23 @@ internal static class WindowsDirectoryCollector
                     if (segmentLength <= 0)
                         throw new PathTooLongException($"Unable to open directory '{path}'.");
                 }
-                var next = OpenDirectorySegment(current ?? root, relativePath[..segmentLength], path);
+                var next = OpenDirectorySegment(current ?? root, relativePath[..segmentLength], path, work.Observation, slot);
                 if (segmentLength == relativePath.Length)
                     return next;
                 var previous = current;
                 current = next;
-                previous?.Dispose();
+                Close(previous, work.Observation, slot);
                 relativePath = relativePath[(segmentLength + 1)..];
             }
         }
         finally
         {
-            current?.Dispose();
+            Close(current, work.Observation, slot);
         }
     }
 
-    private static unsafe SafeFileHandle OpenDirectorySegment(SafeFileHandle parent, ReadOnlySpan<char> relativePath, string path)
+    private static unsafe SafeFileHandle OpenDirectorySegment(SafeFileHandle parent, ReadOnlySpan<char> relativePath,
+        string path, WindowsIoStageTiming.Collection? observation, int slot)
     {
         fixed (char* text = relativePath)
         {
@@ -320,13 +396,28 @@ internal static class WindowsDirectoryCollector
                 ObjectName = &nativeName,
                 Attributes = CaseInsensitive
             };
-            var status = NtOpenFile(out var handle, ListDirectory | Synchronize, ref attributes, out _, ShareAll, SynchronousDirectoryOpen);
+            int status;
+            SafeFileHandle handle;
+            observation?.Enter(slot, WindowsIoStageTiming.Operation.Open);
+            try
+            {
+                status = NtOpenFile(out handle, ListDirectory | Synchronize, ref attributes, out _, ShareAll, SynchronousDirectoryOpen);
+            }
+            finally { observation?.Exit(slot, WindowsIoStageTiming.Operation.Open); }
             GC.KeepAlive(parent);
             if (status == 0)
                 return handle;
-            handle.Dispose();
+            Close(handle, observation, slot);
             throw DirectoryError((int)RtlNtStatusToDosError(status), path, openingDirectory: true);
         }
+    }
+
+    private static void Close(SafeFileHandle? handle, WindowsIoStageTiming.Collection? observation, int slot)
+    {
+        if (handle is null) return;
+        observation?.Enter(slot, WindowsIoStageTiming.Operation.CloseDispose);
+        try { handle.Dispose(); }
+        finally { observation?.Exit(slot, WindowsIoStageTiming.Operation.CloseDispose); }
     }
 
     private static Exception DirectoryError(int error, string path, bool openingDirectory = false)
