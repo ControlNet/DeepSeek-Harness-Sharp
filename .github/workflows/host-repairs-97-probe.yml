@@ -1,4 +1,4 @@
-name: Cross-platform host repair consumers 97
+name: Cross-platform native Git filter closure 98
 
 on:
   push:
@@ -68,7 +68,7 @@ jobs:
           retention-days: 7
 
   host-repair-consumers:
-    name: SDK, actual GUI text and worker entry (${{ matrix.os }})
+    name: SDK and owned native Git teardown (${{ matrix.os }})
     needs: bridge-dryioc-feed
     strategy:
       fail-fast: false
