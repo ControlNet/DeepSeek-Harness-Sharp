@@ -6,13 +6,16 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Dsh.Sandbox;
 
-/// <summary>Collects non-reparse descendants using bounded root-relative native directory reads.</summary>
+/// <summary>Collects non-reparse descendants using bounded parent-relative native directory reads.</summary>
 [SupportedOSPlatform("windows")]
 internal static class WindowsDirectoryCollector
 {
     private const int BufferSize = 16 * 1024;
     private const int WorkerCount = 255;
     private const int MaximumActiveRoots = 2;
+    private const int MaximumCachedParents = 64;
+    private const int MaximumDescendantHandles = 511;
+    private const int MaximumNameLength = ushort.MaxValue / sizeof(char);
     private const uint ListDirectory = 1;
     private const uint Synchronize = 0x00100000;
     private const uint BackupSemantics = 0x02000000;
@@ -26,6 +29,7 @@ internal static class WindowsDirectoryCollector
     private const int ErrorFileNotFound = 2;
     private const int ErrorPathNotFound = 3;
     private const int ErrorAccessDenied = 5;
+    private const int ErrorInsufficientBuffer = 122;
     private const int ErrorFilenameExceedsRange = 206;
     private const int ErrorOperationAborted = 995;
     private const int HResultHighWordMask = unchecked((int)0xffff0000);
@@ -38,11 +42,13 @@ internal static class WindowsDirectoryCollector
     /// </summary>
     /// <remarks>
     /// Each root's entries are read and published on the caller before any of its descendants is opened.
-    /// At most two root anchors and 255 dedicated workers own handles; every native buffer is 16 KiB.
-    /// The caller scratch buffer and all worker buffers together are bounded by 4 MiB.
-    /// Root-relative names exceeding the native counted-name limit are split at directory separators.
-    /// Such opens transiently own two descendant handles per worker; queued directories own none.
-    /// Paths, entry topology and discovery/publication queues cost O(entries).
+    /// At most two root anchors, 255 workers and 64 retained immediate parents are used.
+    /// Every native buffer is 16 KiB; caller scratch and worker buffers together are bounded by 4 MiB.
+    /// Descendant handles, including retained parents and segmented opens, share a hard limit of 511.
+    /// Segmented opens reserve two handles atomically; ordinary opens reserve one.
+    /// Paths, parent links, entry topology and discovery/publication queues cost O(entries).
+    /// A retained parent is retired after its last immediate child's native open, not its subtree query.
+    /// Concurrent renames can preserve an opened parent's identity; paths are not an atomic tree snapshot.
     /// All workers join before descendant publication; callbacks retain native entry and FIFO directory order.
     /// Native calls are synchronous, with cancellation checked before opens, between entries and after completion.
     /// </remarks>
@@ -135,6 +141,7 @@ internal static class WindowsDirectoryCollector
                         work.Fail(error);
                     }
                 }
+            work.RetireResources();
             foreach (var root in collected)
                 root.Handle?.Dispose();
             if (buffer != 0)
@@ -156,11 +163,7 @@ internal static class WindowsDirectoryCollector
             work?.ThrowIfStopped();
             var status = NtQueryDirectoryFile(handle, 0, 0, 0, out var ioStatus, buffer, BufferSize,
                 FileFullDirectoryInformation, 0, 0, 0);
-            if (status is NoMoreFiles or NoSuchFile)
-                return;
-            if (status != 0)
-                throw DirectoryError((int)RtlNtStatusToDosError(status), directory.Path);
-            if (ioStatus.Information == 0)
+            if (!HasCompleteDirectoryBatch(status, ioStatus.Information, directory.Path))
                 return;
             var entry = (DirectoryInformation*)buffer;
             while (true)
@@ -171,7 +174,7 @@ internal static class WindowsDirectoryCollector
                 if ((entry->Attributes & FileAttributes.ReparsePoint) == 0 && !name.SequenceEqual(".") && !name.SequenceEqual(".."))
                 {
                     var path = Path.Join(directory.Path.AsSpan(), name);
-                    var child = (entry->Attributes & FileAttributes.Directory) != 0 ? new DirectoryWork(path, directory.Root) : null;
+                    var child = (entry->Attributes & FileAttributes.Directory) != 0 ? new DirectoryWork(path, directory.Root, directory) : null;
                     directory.Entries.Add(new Entry(path, child));
                 }
                 if (entry->NextEntryOffset == 0)
@@ -179,6 +182,17 @@ internal static class WindowsDirectoryCollector
                 entry = (DirectoryInformation*)((byte*)entry + entry->NextEntryOffset);
             }
         }
+    }
+
+    internal static bool HasCompleteDirectoryBatch(int status, nuint byteCount, string path)
+    {
+        if (status is NoMoreFiles or NoSuchFile)
+            return false;
+        if (status != 0)
+            throw DirectoryError((int)RtlNtStatusToDosError(status), path);
+        if (byteCount == 0)
+            throw DirectoryError(ErrorInsufficientBuffer, path);
+        return true;
     }
 
     private static void PublishDirectory(DirectoryWork directory, Queue<DirectoryWork> pending,
@@ -214,10 +228,15 @@ internal static class WindowsDirectoryCollector
         public int Outstanding { get; set; }
     }
 
-    private sealed class DirectoryWork(string path, RootWork root)
+    private sealed class DirectoryWork(string path, RootWork root, DirectoryWork? parent = null)
     {
         public string Path { get; } = path;
         public RootWork Root { get; } = root;
+        public DirectoryWork? Parent { get; } = parent;
+        public int RelativeStart { get; } = parent is null ? 0 : parent.Path.Length + (Path.EndsInDirectorySeparator(parent.Path) ? 0 : 1);
+        public SafeFileHandle? CachedHandle { get; set; }
+        public int RemainingChildOpens { get; set; }
+        public int CacheSlot { get; set; } = -1;
         public List<Entry> Entries { get; } = [];
     }
 
@@ -230,6 +249,10 @@ internal static class WindowsDirectoryCollector
         private int _outstanding;
         private bool _sealed;
         private ExceptionDispatchInfo? _failure;
+        private readonly DirectoryWork?[] _cachedParents = new DirectoryWork?[MaximumCachedParents];
+        private readonly nint[] _buffers = new nint[WorkerCount];
+        private int _bufferCount;
+        private int _descendantHandles;
 
         public CancellationToken CancellationToken { get; }
 
@@ -279,31 +302,183 @@ internal static class WindowsDirectoryCollector
 
         public void Run()
         {
-            nint buffer = 0;
             try
             {
-                buffer = Marshal.AllocHGlobal(BufferSize);
+                var bufferIndex = Interlocked.Increment(ref _bufferCount) - 1;
+                var buffer = _buffers[bufferIndex] = Marshal.AllocHGlobal(BufferSize);
                 while (Take() is { } directory)
-                {
-                    ThrowIfStopped();
-                    CancellationToken.ThrowIfCancellationRequested();
-                    var root = directory.Root;
-                    using (var handle = OpenRelativeDirectory(root.Handle!, directory.Path.AsSpan(root.RelativeStart), directory.Path, this))
-                    {
-                        CollectDirectory(handle, directory, buffer, CancellationToken, this);
-                    }
-                    Complete(directory);
-                }
+                    ProcessDirectory(directory, buffer);
             }
             catch (Exception error)
             {
                 Fail(error);
             }
+        }
+
+        private void ProcessDirectory(DirectoryWork directory, nint buffer)
+        {
+            SafeFileHandle? handle = null;
+            try
+            {
+                handle = OpenChild(directory);
+                CollectDirectory(handle, directory, buffer, CancellationToken, this);
+                if (Complete(directory, handle))
+                    handle = null;
+            }
+            catch (Exception error)
+            {
+                Fail(error);
+                throw;
+            }
             finally
             {
+                if (handle is not null)
+                {
+                    try
+                    {
+                        handle.Dispose();
+                    }
+                    finally
+                    {
+                        ReleaseHandles(1);
+                    }
+                }
+            }
+        }
+
+        private SafeFileHandle OpenChild(DirectoryWork directory)
+        {
+            SafeFileHandle? handle = null;
+            var reserved = 0;
+            var parent = directory.Parent!;
+            try
+            {
+                ThrowIfStopped();
+                CancellationToken.ThrowIfCancellationRequested();
+                // Every child counts as a borrower until its open returns, including queued children.
+                var anchor = parent.CachedHandle ?? directory.Root.Handle!;
+                var relativeStart = parent.CachedHandle is not null || parent.Parent is null
+                    ? directory.RelativeStart : directory.Root.RelativeStart;
+                var relativePath = directory.Path.AsSpan(relativeStart);
+                var cost = relativePath.Length > MaximumNameLength ? 2 : 1;
+                ReserveHandles(cost);
+                reserved = cost;
+                handle = OpenRelativeDirectory(anchor, relativePath, directory.Path, this);
+                return handle;
+            }
+            catch (Exception error)
+            {
+                // Record native failure before interruption-safe borrower/quota cleanup can record an interruption.
+                Fail(error);
+                throw;
+            }
+            finally
+            {
+                if (reserved != 0)
+                {
+                    FinishChildOpen(parent);
+                    var released = handle is null ? reserved : reserved - 1;
+                    if (released != 0)
+                        ReleaseHandles(released);
+                }
+            }
+        }
+
+        private void ReserveHandles(int count)
+        {
+            lock (_gate)
+            {
+                while (_failure is null && _descendantHandles > MaximumDescendantHandles - count)
+                    Monitor.Wait(_gate);
+                ThrowIfStopped();
+                _descendantHandles += count;
+            }
+        }
+
+        private void ReleaseHandles(int count)
+        {
+            var interruption = EnterCleanupGate();
+            try
+            {
+                if (interruption is not null && _failure is null)
+                    Volatile.Write(ref _failure, ExceptionDispatchInfo.Capture(interruption));
+                _descendantHandles -= count;
+                Monitor.PulseAll(_gate);
+            }
+            finally
+            {
+                Monitor.Exit(_gate);
+            }
+        }
+
+        private void FinishChildOpen(DirectoryWork parent)
+        {
+            // An enqueued child's parent cannot acquire a cache handle later.
+            if (parent.CachedHandle is null)
+                return;
+            SafeFileHandle? retired = null;
+            var interruption = EnterCleanupGate();
+            try
+            {
+                if (interruption is not null && _failure is null)
+                {
+                    Volatile.Write(ref _failure, ExceptionDispatchInfo.Capture(interruption));
+                    Monitor.PulseAll(_gate);
+                }
+                if (parent.CachedHandle is not null && --parent.RemainingChildOpens == 0)
+                {
+                    retired = parent.CachedHandle;
+                    parent.CachedHandle = null;
+                }
+            }
+            finally
+            {
+                Monitor.Exit(_gate);
+            }
+            if (retired is not null)
+                CloseCachedParent(parent, retired);
+        }
+
+        private void CloseCachedParent(DirectoryWork parent, SafeFileHandle handle)
+        {
+            // Keep both quotas charged while the real close runs outside the gate.
+            try
+            {
+                handle.Dispose();
+            }
+            finally
+            {
+                var interruption = EnterCleanupGate();
+                try
+                {
+                    if (interruption is not null && _failure is null)
+                        Volatile.Write(ref _failure, ExceptionDispatchInfo.Capture(interruption));
+                    _cachedParents[parent.CacheSlot] = null;
+                    parent.CacheSlot = -1;
+                    _descendantHandles--;
+                    Monitor.PulseAll(_gate);
+                }
+                finally
+                {
+                    Monitor.Exit(_gate);
+                }
+            }
+        }
+
+        public void RetireResources()
+        {
+            // Only the caller, after every worker has joined, may abandon unopened borrowers.
+            foreach (var parent in _cachedParents)
+            {
+                if (parent is null)
+                    continue;
+                var handle = parent.CachedHandle!;
+                parent.CachedHandle = null;
+                CloseCachedParent(parent, handle);
+            }
+            foreach (var buffer in _buffers)
                 if (buffer != 0)
                     Marshal.FreeHGlobal(buffer);
-            }
         }
 
         public void ThrowIfStopped() => Volatile.Read(ref _failure)?.Throw();
@@ -351,24 +526,36 @@ internal static class WindowsDirectoryCollector
             }
         }
 
-        private void Complete(DirectoryWork directory)
+        private bool Complete(DirectoryWork directory, SafeFileHandle handle)
         {
             lock (_gate)
             {
                 if (_failure is not null)
-                    return;
+                    return false;
                 // Outstanding counts queued plus active nodes. Publish children before retiring their parent.
+                var children = 0;
                 foreach (var entry in directory.Entries)
                 {
                     if (entry.Directory is not { } child)
                         continue;
                     _pending.Enqueue(child);
+                    children++;
                     _outstanding = checked(_outstanding + 1);
                     directory.Root.Outstanding = checked(directory.Root.Outstanding + 1);
+                }
+                // Never wait for a cache slot: a full cache falls back to the original root-relative open.
+                var slot = children == 0 ? -1 : Array.IndexOf(_cachedParents, null);
+                if (slot >= 0)
+                {
+                    directory.RemainingChildOpens = children;
+                    directory.CacheSlot = slot;
+                    directory.CachedHandle = handle;
+                    _cachedParents[slot] = directory;
                 }
                 _outstanding--;
                 directory.Root.Outstanding--;
                 Monitor.PulseAll(_gate);
+                return slot >= 0;
             }
         }
     }
@@ -376,8 +563,9 @@ internal static class WindowsDirectoryCollector
     private static SafeFileHandle OpenRelativeDirectory(SafeFileHandle root, ReadOnlySpan<char> relativePath,
         string path, WorkQueue work)
     {
-        const int maximumNameLength = ushort.MaxValue / sizeof(char);
-        if (relativePath.Length <= maximumNameLength)
+        work.CancellationToken.ThrowIfCancellationRequested();
+        work.ThrowIfStopped();
+        if (relativePath.Length <= MaximumNameLength)
             return OpenDirectorySegment(root, relativePath, path);
 
         SafeFileHandle? current = null;
@@ -388,9 +576,9 @@ internal static class WindowsDirectoryCollector
                 work.CancellationToken.ThrowIfCancellationRequested();
                 work.ThrowIfStopped();
                 var segmentLength = relativePath.Length;
-                if (segmentLength > maximumNameLength)
+                if (segmentLength > MaximumNameLength)
                 {
-                    segmentLength = relativePath[..(maximumNameLength + 1)].LastIndexOfAny('\\', '/');
+                    segmentLength = relativePath[..(MaximumNameLength + 1)].LastIndexOfAny('\\', '/');
                     if (segmentLength <= 0)
                         throw new PathTooLongException($"Unable to open directory '{path}'.");
                 }
