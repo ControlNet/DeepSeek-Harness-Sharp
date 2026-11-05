@@ -233,7 +233,7 @@ internal static class WindowsDirectoryCollector
         public string Path { get; } = path;
         public RootWork Root { get; } = root;
         public DirectoryWork? Parent { get; } = parent;
-        public int RelativeStart { get; } = parent is null ? 0 : parent.Path.Length + (Path.EndsInDirectorySeparator(parent.Path) ? 0 : 1);
+        public int RelativeStart { get; } = parent is null ? 0 : parent.Path.Length + (System.IO.Path.EndsInDirectorySeparator(parent.Path) ? 0 : 1);
         public SafeFileHandle? CachedHandle { get; set; }
         public int RemainingChildOpens { get; set; }
         public int CacheSlot { get; set; } = -1;
