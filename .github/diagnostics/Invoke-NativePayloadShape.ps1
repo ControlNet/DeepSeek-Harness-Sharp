@@ -2,8 +2,9 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'NativeWaitCapture.ps1')
+. (Join-Path $PSScriptRoot 'NativePayloadXperf.ps1')
 
-# Only fixed numeric categories leave this script and no payload values are serialized.
+# Get-WinEvent payloads are described only by fixed numeric categories.
 function Get-NativePayloadCategory($Value) {
     if ($null -eq $Value) { return 1 }
     if ($Value -is [byte]) { return 2 }
@@ -168,6 +169,14 @@ finally {
             else {
                 Write-Host "NATIVE_SHAPE_TRACE bytes=$((Get-Item -LiteralPath $etl).Length) fullRetentionClaim=0"
                 $measurement = Measure-NativePayloadShapes
+                try {
+                    $xperfMeasurement = Invoke-PrivatePayloadXperf
+                    if ($measurement -eq 0 -and $xperfMeasurement -ne 0) { $measurement = $xperfMeasurement }
+                }
+                catch {
+                    if ($measurement -eq 0) { $measurement = 44 }
+                    Write-Host "NATIVE_XPERF_FAILURE hresult=$($_.Exception.HResult) decoded=0 targetProcessCausality=0"
+                }
                 if (-not $stopped.KnownLoss) { $measurement = 21 }
                 elseif ($stopped.Lost -ne 0 -or $stopped.Dropped -ne 0) { $measurement = 22 }
             }

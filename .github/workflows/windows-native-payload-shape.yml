@@ -13,13 +13,13 @@ concurrency:
 
 jobs:
   shape:
-    name: Four-second owned WPR capture without build or product tests
+    name: Four-second owned WPR capture with private xperf exports
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-      - name: Reduce real kernel event metadata to bounded numeric shapes
+      - name: Inspect payload shapes and bounded private xperf reports
         shell: pwsh
         run: ./.github/diagnostics/Invoke-NativePayloadShape.ps1
