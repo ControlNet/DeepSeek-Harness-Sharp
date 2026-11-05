@@ -263,10 +263,17 @@ internal static class WindowsDirectoryCollector
 
         public void Seal()
         {
-            lock (_gate)
+            var interruption = EnterCleanupGate();
+            try
             {
+                if (interruption is not null && _failure is null)
+                    Volatile.Write(ref _failure, ExceptionDispatchInfo.Capture(interruption));
                 _sealed = true;
                 Monitor.PulseAll(_gate);
+            }
+            finally
+            {
+                Monitor.Exit(_gate);
             }
         }
 
@@ -303,12 +310,34 @@ internal static class WindowsDirectoryCollector
 
         public void Fail(Exception error)
         {
-            lock (_gate)
+            EnterCleanupGate();
+            try
             {
                 if (_failure is not null)
                     return;
                 Volatile.Write(ref _failure, ExceptionDispatchInfo.Capture(error));
                 Monitor.PulseAll(_gate);
+            }
+            finally
+            {
+                Monitor.Exit(_gate);
+            }
+        }
+
+        private ThreadInterruptedException? EnterCleanupGate()
+        {
+            ThreadInterruptedException? interruption = null;
+            while (true)
+            {
+                try
+                {
+                    Monitor.Enter(_gate);
+                    return interruption;
+                }
+                catch (ThreadInterruptedException error)
+                {
+                    interruption ??= error;
+                }
             }
         }
 

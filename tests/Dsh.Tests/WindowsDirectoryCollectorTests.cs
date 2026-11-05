@@ -375,6 +375,19 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     public void InterruptedSealing_RetiresWaitingWorkersBeforeFailureIsPropagated()
     {
         RequireWindows();
+        Assert.IsType<ThreadInterruptedException>(RunInterruptedCleanup(null));
+    }
+
+    [Fact]
+    public void InterruptedFailureCleanup_RetiresWorkersAndPreservesThePrimaryFailure()
+    {
+        RequireWindows();
+        var failure = new IOException("The native operation failed before cleanup.");
+        Assert.Same(failure, RunInterruptedCleanup(failure));
+    }
+
+    private static Exception? RunInterruptedCleanup(Exception? primaryFailure)
+    {
         const int threadDeadlineSeconds = 5;
         var deadline = TimeSpan.FromSeconds(threadDeadlineSeconds);
         var queueType = typeof(WindowsDirectoryCollector).GetNestedType("WorkQueue", BindingFlags.NonPublic)!;
@@ -384,17 +397,20 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         var seal = queueType.GetMethod("Seal")!.CreateDelegate<Action>(queue);
         var fail = queueType.GetMethod("Fail")!.CreateDelegate<Action<Exception>>(queue);
         var demand = queueType.GetMethod("ThrowIfStopped")!.CreateDelegate<Action>(queue);
-        Exception? sealFailure = null;
+        Exception? cleanupFailure = null;
         var worker = new Thread(run.Invoke) { IsBackground = true };
         var caller = new Thread(() =>
         {
             try
             {
-                seal();
+                if (primaryFailure is null)
+                    seal();
+                else
+                    fail(primaryFailure);
             }
             catch (Exception error)
             {
-                sealFailure = error;
+                cleanupFailure = error;
             }
         }) { IsBackground = true };
         try
@@ -408,10 +424,10 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
                     "The cleanup caller must be waiting for the queue gate before interruption.");
                 caller.Interrupt();
             }
-            Assert.True(caller.Join(deadline), "Sealing must finish after the gate is released.");
+            Assert.True(caller.Join(deadline), "Cleanup must finish after the gate is released.");
             Assert.True(worker.Join(deadline), "An interrupted cleanup must release its waiting worker.");
-            Assert.Null(sealFailure);
-            Assert.Throws<ThreadInterruptedException>(demand);
+            Assert.Null(cleanupFailure);
+            return Record.Exception(demand);
         }
         finally
         {
