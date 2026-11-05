@@ -30,6 +30,20 @@ internal sealed class ShellPane : ITuiPane
     private int _wakePending;
     private int _bytesRead;
     private int _keysSent;
+    private int _textCalls;
+    private int _textRejected;
+    private int _writesQueued;
+    private int _writesRejected;
+    private int _writesStarted;
+    private int _writesCompleted;
+    private int _bytesWritten;
+    private int _writeHResult;
+    private int _replies;
+    private int _cursorReplies;
+    private int _feeds;
+    private int _readHResult;
+    private int _snapshots;
+    private int _wakesCompleted;
     private string _status = "";
     private bool _exited;
     private bool _disposed;
@@ -40,7 +54,13 @@ internal sealed class ShellPane : ITuiPane
         _backing = backing;
         LayerPtyId = layerPtyId;
         _screen = new VtScreen(Math.Max(1, width), Math.Max(1, height));
-        _screen.Reply += reply => EnqueueWrite(System.Text.Encoding.UTF8.GetBytes(reply));
+        _screen.Reply += reply =>
+        {
+            Interlocked.Increment(ref _replies);
+            if (reply.EndsWith('R'))
+                Interlocked.Increment(ref _cursorReplies);
+            EnqueueWrite(System.Text.Encoding.UTF8.GetBytes(reply));
+        };
         Id = id;
         StatusText = layerPtyId is { Length: > 0 }
             ? $"[pty {layerPtyId}] 层 - {window.KeyBindings.Keys(TuiAction.Overview)} 总览 - {window.KeyBindings.Keys(TuiAction.PrevSession, TuiAction.NextSession)} 切该 pty 的会话 - {window.KeyBindings.Keys(TuiAction.Detach)} 离开 DSH"
@@ -140,8 +160,12 @@ internal sealed class ShellPane : ITuiPane
 
     public void HandleText(string text)
     {
+        Interlocked.Increment(ref _textCalls);
         if (_disposed || _exited || _backing is null || text.Length == 0)
+        {
+            Interlocked.Increment(ref _textRejected);
             return;
+        }
         var bytes = System.Text.Encoding.UTF8.GetBytes(text);
         _scrollOffset = 0;
         EnqueueWrite(bytes);
@@ -174,11 +198,15 @@ internal sealed class ShellPane : ITuiPane
         _pump.Dispose();
     }
 
+    internal string IoDiagnostics
+        => $"pane={Id},backing={(_backing is null ? 0 : 1)},disposed={(_disposed ? 1 : 0)},exited={(_exited ? 1 : 0)},backingExited={(_backing?.Exited == true ? 1 : 0)},pump={(int)_pumpTask.Status},writer={(int)_writerTask.Status},text={Volatile.Read(ref _textCalls)},textRejected={Volatile.Read(ref _textRejected)},queued={Volatile.Read(ref _writesQueued)},queueRejected={Volatile.Read(ref _writesRejected)},started={Volatile.Read(ref _writesStarted)},completed={Volatile.Read(ref _writesCompleted)},writtenBytes={Volatile.Read(ref _bytesWritten)},writeHr={Volatile.Read(ref _writeHResult)},replies={Volatile.Read(ref _replies)},cursorReplies={Volatile.Read(ref _cursorReplies)},readBytes={Volatile.Read(ref _bytesRead)},feeds={Volatile.Read(ref _feeds)},readHr={Volatile.Read(ref _readHResult)},snapshots={Volatile.Read(ref _snapshots)},wakePending={Volatile.Read(ref _wakePending)},wakesCompleted={Volatile.Read(ref _wakesCompleted)}";
+
     /** 滚回+当前屏的纯文本快照(去行尾空白; 屏幕末尾的全空行也去掉, 避免快照被空屏淹没)。 */
     public IReadOnlyList<string> SnapshotLines()
     {
         lock (_screenGate)
         {
+            Interlocked.Increment(ref _snapshots);
             var lines = new List<string>(_screen.ScrollbackCount + _screen.Height);
             for (var offset = _screen.ScrollbackCount - 1; offset >= 0; offset--)
                 lines.Add(RowText(_screen.ScrollbackRow(offset)));
@@ -205,7 +233,12 @@ internal sealed class ShellPane : ITuiPane
     }
 
     private void EnqueueWrite(byte[] bytes)
-        => _writes.Writer.TryWrite(bytes);
+    {
+        if (_writes.Writer.TryWrite(bytes))
+            Interlocked.Increment(ref _writesQueued);
+        else
+            Interlocked.Increment(ref _writesRejected);
+    }
 
     private async Task WriteLoopAsync()
     {
@@ -215,10 +248,14 @@ internal sealed class ShellPane : ITuiPane
                 continue;
             try
             {
+                Interlocked.Increment(ref _writesStarted);
                 await _backing.WriteAsync(bytes, _pump.Token);
+                Interlocked.Add(ref _bytesWritten, bytes.Length);
+                Interlocked.Increment(ref _writesCompleted);
             }
-            catch (Exception)
+            catch (Exception error)
             {
+                Volatile.Write(ref _writeHResult, error.HResult);
                 // 写入失败(会话退出)由读取泵统一标定 Exited
                 return;
             }
@@ -250,6 +287,7 @@ internal sealed class ShellPane : ITuiPane
             }
             catch (Exception error)
             {
+                Volatile.Write(ref _readHResult, error.HResult);
                 if (!_pump.IsCancellationRequested)
                 {
                     StatusText = $"终端泵中止: {error.Message}";
@@ -269,7 +307,10 @@ internal sealed class ShellPane : ITuiPane
             _bytesRead += read;
             StatusText = $"终端读取 {_bytesRead} 字节 - {_backing.Command}";
             lock (_screenGate)
+            {
                 _screen.Feed(_readBuffer.AsSpan(0, read));
+                Interlocked.Increment(ref _feeds);
+            }
             Invalidate();
         }
         _exited = true;
@@ -303,6 +344,7 @@ internal sealed class ShellPane : ITuiPane
         _window.QueueAction(() =>
         {
             Interlocked.Exchange(ref _wakePending, 0);
+            Interlocked.Increment(ref _wakesCompleted);
             _window.Invalidate();
         });
     }

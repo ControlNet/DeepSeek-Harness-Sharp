@@ -1064,6 +1064,11 @@ public sealed partial class ChatWindow : IDisposable
         }
     }
 
+    internal string ShellPaneIoDiagnostics(int paneId)
+        => _panes.TryGetValue(paneId, out var pane) && pane is ShellPane shell
+            ? $"focused={_focusedPaneId},layer={(_ptyLayer?.Id == paneId ? 1 : 0)},{shell.IoDiagnostics}"
+            : $"focused={_focusedPaneId},missingShell={paneId}";
+
     /** 刷新并返回其他进程发布的远程窗格(pty id + 快照); 直接用返回值, 不等 UI 线程应用 _daemonPtys。 */
     internal async Task<IReadOnlyList<(string PtyId, PtyPaneSnapshotDto Pane)>> RemotePanesAsync()
     {

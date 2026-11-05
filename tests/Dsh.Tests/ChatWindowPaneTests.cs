@@ -657,11 +657,19 @@ public sealed class ChatWindowPaneTests : IDisposable
             var promptText = await WaitForPaneTextAsync(chat, paneId, HasPrompt);
             if (!HasPrompt(promptText))
                 Assert.Fail(DescribeMissingPrompt(session, promptText));
+            var promptIo = chat.ShellPaneIoDiagnostics(paneId);
             var input = Path.GetFileNameWithoutExtension(shell).Equals("cmd", StringComparison.OrdinalIgnoreCase)
                 ? "cmd /v:on /c \"set /a m=6*7 & echo STAGE1-!m!\"\r"
                 : "echo STAGE1-$((6*7))\r";
+            var commandTime = Stopwatch.StartNew();
             chat.ApplyPaneInput("text", paneId, input);
-            Assert.Contains(expected, await WaitForPaneTextAsync(chat, paneId, text => text.Contains(expected)));
+            var paneText = await WaitForPaneTextAsync(chat, paneId, text => text.Contains(expected));
+            var hostText = session.SnapshotText();
+            var inputText = input.TrimEnd('\r');
+            var conPty = typeof(PtySession).GetField("_conPty", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.GetValue(session);
+            await Console.Error.WriteLineAsync(
+                $"PTY_INPUT_DIAGNOSTIC elapsedMs={commandTime.ElapsedMilliseconds},conPty={(conPty is null ? 0 : 1)},status={(int)session.Status},exitKnown={(session.ExitCode is not null ? 1 : 0)},exit={session.ExitCode.GetValueOrDefault()},hostChars={hostText.Length},paneChars={paneText.Length},hostPrompt={(HasPrompt(hostText) ? 1 : 0)},panePrompt={(HasPrompt(paneText) ? 1 : 0)},hostMarker={(hostText.Contains(expected, StringComparison.Ordinal) ? 1 : 0)},hostInput={(hostText.Contains(inputText, StringComparison.Ordinal) ? 1 : 0)},paneInput={(paneText.Contains(inputText, StringComparison.Ordinal) ? 1 : 0)};promptIo=[{promptIo}];finalIo=[{chat.ShellPaneIoDiagnostics(paneId)}];poolThreads={ThreadPool.ThreadCount},poolPending={ThreadPool.PendingWorkItemCount},poolCompleted={ThreadPool.CompletedWorkItemCount}");
+            Assert.Contains(expected, paneText);
         }
         finally
         {
