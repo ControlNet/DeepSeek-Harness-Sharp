@@ -10,6 +10,7 @@ internal static class WindowsIoStageTiming
     private const int CollectionCapacity = 16;
     private const int SlotCapacity = 512; // Caller 0, actual owned workers 1..511.
     private const int RootCapacity = 256;
+    private const int PreDeadlineSeconds = 59;
     private static Observation? _observation;
 
     internal enum Phase { CollectionStart, CollectionComplete, AncestorsStart, AncestorsComplete, GrantsStart, FirstProof, GrantsComplete, ApplyFinal, Count }
@@ -94,12 +95,16 @@ internal static class WindowsIoStageTiming
         {
             if (Volatile.Read(ref _disposed) != 0) return;
             var sample = Interlocked.Increment(ref _sample);
-            if (sample <= 3) Dump(sample);
             if (sample == 3)
             {
-                try { _timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan); }
+                try
+                {
+                    var due = TimeSpan.FromSeconds(PreDeadlineSeconds) - Stopwatch.GetElapsedTime(_started);
+                    _timer.Change(due > TimeSpan.Zero ? due : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+                }
                 catch (Exception) { Failed(); }
             }
+            if (sample <= 4) Dump(sample);
         }
 
         private void Dump(int sample)
@@ -108,7 +113,7 @@ internal static class WindowsIoStageTiming
             {
                 lock (_dumpGate)
                 {
-                    Trace.WriteLine($"IO_STAGE sample={sample} started={_started} ticks={Stopwatch.GetTimestamp()} frequency={Stopwatch.Frequency} applies={Volatile.Read(ref _applyCount)} applyOverflow={Math.Max(0, Volatile.Read(ref _applyCount) - ApplyCapacity)} collections={Volatile.Read(ref _collectionCount)} collectionOverflow={Math.Max(0, Volatile.Read(ref _collectionCount) - CollectionCapacity)} observerErrors={Volatile.Read(ref _errors)} listenerErrors={_listener.Errors} scope=managedNativeCallBoundary totals=overlapping notWallPartitions=1 unknownIdle=1 closeIsSafeHandleDisposeBoundary=1");
+                    Trace.WriteLine($"IO_STAGE sample={sample} final={(sample == 5 ? 1 : 0)} requestedSeconds={(sample == 4 ? PreDeadlineSeconds : sample < 4 ? sample * 15 : -1)} started={_started} ticks={Stopwatch.GetTimestamp()} frequency={Stopwatch.Frequency} applies={Volatile.Read(ref _applyCount)} applyOverflow={Math.Max(0, Volatile.Read(ref _applyCount) - ApplyCapacity)} collections={Volatile.Read(ref _collectionCount)} collectionOverflow={Math.Max(0, Volatile.Read(ref _collectionCount) - CollectionCapacity)} observerErrors={Volatile.Read(ref _errors)} listenerErrors={_listener.Errors} scope=managedNativeCallBoundary totals=overlapping notWallPartitions=1 unknownIdle=1 closeIsSafeHandleDisposeBoundary=1");
                     for (var phase = 0; phase < _testPhases.Length; phase++)
                         Trace.WriteLine($"IO_STAGE_TEST sample={sample} phase={(TestPhase)phase} ticks={Volatile.Read(ref _testPhases[phase])} known={(Volatile.Read(ref _testPhases[phase]) == 0 ? 0 : 1)}");
                     foreach (var apply in _applies) apply?.Dump(sample);
@@ -124,7 +129,7 @@ internal static class WindowsIoStageTiming
             Interlocked.CompareExchange(ref _observation, null, this);
             try { await _timer.DisposeAsync().ConfigureAwait(false); }
             catch (Exception) { Failed(); }
-            Dump(4);
+            Dump(5);
             try
             {
                 Trace.Listeners.Remove(_listener);
@@ -292,6 +297,7 @@ internal static class WindowsIoStageTiming
                 var exited = Volatile.Read(ref state.Exited);
                 var retired = Volatile.Read(ref state.Retired);
                 var coherent = (sequence & 1) == 0 && sequence == Volatile.Read(ref state.Sequence);
+                if (retired == 1 && operation == 0 && coherent) continue;
                 Trace.WriteLine($"IO_STAGE_SLOT sample={sample} collection={ordinal} slot={slot} root={root} admission={admission} operation={(Operation)operation} entered={entered} exited={exited} retired={retired} coherent={(coherent ? 1 : 0)} ticks={Stopwatch.GetTimestamp()}");
             }
             var roots = Math.Min(Volatile.Read(ref _roots), RootCapacity);
