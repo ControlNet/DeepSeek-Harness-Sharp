@@ -391,7 +391,7 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         const int threadDeadlineSeconds = 5;
         var deadline = TimeSpan.FromSeconds(threadDeadlineSeconds);
         var queueType = typeof(WindowsDirectoryCollector).GetNestedType("WorkQueue", BindingFlags.NonPublic)!;
-        var queue = Activator.CreateInstance(queueType, CancellationToken.None)!;
+        var queue = Activator.CreateInstance(queueType, [CancellationToken.None, null])!;
         var gate = queueType.GetField("_gate", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(queue)!;
         var run = queueType.GetMethod("Run")!.CreateDelegate<Action>(queue);
         var seal = queueType.GetMethod("Seal")!.CreateDelegate<Action>(queue);
@@ -603,10 +603,10 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         RequireWindows();
         using var queue = CreateResourceQueue();
         if (waitForHandle)
-            queue.RentHandles(511);
+            queue.RentHandles(511, 0);
         else
             for (var index = 0; index < 256; index++)
-                queue.RentBuffer();
+                queue.RentBuffer(0);
         var worker = queue.StartWorker();
         WaitUntilBlocked(worker);
 
@@ -630,10 +630,10 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         using var queue = CreateResourceQueue();
         using var cancellation = new CancellationTokenSource();
         if (waitForHandle)
-            queue.RentHandles(511);
+            queue.RentHandles(511, 0);
         else
             for (var index = 0; index < 256; index++)
-                queue.RentBuffer();
+                queue.RentBuffer(0);
         var worker = queue.StartWorker();
         WaitUntilBlocked(worker);
         if (!waitForHandle)
@@ -668,7 +668,7 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         Assert.Equal(0, queue.CreatedBufferCount);
         var buffers = new int[256];
         for (var index = 0; index < buffers.Length; index++)
-            buffers[index] = queue.RentBuffer();
+            buffers[index] = queue.RentBuffer(0);
         Assert.Equal(256, buffers.Distinct().Count());
         var worker = queue.StartWorker();
         WaitUntilBlocked(worker);
@@ -679,7 +679,7 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         queue.Demand();
         Assert.Equal(1, queue.ChildEntryCount);
         Assert.Equal(256, queue.CreatedBufferCount);
-        Assert.Equal(buffers[0], queue.RentBuffer());
+        Assert.Equal(buffers[0], queue.RentBuffer(0));
     }
 
     [Fact]
@@ -687,14 +687,14 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     {
         RequireWindows();
         using var queue = CreateResourceQueue();
-        queue.RentHandles(510);
+        queue.RentHandles(510, 0);
         Exception? reservationFailure = null;
         var reserved = false;
         var segmented = queue.Start(() =>
         {
             try
             {
-                queue.RentHandles(2);
+                queue.RentHandles(2, 0);
                 reserved = true;
                 queue.ReleaseResources(-1, 2);
             }
@@ -725,8 +725,8 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     {
         RequireWindows();
         using var queue = CreateResourceQueue();
-        queue.RentHandles(511);
-        var buffer = queue.RentBuffer();
+        queue.RentHandles(511, 0);
+        var buffer = queue.RentBuffer(0);
         var worker = queue.StartWorker();
         WaitUntilBlocked(worker);
         var failure = new IOException("The primary native operation failed before returning its resources.");
@@ -779,10 +779,10 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         public ResourceQueue(string root, string child)
         {
             ChildPath = child;
-            _queue = Activator.CreateInstance(_type, CancellationToken.None)!;
+            _queue = Activator.CreateInstance(_type, [CancellationToken.None, null])!;
             Gate = Field("_gate");
-            RentHandles = Method("RentHandles").CreateDelegate<Action<int>>(_queue);
-            RentBuffer = Method("RentBuffer").CreateDelegate<Func<int>>(_queue);
+            RentHandles = Method("RentHandles").CreateDelegate<Action<int, int>>(_queue);
+            RentBuffer = Method("RentBuffer").CreateDelegate<Func<int, int>>(_queue);
             ReleaseResources = Method("ReleaseResources").CreateDelegate<Action<int, int>>(_queue);
             Fail = Method("Fail").CreateDelegate<Action<Exception>>(_queue);
             Demand = Method("ThrowIfStopped").CreateDelegate<Action>(_queue);
@@ -809,8 +809,8 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
 
         public string ChildPath { get; }
         public object Gate { get; }
-        public Action<int> RentHandles { get; }
-        public Func<int> RentBuffer { get; }
+        public Action<int, int> RentHandles { get; }
+        public Func<int, int> RentBuffer { get; }
         public Action<int, int> ReleaseResources { get; }
         public Action<Exception> Fail { get; }
         public Action Demand { get; }
