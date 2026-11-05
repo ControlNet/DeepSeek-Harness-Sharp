@@ -296,6 +296,8 @@ internal sealed class WindowsAclLease : IDisposable
         private static readonly SecurityIdentifier OwnerRights = new("S-1-3-4");
         private static readonly SecurityIdentifier PrincipalSelf = new("S-1-5-10");
         private readonly Lock _proofGate = new();
+        private Dictionary<(SecurityIdentifier Sid, bool Directory), Dictionary<byte[], RawAcl>>? _readAclFacts;
+        private int _readAclFactCount;
         private HashSet<byte[]>? _positiveProofs;
 
         public static EffectiveRead? TryCreate(SafeFileHandle process)
@@ -317,21 +319,57 @@ internal sealed class WindowsAclLease : IDisposable
         public void Dispose()
         {
             lock (_proofGate)
+            {
                 _positiveProofs = null;
+                _readAclFacts = null;
+                _readAclFactCount = 0;
+            }
             token.Dispose();
         }
 
-        public unsafe bool CanRead(nint descriptor, ushort control)
+        public static unsafe ReadOnlySpan<byte> DescriptorBytes(nint descriptor, ushort control)
         {
             // Absolute descriptors contain pointers, not a contiguous descriptor image.
             var length = (control & (ushort)ControlFlags.SelfRelative) != 0
                 ? WindowsNative.GetSecurityDescriptorLength(descriptor) : 0;
-            var bytes = length is > 0 and <= int.MaxValue
+            return length is > 0 and <= int.MaxValue
                 ? new ReadOnlySpan<byte>((void*)descriptor, (int)length) : default;
-            return CanRead(descriptor, bytes);
         }
 
-        private unsafe bool CanRead(nint descriptor, ReadOnlySpan<byte> bytes)
+        public RawAcl? FindReadAcl(ReadOnlySpan<byte> descriptor, SecurityIdentifier sid, bool directory)
+        {
+            lock (_proofGate)
+                if (!descriptor.IsEmpty && _readAclFacts is not null
+                    && _readAclFacts.TryGetValue((sid, directory), out var facts)
+                    && facts.GetAlternateLookup<ReadOnlySpan<byte>>().TryGetValue(descriptor, out var cached))
+                    return cached;
+            return null;
+        }
+
+        public void RememberReadAcl(ReadOnlySpan<byte> descriptor, SecurityIdentifier sid, bool directory, RawAcl acl)
+        {
+            if (descriptor.IsEmpty)
+                return;
+            lock (_proofGate)
+            {
+                if (_readAclFactCount >= PositiveProofCapacity)
+                    return;
+                var byKind = _readAclFacts ??= [];
+                if (!byKind.TryGetValue((sid, directory), out var facts))
+                    byKind.Add((sid, directory), facts = new Dictionary<byte[], RawAcl>(DescriptorComparer.Instance));
+                // These parsed ACLs are read-only facts. Mutation callers never look in this cache.
+                // Only a successful read/inheritance calculation is retained; native failures are not cached.
+                // Share the already immutable native-proof image instead of retaining a second descriptor copy.
+                var added = _positiveProofs is not null
+                    && _positiveProofs.GetAlternateLookup<ReadOnlySpan<byte>>().TryGetValue(descriptor, out var image)
+                    ? facts.TryAdd(image, acl)
+                    : facts.GetAlternateLookup<ReadOnlySpan<byte>>().TryAdd(descriptor, acl);
+                if (added)
+                    _readAclFactCount++;
+            }
+        }
+
+        public unsafe bool CanRead(nint descriptor, ReadOnlySpan<byte> bytes)
         {
             if (!bytes.IsEmpty)
                 lock (_proofGate)
@@ -468,7 +506,7 @@ internal sealed class WindowsAclLease : IDisposable
             if (_inheritance is not null || restrict && ProtectedInheritance.ContainsKey(path))
                 return false;
             using var handle = Open(readOnly: true);
-            var (acl, _, reuseRead) = ReadGrantAcl(handle, sid, directory, effectiveRead);
+            var (acl, _, reuseRead) = ReadGrantAcl(handle, sid, directory, effectiveRead, readOnly: true);
             if (restrict)
                 DemandNoAmbientGrant(acl, access, network);
             return reuseRead || inheritedAccess == access && HasInheritedGrant(acl, sid, access, directory);
@@ -654,7 +692,7 @@ internal sealed class WindowsAclLease : IDisposable
         }
 
         private (RawAcl Acl, bool Protected, bool ReuseRead) ReadGrantAcl(SafeFileHandle handle,
-            SecurityIdentifier sid, bool directory, EffectiveRead? effectiveRead)
+            SecurityIdentifier sid, bool directory, EffectiveRead? effectiveRead, bool readOnly = false)
         {
             if (effectiveRead is null)
             {
@@ -674,6 +712,11 @@ internal sealed class WindowsAclLease : IDisposable
                     throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot read the AppContainer filesystem grant inheritance.");
                 if (dacl == 0)
                     throw new NotSupportedException("An AppContainer filesystem grant requires an explicit ACL.");
+                // This image includes owner, group, DACL, label and control.
+                // Every object still supplies its own freshly queried descriptor, even when its pure parsed facts match another object.
+                var descriptorBytes = EffectiveRead.DescriptorBytes(descriptor, control);
+                if (readOnly && effectiveRead.FindReadAcl(descriptorBytes, sid, directory) is { } cachedAcl)
+                    return (cachedAcl, (control & DaclProtected) != 0, true);
                 var bytes = new byte[(ushort)Marshal.ReadInt16(dacl, 2)];
                 Marshal.Copy(dacl, bytes, 0, bytes.Length);
                 var acl = new RawAcl(bytes, 0);
@@ -681,8 +724,10 @@ internal sealed class WindowsAclLease : IDisposable
                 // Inspect every object, including protected descendants, and retain the narrowing path for this SID's existing ACEs.
                 var hasPrincipals = owner != 0 && group != 0;
                 var stable = EffectiveRead.IsStableAllowAcl(acl, sid);
-                var reuseRead = hasPrincipals && stable && effectiveRead.CanRead(descriptor, control)
+                var reuseRead = hasPrincipals && stable && effectiveRead.CanRead(descriptor, descriptorBytes)
                     && (!directory || effectiveRead.CanInheritRead(acl, owner, group, label));
+                if (readOnly && reuseRead)
+                    effectiveRead.RememberReadAcl(descriptorBytes, sid, directory, acl);
                 return (acl, protectedDacl, reuseRead);
             }
             finally { WindowsNative.LocalFree(descriptor); }

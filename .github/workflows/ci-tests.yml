@@ -379,8 +379,8 @@ jobs:
           sys.exit(code if code >= 0 else 128 - code)
           PY
 
-      - name: Check native directory and authority consumers after original MCP (probe 88 bounded roots)
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/native-root-admission88' }}
+      - name: Check native directory and authority consumers after original MCP (probe 91 descriptor facts)
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/fresh-acl-facts91' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -389,8 +389,8 @@ jobs:
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
 
-      - name: Check read-proof coordination after original MCP (probe 88 bounded roots)
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/native-root-admission88' }}
+      - name: Check read-proof coordination after original MCP (probe 91 descriptor facts)
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/fresh-acl-facts91' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -399,8 +399,8 @@ jobs:
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
 
-      - name: Check owned worker retirement after original MCP (probe 88 bounded roots)
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/native-root-admission88' }}
+      - name: Check owned worker retirement after original MCP (probe 91 descriptor facts)
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/fresh-acl-facts91' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -409,8 +409,8 @@ jobs:
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
 
-      - name: Check other owned MCP boundaries after original MCP (probe 88 bounded roots)
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/native-root-admission88' }}
+      - name: Check other owned MCP boundaries after original MCP (probe 91 descriptor facts)
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/fresh-acl-facts91' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -420,8 +420,8 @@ jobs:
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
 
-      - name: Gate bounded-root components before the original consumer on a separate runner
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'sandbox-components-88' }}
+      - name: Gate fresh descriptor computation components before the original consumer on a separate runner
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'sandbox-components-91' }}
         shell: bash
         run: |
           set -euo pipefail

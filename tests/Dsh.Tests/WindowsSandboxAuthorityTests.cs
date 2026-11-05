@@ -148,6 +148,118 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
 
     [Fact]
     [Trait("Category", "SandboxNative")]
+    public async Task IdenticalNonInheritingReadAcls_StillGrantFutureDirectoryDescendants()
+    {
+        if (!OperatingSystem.IsWindows())
+            Assert.Skip("This consumer requires Windows AppContainer and native filesystem access checks.");
+        var working = Directory.CreateDirectory(Path.Combine(_root, "working")).FullName;
+        var input = new FileInfo(Path.Combine(_root, "a.txt"));
+        File.WriteAllText(input.FullName, "initial-read");
+        var readable = Directory.CreateDirectory(Path.Combine(_root, "readonly"));
+        using var identity = WindowsIdentity.GetCurrent();
+        var user = identity.User ?? throw new InvalidOperationException("The authority fixture requires a user SID.");
+        // The file can use this grant directly; the directory still needs authority for future children.
+        var sddl = $"D:P(A;;FA;;;{user.Value})(A;;0x1200a9;;;S-1-15-2-2)";
+        var fileAcl = input.GetAccessControl(AccessControlSections.Access);
+        fileAcl.SetSecurityDescriptorSddlForm(sddl, AccessControlSections.Access);
+        input.SetAccessControl(fileAcl);
+        var directoryAcl = readable.GetAccessControl(AccessControlSections.Access);
+        directoryAcl.SetSecurityDescriptorSddlForm(sddl, AccessControlSections.Access);
+        readable.SetAccessControl(directoryAcl);
+        var originalFileAcl = ReadDacl(input.FullName);
+        var originalDirectoryAcl = ReadDacl(readable.FullName);
+        Assert.Equal(originalFileAcl, originalDirectoryAcl);
+        var lateFile = new FileInfo(Path.Combine(readable.FullName, "late.txt"));
+
+        await using (var consumer = await SandboxedProcess.StartAsync(new SandboxProcessOptions
+        {
+            Executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
+            WorkingDirectory = working,
+            ReadOnlyPaths = [input.FullName, readable.FullName],
+            Arguments = ["/D", "/Q", "/C",
+                @"set /p gate=&type ..\a.txt&type ..\readonly\late.txt&(echo tampered>>..\a.txt) 2>nul&(echo tampered>>..\readonly\late.txt) 2>nul&exit /b 0"],
+        }, TestContext.Current.CancellationToken))
+        {
+            var output = new StreamReader(consumer.StandardOutput).ReadToEndAsync(TestContext.Current.CancellationToken);
+            var error = consumer.StandardError.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken);
+            Assert.Equal(originalFileAcl, ReadDacl(input.FullName));
+            // Only the real directory grant can supply the restricted token's read authority here.
+            // The explicit creation ACL gives the host access, but grants no ambient AppContainer rights.
+            var lateAcl = new FileSecurity();
+            lateAcl.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
+            using (var stream = lateFile.Create(FileMode.CreateNew, FileSystemRights.FullControl, FileShare.Read,
+                4096, FileOptions.None, lateAcl))
+                stream.Write("late-read"u8);
+            await consumer.StandardInput.WriteAsync("continue\n"u8.ToArray(), TestContext.Current.CancellationToken);
+            await consumer.StandardInput.DisposeAsync();
+            Assert.Equal(0, await consumer.WaitForExitAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(Deadline, TestContext.Current.CancellationToken));
+            var stdout = await output;
+            await error;
+            Assert.Contains("initial-read", stdout);
+            Assert.Contains("late-read", stdout);
+            Assert.Equal("initial-read", File.ReadAllText(input.FullName));
+            Assert.Equal("late-read", File.ReadAllText(lateFile.FullName));
+        }
+
+        AssertDaclRestored(originalFileAcl, input.FullName);
+        AssertDaclRestored(originalDirectoryAcl, readable.FullName);
+        var lateRules = lateFile.GetAccessControl(AccessControlSections.Access)
+            .GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>();
+        Assert.DoesNotContain(lateRules, rule => rule.IdentityReference.Value.StartsWith("S-1-15-2-", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    [Trait("Category", "SandboxNative")]
+    public async Task DifferentReadDescriptors_StillGrantPrivatePeerAndRestoreBoth()
+    {
+        if (!OperatingSystem.IsWindows())
+            Assert.Skip("This consumer requires Windows AppContainer and native filesystem access checks.");
+        var working = Directory.CreateDirectory(Path.Combine(_root, "working")).FullName;
+        var shared = new FileInfo(Path.Combine(_root, "a.txt"));
+        var privatePeer = new FileInfo(Path.Combine(_root, "z.txt"));
+        File.WriteAllText(shared.FullName, "shared-read");
+        File.WriteAllText(privatePeer.FullName, "private-read");
+        using var identity = WindowsIdentity.GetCurrent();
+        var user = identity.User ?? throw new InvalidOperationException("The authority fixture requires a user SID.");
+        var sharedAcl = shared.GetAccessControl(AccessControlSections.Access);
+        sharedAcl.SetSecurityDescriptorSddlForm($"D:P(A;;FA;;;{user.Value})(A;;0x1200a9;;;S-1-15-2-2)",
+            AccessControlSections.Access);
+        shared.SetAccessControl(sharedAcl);
+        var privateAcl = privatePeer.GetAccessControl(AccessControlSections.Access);
+        privateAcl.SetSecurityDescriptorSddlForm($"D:P(A;;FA;;;{user.Value})", AccessControlSections.Access);
+        privatePeer.SetAccessControl(privateAcl);
+        var originalSharedAcl = ReadDacl(shared.FullName);
+        var originalPrivateAcl = ReadDacl(privatePeer.FullName);
+
+        await using (var consumer = await SandboxedProcess.StartAsync(new SandboxProcessOptions
+        {
+            Executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
+            WorkingDirectory = working,
+            ReadOnlyPaths = [shared.FullName, privatePeer.FullName],
+            Arguments = ["/D", "/Q", "/C",
+                @"type ..\a.txt&type ..\z.txt&(echo tampered>>..\a.txt) 2>nul&(echo tampered>>..\z.txt) 2>nul&exit /b 0"],
+        }, TestContext.Current.CancellationToken))
+        {
+            var output = new StreamReader(consumer.StandardOutput).ReadToEndAsync(TestContext.Current.CancellationToken);
+            var error = consumer.StandardError.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken);
+            Assert.Equal(0, await consumer.WaitForExitAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(Deadline, TestContext.Current.CancellationToken));
+            var stdout = await output;
+            await error;
+            Assert.Contains("shared-read", stdout);
+            Assert.Contains("private-read", stdout);
+            Assert.Equal("shared-read", File.ReadAllText(shared.FullName));
+            Assert.Equal("private-read", File.ReadAllText(privatePeer.FullName));
+        }
+
+        AssertDaclRestored(originalSharedAcl, shared.FullName);
+        AssertDaclRestored(originalPrivateAcl, privatePeer.FullName);
+    }
+
+    [Fact]
+    [Trait("Category", "SandboxNative")]
     public void ReadableRootGroups_MergeIndependentTreesBeforeOverlappingWriteOverridesAreReused()
     {
         if (!OperatingSystem.IsWindows())
