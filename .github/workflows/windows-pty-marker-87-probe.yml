@@ -1,9 +1,9 @@
-name: Windows PTY lifecycle timing original quick probe 90
+name: Windows PTY original send critical path probe 91
 
 on:
   push:
     branches:
-      - probe/pty-timing90
+      - probe/pty-critical91
 
 permissions:
   contents: read
