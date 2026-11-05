@@ -11,7 +11,7 @@ namespace Dsh.Sandbox;
 internal static class WindowsDirectoryCollector
 {
     private const int BufferSize = 16 * 1024;
-    private const int WorkerCount = 128;
+    private const int MaximumWorkerCount = 512;
     private const uint ListDirectory = 1;
     private const uint Synchronize = 0x00100000;
     private const uint BackupSemantics = 0x02000000;
@@ -37,11 +37,15 @@ internal static class WindowsDirectoryCollector
     /// </summary>
     /// <remarks>
     /// Root entries are read and published before any descendant is opened.
-    /// One hundred twenty-eight dedicated workers each own one 16 KiB buffer and normally one descendant handle.
+    /// The queue grows up to 512 dedicated workers only when queued plus active directories exceed its started worker count.
+    /// A single descendant chain starts one worker; workers remain available until collection finishes.
+    /// Each worker owns one 16 KiB buffer, bounding descendant buffers at 8 MiB, and normally one descendant handle.
     /// Root-relative names exceeding the native counted-name limit are split at directory separators.
-    /// Such opens transiently own two descendant handles per worker; queued directories own none.
-    /// Paths, entry topology and discovery/publication queues cost O(entries).
-    /// All workers join before descendant publication; callbacks retain native entry and FIFO directory order.
+    /// Such opens transiently own two descendant handles per worker, bounding descendant handles at 1,024 plus the root.
+    /// Queued directories own no handles; the root buffer is freed before workers start.
+    /// The worker registry holds 512 thread references; thread stacks use runtime defaults and paths, topology and queues cost O(entries).
+    /// All successfully started workers, including those discovered during joins, join before descendant publication or failure propagation.
+    /// Callbacks retain native entry and FIFO directory order.
     /// Native calls are synchronous, with cancellation checked before opens, between entries and after completion.
     /// </remarks>
     public static unsafe void Collect(string root, Action<string, bool> accept, CancellationToken cancellationToken)
@@ -72,46 +76,12 @@ internal static class WindowsDirectoryCollector
         if (pending.Count != 0)
         {
             var work = new WorkQueue(rootHandle, rootPath, pending, cancellationToken);
-            var workers = new Thread[WorkerCount];
-            var started = 0;
             using var registration = cancellationToken.UnsafeRegister(static state =>
             {
                 var queue = (WorkQueue)state!;
                 queue.Fail(new OperationCanceledException(queue.CancellationToken));
             }, work);
-            try
-            {
-                for (; started < workers.Length; started++)
-                {
-                    work.ThrowIfStopped();
-                    var worker = new Thread(work.Run) { IsBackground = true };
-                    workers[started] = worker;
-                    worker.Start();
-                }
-            }
-            catch (Exception error)
-            {
-                work.Fail(error);
-            }
-            finally
-            {
-                for (var index = 0; index < started; index++)
-                {
-                    while (true)
-                    {
-                        try
-                        {
-                            workers[index].Join();
-                            break;
-                        }
-                        catch (ThreadInterruptedException error)
-                        {
-                            work.Fail(error);
-                        }
-                    }
-                }
-            }
-            work.ThrowIfStopped();
+            work.RunWorkers();
         }
         while (pending.TryDequeue(out var directory))
         {
@@ -181,6 +151,8 @@ internal static class WindowsDirectoryCollector
         private readonly SafeFileHandle _root;
         private readonly int _relativeStart;
         private readonly Queue<DirectoryWork> _pending;
+        private readonly Thread[] _workers = new Thread[MaximumWorkerCount];
+        private int _workerCount;
         private int _outstanding;
         private ExceptionDispatchInfo? _failure;
 
@@ -196,7 +168,63 @@ internal static class WindowsDirectoryCollector
             CancellationToken = cancellationToken;
         }
 
-        public void Run()
+        public void RunWorkers()
+        {
+            try
+            {
+                lock (_gate)
+                {
+                    GrowWorkers();
+                }
+            }
+            catch (Exception error)
+            {
+                Fail(error);
+            }
+            finally
+            {
+                // Re-read the published count after every join because joined workers can have started more workers.
+                for (var index = 0; index < Volatile.Read(ref _workerCount); index++)
+                {
+                    while (true)
+                    {
+                        try
+                        {
+                            _workers[index].Join();
+                            break;
+                        }
+                        catch (ThreadInterruptedException error)
+                        {
+                            Fail(error);
+                        }
+                    }
+                }
+            }
+            ThrowIfStopped();
+        }
+
+        private void GrowWorkers()
+        {
+            // The queue gate prevents a started worker from growing the pool before its own start is registered.
+            try
+            {
+                while (_failure is null && _workerCount < Math.Min(MaximumWorkerCount, _outstanding))
+                {
+                    CancellationToken.ThrowIfCancellationRequested();
+                    var worker = new Thread(Run) { IsBackground = true };
+                    worker.Start();
+                    _workers[_workerCount] = worker;
+                    Volatile.Write(ref _workerCount, _workerCount + 1);
+                }
+            }
+            catch (Exception error)
+            {
+                // A failed start does not enter the registry, and every earlier successful start still joins.
+                Fail(error);
+            }
+        }
+
+        private void Run()
         {
             nint buffer = 0;
             try
@@ -262,6 +290,7 @@ internal static class WindowsDirectoryCollector
                     _outstanding = checked(_outstanding + 1);
                 }
                 _outstanding--;
+                GrowWorkers();
                 Monitor.PulseAll(_gate);
             }
         }
