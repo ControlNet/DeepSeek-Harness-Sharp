@@ -1,0 +1,81 @@
+name: Windows sandbox current flat256 native close observation 87
+
+on:
+  push:
+    branches:
+      - probe/native-flat256-close87
+
+permissions:
+  contents: read
+
+jobs:
+  bridge-dryioc-feed:
+    name: Bridge the exact formal run DryIoc feed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Verify the frozen source artifact provenance
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $response = & gh api -X GET 'repos/forestbat/DeepSeek-Harness-Sharp/actions/runs/42001413454/artifacts?name=dryioc-feed&per_page=100' 2>&1
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read the exact formal run artifact metadata.' }
+          $metadata = ($response -join "`n") | ConvertFrom-Json
+          $artifacts = @($metadata.artifacts | Where-Object { $_.name -ceq 'dryioc-feed' })
+          if ($metadata.total_count -ne 1 -or $artifacts.Count -ne 1) { throw 'Expected exactly one source dryioc-feed artifact.' }
+          $artifact = $artifacts[0]
+          if ($artifact.id -ne 13402188512 -or $artifact.expired -or $artifact.workflow_run.id -ne 42001413454 -or $artifact.digest -cne 'sha256:c50574452a0d86ff851f8963f6047eccc81153facf31c53be6ddf07452d81502') {
+            throw 'The source artifact does not match the frozen formal run provenance.'
+          }
+          Write-Host 'SOURCE_FEED repository=forestbat/DeepSeek-Harness-Sharp run=42001413454 artifact=13402188512 digest=sha256:c50574452a0d86ff851f8963f6047eccc81153facf31c53be6ddf07452d81502'
+
+      - name: Download the unchanged formal run feed
+        uses: actions/download-artifact@v4
+        with:
+          name: dryioc-feed
+          repository: forestbat/DeepSeek-Harness-Sharp
+          run-id: 42001413454
+          github-token: ${{ github.token }}
+          path: packages
+
+      - name: Verify the real package and commit before bridging
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-ChildItem -LiteralPath packages -File -Recurse)
+          $packages = @($files | Where-Object { $_.Name -clike 'DryIoc.dll.*.nupkg' })
+          if ($files.Count -ne 3 -or $packages.Count -ne 1) { throw 'Expected the original package, commit stamp, and verifier only.' }
+          $package = $packages[0]
+          $commit = (Get-Content -LiteralPath "$($package.FullName).commit" -Raw).Trim()
+          $sha256 = (Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($commit -cne 'b98d2ab37cf05bdea02c34e5e4f8e481d76d5d3f' -or $sha256 -cne 'd6a7a8be85937061a60f803b8f0d0fb9a2e320ea42185da5fc5166ad825c54a1') {
+            throw 'The source DryIoc package does not match the frozen commit and SHA256.'
+          }
+          if (-not (Test-Path -LiteralPath packages/fetch-dryioc-feed.ps1 -PathType Leaf)) { throw 'The original feed verifier is missing.' }
+          Write-Host "VERIFIED_SOURCE_PACKAGE commit=$commit sha256=$sha256"
+
+      - name: Publish the verified unchanged feed into this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: dryioc-feed
+          path: packages/
+          if-no-files-found: error
+          retention-days: 7
+
+  original-windows-regression:
+    name: Original Windows regression-1 with post-MCP gates
+    needs: bridge-dryioc-feed
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: windows-latest
+      native-cc: cl
+      native-cc-alt: clang-cl
+      suite: regression-1
+      quick-cohort: all
+      dryioc-commit: b98d2ab37cf05bdea02c34e5e4f8e481d76d5d3f
+      dryioc-sha256: d6a7a8be85937061a60f803b8f0d0fb9a2e320ea42185da5fc5166ad825c54a1

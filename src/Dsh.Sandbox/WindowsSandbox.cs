@@ -13,6 +13,7 @@ internal sealed class WindowsSandbox : ISandboxLifetime
     private readonly SafeFileHandle _process, _job;
     private readonly WindowsAclLease _acl;
     private readonly string _profile;
+    private readonly WindowsSandboxTiming.Costs _timing;
     private readonly Lock _gate = new();
     private bool _nativeHandlesClosed;
     private Exception? _terminationFailure;
@@ -23,33 +24,55 @@ internal sealed class WindowsSandbox : ISandboxLifetime
     public Task<int> Exit { get; }
 
     private WindowsSandbox(int id, SafeFileHandle process, SafeFileHandle job,
-        WindowsAclLease acl, string profile, Stream input, Stream output, Stream error)
+        WindowsAclLease acl, string profile, Stream input, Stream output, Stream error, WindowsSandboxTiming.Costs timing)
     {
+        WindowsSandboxTiming.Mark(timing, "sandbox-constructor-start", child: id);
         Id = id;
         _process = process;
         _job = job;
         _acl = acl;
         _profile = profile;
+        _timing = timing;
         StandardInput = input;
         StandardOutput = output;
         StandardError = error;
         Exit = ObserveAsync();
+        WindowsSandboxTiming.Mark(timing, "sandbox-constructor-complete", child: id);
     }
 
     public static WindowsSandbox Start(SandboxPolicy policy, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var timing = new WindowsSandboxTiming.Costs();
+        WindowsSandboxTiming.Mark(timing, "startup-start");
+        WindowsSandboxTiming.Mark(timing, "profile-start");
         var profile = $"Dsh.Sandbox.{Guid.NewGuid():N}";
         var result = WindowsNative.CreateAppContainerProfile(profile, "Dsh sandbox", "Ephemeral isolated process", 0, 0, out var sid);
         if (result < 0)
+        {
+            WindowsSandboxTiming.Mark(timing, "profile-failed");
+            timing.Emit("launch-final");
+            WindowsSandboxTiming.Mark(timing, "launch-final");
+            WindowsSandboxTiming.Mark(timing, "startup-final");
             Marshal.ThrowExceptionForHR(result);
+        }
+        WindowsSandboxTiming.Mark(timing, "profile-complete");
         WindowsAclLease? acl = null;
         SafeFileHandle? job = null, process = null;
         WindowsPipe? input = null, output = null, error = null;
         Stream? inputStream = null, outputStream = null, errorStream = null;
         try
         {
-            acl = WindowsAclLease.CreateBootstrap(sid, policy, cancellationToken);
+            WindowsSandboxTiming.Mark(timing, "bootstrap-start");
+            try
+            {
+                acl = WindowsAclLease.CreateBootstrap(sid, policy, cancellationToken, timing);
+            }
+            finally
+            {
+                WindowsSandboxTiming.Mark(timing, "bootstrap-final");
+            }
+            WindowsSandboxTiming.Mark(timing, "bootstrap-complete");
             cancellationToken.ThrowIfCancellationRequested();
             job = WindowsNative.CreateJobObject(0, null);
             CheckHandle(job, "create the sandbox job");
@@ -76,15 +99,19 @@ internal sealed class WindowsSandbox : ISandboxLifetime
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 // Keep the canonical DOS working directory: cmd treats a forced extended-length prefix as UNC and changes directories.
+                WindowsSandboxTiming.Mark(timing, "process-create-start");
                 Check(WindowsNative.CreateProcess(WindowsNative.PathForNative(policy.Executable), command, 0, 0, true,
                     0x00000004 | 0x00000400 | 0x00080000 | DetachedProcess, environment, policy.WorkingDirectory, ref startup, out information), "create the suspended AppContainer process");
+                WindowsSandboxTiming.Mark(timing, "process-create-complete", child: (int)information.ProcessId);
             }
             finally { Marshal.FreeHGlobal(environment); }
             process = new SafeFileHandle(information.Process, ownsHandle: true);
             using var thread = new SafeFileHandle(information.Thread, ownsHandle: true);
             try
             {
+                WindowsSandboxTiming.Mark(timing, "job-assign-start", child: (int)information.ProcessId);
                 Check(WindowsNative.AssignProcessToJobObject(job, process), "assign the suspended process to its non-breakaway job");
+                WindowsSandboxTiming.Mark(timing, "job-assign-complete", child: (int)information.ProcessId);
                 // Apply the complete filesystem policy using the suspended process's actual token before any application code runs.
                 acl.Apply(policy, process, cancellationToken);
                 input.Child.Dispose();
@@ -94,23 +121,28 @@ internal sealed class WindowsSandbox : ISandboxLifetime
                 outputStream = output.TakeParent(FileAccess.Read);
                 errorStream = error.TakeParent(FileAccess.Read);
                 cancellationToken.ThrowIfCancellationRequested();
+                WindowsSandboxTiming.Mark(timing, "resume-start", child: (int)information.ProcessId);
                 if (WindowsNative.ResumeThread(thread) == uint.MaxValue)
                     throw NativeError("resume the AppContainer process");
+                WindowsSandboxTiming.Mark(timing, "resume-complete", child: (int)information.ProcessId);
                 return new WindowsSandbox((int)information.ProcessId, process, job, acl, profile,
-                    inputStream, outputStream, errorStream);
+                    inputStream, outputStream, errorStream, timing);
             }
             catch
             {
+                WindowsSandboxTiming.Mark(timing, "launch-process-cleanup-start", child: (int)information.ProcessId);
                 WindowsNative.TerminateProcess(process, 125);
                 WindowsNative.TerminateJobObject(job, 125);
                 WindowsNative.WaitForSingleObject(process, uint.MaxValue);
                 while (ActiveProcesses(job) != 0)
                     Thread.Sleep(25);
+                WindowsSandboxTiming.Mark(timing, "launch-process-cleanup-complete", child: (int)information.ProcessId);
                 throw;
             }
         }
         catch (Exception launchFailure)
         {
+            WindowsSandboxTiming.Mark(timing, "launch-failed");
             List<Exception>? failures = null;
             DisposeResource(inputStream, ref failures);
             DisposeResource(outputStream, ref failures);
@@ -132,6 +164,9 @@ internal sealed class WindowsSandbox : ISandboxLifetime
             output?.Dispose();
             error?.Dispose();
             WindowsNative.FreeSid(sid);
+            timing.Emit("launch-final");
+            WindowsSandboxTiming.Mark(timing, "launch-final");
+            WindowsSandboxTiming.Mark(timing, "startup-final");
         }
     }
 
@@ -154,15 +189,21 @@ internal sealed class WindowsSandbox : ISandboxLifetime
                     throw new IOException("Terminating the exact Windows sandbox job failed.", _terminationFailure);
                 await Task.Delay(25).ConfigureAwait(false);
             }
+            WindowsSandboxTiming.Mark(_timing, "root-exited", child: Id);
             Check(WindowsNative.GetExitCodeProcess(_process, out var code), "read the sandbox process exit code");
             Kill();
+            WindowsSandboxTiming.Mark(_timing, "job-empty-wait-start", child: Id);
             await WaitForEmptyJobAsync().ConfigureAwait(false);
+            WindowsSandboxTiming.Mark(_timing, "job-empty-wait-complete", child: Id);
             return unchecked((int)code);
         }
         catch
         {
+            WindowsSandboxTiming.Mark(_timing, "exit-observation-failed", child: Id);
             Kill();
+            WindowsSandboxTiming.Mark(_timing, "failed-job-empty-wait-start", child: Id);
             await WaitForEmptyJobAsync().ConfigureAwait(false);
+            WindowsSandboxTiming.Mark(_timing, "failed-job-empty-wait-complete", child: Id);
             throw;
         }
     }
@@ -204,9 +245,15 @@ internal sealed class WindowsSandbox : ISandboxLifetime
     public async ValueTask DisposeAsync()
     {
         Kill();
+        WindowsSandboxTiming.Mark(_timing, "sandbox-dispose-start", child: Id);
+        try
+        {
         List<Exception>? failures = null;
+        WindowsSandboxTiming.Mark(_timing, "dispose-exit-wait-start", child: Id);
         try { await Exit.ConfigureAwait(false); }
         catch (Exception exception) { (failures ??= []).Add(exception); }
+        WindowsSandboxTiming.Mark(_timing, "dispose-exit-wait-final", child: Id);
+        WindowsSandboxTiming.Mark(_timing, "dispose-streams-start", child: Id);
         List<Exception>? cleanupFailures = null;
         try { await StandardInput.DisposeAsync().ConfigureAwait(false); }
         catch (Exception exception) { (failures ??= []).Add(exception); }
@@ -214,18 +261,29 @@ internal sealed class WindowsSandbox : ISandboxLifetime
         catch (Exception exception) { (failures ??= []).Add(exception); }
         try { await StandardError.DisposeAsync().ConfigureAwait(false); }
         catch (Exception exception) { (failures ??= []).Add(exception); }
+        WindowsSandboxTiming.Mark(_timing, "dispose-streams-final", child: Id);
+        WindowsSandboxTiming.Mark(_timing, "dispose-handles-start", child: Id);
         lock (_gate)
         {
             _nativeHandlesClosed = true;
             DisposeResource(_process, ref failures);
             DisposeResource(_job, ref failures);
         }
+        WindowsSandboxTiming.Mark(_timing, "dispose-handles-final", child: Id);
         DisposeResource(_acl, ref cleanupFailures);
+        WindowsSandboxTiming.Mark(_timing, "dispose-profile-start", child: Id);
         DeleteProfile(_profile, ref cleanupFailures);
+        WindowsSandboxTiming.Mark(_timing, "dispose-profile-final", child: Id);
         if (cleanupFailures is not null)
             (failures ??= []).AddRange(cleanupFailures);
         if (failures is not null)
             throw new AggregateException("Disposing the Windows sandbox failed.", failures);
+        }
+        finally
+        {
+            _timing.Emit("sandbox-dispose-final");
+            WindowsSandboxTiming.Mark(_timing, "sandbox-dispose-final", child: Id);
+        }
     }
 
     private static void DisposeResource(IDisposable? resource, ref List<Exception>? failures)
