@@ -46,14 +46,16 @@ internal static class WindowsDirectoryCollector
     /// All workers join before descendant publication; callbacks retain native entry and FIFO directory order.
     /// Native calls are synchronous, with cancellation checked before opens, between entries and after completion.
     /// </remarks>
-    public static void Collect(string root, Action<string, bool> accept, CancellationToken cancellationToken)
+    public static void Collect(string root, Action<string, bool> accept, CancellationToken cancellationToken,
+        WindowsRootAdmissionTiming.Root? timing = null)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(accept);
-        Collect([new RootRequest(root, accept)], cancellationToken);
+        Collect([new RootRequest(root, accept, timing)], cancellationToken);
     }
 
-    internal readonly record struct RootRequest(string Path, Action<string, bool> Accept);
+    internal readonly record struct RootRequest(string Path, Action<string, bool> Accept,
+        WindowsRootAdmissionTiming.Root? Timing = null);
 
     /// <summary>Collects independent trees with bounded root admission and preserves each root's publication order.</summary>
     public static void Collect(ReadOnlySpan<RootRequest> roots, CancellationToken cancellationToken)
@@ -85,6 +87,7 @@ internal static class WindowsDirectoryCollector
                     slot = work.WaitForCompletedRoot(active);
                     active[slot]!.Handle!.Dispose();
                     active[slot]!.Handle = null;
+                    active[slot]!.Timing?.SlotReleased();
                 }
                 work.ThrowIfStopped();
                 cancellationToken.ThrowIfCancellationRequested();
@@ -93,6 +96,7 @@ internal static class WindowsDirectoryCollector
                 var root = new RootWork(request);
                 collected.Add(root);
                 active[slot] = root;
+                root.Timing?.Enter(slot);
                 var nativeRoot = root.Directory.Path.StartsWith(@"\\", StringComparison.Ordinal)
                     && !root.Directory.Path.StartsWith(@"\\?\", StringComparison.Ordinal)
                     ? $@"\\?\UNC\{root.Directory.Path.AsSpan(2)}" : root.Directory.Path;
@@ -136,20 +140,28 @@ internal static class WindowsDirectoryCollector
                     }
                 }
             foreach (var root in collected)
+            {
                 root.Handle?.Dispose();
+                root.Timing?.SlotReleased();
+            }
             if (buffer != 0)
                 Marshal.FreeHGlobal(buffer);
         }
         work.ThrowIfStopped();
         foreach (var root in collected)
+        {
             while (root.Pending.TryDequeue(out var directory))
                 PublishDirectory(directory, root.Pending, root.Accept, cancellationToken);
+            root.Timing?.Published();
+        }
         cancellationToken.ThrowIfCancellationRequested();
     }
 
     private static unsafe void CollectDirectory(SafeFileHandle handle, DirectoryWork directory, nint buffer,
         CancellationToken cancellationToken, WorkQueue? work = null)
     {
+        try
+        {
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -179,6 +191,11 @@ internal static class WindowsDirectoryCollector
                 entry = (DirectoryInformation*)((byte*)entry + entry->NextEntryOffset);
             }
         }
+        }
+        finally
+        {
+            directory.Root.Timing?.Recorded(directory.Entries.Count);
+        }
     }
 
     private static void PublishDirectory(DirectoryWork directory, Queue<DirectoryWork> pending,
@@ -204,11 +221,13 @@ internal static class WindowsDirectoryCollector
             Directory = new DirectoryWork(path, this);
             RelativeStart = path.Length + (Path.EndsInDirectorySeparator(path) ? 0 : 1);
             Accept = request.Accept;
+            Timing = request.Timing;
         }
 
         public DirectoryWork Directory { get; }
         public int RelativeStart { get; }
         public Action<string, bool> Accept { get; }
+        public WindowsRootAdmissionTiming.Root? Timing { get; }
         public Queue<DirectoryWork> Pending { get; } = new();
         public SafeFileHandle? Handle { get; set; }
         public int Outstanding { get; set; }
@@ -244,6 +263,9 @@ internal static class WindowsDirectoryCollector
                     _pending.Enqueue(directory);
                 root.Outstanding = root.Pending.Count;
                 _outstanding = checked(_outstanding + root.Outstanding);
+                root.Timing?.Admitted();
+                if (root.Outstanding == 0)
+                    root.Timing?.WorkCompleted();
                 Monitor.PulseAll(_gate);
             }
         }
@@ -368,6 +390,8 @@ internal static class WindowsDirectoryCollector
                 }
                 _outstanding--;
                 directory.Root.Outstanding--;
+                if (directory.Root.Outstanding == 0)
+                    directory.Root.Timing?.WorkCompleted();
                 Monitor.PulseAll(_gate);
             }
         }
