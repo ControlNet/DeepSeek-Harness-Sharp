@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Dsh.Sandbox;
+using Microsoft.Win32.SafeHandles;
 
 namespace Dsh.Tests;
 
@@ -60,6 +61,109 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         Assert.True(expected.SequenceEqual(actual), "Collection must retain native entry order and FIFO directory order.");
         Assert.Equal(actual.Count, actual.Select(static entry => entry.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.All(actual, static entry => Assert.Equal(Directory.Exists(entry.Path), entry.Directory));
+        AssertDirectoriesReleased();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(@"\\?\")]
+    [InlineData(@"\\.\")]
+    public void DosAndDeviceRoots_PreserveUnicodeDescendantsAndReleaseHandles(string prefix)
+    {
+        RequireWindows();
+        var root = $"{prefix}{_root}";
+        var child = Path.Join(root, "λ-child");
+        var nested = Path.Join(child, "nested");
+        Directory.CreateDirectory(nested);
+        var file = Path.Join(nested, "input.txt");
+        File.WriteAllText(file, "included");
+        var actual = new List<(string Path, bool Directory)>();
+
+        WindowsDirectoryCollector.Collect(root, (path, directory) => actual.Add((path, directory)),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(new[] { (child, true), (nested, true), (file, false) }, actual);
+        AssertDirectoriesReleased();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RootRenamedBeforeDescendantOpen_ReResolvesDiscoveredAbsolutePath(bool replaceRoot)
+    {
+        RequireWindows();
+        var root = Directory.CreateDirectory(Path.Join(_root, "tree")).FullName;
+        var child = Directory.CreateDirectory(Path.Join(root, "child")).FullName;
+        File.WriteAllText(Path.Join(child, "old.txt"), "original tree");
+        var replacementFile = Path.Join(child, "replacement.txt");
+        var actual = new List<(string Path, bool Directory)>();
+
+        void Accept(string path, bool directory)
+        {
+            actual.Add((path, directory));
+            if (path != child)
+                return;
+            Directory.Move(root, Path.Join(_root, "moved"));
+            if (replaceRoot)
+            {
+                Directory.CreateDirectory(child);
+                File.WriteAllText(replacementFile, "replacement tree");
+            }
+        }
+
+        if (replaceRoot)
+        {
+            WindowsDirectoryCollector.Collect(root, Accept, TestContext.Current.CancellationToken);
+            Assert.Equal(new[] { (child, true), (replacementFile, false) }, actual);
+        }
+        else
+        {
+            Assert.Throws<DirectoryNotFoundException>(() =>
+                WindowsDirectoryCollector.Collect(root, Accept, TestContext.Current.CancellationToken));
+            Assert.Equal(new[] { (child, true) }, actual);
+        }
+        AssertDirectoriesReleased();
+    }
+
+    [Fact]
+    public void NativeCountedNameBoundaryAndOverlongRelativePath_CollectAllRealDirectories()
+    {
+        RequireWindows();
+        using (var tree = new NativeDeepTree(_root))
+        {
+            // UNICODE_STRING counts UTF-16 bytes without requiring a trailing NUL.
+            const int maximumNameCharacters = ushort.MaxValue / sizeof(char);
+            const int maximumComponentCharacters = 240;
+            const int dosNtPrefixCharacters = 4;
+            var parent = 0;
+            var branchPathLength = maximumNameCharacters - dosNtPrefixCharacters - maximumComponentCharacters - 1;
+            while (tree.Paths[parent].Length < branchPathLength)
+            {
+                var remaining = branchPathLength - tree.Paths[parent].Length - 1;
+                var length = Math.Min(maximumComponentCharacters, remaining);
+                if (remaining - length == 1)
+                    length--;
+                parent = tree.Add(parent, new string('λ', length));
+            }
+            tree.Add(parent, new string('a', maximumComponentCharacters - 1));
+            tree.Add(parent, new string('b', maximumComponentCharacters));
+            var deepest = tree.Add(parent, new string('c', maximumComponentCharacters + 1));
+            while (tree.Paths[deepest].Length - _root.Length - 1 <= maximumNameCharacters)
+                deepest = tree.Add(deepest, new string('d', maximumComponentCharacters));
+            tree.Add(deepest, "last");
+            var actual = new List<string>();
+
+            WindowsDirectoryCollector.Collect(_root, (path, directory) =>
+            {
+                Assert.True(directory);
+                actual.Add(path);
+            }, TestContext.Current.CancellationToken);
+
+            Assert.Equal(tree.Paths.Count - 1, actual.Count);
+            Assert.True(new HashSet<string>(tree.Paths.Skip(1), StringComparer.OrdinalIgnoreCase).SetEquals(actual),
+                "Counted-name boundaries and segmented relative opens must not truncate the collected tree.");
+        }
+        Assert.Empty(Directory.EnumerateFileSystemEntries(_root));
         AssertDirectoriesReleased();
     }
 
@@ -604,6 +708,111 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
 
         Assert.Equal(0, visits);
         AssertDirectoriesReleased();
+    }
+
+    // Fixture-only relative creation makes genuine paths beyond Win32's full-path limit.
+    private sealed unsafe class NativeDeepTree : IDisposable
+    {
+        private const uint DirectoryAccess = 0x00110001; // DELETE | SYNCHRONIZE | FILE_LIST_DIRECTORY.
+        private const uint ShareAll = 7;
+        private const uint DirectoryOpenOptions = 0x4021; // Backup intent, synchronous non-alert I/O, directory.
+        private readonly List<SafeFileHandle> _handles = [];
+        public List<string> Paths { get; } = [];
+
+        public NativeDeepTree(string root)
+        {
+            var handle = WindowsNative.CreateFile(root, DirectoryAccess, ShareAll, 0, 3, 0x02000000, 0);
+            if (handle.IsInvalid)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                handle.Dispose();
+                throw new Win32Exception(error, "Unable to open the deep-tree fixture root.");
+            }
+            _handles.Add(handle);
+            Paths.Add(root);
+        }
+
+        public int Add(int parent, string component)
+        {
+            fixed (char* text = component)
+            {
+                var name = new NativeName
+                {
+                    Length = checked((ushort)(component.Length * sizeof(char))),
+                    MaximumLength = checked((ushort)(component.Length * sizeof(char))),
+                    Buffer = text
+                };
+                var attributes = new NativeAttributes
+                {
+                    Length = (uint)sizeof(NativeAttributes),
+                    RootDirectory = _handles[parent].DangerousGetHandle(),
+                    ObjectName = &name,
+                    Attributes = 0x40
+                };
+                var status = NtCreateFile(out var handle, DirectoryAccess, ref attributes, out _, 0,
+                    (uint)FileAttributes.Directory, ShareAll, 2, DirectoryOpenOptions, 0, 0);
+                if (status < 0)
+                {
+                    handle.Dispose();
+                    throw new Win32Exception((int)RtlNtStatusToDosError(status), "Unable to create a relative deep-tree fixture directory.");
+                }
+                _handles.Add(handle);
+                Paths.Add(Path.Join(Paths[parent], component));
+                return Paths.Count - 1;
+            }
+        }
+
+        public void Dispose()
+        {
+            List<Exception>? failures = null;
+            for (var index = _handles.Count - 1; index >= 0; index--)
+            {
+                using var handle = _handles[index];
+                if (index == 0)
+                    continue;
+                byte delete = 1;
+                if (!SetFileInformationByHandle(handle, 4, ref delete, sizeof(byte)))
+                    (failures ??= []).Add(new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to delete a deep-tree fixture directory."));
+            }
+            if (failures is not null)
+                throw new AggregateException("Deep-tree fixture cleanup failed.", failures);
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeName
+        {
+            public ushort Length, MaximumLength;
+            public char* Buffer;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeAttributes
+        {
+            public uint Length;
+            public nint RootDirectory;
+            public NativeName* ObjectName;
+            public uint Attributes;
+            public nint SecurityDescriptor, SecurityQualityOfService;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeIoStatus
+        {
+            public nint Status;
+            public nuint Information;
+        }
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtCreateFile(out SafeFileHandle handle, uint access, ref NativeAttributes attributes,
+            out NativeIoStatus statusBlock, nint allocationSize, uint fileAttributes, uint share, uint disposition,
+            uint options, nint eaBuffer, uint eaLength);
+
+        [DllImport("ntdll.dll")]
+        private static extern uint RtlNtStatusToDosError(int status);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetFileInformationByHandle(SafeFileHandle handle, uint informationClass, ref byte information, uint size);
     }
 
     private void AssertDirectoriesReleased()

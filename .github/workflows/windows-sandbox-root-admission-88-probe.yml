@@ -1,9 +1,9 @@
-name: Windows sandbox root self-open original consumer probe 93
+name: Windows fresh absolute directory original consumer probe 96
 
 on:
   push:
     branches:
-      - perf/native-root-self93
+      - perf/native-absolute-open96
 
 permissions:
   contents: read
@@ -68,20 +68,20 @@ jobs:
           retention-days: 7
 
   sandbox-components:
-    name: Windows bounded root self-open component gate
+    name: Windows fresh absolute directory component gate
     needs: bridge-dryioc-feed
     uses: ./.github/workflows/ci-tests.yml
     with:
       os: windows-latest
       native-cc: cl
       native-cc-alt: clang-cl
-      suite: sandbox-components-93
+      suite: sandbox-components-96
       quick-cohort: all
       dryioc-commit: b98d2ab37cf05bdea02c34e5e4f8e481d76d5d3f
       dryioc-sha256: d6a7a8be85937061a60f803b8f0d0fb9a2e320ea42185da5fc5166ad825c54a1
 
   original-windows-regression:
-    name: Original Windows regression-1 with bounded root self-open gates
+    name: Original Windows regression-1 with fresh absolute directory gates
     needs: [bridge-dryioc-feed, sandbox-components]
     uses: ./.github/workflows/ci-tests.yml
     with:
