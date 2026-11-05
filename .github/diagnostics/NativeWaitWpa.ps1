@@ -345,6 +345,61 @@ function Read-PrivateNativeWaitWpaReports([string] $Directory, [string] $Scratch
     return @{ Status = $status }
 }
 
+# The private view changes only the inspected original preset's identity-key boundary.
+function New-PrivateThreadWaitWpaProfile([string] $SourcePath, [string] $DestinationPath) {
+    $reader = $null
+    $writer = $null
+    $output = $null
+    try {
+        $settings = [Xml.XmlReaderSettings]::new()
+        $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $settings.MaxCharactersInDocument = 2097152
+        $settings.MaxCharactersFromEntities = 1024
+        $reader = [Xml.XmlReader]::Create($SourcePath, $settings)
+        $document = [Xml.XmlDocument]::new()
+        $document.PreserveWhitespace = $true
+        $document.XmlResolver = $null
+        $document.Load($reader)
+        $manager = [Xml.XmlNamespaceManager]::new($document.NameTable)
+        $manager.AddNamespace('w', 'http://tempuri.org/SerializableElement.xsd')
+        $presets = $document.SelectNodes('/w:WpaProfileContainer[@Version="2"]/w:Content/w:Views/w:View/w:Graphs/w:Graph[translate(@Guid,"ABCDEF","abcdef")="c58f5fea-0319-4046-932d-e695ebe20b47"]/w:Preset', $manager)
+        if ($presets.Count -ne 1 -or $document.SelectNodes('//*[local-name()="FileReference"]').Count -ne 0) { throw [IO.InvalidDataException]::new() }
+        $preset = $presets[0]
+        $columns = $preset.SelectNodes('w:Columns/w:Column', $manager)
+        $guids = @('b065487c-5e32-4f1f-a2cd-581e086ce29e', '944ed37a-5774-421e-b2d5-84f17a4b3a05', 'fe7ccd45-6275-413e-a538-3587f0eb452b')
+        $labels = @('New Process', 'New Thread Id', 'New Prev Wait Reason')
+        if ($columns.Count -ne 28 -or $preset.GetAttribute('KeyColumnCount') -cne '1') { throw [IO.InvalidDataException]::new() }
+        for ($index = 0; $index -lt $guids.Count; $index++) {
+            if (-not [string]::Equals($columns[$index].GetAttribute('Guid'), $guids[$index], [StringComparison]::OrdinalIgnoreCase) -or
+                -not [string]::Equals($columns[$index].GetAttribute('Name'), $labels[$index], [StringComparison]::Ordinal)) { throw [IO.InvalidDataException]::new() }
+        }
+        $original = $document.OuterXml
+        $null = $preset.SetAttribute('KeyColumnCount', $guids.Count.ToString([Globalization.CultureInfo]::InvariantCulture))
+        $null = $preset.SetAttribute('KeyColumnCount', '1')
+        if ($document.OuterXml -cne $original) { throw [IO.InvalidDataException]::new() }
+        $null = $preset.SetAttribute('KeyColumnCount', $guids.Count.ToString([Globalization.CultureInfo]::InvariantCulture))
+        $output = [IO.File]::Open($DestinationPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $writerSettings = [Xml.XmlWriterSettings]::new()
+        $writerSettings.Encoding = [Text.UTF8Encoding]::new($false)
+        $writerSettings.Indent = $false
+        $writer = [Xml.XmlWriter]::Create($output, $writerSettings)
+        $document.Save($writer)
+        $writer.Dispose()
+        $writer = $null
+        $output.Dispose()
+        $output = $null
+        $hash = (Get-FileHash -LiteralPath $DestinationPath -Algorithm SHA256).Hash
+        Write-Host "WPA_TARGET_PROFILE_VIEW derived=1 originalFileModified=0 originalFingerprintVerified=1 precisePresets=1 originalKeys=1 newKeys=$($guids.Count) semanticAttributesChanged=1 otherXmlSemanticsPreserved=1 fileReferences=0 sha256=$hash"
+        return $DestinationPath
+    }
+    finally {
+        if ($null -ne $writer) { $writer.Dispose() }
+        if ($null -ne $output) { $output.Dispose() }
+        if ($null -ne $reader) { $reader.Dispose() }
+    }
+}
+
 function Get-PrivateNativeWpaPrerequisites([string] $Child) {
     $selection = Join-Path $Child 'selected.wpaProfile'
     $status = 40
@@ -378,7 +433,8 @@ function Get-PrivateNativeWpaPrerequisites([string] $Child) {
         }
         Write-Host "WPA_TARGET_PROFILE verified=$([int]$profileSelected) inventoryExit=$inventoryExit"
         if (-not $profileSelected) { throw [IO.InvalidDataException]::new() }
-        return @{ Status = 0; Application = [string]$command.Source; ProfilePath = $selection }
+        $threadProfile = New-PrivateThreadWaitWpaProfile $selection (Join-Path $Child 'thread-wait.wpaProfile')
+        return @{ Status = 0; Application = [string]$command.Source; ProfilePath = $threadProfile }
     }
     catch {
         Write-Host "WPA_TARGET_PREREQUISITE_UNKNOWN status=$status hresult=$($_.Exception.HResult)"

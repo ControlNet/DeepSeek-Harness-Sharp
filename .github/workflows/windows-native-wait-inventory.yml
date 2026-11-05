@@ -1,4 +1,4 @@
-name: Windows installed WPA original identity-key inventory
+name: Windows real WPA owned-thread identity view probe
 
 on:
   push:
@@ -20,6 +20,6 @@ jobs:
       - name: Inspect installed command-line analyzer help without recording or exporting
         shell: pwsh
         run: ./.github/diagnostics/Invoke-NativeEtlToolsInventory.ps1
-      - name: Inspect original installed precise CPU identity keys without recording or exporting
+      - name: Validate the private identity-key view with the real owned-thread capture
         shell: pwsh
-        run: ./.github/diagnostics/Invoke-WpaInstalledProfileInventory.ps1
+        run: ./.github/diagnostics/Invoke-WpaInstalledProfileExport.ps1
