@@ -164,7 +164,15 @@ function Write-ApprovedTypedOutput([string] $Path, [ValidateSet('CPU', 'FILE')] 
           'rejected_metadata', 'rejected_lifetime', 'rejected_process_missing', 'rejected_process_identity',
           'rejected_thread_missing', 'rejected_thread_identity', 'rejected_thread_owner_missing', 'rejected_thread_owner_identity',
           'process_start_before_create', 'process_start_after_exit', 'process_stop_before_create', 'process_stop_after_exit',
-          'thread_start_before_create', 'thread_start_after_exit', 'thread_stop_before_create', 'thread_stop_after_exit')
+          'thread_start_before_create', 'thread_start_after_exit', 'thread_stop_before_create', 'thread_stop_after_exit',
+          'sdk_stop_sentinel_meaning_unknown', 'pending_operation_coverage_unknown', 'trace_header_duration_ticks',
+          'relative_ticks_per_second', 'sdk_relative_unit_nanoseconds', 'rejection_observations',
+          'rejection_observations_omitted', 'rejection_observation_limit', 'rejection_index', 'activity_index',
+          'thread_index', 'pid', 'rejection_stage', 'rejection_reason', 'endpoint', 'timestamp_present',
+          'timestamp_has_value', 'timestamp_is_partial', 'timestamp_is_default', 'relative_nanoseconds',
+          'relative_ticks', 'relative_zero', 'relative_negative', 'relative_positive',
+          'process_create_comparison_known', 'thread_create_comparison_known',
+          'relative_to_process_create', 'relative_to_thread_create')
     }
     foreach ($key in $numeric) { $null = $keys.Add($key) }
     $labels = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)

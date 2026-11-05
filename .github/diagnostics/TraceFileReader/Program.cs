@@ -10,6 +10,7 @@ internal static class Program
 {
     private const long MaximumInputBytes = 256L * 1024 * 1024;
     private const int MaximumThreads = 64;
+    private const int MaximumRejectionObservations = 64;
     private const int InvalidInput = 2;
     private const int Unsupported = 3;
     private const int MissingData = 4;
@@ -43,6 +44,7 @@ internal static class Program
                 Line("allow_lost_events=0 allow_time_inversion=0 symbols_requested=0");
                 Line("syscall_data_available=0 machine_disk_io_used=0 capture_window_completeness_unknown=1");
                 Line("raw_unpaired_events_available=0 duration_sum_is_wallclock_partition=0");
+                Line("sdk_stop_sentinel_meaning_unknown=1 pending_operation_coverage_unknown=1");
                 processing = true;
                 status = Read(args[0], processId, threadIds);
             }
@@ -136,6 +138,8 @@ internal static class Program
         processor.Process();
 
         Line($"lost_events={metadata.LostEventCount} lost_buffers={metadata.LostBufferCount}");
+        long headerTicks = (metadata.StopTime - metadata.StartTime).Ticks;
+        Line($"trace_header_duration_ticks={headerTicks} relative_ticks_per_second={TimeSpan.TicksPerSecond} sdk_relative_unit_nanoseconds=1");
         if (metadata.LostEventCount != 0 || metadata.LostBufferCount != 0)
             return LostData;
         if (!pendingProcesses.HasResult || !pendingThreads.HasResult || !pendingFiles.HasResult)
@@ -266,6 +270,8 @@ internal static class Program
         IProcess process, IThread?[] threads, Dictionary<uint, int> indices, uint[] threadIds)
     {
         private readonly List<Category> categories = new(19);
+        private long rejectionObservations;
+        private long rejectionObservationsOmitted;
         public long IdentityConflicts { get; private set; }
         public long InvalidDurations { get; private set; }
         public long TargetCount { get; private set; }
@@ -304,6 +310,7 @@ internal static class Program
                 {
                     category.MetadataRejections[identityRejection]++;
                     IdentityConflicts++;
+                    EmitRejection(category.Label, activityIndex, index, activity, target, 0, identityRejection);
                     continue;
                 }
                 IThread targetThread = target!;
@@ -317,11 +324,13 @@ internal static class Program
                 {
                     category.LifetimeRejections++;
                     IdentityConflicts++;
+                    EmitRejection(category.Label, activityIndex, index, activity, targetThread, 1, -1);
                     continue;
                 }
                 if (start.HasValue && stop.HasValue && stop.RelativeTimestamp < start.RelativeTimestamp)
                 {
                     InvalidDurations++;
+                    EmitRejection(category.Label, activityIndex, index, activity, targetThread, 2, -1);
                     continue;
                 }
                 category.Total.Add(start, stop);
@@ -333,6 +342,7 @@ internal static class Program
         public void Emit()
         {
             Line($"target_observations={TargetCount} identity_conflicts={IdentityConflicts} invalid_durations={InvalidDurations}");
+            Line($"rejection_observations={rejectionObservations} rejection_observations_omitted={rejectionObservationsOmitted} rejection_observation_limit={MaximumRejectionObservations}");
             foreach (Category category in categories)
             {
                 // An empty SDK list does not prove that its event category was enabled in the capture.
@@ -350,6 +360,53 @@ internal static class Program
                 for (int index = 0; index < threadIds.Length; index++)
                     EmitStats(category.Label, threadIds[index], category.PerThread[index]);
             }
+        }
+
+        private void EmitRejection(string category, int activityIndex, int threadIndex,
+            IFileActivity activity, IThread? target, int stage, int reason)
+        {
+            if (rejectionObservations == MaximumRejectionObservations)
+            {
+                rejectionObservationsOmitted++;
+                return;
+            }
+            long observation = rejectionObservations++;
+            Line($"category={category} rejection_index={observation} activity_index={activityIndex} thread_index={threadIndex} pid={process.Id} tid={threadIds[threadIndex]} rejection_stage={stage} rejection_reason={reason}");
+            EmitTimestamp(category, observation, 0, activity.StartTime, target);
+            EmitTimestamp(category, observation, 1, activity.StopTime, target);
+            EmitTimestamp(category, observation, 2, process.CreateTime, target);
+            EmitTimestamp(category, observation, 3, target?.CreateTime, target);
+            EmitTimestamp(category, observation, 4, process.ExitTime, target);
+            EmitTimestamp(category, observation, 5, target?.ExitTime, target);
+        }
+
+        private void EmitTimestamp(string category, long observation, int endpoint, TraceTimestamp? timestamp, IThread? target)
+        {
+            string identity = $"category={category} rejection_index={observation} endpoint={endpoint}";
+            if (timestamp is not TraceTimestamp value)
+            {
+                Line($"{identity} timestamp_present=0");
+                return;
+            }
+            Line($"{identity} timestamp_present=1 timestamp_has_value={Flag(value.HasValue)} timestamp_is_partial={Flag(value.IsPartial)} timestamp_is_default={Flag(value.Equals(default(TraceTimestamp)))}");
+            if (!value.HasValue)
+                return;
+            long nanoseconds = value.RelativeTimestamp.Nanoseconds;
+            // Decimal 100ns ticks preserve fractional ticks rather than rounding the SDK nanoseconds.
+            Line($"{identity} relative_nanoseconds={nanoseconds} relative_ticks={nanoseconds / 100m} relative_zero={Flag(nanoseconds == 0)} relative_negative={Flag(nanoseconds < 0)} relative_positive={Flag(nanoseconds > 0)}");
+            EmitCreationComparison(identity, value.RelativeTimestamp, process.CreateTime, target?.CreateTime);
+        }
+
+        private static void EmitCreationComparison(string identity, Timestamp timestamp,
+            TraceTimestamp? processCreate, TraceTimestamp? threadCreate)
+        {
+            bool processKnown = processCreate is TraceTimestamp processTime && processTime.HasValue;
+            bool threadKnown = threadCreate is TraceTimestamp threadTime && threadTime.HasValue;
+            string processComparison = processKnown
+                ? $" relative_to_process_create={Math.Sign(timestamp.CompareTo(processCreate!.Value.RelativeTimestamp))}" : "";
+            string threadComparison = threadKnown
+                ? $" relative_to_thread_create={Math.Sign(timestamp.CompareTo(threadCreate!.Value.RelativeTimestamp))}" : "";
+            Line($"{identity} process_create_comparison_known={Flag(processKnown)} thread_create_comparison_known={Flag(threadKnown)}{processComparison}{threadComparison}");
         }
 
         private static void EmitStats(string category, uint? tid, Statistics stats)
