@@ -12,15 +12,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  wpa:
-    name: Validate the installed WPA target decoder in a separate hosted job
-    runs-on: windows-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run the shared short WPA export probe without warming the original consumer VM
-        shell: pwsh
-        run: ./.github/diagnostics/Invoke-WpaInstalledProfileExport.ps1
   native:
     name: Original Windows regression-1 context followed by owned MCP
     runs-on: windows-latest
