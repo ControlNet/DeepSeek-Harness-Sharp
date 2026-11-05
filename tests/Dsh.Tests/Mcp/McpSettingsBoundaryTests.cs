@@ -21,24 +21,85 @@ public sealed class McpSettingsBoundaryTests
     [Trait("Category", "SandboxNative")]
     public async Task OwnedStdio_PreservesToolOutput_ButNeverMutatesSettings()
     {
+        using var timing = new SandboxTimingTraceListener();
+        System.Diagnostics.Trace.Listeners.Add(timing);
+        Mark("test-start");
+        try
+        {
+        using var observation = Dsh.Sandbox.WindowsSandboxTiming.Observe();
+        Mark("fixture-constructor-start");
         using (var fixture = ProtectedFixture())
         {
+            Mark("fixture-ready");
+            Mark("backend-start");
             await SandboxTestBackend.RequireAsync();
+            Mark("backend-complete");
             var tools = Tools(fixture);
             await using (var service = new McpService(fixture.Context, workingDirectory: fixture.Root))
             {
                 var output = Path.Combine(fixture.Root, "mcp-output");
                 var initialSettings = await File.ReadAllBytesAsync(fixture.SettingsPath, TestContext.Current.CancellationToken);
+                Mark("connect-start");
                 await Connect(service);
+                Mark("connect-complete");
+                Mark("tool-permitted-start");
                 var permitted = await Execute(tools, "write_file", new { path = output, content = "workspace 中文" }, TestContext.Current.CancellationToken);
+                Mark("tool-permitted-complete");
                 Assert.False(permitted.IsError, Text(permitted));
                 Assert.Equal("workspace 中文", Text(permitted));
                 Assert.Equal("workspace 中文", await File.ReadAllTextAsync(output, TestContext.Current.CancellationToken));
+                Mark("tool-denied-start");
                 var denied = await Execute(tools, "write_file", new { path = fixture.SettingsPath, content = "bad" }, TestContext.Current.CancellationToken);
+                Mark("tool-denied-complete");
                 var currentSettings = await File.ReadAllBytesAsync(fixture.SettingsPath, TestContext.Current.CancellationToken);
                 Assert.Equal(initialSettings, currentSettings);
                 Assert.True(denied.IsError, $"The owned MCP server reported success for the protected settings write. Output: {Text(denied)}");
+                Mark("assertions-complete");
+                Mark("service-dispose-start");
             }
+            Mark("service-dispose-complete");
+            Mark("fixture-dispose-start");
+        }
+        Mark("fixture-dispose-complete");
+        }
+        finally
+        {
+            Mark("test-final");
+            System.Diagnostics.Trace.Listeners.Remove(timing);
+        }
+
+        static void Mark(string phase)
+        {
+            try
+            {
+                System.Diagnostics.Trace.WriteLine(
+                    $"MCP_DIAGNOSTIC pid={Environment.ProcessId} phase={phase} ticks={System.Diagnostics.Stopwatch.GetTimestamp()} frequency={System.Diagnostics.Stopwatch.Frequency}");
+            }
+            catch (Exception) { }
+        }
+    }
+
+    private sealed class SandboxTimingTraceListener : System.Diagnostics.TraceListener
+    {
+        public override void Write(string? message) => WriteLine(message);
+
+        public override void WriteLine(string? message)
+        {
+            if (message is null || !(message.StartsWith("SANDBOX_PHASE ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_COST ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_COLLECTION ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_SNAPSHOT ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_RUNTIME ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_NATIVE ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_MACHINE_CPU ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_PROCESS_CPU ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_MACHINE_MEMORY ", StringComparison.Ordinal)
+                || message.StartsWith("SANDBOX_MACHINE_COMMIT ", StringComparison.Ordinal)
+                || message.StartsWith("MCP_DIAGNOSTIC ", StringComparison.Ordinal)))
+                return;
+            // Only numeric diagnostic records reach stderr, including during test cancellation.
+            try { Console.Error.WriteLine(message); }
+            catch (Exception) { }
         }
     }
 
