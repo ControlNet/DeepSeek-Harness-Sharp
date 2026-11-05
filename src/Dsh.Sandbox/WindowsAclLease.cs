@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
@@ -12,7 +11,6 @@ namespace Dsh.Sandbox;
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsAclLease : IDisposable
 {
-    private const int ReadProbeParallelism = 4;
     private const int ReadProbeBatchSize = 128;
     private const int ReadExecute = 0x1200a9;
     private const int Modify = 0x1301bf;
@@ -100,6 +98,7 @@ internal sealed class WindowsAclLease : IDisposable
     private void ApplyGrants(SandboxPolicy policy, Dictionary<string, (bool Write, bool Directory)> paths,
         EffectiveRead? effectiveRead, CancellationToken cancellationToken)
     {
+        // AddTree joins all directory workers before proof workers start.
         var ordered = paths.OrderBy(static entry => entry.Key.Length).ToArray();
         var offset = _entries.Count;
         _entries.EnsureCapacity(offset + ordered.Length);
@@ -118,18 +117,11 @@ internal sealed class WindowsAclLease : IDisposable
             _entries[offset + index].Grant(_sid, mask, inheritedMask, access.Directory, denyWrite || denyDelete,
                 policy.AllowNetwork, denyWrite ? effectiveRead : null, cancellationToken);
         };
-        var options = new ParallelOptions { MaxDegreeOfParallelism = ReadProbeParallelism, CancellationToken = cancellationToken };
-        var reusable = 1;
-        Action<int, ParallelLoopState> probe = (index, state) =>
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!_entries[offset + index].CanReuseReadGrant(_sid, ReadExecute, ReadExecute, ordered[index].Value.Directory,
-                    true, policy.AllowNetwork, effectiveRead))
-            {
-                Interlocked.Exchange(ref reusable, 0);
-                state.Stop();
-            }
-        };
+        WindowsReadProofCoordinator? proofs = null;
+        Func<int, bool>? probe = null;
+        Exception? applyFailure = null;
+        bool Probe(int index) => _entries[offset + index].CanReuseReadGrant(_sid, ReadExecute, ReadExecute,
+            ordered[index].Value.Directory, true, policy.AllowNetwork, effectiveRead);
         try
         {
             // The caller holds the gate until every pure probe finishes; mutations keep their stable serial order.
@@ -141,28 +133,27 @@ internal sealed class WindowsAclLease : IDisposable
                     readOnly = !ordered[index].Value.Write;
                 lock (AclGate)
                 {
-                    if (readOnly)
-                    {
-                        reusable = 1;
-                        Parallel.For(start, end, options, probe);
-                    }
-                    if (!readOnly || reusable == 0)
+                    var reusable = readOnly && (proofs ??= new WindowsReadProofCoordinator(end - start))
+                        .Probe(start, end, probe ??= Probe, cancellationToken);
+                    if (!reusable)
                         for (var index = start; index < end; index++)
                             grant(index);
                 }
                 start = end;
             }
         }
-        catch (AggregateException failure)
+        catch (Exception error)
         {
-            var original = failure.InnerExceptions[0];
-            foreach (var exception in failure.InnerExceptions)
-                if (exception is not OperationCanceledException)
-                {
-                    original = exception;
-                    break;
-                }
-            ExceptionDispatchInfo.Throw(original);
+            applyFailure = error;
+            throw;
+        }
+        finally
+        {
+            try { proofs?.Dispose(); }
+            catch (Exception) when (applyFailure is not null)
+            {
+                // Disposal finishes all joins before throwing; preserve the original grant/proof failure.
+            }
         }
     }
 

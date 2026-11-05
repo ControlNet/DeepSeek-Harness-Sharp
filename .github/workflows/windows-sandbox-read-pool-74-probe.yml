@@ -1,0 +1,199 @@
+name: Windows dedicated native read proof capacity
+
+on:
+  push:
+    branches: [perf/native-read-pool-74]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-read-pool-74-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Original Windows regression-1 context followed by owned MCP
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Cache NuGet packages without a post-job dotnet invocation
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: dotnet-cache-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+      - name: Download and verify the exact failing formal run's DryIoc feed
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Reuse and verify the feed prepared for the exact failing formal run.
+          $metadata = & gh api -X GET "repos/$env:GITHUB_REPOSITORY" 2>&1
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Write-Host "FEED_METADATA_EXIT=$code"
+            exit $code
+          }
+          $repository = $metadata | ConvertFrom-Json
+          $source = if ($repository.fork) { $repository.parent.full_name } else { $repository.full_name }
+          if ([string]::IsNullOrWhiteSpace($source)) { throw 'The formal artifact repository could not be resolved.' }
+          $download = & gh run download 41905450305 --repo $source --name dryioc-feed --dir packages 2>&1
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $http = [regex]::Match(($download -join "`n"), '\bHTTP\s+(\d{3})\b')
+            $status = if ($http.Success) { [int]$http.Groups[1].Value } else { 0 }
+            Write-Host "FEED_DOWNLOAD_EXIT=$code HTTP=$status"
+            exit $code
+          }
+          & ./packages/fetch-dryioc-feed.ps1 -VerifyOnly -ExpectedCommit 'b98d2ab37cf05bdea02c34e5e4f8e481d76d5d3f' -ExpectedSha256 'd6a7a8be85937061a60f803b8f0d0fb9a2e320ea42185da5fc5166ad825c54a1' -RefreshPackageCache
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install the original Windows regression-1 C# frontend
+        shell: pwsh
+        run: |
+          $tools = Join-Path $PWD '.artifacts/csharp-frontends'
+          dotnet tool install csharprepl --version 0.9.2 --tool-path $tools --allow-roll-forward
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tools >> $env:GITHUB_PATH
+      - name: Check the original Windows C toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v clang-cl >/dev/null 2>&1; then
+            choco install llvm --no-progress -y
+            printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+            export PATH="/c/Program Files/LLVM/bin:$PATH"
+          fi
+          clang-cl --version
+          "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' \
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'Common7\Tools\VsDevCmd.bat'
+      - name: Build tests with the original Windows regression-1 compiler settings
+        id: build_tests
+        run: >
+          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
+          -p:DshNativeCompiler=cl
+      - name: Dedicated read proof coordinator lifecycle components
+        id: read_proof_components
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -class Dsh.Tests.WindowsReadProofCoordinatorTests \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Start the original standalone PTY daemon from the current build
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Preserve the formal job's existing standalone daemon and readiness check.
+          mkdir -p .daemon-tests
+          HOME_DIR="$(mktemp -d "$PWD/.daemon-tests/qXXXXXX")"
+          cp src/Dsh.Boot/Profiles/Templates/settings.yaml "$HOME_DIR/settings.yaml"
+          DSH_HOME="$(cygpath -w "$HOME_DIR")"
+          export DSH_HOME
+          echo "DSH_HOME=$DSH_HOME" >> "$GITHUB_ENV"
+          DAEMON="DeepSeek-Harness-Sharp/bin/Debug/net10.0/dsharp"
+          if [ ! -x "$DAEMON" ]; then
+            DAEMON="$DAEMON.exe"
+          fi
+          "$DAEMON" tui daemon > "$HOME_DIR/daemon.log" 2>&1 &
+          DAEMON_PID=$!
+          for _ in {1..200}; do
+            if [ -e "$HOME_DIR/run/dsh.sock" ] || [ -e "$HOME_DIR/run/dsh.port" ]; then
+              exit 0
+            fi
+            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+              exit 1
+            fi
+            sleep 0.05
+          done
+          exit 1
+      - name: Run the genuine predecessor root-cause regression (regression-1, no retries)
+        id: original_regression
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && steps.read_proof_components.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ ! -x "$EXE" ]; then
+            EXE="$EXE.exe"
+          fi
+          # Preserve the formal class selection and Windows runner parallelism.
+          ARGS=(-noColor
+            -class Dsh.Tests.PtyDaemonSubscribeTests
+            -class Dsh.Tests.PtyDaemonTests
+            -class Dsh.Tests.PtyOwnershipTests
+            -class Dsh.Tests.PtyOutputReaderTests
+            -class Dsh.Tests.UnixPtyDescriptorOwnershipTests
+            -class Dsh.Tests.PtyConsoleResizeTests
+            -class Dsh.Tests.MouseReportPtyTests
+            -class Dsh.Tests.TuiOverlayCpuTests
+            -class Dsh.Tests.PtySessionSubscriptionTests
+            -class Dsh.Tests.ChatWindowKeyBindingTests
+            -class Dsh.Tests.ChatWindowPaneTests
+            -class 'Dsh.Tests.JobsTests*'
+            -class Dsh.Tests.Runtime.PluginLifecycleTests
+            -class Dsh.Tests.Runtime.PluginSchedulerTests
+            -class Dsh.Tests.Runtime.RuntimePluginTests
+            -class Dsh.Tests.Runtime.PluginUnloadTests
+            -class Dsh.Tests.AcpTests
+            -class Dsh.Tests.AcpClientTests
+            -class Dsh.Tests.LspTests
+            -class Dsh.Tests.SdkTests
+            -class Dsh.Tests.Mcp.McpResourceToolsTests
+            -class Dsh.Tests.ProjectMemoryTests
+            -class Dsh.Tests.SessionAutoRenameTests
+            -class Dsh.Tests.SessionLogCompatibilityTests
+            -class Dsh.Tests.RemoteHostCapabilityTests
+            -class Dsh.Tests.RemoteHostTests
+            -class Dsh.Tests.FrameCodecTests
+            -class Dsh.Tests.PluginTemplateTests
+            -class Dsh.Tests.SettingsTemplateTests
+            -class Dsh.Tests.ExportSessionLogTests)
+          ARGS+=(-trait- Category=GpuStress -trait- Category=OnlyGpu
+            -trait- Category=RenderBench -trait- Category=LlmSmoke)
+          "$EXE" "${ARGS[@]}"
+      - name: Run the original owned MCP consumer once after the formal regression
+        if: ${{ !cancelled() && steps.original_regression.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe"
+          "$EXE" -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_PreservesToolOutput_ButNeverMutatesSettings \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Native directory and filesystem authority component gates
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -class Dsh.Tests.WindowsDirectoryCollectorTests -class Dsh.Tests.WindowsSandboxAuthorityTests \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Original failed shared-worker crash and cancellation consumers
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.PluginSandboxIntegrationTests.FailedWorkerCall_RetiresSharedWorker_AndExplicitEnableDoesNotReplay \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+      - name: Remaining original owned MCP crash and cancellation consumers
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_CrashDoesNotReplay \
+            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_CancellationDoesNotRestart \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
