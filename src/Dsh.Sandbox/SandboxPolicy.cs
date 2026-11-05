@@ -45,9 +45,9 @@ internal sealed record SandboxPolicy(
                 (Path: path, Category: WindowsIoStageTiming.RootCategory.Unknown, Ordinal: index + 1))
                 .Concat(options.ReadOnlyPaths.Select((path, index) =>
                     (Path: path, Category: WindowsIoStageTiming.RootCategory.ExplicitReadOnly, Ordinal: index + 1)))
-                .Append((executable.Source, WindowsIoStageTiming.RootCategory.Executable, 1));
+                .Append((Path: executable.Source, Category: WindowsIoStageTiming.RootCategory.Executable, Ordinal: 1));
             if (SandboxedProcess.BackendExecutablePath is { } backend)
-                protectedRuntime = protectedRuntime.Append((backend, WindowsIoStageTiming.RootCategory.Host, 1));
+                protectedRuntime = protectedRuntime.Append((Path: backend, Category: WindowsIoStageTiming.RootCategory.Host, Ordinal: 1));
             readable = protectedRuntime.Select(value =>
             {
                 var path = ExistingPath(value.Path);
