@@ -1,4 +1,4 @@
-name: Windows sandbox fresh descriptor buffer original consumer probe 94
+name: Windows native security query equivalence observation 94
 
 on:
   push:
@@ -68,27 +68,14 @@ jobs:
           retention-days: 7
 
   sandbox-components:
-    name: Windows fresh descriptor buffer component gate
+    name: Windows same-handle security query observation only
     needs: bridge-dryioc-feed
     uses: ./.github/workflows/ci-tests.yml
     with:
       os: windows-latest
       native-cc: cl
       native-cc-alt: clang-cl
-      suite: sandbox-components-94
-      quick-cohort: all
-      dryioc-commit: b98d2ab37cf05bdea02c34e5e4f8e481d76d5d3f
-      dryioc-sha256: d6a7a8be85937061a60f803b8f0d0fb9a2e320ea42185da5fc5166ad825c54a1
-
-  original-windows-regression:
-    name: Original Windows regression-1 with fresh descriptor buffer gates
-    needs: [bridge-dryioc-feed, sandbox-components]
-    uses: ./.github/workflows/ci-tests.yml
-    with:
-      os: windows-latest
-      native-cc: cl
-      native-cc-alt: clang-cl
-      suite: regression-1
+      suite: security-query-contrast-94
       quick-cohort: all
       dryioc-commit: b98d2ab37cf05bdea02c34e5e4f8e481d76d5d3f
       dryioc-sha256: d6a7a8be85937061a60f803b8f0d0fb9a2e320ea42185da5fc5166ad825c54a1

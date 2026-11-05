@@ -653,65 +653,39 @@ internal sealed class WindowsAclLease : IDisposable
             }
         }
 
-        private unsafe (RawAcl Acl, bool Protected, bool ReuseRead) ReadGrantAcl(SafeFileHandle handle,
+        private (RawAcl Acl, bool Protected, bool ReuseRead) ReadGrantAcl(SafeFileHandle handle,
             SecurityIdentifier sid, bool directory, EffectiveRead? effectiveRead)
         {
-            const int initialBufferSize = 1024;
-            const int errorInsufficientBuffer = 122;
             if (effectiveRead is null)
             {
                 var original = ReadAcl(handle);
                 return (original.Acl, original.Protected, false);
             }
-            Span<byte> buffer = stackalloc byte[initialBufferSize];
-            byte[]? expanded = null;
-            while (true)
+            var queryError = WindowsNative.GetSecurityInfo(handle, 1, 0x17, out var owner, out var group,
+                out var dacl, out var label, out var descriptor);
+            if (queryError != 0)
             {
-                uint needed;
-                int queryError;
-                fixed (byte* pointer = buffer)
-                {
-                    if (WindowsNative.GetKernelObjectSecurity(handle, 0x17, (nint)pointer, (uint)buffer.Length, out needed))
-                        return ReadGrantDescriptor(pointer, expanded, sid, directory, effectiveRead);
-                    queryError = Marshal.GetLastPInvokeError();
-                }
-                // Grow to the actual descriptor length reported by the native query.
-                if (queryError == errorInsufficientBuffer && needed > (uint)buffer.Length)
-                {
-                    expanded = new byte[checked((int)needed)];
-                    buffer = expanded;
-                    continue;
-                }
                 var original = ReadAcl(handle);
                 return (original.Acl, original.Protected, false);
             }
-        }
-
-        private static unsafe (RawAcl Acl, bool Protected, bool ReuseRead) ReadGrantDescriptor(byte* pointer,
-            byte[]? expanded, SecurityIdentifier sid, bool directory, EffectiveRead effectiveRead)
-        {
-            // The documented self-relative header and every native component stay inside the caller's fixed buffer lifetime.
-            var descriptor = (WindowsNative.SecurityDescriptorRelative*)pointer;
-            if (descriptor->Dacl == 0)
-                throw new NotSupportedException("An AppContainer filesystem grant requires an explicit ACL.");
-            RawAcl acl;
-            if (expanded is null)
+            try
             {
-                var dacl = (nint)(pointer + descriptor->Dacl);
+                if (!WindowsNative.GetSecurityDescriptorControl(descriptor, out var control, out _))
+                    throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot read the AppContainer filesystem grant inheritance.");
+                if (dacl == 0)
+                    throw new NotSupportedException("An AppContainer filesystem grant requires an explicit ACL.");
                 var bytes = new byte[(ushort)Marshal.ReadInt16(dacl, 2)];
                 Marshal.Copy(dacl, bytes, 0, bytes.Length);
-                acl = new RawAcl(bytes, 0);
+                var acl = new RawAcl(bytes, 0);
+                var protectedDacl = (control & DaclProtected) != 0;
+                // Inspect every object, including protected descendants, and retain the narrowing path for this SID's existing ACEs.
+                var hasPrincipals = owner != 0 && group != 0;
+                var stable = EffectiveRead.IsStableAllowAcl(acl, sid);
+                var reuseRead = hasPrincipals && stable && effectiveRead.CanRead(descriptor, control)
+                    && (!directory || effectiveRead.CanInheritRead(acl, owner, group, label));
+                return (acl, protectedDacl, reuseRead);
             }
-            else
-                acl = new RawAcl(expanded, checked((int)descriptor->Dacl));
-            var protectedDacl = (descriptor->Control & DaclProtected) != 0;
-            var hasPrincipals = descriptor->Owner != 0 && descriptor->Group != 0;
-            var stable = EffectiveRead.IsStableAllowAcl(acl, sid);
-            var label = descriptor->Sacl == 0 ? 0 : (nint)(pointer + descriptor->Sacl);
-            var reuseRead = hasPrincipals && stable && effectiveRead.CanRead((nint)pointer, descriptor->Control)
-                && (!directory || effectiveRead.CanInheritRead(acl, (nint)(pointer + descriptor->Owner),
-                    (nint)(pointer + descriptor->Group), label));
-            return (acl, protectedDacl, reuseRead);
+            finally { WindowsNative.LocalFree(descriptor); }
         }
 
         private static (RawAcl Acl, bool Protected) ReadAcl(SafeFileHandle handle)

@@ -1,9 +1,12 @@
 using Dsh.Boot;
 using Dsh.Plugins.Sandbox;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using Dsh.Sandbox;
+using Microsoft.Win32.SafeHandles;
 
 namespace Dsh.Tests;
 
@@ -196,6 +199,132 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
         Assert.True(input.GetAccessControl(AccessControlSections.Access).AreAccessRulesProtected);
         File.WriteAllText(input.FullName, "host-write-after-disposal");
         Assert.Equal("host-write-after-disposal", File.ReadAllText(input.FullName));
+    }
+
+    // Temporary API investigation only; remove after the dedicated Windows observation job.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Category", "SandboxNative")]
+    public unsafe void TemporaryDiagnostic_FileSecurityQueries_ReportComponentEquivalence(bool protectedFile)
+    {
+        const int initialDescriptorBufferSize = 1024;
+        const int errorInsufficientBuffer = 122;
+        if (!OperatingSystem.IsWindows())
+            Assert.Skip("This diagnostic requires Windows native security queries.");
+        var stage = 0;
+        try
+        {
+            var parent = Directory.CreateDirectory(Path.Combine(_root, "descriptor-query"));
+            var parentAcl = parent.GetAccessControl(AccessControlSections.Access);
+            parentAcl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier("S-1-5-21-0-0-0-424242"),
+                FileSystemRights.ReadAttributes, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                PropagationFlags.None, AccessControlType.Allow));
+            parent.SetAccessControl(parentAcl);
+            var file = new FileInfo(Path.Combine(parent.FullName, "input.txt"));
+            File.WriteAllText(file.FullName, "owned-descriptor-query");
+            if (protectedFile)
+            {
+                var fileAcl = file.GetAccessControl(AccessControlSections.Access);
+                fileAcl.SetAccessRuleProtection(isProtected: true, preserveInheritance: true);
+                file.SetAccessControl(fileAcl);
+            }
+            var before = file.GetAccessControl(AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group)
+                .GetSecurityDescriptorBinaryForm();
+            stage = 1;
+            using var handle = WindowsNative.CreateFile(file.FullName, 0x20000, 7, 0, 3, 0x02000000, 0);
+            if (handle.IsInvalid)
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            stage = 2;
+            var error = WindowsNative.GetSecurityInfo(handle, 1, 0x17, out var owner, out var group,
+                out var dacl, out var label, out var infoPointer);
+            if (error != 0)
+                throw new Win32Exception((int)error);
+            try
+            {
+                stage = 3;
+                if (!WindowsNative.GetSecurityDescriptorControl(infoPointer, out var infoControl, out _))
+                    throw new Win32Exception(Marshal.GetLastPInvokeError());
+                var infoLength = WindowsNative.GetSecurityDescriptorLength(infoPointer);
+                var info = new RawSecurityDescriptor((ControlFlags)infoControl,
+                    owner == 0 ? null : new SecurityIdentifier(owner), group == 0 ? null : new SecurityIdentifier(group),
+                    TemporaryDescriptorQuery94.ReadAcl(label), TemporaryDescriptorQuery94.ReadAcl(dacl));
+                Span<byte> buffer = stackalloc byte[initialDescriptorBufferSize];
+                var queryCount = 0;
+                while (true)
+                {
+                    uint needed;
+                    int kernelError;
+                    fixed (byte* pointer = buffer)
+                    {
+                        queryCount++;
+                        stage = 4;
+                        if (TemporaryDescriptorQuery94.GetKernelObjectSecurity(handle, 0x17, (nint)pointer, (uint)buffer.Length, out needed))
+                        {
+                            var kernelBytes = new byte[checked((int)needed)];
+                            Marshal.Copy((nint)pointer, kernelBytes, 0, kernelBytes.Length);
+                            var kernel = new RawSecurityDescriptor(kernelBytes, 0);
+                            var header = (TemporaryDescriptorQuery94.SecurityDescriptorRelative*)pointer;
+                            var headerOwner = header->Owner == 0 ? null : new SecurityIdentifier((nint)(pointer + header->Owner));
+                            var headerGroup = header->Group == 0 ? null : new SecurityIdentifier((nint)(pointer + header->Group));
+                            var headerDacl = TemporaryDescriptorQuery94.ReadAcl(header->Dacl == 0 ? 0 : (nint)(pointer + header->Dacl));
+                            var headerLabel = TemporaryDescriptorQuery94.ReadAcl(header->Sacl == 0 ? 0 : (nint)(pointer + header->Sacl));
+                            var after = file.GetAccessControl(AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group)
+                                .GetSecurityDescriptorBinaryForm();
+                            TestContext.Current.TestOutputHelper?.WriteLine(
+                                $"protected={protectedFile}; infoLength={infoLength}; kernelLength={needed}; kernelQueryCount={queryCount}; infoControl={infoControl}; kernelControl={(ushort)kernel.ControlFlags}; infoDaclLength={info.DiscretionaryAcl?.BinaryLength ?? 0}; kernelDaclLength={kernel.DiscretionaryAcl?.BinaryLength ?? 0}; infoLabelLength={info.SystemAcl?.BinaryLength ?? 0}; kernelLabelLength={kernel.SystemAcl?.BinaryLength ?? 0}; daclEqual={TemporaryDescriptorQuery94.AclEqual(info.DiscretionaryAcl, kernel.DiscretionaryAcl)}; controlEqual={infoControl == (ushort)kernel.ControlFlags}; ownerEqual={Equals(info.Owner, kernel.Owner)}; groupEqual={Equals(info.Group, kernel.Group)}; labelEqual={TemporaryDescriptorQuery94.AclEqual(info.SystemAcl, kernel.SystemAcl)}; headerControlEqual={header->Control == (ushort)kernel.ControlFlags}; headerOwnerEqual={Equals(headerOwner, kernel.Owner)}; headerGroupEqual={Equals(headerGroup, kernel.Group)}; headerDaclEqual={TemporaryDescriptorQuery94.AclEqual(headerDacl, kernel.DiscretionaryAcl)}; headerLabelEqual={TemporaryDescriptorQuery94.AclEqual(headerLabel, kernel.SystemAcl)}; fileSecurityUnchanged={before.AsSpan().SequenceEqual(after)}");
+                            return;
+                        }
+                        kernelError = Marshal.GetLastPInvokeError();
+                    }
+                    if (kernelError != errorInsufficientBuffer || needed <= (uint)buffer.Length)
+                        throw new Win32Exception(kernelError);
+                    buffer = new byte[checked((int)needed)];
+                }
+            }
+            finally { WindowsNative.LocalFree(infoPointer); }
+        }
+        catch (Exception error)
+        {
+            // Deliberately omit the original exception and its potentially identifying message.
+            throw new InvalidOperationException($"Temporary descriptor diagnostic failed; stage={stage}; hresult={error.HResult}; nativeError={(error is Win32Exception native ? native.NativeErrorCode : 0)}.");
+        }
+    }
+
+    // Temporary declarations and materialization only, with no product permission decisions.
+    private static class TemporaryDescriptorQuery94
+    {
+        [DllImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetKernelObjectSecurity(SafeFileHandle handle, uint information, nint descriptor, uint length, out uint needed);
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct SecurityDescriptorRelative
+        {
+            public byte Revision, ResourceManagerControl;
+            public ushort Control;
+            public uint Owner, Group, Sacl, Dacl;
+        }
+
+        internal static RawAcl? ReadAcl(nint pointer)
+        {
+            if (pointer == 0)
+                return null;
+            var bytes = new byte[(ushort)Marshal.ReadInt16(pointer, 2)];
+            Marshal.Copy(pointer, bytes, 0, bytes.Length);
+            return new RawAcl(bytes, 0);
+        }
+
+        internal static bool AclEqual(RawAcl? left, RawAcl? right)
+        {
+            if (left is null || right is null)
+                return left is null && right is null;
+            var leftBytes = new byte[left.BinaryLength];
+            var rightBytes = new byte[right.BinaryLength];
+            left.GetBinaryForm(leftBytes, 0);
+            right.GetBinaryForm(rightBytes, 0);
+            return leftBytes.AsSpan().SequenceEqual(rightBytes);
+        }
     }
 
     [Fact]

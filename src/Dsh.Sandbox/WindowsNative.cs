@@ -201,20 +201,6 @@ internal static class WindowsNative
     [DllImport("advapi32.dll", SetLastError = true)]
     internal static extern uint GetSecurityInfo(SafeFileHandle handle, int type, uint information, out nint owner, out nint group, out nint dacl, out nint sacl, out nint descriptor);
     [DllImport("advapi32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool GetKernelObjectSecurity(SafeFileHandle handle, uint information, nint descriptor, uint length, out uint needed);
-
-    // GetKernelObjectSecurity returns the fixed SECURITY_DESCRIPTOR_RELATIVE header followed by its SID/ACL data.
-    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/7d4dac05-9cef-4563-a058-f108abecce1d
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct SecurityDescriptorRelative
-    {
-        public byte Revision, ResourceManagerControl;
-        public ushort Control;
-        public uint Owner, Group, Sacl, Dacl;
-    }
-
-    [DllImport("advapi32.dll", SetLastError = true)]
     internal static extern uint SetSecurityInfo(SafeFileHandle handle, int type, uint information, nint owner, nint group, nint dacl, nint sacl);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string descriptor, uint revision, out nint converted, out uint size);

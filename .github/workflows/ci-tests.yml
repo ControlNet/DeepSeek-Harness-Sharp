@@ -379,56 +379,12 @@ jobs:
           sys.exit(code if code >= 0 else 128 - code)
           PY
 
-      - name: Check native directory and authority consumers after original MCP (probe 94 fresh descriptor buffer)
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/fresh-proof-buffer94' }}
+      - name: Observe native security descriptor components on an owned file only
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'security-query-contrast-94' }}
         shell: bash
         run: |
           set -euo pipefail
           tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
-            -class Dsh.Tests.WindowsDirectoryCollectorTests -class Dsh.Tests.WindowsSandboxAuthorityTests \
+            -method Dsh.Tests.WindowsSandboxAuthorityTests.TemporaryDiagnostic_FileSecurityQueries_ReportComponentEquivalence \
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
-
-      - name: Check read-proof coordination after original MCP (probe 94 fresh descriptor buffer)
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/fresh-proof-buffer94' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
-            -class Dsh.Tests.WindowsReadProofCoordinatorTests \
-            -trait- Category=GpuStress -trait- Category=OnlyGpu \
-            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
-
-      - name: Check owned worker retirement after original MCP (probe 94 fresh descriptor buffer)
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/fresh-proof-buffer94' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
-            -method Dsh.Tests.PluginSandboxIntegrationTests.FailedWorkerCall_RetiresSharedWorker_AndExplicitEnableDoesNotReplay \
-            -trait- Category=GpuStress -trait- Category=OnlyGpu \
-            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
-
-      - name: Check other owned MCP boundaries after original MCP (probe 94 fresh descriptor buffer)
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' && github.ref == 'refs/heads/perf/fresh-proof-buffer94' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
-            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_CrashDoesNotReplay \
-            -method Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_CancellationDoesNotRestart \
-            -trait- Category=GpuStress -trait- Category=OnlyGpu \
-            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
-
-      - name: Gate fresh descriptor buffer components before the original consumer on a separate runner
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'sandbox-components-94' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe"
-          ARGS=(-noColor -parallelMode none -reporter verbose
-            -trait- Category=GpuStress -trait- Category=OnlyGpu
-            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips)
-          "$EXE" "${ARGS[@]}" -class Dsh.Tests.WindowsDirectoryCollectorTests -class Dsh.Tests.WindowsSandboxAuthorityTests
-          "$EXE" "${ARGS[@]}" -class Dsh.Tests.WindowsReadProofCoordinatorTests
-          "$EXE" "${ARGS[@]}" -method Dsh.Tests.PluginSandboxIntegrationTests.FailedWorkerCall_RetiresSharedWorker_AndExplicitEnableDoesNotReplay
