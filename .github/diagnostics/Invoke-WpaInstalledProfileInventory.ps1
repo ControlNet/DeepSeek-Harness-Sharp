@@ -1,3 +1,5 @@
+param([string] $SelectionCopyPath = '')
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -21,8 +23,8 @@ try {
     $null = New-Item -ItemType Directory -Path $private
     $created = $true
     $report = Join-Path $private 'inventory.txt'
-    $job = Start-Job -ArgumentList $report -ScriptBlock {
-        param([string] $Report)
+    $job = Start-Job -ArgumentList $report, $SelectionCopyPath -ScriptBlock {
+        param([string] $Report, [string] $SelectionCopyPath)
         $ErrorActionPreference = 'Stop'
         Set-StrictMode -Version Latest
         function Emit([string] $Line) { [IO.File]::AppendAllText($Report, $Line + "`n") }
@@ -48,6 +50,7 @@ try {
         $reparseSkipped = 0
         $absentRoots = 0
         $bytesRead = 0L
+        $selectionCopied = $false
         $roots = [Collections.Generic.List[string]]::new()
         $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         $queue = [Collections.Generic.Queue[object]]::new()
@@ -178,6 +181,7 @@ try {
                             if ($null -ne $content -and $content.GetAttribute('type', 'http://www.w3.org/2001/XMLSchema-instance') -ceq 'WpaProfile2' -and $null -ne $content.SelectSingleNode('w:Views/w:View/w:Graphs/w:Graph/w:Preset', $manager)) {
                                 $identity = 1
                                 $recognized++
+                                $categoryCounts = [int[]]::new($identifiers.Count)
                                 for ($id = 0; $id -lt $identifiers.Count; $id++) {
                                     $allow = $identifiers[$id]
                                     $nodes = $content.SelectNodes("w:Views/w:View/descendant-or-self::w:$($allow.Element)", $manager)
@@ -185,6 +189,7 @@ try {
                                     foreach ($node in $nodes) {
                                         if ([string]::Equals($node.GetAttribute($allow.Attribute), $allow.Value, [StringComparison]::OrdinalIgnoreCase)) { $count++ }
                                     }
+                                    $categoryCounts[$id] = $count
                                     Emit "WPA_PROFILE_CATEGORY candidate=$index kind=$($allow.Kind) id=$id count=$count"
                                 }
                                 $views = $content.SelectNodes('w:Views/w:View', $manager).Count
@@ -192,6 +197,38 @@ try {
                                 $presets = $content.SelectNodes('w:Views/w:View/w:Graphs/w:Graph/w:Preset', $manager).Count
                                 $references = $content.SelectNodes('w:Sessions/w:Session/w:FileReferences/w:FileReference', $manager).Count
                                 Emit "WPA_PROFILE_STRUCTURE candidate=$index views=$views graphs=$graphs presets=$presets references=$references referencesResolved=0"
+                                # Only the exact observed installed profile can leave this inventory as a private byte-for-byte copy.
+                                $allReferences = $document.SelectNodes('//*[local-name()="FileReference"]').Count
+                                $precise = $content.SelectNodes('w:Views/w:View/w:Graphs/w:Graph[translate(@Guid,"ABCDEF","abcdef")="c58f5fea-0319-4046-932d-e695ebe20b47"]', $manager)
+                                $waitProperties = 0
+                                foreach ($id in @(6, 7, 8)) {
+                                    $present = $false
+                                    foreach ($graph in $precise) {
+                                        foreach ($column in $graph.SelectNodes('.//w:Column', $manager)) {
+                                            if ([string]::Equals($column.GetAttribute('Guid'), $identifiers[$id].Value, [StringComparison]::OrdinalIgnoreCase)) { $present = $true }
+                                        }
+                                    }
+                                    if ($present) { $waitProperties++ }
+                                }
+                                if (-not $selectionCopied -and -not [string]::IsNullOrWhiteSpace($SelectionCopyPath) -and
+                                    $fingerprint -ceq '248989AFE19CC92AB856AF84D538B079FFE0597F92C7DBD1A61C1AF917E6B0E8' -and
+                                    $categoryCounts[0] -gt 0 -and $waitProperties -eq 3 -and $allReferences -eq 0) {
+                                    # The caller owns this existing directory and is responsible for its final removal.
+                                    $destination = [IO.Path]::GetFullPath($SelectionCopyPath)
+                                    $ancestor = [IO.Path]::GetDirectoryName($destination)
+                                    while ($null -ne $ancestor) {
+                                        if (([IO.File]::GetAttributes($ancestor) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                                            throw [IO.InvalidDataException]::new('Selection directory is redirected.')
+                                        }
+                                        $parent = [IO.Directory]::GetParent($ancestor)
+                                        $ancestor = if ($null -eq $parent) { $null } else { $parent.FullName }
+                                    }
+                                    $copy = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                                    try { $copy.Write($buffer, 0, $buffer.Length) }
+                                    finally { $copy.Dispose() }
+                                    $selectionCopied = $true
+                                    Emit "WPA_PROFILE_COPY selected=1 candidate=$index bytes=$length sha256=$fingerprint formatIdentity=$identity preciseCpu=$($categoryCounts[0]) waitProperties=$waitProperties fileReferences=$allReferences exactBytes=1"
+                                }
                             }
                         }
                         catch { $hresult = $_.Exception.HResult }
@@ -220,6 +257,7 @@ try {
             # Absence is scoped to accessible permitted roots and is not inferred after truncation or access failures.
             $noneFound = [int]($candidates -eq 0 -and -not $truncated -and $accessUnknown -eq 0 -and $reparseSkipped -eq 0)
             Emit "WPA_PROFILE_SUMMARY directories=$directories entries=$entries files=$files candidates=$candidates xmlParsed=$parsed recognizedFormat=$recognized parseOrFormatUnknown=$unknown traversalTruncated=$([int]$truncated) accessUnknown=$accessUnknown absentRoots=$absentRoots reparseSkipped=$reparseSkipped bytesRead=$bytesRead noTemplateFound=$noneFound usableProfile=-1 supportVerified=0 exportVerified=0 schemaVerified=0 targetAttributionVerified=0"
+            Emit "WPA_PROFILE_COPY_RESULT requested=$([int](-not [string]::IsNullOrWhiteSpace($SelectionCopyPath))) selected=$([int]$selectionCopied) supportVerified=0 exportVerified=0 schemaVerified=0"
         }
         catch { Emit "WPA_PROFILE_FAILURE hresult=$($_.Exception.HResult)"; throw 'Installed profile inventory failed.' }
     }

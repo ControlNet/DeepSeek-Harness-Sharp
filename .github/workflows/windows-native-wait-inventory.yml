@@ -1,4 +1,4 @@
-name: Windows native ETL analyzer prerequisite inventory
+name: Windows native ETL tools and installed WPA export probe
 
 on:
   push:
@@ -20,7 +20,8 @@ jobs:
       - name: Inspect installed command-line analyzer help without recording or exporting
         shell: pwsh
         run: ./.github/diagnostics/Invoke-NativeEtlToolsInventory.ps1
-      - name: Inspect installed WPA profile templates without recording or exporting
-        if: ${{ !cancelled() }}
+      - name: Export an owned four-second trace with the exact inspected installed WPA profile
         shell: pwsh
-        run: ./.github/diagnostics/Invoke-WpaInstalledProfileInventory.ps1
+        # The entrypoint reuses the bounded inventory and refuses recording without both prerequisites.
+        # Output shape observations are not event-schema validation or original MCP attribution.
+        run: ./.github/diagnostics/Invoke-WpaInstalledProfileExport.ps1
