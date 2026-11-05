@@ -19,6 +19,12 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     {
         RequireWindows();
         var expectedCount = PopulateTree();
+        const int rootFileCount = 128;
+        const int nameLength = 96;
+        var suffix = new string('界', nameLength);
+        for (var index = 0; index < rootFileCount; index++)
+            File.WriteAllText(Path.Combine(_root, $"root-{index:D3}-{suffix}.txt"), "included");
+        expectedCount += rootFileCount;
         var hidden = Path.Combine(_root, "hidden-system.txt");
         File.WriteAllText(hidden, "included");
         File.SetAttributes(hidden, FileAttributes.Hidden | FileAttributes.System);

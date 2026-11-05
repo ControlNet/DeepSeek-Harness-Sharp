@@ -1,9 +1,9 @@
-name: Windows current-source anonymous directory provenance 99
+name: Windows direct overlapped root with synchronous query facade 100
 
 on:
   push:
     branches:
-      - diag/current-directory-provenance99
+      - diag/root-facade100
 
 permissions:
   contents: read
@@ -68,7 +68,7 @@ jobs:
           retention-days: 7
 
   original-windows-regression:
-    name: Original Windows regression-1 with anonymous root and directory provenance
+    name: Original Windows regression-1 with direct overlapped root
     needs: bridge-dryioc-feed
     uses: ./.github/workflows/ci-tests.yml
     with:

@@ -15,8 +15,10 @@ internal static class WindowsDirectoryCollector
     private const uint ListDirectory = 1;
     private const uint Synchronize = 0x00100000;
     private const uint BackupSemantics = 0x02000000;
+    private const uint Overlapped = 0x40000000;
     private const uint SynchronousDirectoryOpen = 0x00004021;
     private const int FileFullDirectoryInformation = 2;
+    private const int FileFullDirectoryInfo = 14;
     private const int NoMoreFiles = unchecked((int)0x80000006);
     private const int NoSuchFile = unchecked((int)0xc000000f);
     private const uint ShareAll = (uint)(FileShare.Read | FileShare.Write | FileShare.Delete);
@@ -25,6 +27,7 @@ internal static class WindowsDirectoryCollector
     private const int ErrorFileNotFound = 2;
     private const int ErrorPathNotFound = 3;
     private const int ErrorAccessDenied = 5;
+    private const int ErrorNoMoreFiles = 18;
     private const int ErrorFilenameExceedsRange = 206;
     private const int ErrorOperationAborted = 995;
     private const int HResultHighWordMask = unchecked((int)0xffff0000);
@@ -66,7 +69,7 @@ internal static class WindowsDirectoryCollector
             observation?.Enter(0, WindowsIoStageTiming.Operation.Open);
             try
             {
-                rootHandle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics, 0);
+                rootHandle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics | Overlapped, 0);
                 openError = Marshal.GetLastPInvokeError();
             }
             finally { observation?.Exit(0, WindowsIoStageTiming.Operation.Open); }
@@ -167,24 +170,47 @@ internal static class WindowsDirectoryCollector
         {
             cancellationToken.ThrowIfCancellationRequested();
             work?.ThrowIfStopped();
-            int status;
-            IoStatusBlock ioStatus;
-            observation?.Enter(slot, WindowsIoStageTiming.Operation.Query);
-            try
+            if (work is null)
             {
-                status = NtQueryDirectoryFile(handle, 0, 0, 0, out ioStatus, buffer, BufferSize,
-                    FileFullDirectoryInformation, 0, 0, 0);
+                // The root uses a synchronous Win32 query over its overlapped anchor.
+                bool success;
+                int queryError;
+                observation?.Enter(slot, WindowsIoStageTiming.Operation.Query);
+                try
+                {
+                    success = GetFileInformationByHandleEx(handle, FileFullDirectoryInfo, buffer, BufferSize);
+                    queryError = Marshal.GetLastPInvokeError();
+                }
+                finally { observation?.Exit(slot, WindowsIoStageTiming.Operation.Query); }
+                if (!success)
+                {
+                    if (queryError is not (ErrorNoMoreFiles or ErrorFileNotFound))
+                        throw DirectoryError(queryError, directory.Path);
+                    observation?.DirectoryCompleted(slot);
+                    return;
+                }
             }
-            finally { observation?.Exit(slot, WindowsIoStageTiming.Operation.Query); }
-            if (status is NoMoreFiles or NoSuchFile)
+            else
             {
-                observation?.DirectoryCompleted(slot);
-                return;
+                int status;
+                IoStatusBlock ioStatus;
+                observation?.Enter(slot, WindowsIoStageTiming.Operation.Query);
+                try
+                {
+                    status = NtQueryDirectoryFile(handle, 0, 0, 0, out ioStatus, buffer, BufferSize,
+                        FileFullDirectoryInformation, 0, 0, 0);
+                }
+                finally { observation?.Exit(slot, WindowsIoStageTiming.Operation.Query); }
+                if (status is NoMoreFiles or NoSuchFile)
+                {
+                    observation?.DirectoryCompleted(slot);
+                    return;
+                }
+                if (status != 0)
+                    throw DirectoryError((int)RtlNtStatusToDosError(status), directory.Path);
+                if (ioStatus.Information == 0)
+                    return;
             }
-            if (status != 0)
-                throw DirectoryError((int)RtlNtStatusToDosError(status), directory.Path);
-            if (ioStatus.Information == 0)
-                return;
             var entry = (DirectoryInformation*)buffer;
             while (true)
             {
@@ -437,6 +463,7 @@ internal static class WindowsDirectoryCollector
         };
     }
 
+    // FILE_FULL_DIRECTORY_INFORMATION (NT class 2) and FILE_FULL_DIR_INFO (Win32 class 14): FileName starts at byte 68.
     [StructLayout(LayoutKind.Sequential)]
     private unsafe struct DirectoryInformation
     {
@@ -470,6 +497,11 @@ internal static class WindowsDirectoryCollector
         public nint Status;
         public nuint Information;
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int informationClass,
+        nint information, uint bufferSize);
 
     [DllImport("ntdll.dll")]
     private static extern int NtQueryDirectoryFile(SafeFileHandle handle, nint completionEvent, nint apcRoutine,
