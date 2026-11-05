@@ -73,9 +73,7 @@ internal sealed class WindowsAclLease : IDisposable
         foreach (var grant in policy.Writable.OrderBy(static grant => grant.Source.Length))
             if (!SandboxPolicy.Contains(windows, grant.Source))
                 AddTree(paths, grant.Source, grant.IsDirectory, true, cancellationToken);
-        foreach (var grant in policy.Readable.OrderBy(static grant => grant.Source.Length))
-            if (!SandboxPolicy.Contains(windows, grant.Source))
-                AddTree(paths, grant.Source, grant.IsDirectory, false, cancellationToken);
+        AddReadableTrees(paths, policy.Readable, windows, cancellationToken);
         foreach (var denied in policy.Denied)
         {
             if (File.Exists(denied) || Directory.Exists(denied))
@@ -98,7 +96,7 @@ internal sealed class WindowsAclLease : IDisposable
     private void ApplyGrants(SandboxPolicy policy, Dictionary<string, (bool Write, bool Directory)> paths,
         EffectiveRead? effectiveRead, CancellationToken cancellationToken)
     {
-        // AddTree joins all directory workers before proof workers start.
+        // All tree collection joins its directory workers before proof workers start.
         var ordered = paths.OrderBy(static entry => entry.Key.Length).ToArray();
         var offset = _entries.Count;
         _entries.EnsureCapacity(offset + ordered.Length);
@@ -179,7 +177,67 @@ internal sealed class WindowsAclLease : IDisposable
         return false;
     }
 
-    private void AddTree(Dictionary<string, (bool Write, bool Directory)> paths, string root, bool directory, bool write,
+    internal static void AddReadableTrees(Dictionary<string, (bool Write, bool Directory)> paths,
+        IEnumerable<SandboxPath> roots, string windows, CancellationToken cancellationToken)
+    {
+        var group = new List<SandboxPath>();
+        foreach (var grant in roots.OrderBy(static grant => grant.Source.Length))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (SandboxPolicy.Contains(windows, grant.Source))
+                continue;
+            // Overlapping roots must observe all earlier overrides before deciding whether to reuse a tree.
+            if (group.Any(prior => SandboxPolicy.Contains(prior.Source, grant.Source)
+                || SandboxPolicy.Contains(grant.Source, prior.Source)))
+                Flush();
+            if (paths.TryGetValue(grant.Source, out var existing) && !existing.Write && existing.Directory == grant.IsDirectory)
+                continue;
+            group.Add(grant);
+        }
+        Flush();
+
+        void Flush()
+        {
+            if (group.Count == 0)
+                return;
+            if (group.Count == 1)
+            {
+                var grant = group[0];
+                AddTree(paths, grant.Source, grant.IsDirectory, false, cancellationToken);
+                group.Clear();
+                return;
+            }
+            var entries = new List<(string Path, bool Directory)>?[group.Count];
+            var requests = new List<WindowsDirectoryCollector.RootRequest>(group.Count);
+            for (var index = 0; index < group.Count; index++)
+            {
+                var grant = group[index];
+                if (!grant.IsDirectory)
+                    continue;
+                var result = new List<(string Path, bool Directory)>();
+                entries[index] = result;
+                requests.Add(new WindowsDirectoryCollector.RootRequest(grant.Source,
+                    (path, directory) => result.Add((path, directory))));
+            }
+            WindowsDirectoryCollector.Collect(CollectionsMarshal.AsSpan(requests), cancellationToken);
+            // Callbacks buffer independent trees; only the caller merges roots in their original stable order.
+            for (var index = 0; index < group.Count; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var grant = group[index];
+                paths[grant.Source] = (false, grant.IsDirectory);
+                if (entries[index] is { } result)
+                    foreach (var entry in result)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        paths[entry.Path] = (false, entry.Directory);
+                    }
+            }
+            group.Clear();
+        }
+    }
+
+    private static void AddTree(Dictionary<string, (bool Write, bool Directory)> paths, string root, bool directory, bool write,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();

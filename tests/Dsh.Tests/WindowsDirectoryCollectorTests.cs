@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.IO.Enumeration;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Dsh.Sandbox;
@@ -367,6 +368,182 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
             Assert.Equal(sharingViolation, failure.HResult);
             Assert.DoesNotContain(file, actual);
         }
+        AssertDirectoriesReleased();
+    }
+
+    [Fact]
+    public void InterruptedSealing_RetiresWaitingWorkersBeforeFailureIsPropagated()
+    {
+        RequireWindows();
+        const int threadDeadlineSeconds = 5;
+        var deadline = TimeSpan.FromSeconds(threadDeadlineSeconds);
+        var queueType = typeof(WindowsDirectoryCollector).GetNestedType("WorkQueue", BindingFlags.NonPublic)!;
+        var queue = Activator.CreateInstance(queueType, CancellationToken.None)!;
+        var gate = queueType.GetField("_gate", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(queue)!;
+        var run = queueType.GetMethod("Run")!.CreateDelegate<Action>(queue);
+        var seal = queueType.GetMethod("Seal")!.CreateDelegate<Action>(queue);
+        var fail = queueType.GetMethod("Fail")!.CreateDelegate<Action<Exception>>(queue);
+        var demand = queueType.GetMethod("ThrowIfStopped")!.CreateDelegate<Action>(queue);
+        Exception? sealFailure = null;
+        var worker = new Thread(run.Invoke) { IsBackground = true };
+        var caller = new Thread(() =>
+        {
+            try
+            {
+                seal();
+            }
+            catch (Exception error)
+            {
+                sealFailure = error;
+            }
+        }) { IsBackground = true };
+        try
+        {
+            worker.Start();
+            lock (gate)
+            {
+                caller.Start();
+                Assert.True(SpinWait.SpinUntil(
+                    () => (caller.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0, deadline),
+                    "The cleanup caller must be waiting for the queue gate before interruption.");
+                caller.Interrupt();
+            }
+            Assert.True(caller.Join(deadline), "Sealing must finish after the gate is released.");
+            Assert.True(worker.Join(deadline), "An interrupted cleanup must release its waiting worker.");
+            Assert.Null(sealFailure);
+            Assert.Throws<ThreadInterruptedException>(demand);
+        }
+        finally
+        {
+            fail(new OperationCanceledException());
+            if (caller.IsAlive)
+                Assert.True(caller.Join(deadline), "The owned cleanup caller must exit.");
+            if (worker.IsAlive)
+                Assert.True(worker.Join(deadline), "The owned worker must exit.");
+        }
+    }
+
+    [Fact]
+    public void IndependentRoots_PreserveEachReferenceOrderAndCallerPublicationAcrossAdmissionSlots()
+    {
+        RequireWindows();
+        var caller = Environment.CurrentManagedThreadId;
+        var roots = new string[4];
+        var actual = new List<(string Path, bool Directory)>[roots.Length];
+        var expected = new (string Path, bool Directory)[roots.Length][];
+        var requests = new WindowsDirectoryCollector.RootRequest[roots.Length];
+        var rootVisits = 0;
+        for (var index = 0; index < roots.Length; index++)
+        {
+            var ordinal = index;
+            roots[index] = Directory.CreateDirectory(Path.Combine(_root, $"root-{index}")).FullName;
+            for (var branch = 0; branch < 3; branch++)
+            {
+                var child = Directory.CreateDirectory(Path.Combine(roots[index], $"child-{branch}")).FullName;
+                var nested = Directory.CreateDirectory(Path.Combine(child, "nested")).FullName;
+                File.WriteAllText(Path.Combine(nested, "input.txt"), "included");
+            }
+            expected[index] = new FileSystemEnumerable<(string Path, bool Directory)>(roots[index],
+                static (ref FileSystemEntry entry) => (entry.ToFullPath(), entry.IsDirectory),
+                new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    AttributesToSkip = FileAttributes.ReparsePoint,
+                    IgnoreInaccessible = false,
+                    BufferSize = 16 * 1024
+                }).ToArray();
+            actual[index] = [];
+            requests[index] = new WindowsDirectoryCollector.RootRequest(roots[index], (path, directory) =>
+            {
+                Assert.Equal(caller, Environment.CurrentManagedThreadId);
+                if (ordinal == 2 && actual[ordinal].Count == 0)
+                {
+                    var released = 0;
+                    for (var prior = 0; prior < 2; prior++)
+                    {
+                        using var exclusive = WindowsNative.CreateFile(roots[prior], 1, 0, 0, 3, 0x02000000, 0);
+                        if (!exclusive.IsInvalid)
+                            released++;
+                        else
+                            Assert.Equal(32, Marshal.GetLastPInvokeError());
+                    }
+                    Assert.Equal(1, released);
+                }
+                if (Path.GetDirectoryName(path) == roots[ordinal])
+                    rootVisits++;
+                else
+                    Assert.Equal(roots.Length * 3, rootVisits);
+                actual[ordinal].Add((path, directory));
+            });
+        }
+
+        WindowsDirectoryCollector.Collect(requests, TestContext.Current.CancellationToken);
+
+        for (var index = 0; index < roots.Length; index++)
+            Assert.True(expected[index].SequenceEqual(actual[index]),
+                "Every admitted root must retain its complete native entry and FIFO directory order.");
+        AssertDirectoriesReleased();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LaterRootVisitorFailureOrCancellation_DrainsEarlierRootAndStopsFurtherAdmission(bool cancel)
+    {
+        RequireWindows();
+        PopulateTree();
+        var later = Directory.CreateDirectory(Path.Combine(_root, "later")).FullName;
+        File.WriteAllText(Path.Combine(later, "input.txt"), "included");
+        var failure = new InvalidOperationException("The later root visitor rejected collection.");
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var laterVisits = 0;
+        var unadmittedVisits = 0;
+        WindowsDirectoryCollector.RootRequest[] roots =
+        [
+            new(_root, (_, _) => { }),
+            new(later, (_, _) =>
+            {
+                laterVisits++;
+                if (cancel)
+                    cancellation.Cancel();
+                else
+                    throw failure;
+            }),
+            new(later, (_, _) => unadmittedVisits++)
+        ];
+
+        if (cancel)
+        {
+            var observed = Assert.ThrowsAny<OperationCanceledException>(() =>
+                WindowsDirectoryCollector.Collect(roots, cancellation.Token));
+            Assert.Equal(cancellation.Token, observed.CancellationToken);
+        }
+        else
+            Assert.Same(failure, Assert.Throws<InvalidOperationException>(() =>
+                WindowsDirectoryCollector.Collect(roots, cancellation.Token)));
+
+        Assert.Equal(1, laterVisits);
+        Assert.Equal(0, unadmittedVisits);
+        AssertDirectoriesReleased();
+    }
+
+    [Fact]
+    public void MissingLaterRoot_PropagatesNativeErrorAndReleasesEarlierRoot()
+    {
+        RequireWindows();
+        PopulateTree();
+        var visits = 0;
+        WindowsDirectoryCollector.RootRequest[] roots =
+        [
+            new(_root, (_, _) => { }),
+            new(Path.Combine(_root, "missing"), (_, _) => visits++),
+            new(_root, (_, _) => visits++)
+        ];
+
+        Assert.Throws<DirectoryNotFoundException>(() =>
+            WindowsDirectoryCollector.Collect(roots, TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, visits);
         AssertDirectoriesReleased();
     }
 

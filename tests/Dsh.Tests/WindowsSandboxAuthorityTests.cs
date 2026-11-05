@@ -148,6 +148,68 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
 
     [Fact]
     [Trait("Category", "SandboxNative")]
+    public void ReadableRootGroups_MergeIndependentTreesBeforeOverlappingWriteOverridesAreReused()
+    {
+        if (!OperatingSystem.IsWindows())
+            Assert.Skip("This collection regression requires Windows native directory reads.");
+        var parent = Directory.CreateDirectory(Path.Combine(_root, "a")).FullName;
+        var peer = Directory.CreateDirectory(Path.Combine(_root, "b")).FullName;
+        var nested = Directory.CreateDirectory(Path.Combine(parent, "nested")).FullName;
+        var input = Path.Combine(nested, "input.txt");
+        var peerInput = Path.Combine(peer, "input.txt");
+        var writable = Path.Combine(_root, "writable.txt");
+        File.WriteAllText(input, "readable");
+        File.WriteAllText(peerInput, "peer-readable");
+        File.WriteAllText(writable, "writable");
+        var paths = new Dictionary<string, (bool Write, bool Directory)>(StringComparer.OrdinalIgnoreCase)
+        {
+            [nested] = (true, true),
+            [input] = (true, false),
+            [writable] = (true, false)
+        };
+        SandboxPath[] roots = [new(parent, parent, true), new(peer, peer, true), new(nested, nested, true)];
+
+        WindowsAclLease.AddReadableTrees(paths, roots, Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(6, paths.Count);
+        Assert.Equal((false, true), paths[parent]);
+        Assert.Equal((false, true), paths[peer]);
+        Assert.Equal((false, true), paths[nested]);
+        Assert.Equal((false, false), paths[input]);
+        Assert.Equal((false, false), paths[peerInput]);
+        Assert.Equal((true, false), paths[writable]);
+    }
+
+    [Fact]
+    [Trait("Category", "SandboxNative")]
+    public void ReadableRootReuse_RequiresAnActuallyPublishedMatchingAccessAndDirectoryKind()
+    {
+        if (!OperatingSystem.IsWindows())
+            Assert.Skip("This collection regression requires Windows native directory reads.");
+        var root = Directory.CreateDirectory(Path.Combine(_root, "readable")).FullName;
+        var input = Path.Combine(root, "input.txt");
+        File.WriteAllText(input, "readable");
+        var paths = new Dictionary<string, (bool Write, bool Directory)>(StringComparer.OrdinalIgnoreCase);
+        SandboxPath[] roots = [new(root, root, true)];
+        var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        WindowsAclLease.AddReadableTrees(paths, roots, windows, TestContext.Current.CancellationToken);
+        Directory.Delete(root, recursive: true);
+
+        WindowsAclLease.AddReadableTrees(paths, roots, windows, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, paths.Count);
+        Assert.Equal((false, false), paths[input]);
+        paths[root] = (false, false);
+        Assert.Throws<DirectoryNotFoundException>(() =>
+            WindowsAclLease.AddReadableTrees(paths, roots, windows, TestContext.Current.CancellationToken));
+        paths[root] = (true, true);
+        Assert.Throws<DirectoryNotFoundException>(() =>
+            WindowsAclLease.AddReadableTrees(paths, roots, windows, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    [Trait("Category", "SandboxNative")]
     public async Task ProtectedSettings_WithAmbientNetworkCapabilityWrite_RefusesLaunchBeforeExecution()
     {
         if (!OperatingSystem.IsWindows())
