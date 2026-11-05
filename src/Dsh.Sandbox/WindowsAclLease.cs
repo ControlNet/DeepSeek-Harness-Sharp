@@ -11,7 +11,7 @@ namespace Dsh.Sandbox;
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsAclLease : IDisposable
 {
-    private const int ReadProbeBatchSize = 128;
+    private const int MaximumReadProofWindow = 4096;
     private const int ReadExecute = 0x1200a9;
     private const int Modify = 0x1301bf;
     private const int Delete = 0x10000;
@@ -127,15 +127,26 @@ internal sealed class WindowsAclLease : IDisposable
             // The caller holds the gate until every pure probe finishes; mutations keep their stable serial order.
             for (var start = 0; start < ordered.Length;)
             {
-                var end = start + Math.Min(ReadProbeBatchSize, ordered.Length - start);
-                var readOnly = effectiveRead is not null;
-                for (var index = start; readOnly && index < end; index++)
-                    readOnly = !ordered[index].Value.Write;
+                var write = ordered[start].Value.Write;
+                var limit = start + Math.Min(MaximumReadProofWindow, ordered.Length - start);
+                var end = start + 1;
+                while (end < limit && ordered[end].Value.Write == write)
+                    end++;
                 lock (AclGate)
                 {
-                    var reusable = readOnly && (proofs ??= new WindowsReadProofCoordinator(end - start))
-                        .Probe(start, end, probe ??= Probe, cancellationToken);
-                    if (!reusable)
+                    if (!write && effectiveRead is not null)
+                        while (start < end)
+                        {
+                            start = (proofs ??= new WindowsReadProofCoordinator(ordered.Length))
+                                .ProbePrefix(start, end, probe ??= Probe, cancellationToken);
+                            if (start < end)
+                            {
+                                // Grant re-reads the first unproved ACL; no suffix proof survives this mutation.
+                                grant(start);
+                                start++;
+                            }
+                        }
+                    else
                         for (var index = start; index < end; index++)
                             grant(index);
                 }

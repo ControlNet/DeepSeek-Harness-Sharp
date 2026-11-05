@@ -5,8 +5,9 @@ namespace Dsh.Sandbox;
 /// <summary>Runs synchronous read-only proof batches on reusable dedicated threads.</summary>
 /// <remarks>
 /// A single caller submits batches; callbacks must not call back into this coordinator.
-/// At most min(64, entryCount) workers exist, started only for the first nonempty batch.
-/// False stops dispatch and drains the batch; failure, cancellation and disposal also join every started worker.
+/// At most min(64, entryCount) workers exist, growing lazily to each batch's length.
+/// False stops dispatch and drains every reserved callback before returning the first false index, or the end when all pass.
+/// Failure, cancellation and disposal also join every started worker and never return a reusable prefix.
 /// Batch callbacks are released before completion, and disposal drains synchronous native calls.
 /// Callback errors remain primary when cancellation also arrives.
 /// This bounds proof workers and in-flight callbacks, not the process's paths, security descriptors or total memory.
@@ -20,6 +21,7 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
     private int _next;
     private int _end;
     private int _active;
+    private int _prefixEnd;
     private bool _running;
     private bool _stopped;
     private bool _shutdown;
@@ -33,7 +35,7 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
         _workers = new Thread?[Math.Min(MaximumWorkers, entryCount)];
     }
 
-    public bool Probe(int start, int end, Func<int, bool> probe, CancellationToken cancellationToken)
+    public int ProbePrefix(int start, int end, Func<int, bool> probe, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(probe);
         ArgumentOutOfRangeException.ThrowIfNegative(start);
@@ -46,18 +48,19 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
             if (_running)
                 throw new InvalidOperationException("Only one read proof batch may run at a time.");
             if (start == end)
-                return true;
+                return end;
             _running = true;
             _stopped = false;
             _next = start;
             _end = end;
+            _prefixEnd = end;
             _probe = probe;
             _cancellationToken = cancellationToken;
         }
         // Registration lives only for this batch, so neither the token nor idle workers retain its callback.
         using var registration = cancellationToken.UnsafeRegister(static state =>
             ((WindowsReadProofCoordinator)state!).Cancel(), this);
-        StartWorkers();
+        StartWorkers(end - start);
         return DrainBatch();
     }
 
@@ -68,13 +71,14 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
                 Fail(new OperationCanceledException(_cancellationToken));
     }
 
-    private void StartWorkers()
+    private void StartWorkers(int batchLength)
     {
         lock (_gate)
         {
             try
             {
-                while (_started < _workers.Length && !_shutdown && !_stopped)
+                var required = Math.Min(_workers.Length, batchLength);
+                while (_started < required && _next < _end && !_shutdown && !_stopped)
                 {
                     _cancellationToken.ThrowIfCancellationRequested();
                     var worker = new Thread(Run) { IsBackground = true };
@@ -91,10 +95,10 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
         }
     }
 
-    private bool DrainBatch()
+    private int DrainBatch()
     {
         ExceptionDispatchInfo? failure;
-        bool reusable;
+        int prefixEnd;
         lock (_gate)
         {
             while (_active != 0 || !_stopped && _next < _end)
@@ -104,7 +108,7 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
             }
             if (_cancellationToken.IsCancellationRequested)
                 Fail(new OperationCanceledException(_cancellationToken));
-            reusable = !_stopped;
+            prefixEnd = _prefixEnd;
             failure = _failure;
             _probe = null;
             _running = false;
@@ -115,7 +119,7 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
             JoinWorkers();
             failure.Throw();
         }
-        return reusable;
+        return prefixEnd;
     }
 
     private void Run()
@@ -141,7 +145,10 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
                 {
                     if (!probe(index))
                         lock (_gate)
+                        {
+                            _prefixEnd = Math.Min(_prefixEnd, index);
                             _stopped = true;
+                        }
                 }
                 catch (Exception error) { Fail(error); }
                 finally

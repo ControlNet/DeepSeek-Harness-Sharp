@@ -9,19 +9,26 @@ public sealed class WindowsReadProofCoordinatorTests
     [Theory(Timeout = 10000)]
     [InlineData(3, 3)]
     [InlineData(128, 64)]
-    public void Batches_ReuseTheSameBoundedDedicatedWorkers(int entries, int expectedWorkers)
+    public void Batches_GrowFromOneEntryAndReuseTheSameBoundedDedicatedWorkers(int entries, int expectedWorkers)
     {
         using var proofs = new WindowsReadProofCoordinator(entries);
         using var ready = new Barrier(expectedWorkers);
         var workers = new[] { new ConcurrentDictionary<Thread, byte>(), new ConcurrentDictionary<Thread, byte>() };
-        var visits = new int[entries * 2];
+        var visits = new int[entries * 2 + 1];
         var cancellationToken = TestContext.Current.CancellationToken;
+        Thread? initialWorker = null;
+        Assert.Equal(1, proofs.ProbePrefix(0, 1, index =>
+        {
+            initialWorker = Thread.CurrentThread;
+            visits[index]++;
+            return true;
+        }, cancellationToken));
 
         for (var batch = 0; batch < workers.Length; batch++)
         {
             var current = batch;
-            var start = batch * entries;
-            Assert.True(proofs.Probe(start, start + entries, index =>
+            var start = 1 + batch * entries;
+            Assert.Equal(start + entries, proofs.ProbePrefix(start, start + entries, index =>
             {
                 Assert.False(Thread.CurrentThread.IsThreadPoolThread);
                 workers[current].TryAdd(Thread.CurrentThread, 0);
@@ -33,6 +40,7 @@ public sealed class WindowsReadProofCoordinatorTests
         }
 
         Assert.Equal(expectedWorkers, workers[0].Count);
+        Assert.Contains(initialWorker!, workers[0].Keys);
         Assert.True(workers[0].Keys.ToHashSet().SetEquals(workers[1].Keys));
         Assert.All(visits, static count => Assert.Equal(1, count));
         proofs.Dispose();
@@ -56,8 +64,8 @@ public sealed class WindowsReadProofCoordinatorTests
         var finished = 0;
         var pending = Task.Run(() =>
         {
-            var reusable = false;
-            var error = Record.Exception(() => reusable = proofs.Probe(0, 128, index =>
+            var prefixEnd = -1;
+            var error = Record.Exception(() => prefixEnd = proofs.ProbePrefix(0, 128, index =>
             {
                 workers.TryAdd(Thread.CurrentThread, 0);
                 Interlocked.Increment(ref calls);
@@ -82,7 +90,7 @@ public sealed class WindowsReadProofCoordinatorTests
                 }
                 finally { Interlocked.Increment(ref finished); }
             }, cancellation.Token));
-            return (Reusable: reusable, Error: error, Finished: Volatile.Read(ref finished));
+            return (PrefixEnd: prefixEnd, Error: error, Finished: Volatile.Read(ref finished));
         }, TestContext.Current.CancellationToken);
 
         try
@@ -101,14 +109,27 @@ public sealed class WindowsReadProofCoordinatorTests
         if (stop == 0)
         {
             Assert.Null(observed.Error);
-            Assert.False(observed.Reusable);
-            // A false batch can be followed by another batch without retaining or invoking its old callback.
-            Assert.True(proofs.Probe(128, 256, static _ => true, TestContext.Current.CancellationToken));
+            Assert.Equal(1, observed.PrefixEnd);
+            // Re-probe an overlapping suffix with a new callback after the caller regains control.
+            // No result from the drained batch may replace a fresh callback invocation.
+            var suffixVisits = new int[128];
+            Assert.Equal(128, proofs.ProbePrefix(2, 128, index =>
+            {
+                Assert.Equal(calls, Volatile.Read(ref finished));
+                Interlocked.Increment(ref suffixVisits[index]);
+                return true;
+            }, TestContext.Current.CancellationToken));
+            Assert.All(suffixVisits[..2], static count => Assert.Equal(0, count));
+            Assert.All(suffixVisits[2..], static count => Assert.Equal(1, count));
         }
-        else if (stop == 1)
-            Assert.Same(failure, observed.Error);
         else
-            Assert.Equal(cancellation.Token, Assert.IsAssignableFrom<OperationCanceledException>(observed.Error).CancellationToken);
+        {
+            Assert.Equal(-1, observed.PrefixEnd);
+            if (stop == 1)
+                Assert.Same(failure, observed.Error);
+            else
+                Assert.Equal(cancellation.Token, Assert.IsAssignableFrom<OperationCanceledException>(observed.Error).CancellationToken);
+        }
         proofs.Dispose();
         Assert.Equal(observed.Finished, Volatile.Read(ref finished));
         Assert.Equal(calls, Volatile.Read(ref finished));
@@ -121,7 +142,7 @@ public sealed class WindowsReadProofCoordinatorTests
         using var proofs = new WindowsReadProofCoordinator(1);
         using var cancellation = new CancellationTokenSource();
         var visits = 0;
-        Assert.True(proofs.Probe(0, 1, _ =>
+        Assert.Equal(1, proofs.ProbePrefix(0, 1, _ =>
         {
             visits++;
             return true;
@@ -129,7 +150,7 @@ public sealed class WindowsReadProofCoordinatorTests
 
         cancellation.Cancel();
 
-        Assert.True(proofs.Probe(1, 2, static _ => true, TestContext.Current.CancellationToken));
+        Assert.Equal(2, proofs.ProbePrefix(1, 2, static _ => true, TestContext.Current.CancellationToken));
         Assert.Equal(1, visits);
     }
 
@@ -146,7 +167,7 @@ public sealed class WindowsReadProofCoordinatorTests
         var failing = new TaskCompletionSource<Thread>(TaskCreationOptions.RunContinuationsAsynchronously);
         var failure = new InvalidOperationException("First read proof callback failed.");
         var finished = 0;
-        var pending = Task.Run(() => Record.Exception(() => proofs.Probe(0, 128, index =>
+        var pending = Task.Run(() => Record.Exception(() => proofs.ProbePrefix(0, 128, index =>
         {
             if (index == 0)
             {
@@ -188,7 +209,7 @@ public sealed class WindowsReadProofCoordinatorTests
     {
         using var proofs = new WindowsReadProofCoordinator(1);
         Thread? worker = null;
-        Assert.True(proofs.Probe(0, 1, _ =>
+        Assert.Equal(1, proofs.ProbePrefix(0, 1, _ =>
         {
             worker = Thread.CurrentThread;
             return true;
@@ -197,7 +218,7 @@ public sealed class WindowsReadProofCoordinatorTests
         cancellation.Cancel();
         var visits = 0;
 
-        var error = Assert.ThrowsAny<OperationCanceledException>(() => proofs.Probe(1, 2, _ =>
+        var error = Assert.ThrowsAny<OperationCanceledException>(() => proofs.ProbePrefix(1, 2, _ =>
         {
             visits++;
             return true;
@@ -219,7 +240,7 @@ public sealed class WindowsReadProofCoordinatorTests
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finished = 0;
         Thread? worker = null;
-        var pending = Task.Run(() => Record.Exception(() => proofs.Probe(0, 128, _ =>
+        var pending = Task.Run(() => Record.Exception(() => proofs.ProbePrefix(0, 128, _ =>
         {
             worker = Thread.CurrentThread;
             started.TrySetResult();
@@ -275,7 +296,7 @@ public sealed class WindowsReadProofCoordinatorTests
         Thread? worker = null;
         var caller = new Thread(() =>
         {
-            failure = Record.Exception(() => proofs.Probe(0, 128, _ =>
+            failure = Record.Exception(() => proofs.ProbePrefix(0, 128, _ =>
             {
                 worker = Thread.CurrentThread;
                 started.TrySetResult();
@@ -302,6 +323,81 @@ public sealed class WindowsReadProofCoordinatorTests
         Assert.Equal(completedAtReturn, Volatile.Read(ref finished));
         Assert.NotNull(worker);
         Assert.False(worker.IsAlive);
+    }
+
+    [Fact(Timeout = 10000)]
+    public async Task EarlierReservedFalse_LowersThePrefixAfterALaterFalseAndDrainsEveryLowerIndex()
+    {
+        using var proofs = new WindowsReadProofCoordinator(3);
+        using var lowerStarted = new CountdownEvent(2);
+        using var releaseFirst = new ManualResetEventSlim();
+        using var releaseEarlierFalse = new ManualResetEventSlim();
+        using var releaseLaterFalse = new ManualResetEventSlim();
+        var allReserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var caller = new TaskCompletionSource<Thread>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var earlierFalse = new TaskCompletionSource<Thread>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var laterFalse = new TaskCompletionSource<Thread>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var visits = new int[128];
+        var finished = 0;
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var pending = Task.Run(() =>
+        {
+            caller.SetResult(Thread.CurrentThread);
+            return proofs.ProbePrefix(0, visits.Length, index =>
+            {
+                Interlocked.Increment(ref visits[index]);
+                try
+                {
+                    if (index == 0)
+                    {
+                        lowerStarted.Signal();
+                        releaseFirst.Wait(cancellationToken);
+                        return true;
+                    }
+                    if (index == 1)
+                    {
+                        lowerStarted.Signal();
+                        releaseEarlierFalse.Wait(cancellationToken);
+                        earlierFalse.SetResult(Thread.CurrentThread);
+                        return false;
+                    }
+                    lowerStarted.Wait(cancellationToken);
+                    allReserved.SetResult();
+                    releaseLaterFalse.Wait(cancellationToken);
+                    laterFalse.SetResult(Thread.CurrentThread);
+                    return false;
+                }
+                finally { Interlocked.Increment(ref finished); }
+            }, cancellationToken);
+        }, cancellationToken);
+
+        try
+        {
+            await allReserved.Task.WaitAsync(cancellationToken);
+            // All callbacks are outside the coordinator gate, so this is the caller's drain wait.
+            WaitForBlocked(await caller.Task.WaitAsync(cancellationToken));
+            releaseLaterFalse.Set();
+            var laterWorker = await laterFalse.Task.WaitAsync(cancellationToken);
+            // This callback has no wait after its signal, so an idle worker has recorded the later false.
+            WaitForBlocked(laterWorker);
+            Assert.False(pending.IsCompleted);
+            releaseEarlierFalse.Set();
+            var earlierWorker = await earlierFalse.Task.WaitAsync(cancellationToken);
+            WaitForBlocked(earlierWorker);
+            Assert.False(pending.IsCompleted);
+        }
+        finally
+        {
+            releaseLaterFalse.Set();
+            releaseEarlierFalse.Set();
+            releaseFirst.Set();
+            await pending;
+        }
+
+        Assert.Equal(1, await pending);
+        Assert.Equal(3, Volatile.Read(ref finished));
+        Assert.Equal(new[] { 1, 1, 1 }, visits[..3]);
+        Assert.All(visits[3..], static count => Assert.Equal(0, count));
     }
 
     private static void WaitForBlocked(Thread thread) => Assert.True(SpinWait.SpinUntil(
