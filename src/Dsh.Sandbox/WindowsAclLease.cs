@@ -69,7 +69,7 @@ internal sealed class WindowsAclLease : IDisposable
 
     public void Apply(SandboxPolicy policy, SafeFileHandle process, CancellationToken cancellationToken)
     {
-        using var effectiveRead = EffectiveRead.TryCreate(process);
+        using var effectiveRead = EffectiveRead.TryCreate(process, _sid, policy.AllowNetwork);
         var paths = new Dictionary<string, (bool Write, bool Directory)>(StringComparer.OrdinalIgnoreCase);
         var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         foreach (var grant in policy.Writable.OrderBy(static grant => grant.Source.Length))
@@ -218,7 +218,7 @@ internal sealed class WindowsAclLease : IDisposable
         public int Owners { get; set; } = 1;
     }
 
-    private sealed class EffectiveRead(SafeAccessTokenHandle token) : IDisposable
+    private sealed class EffectiveRead(SafeAccessTokenHandle token, SecurityIdentifier sid, bool network) : IDisposable
     {
         private const uint TokenQuery = 0x0008;
         private const uint TokenDuplicate = 0x0002;
@@ -236,9 +236,17 @@ internal sealed class WindowsAclLease : IDisposable
         private static readonly SecurityIdentifier OwnerRights = new("S-1-3-4");
         private static readonly SecurityIdentifier PrincipalSelf = new("S-1-5-10");
         private readonly Lock _proofGate = new();
-        private HashSet<byte[]>? _positiveProofs;
+        private Dictionary<byte[], ReadProof>? _positiveProofs;
 
-        public static EffectiveRead? TryCreate(SafeFileHandle process)
+        [Flags]
+        private enum ReadProof : byte
+        {
+            Access = 1,
+            File = 2,
+            Directory = 4,
+        }
+
+        public static EffectiveRead? TryCreate(SafeFileHandle process, SecurityIdentifier sid, bool network)
         {
             if (!WindowsNative.OpenProcessToken(process, TokenQuery | TokenDuplicate, out var primary))
             {
@@ -248,7 +256,7 @@ internal sealed class WindowsAclLease : IDisposable
             using (primary)
             {
                 if (WindowsNative.DuplicateTokenEx(primary, TokenQuery, 0, SecurityImpersonation, ImpersonationToken, out var duplicate))
-                    return new EffectiveRead(duplicate);
+                    return new EffectiveRead(duplicate, sid, network);
                 duplicate.Dispose();
                 return null;
             }
@@ -261,22 +269,30 @@ internal sealed class WindowsAclLease : IDisposable
             token.Dispose();
         }
 
-        public unsafe bool CanRead(nint descriptor, ushort control)
+        public bool IsCompleteProofContext(SecurityIdentifier principal, int access, int inheritedAccess, bool restrict, bool allowNetwork)
+            => principal == sid && access == ReadExecute && inheritedAccess == ReadExecute && restrict && allowNetwork == network;
+
+        public bool HasCompleteProof(nint descriptor, ushort control, bool directory)
+            => HasProof(DescriptorBytes(descriptor, control), directory ? ReadProof.Directory : ReadProof.File);
+
+        public void RememberCompleteProof(nint descriptor, ushort control, bool directory)
+            => RememberProof(DescriptorBytes(descriptor, control), directory ? ReadProof.Directory : ReadProof.File);
+
+        public bool CanRead(nint descriptor, ushort control) => CanRead(descriptor, DescriptorBytes(descriptor, control));
+
+        private static unsafe ReadOnlySpan<byte> DescriptorBytes(nint descriptor, ushort control)
         {
             // Absolute descriptors contain pointers, not a contiguous descriptor image.
             var length = (control & (ushort)ControlFlags.SelfRelative) != 0
                 ? WindowsNative.GetSecurityDescriptorLength(descriptor) : 0;
-            var bytes = length is > 0 and <= int.MaxValue
+            return length is > 0 and <= int.MaxValue
                 ? new ReadOnlySpan<byte>((void*)descriptor, (int)length) : default;
-            return CanRead(descriptor, bytes);
         }
 
         private unsafe bool CanRead(nint descriptor, ReadOnlySpan<byte> bytes)
         {
-            if (!bytes.IsEmpty)
-                lock (_proofGate)
-                    if (_positiveProofs is not null && _positiveProofs.GetAlternateLookup<ReadOnlySpan<byte>>().Contains(bytes))
-                        return true;
+            if (HasProof(bytes, ReadProof.Access))
+                return true;
             var mapping = new WindowsNative.GenericMapping { Read = FileGenericRead, Write = FileGenericWrite, Execute = FileGenericExecute, All = FileAllAccess };
             byte* privileges = stackalloc byte[PrivilegeBufferBytes];
             uint length = PrivilegeBufferBytes;
@@ -285,16 +301,33 @@ internal sealed class WindowsAclLease : IDisposable
                 out var granted, out var allowed);
             if (!succeeded || !allowed || (granted & ReadExecute) != ReadExecute)
                 return false;
-            // Only this context's immutable query-only token and constant mapping share successful proofs.
-            // Native checks run outside the cache lock; alternate insertion copies only a new successful image.
-            if (!bytes.IsEmpty)
-                lock (_proofGate)
-                {
-                    var proofs = _positiveProofs ??= new HashSet<byte[]>(PositiveProofCapacity, DescriptorComparer.Instance);
-                    if (proofs.Count < PositiveProofCapacity)
-                        proofs.GetAlternateLookup<ReadOnlySpan<byte>>().Add(bytes);
-                }
+            RememberProof(bytes, ReadProof.Access);
             return true;
+        }
+
+        private bool HasProof(ReadOnlySpan<byte> bytes, ReadProof proof)
+        {
+            if (bytes.IsEmpty)
+                return false;
+            lock (_proofGate)
+                return _positiveProofs is not null
+                    && _positiveProofs.GetAlternateLookup<ReadOnlySpan<byte>>().TryGetValue(bytes, out var known)
+                    && (known & proof) == proof;
+        }
+
+        private void RememberProof(ReadOnlySpan<byte> bytes, ReadProof proof)
+        {
+            if (bytes.IsEmpty)
+                return;
+            // One bounded image store belongs to this immutable query-only token, SID and network context.
+            // Complete proofs additionally distinguish file authority from directory inheritance authority.
+            lock (_proofGate)
+            {
+                var proofs = _positiveProofs ??= new Dictionary<byte[], ReadProof>(PositiveProofCapacity, DescriptorComparer.Instance);
+                var lookup = proofs.GetAlternateLookup<ReadOnlySpan<byte>>();
+                if (lookup.TryGetValue(bytes, out var known) || proofs.Count < PositiveProofCapacity)
+                    lookup[bytes] = known | proof;
+            }
         }
 
         private sealed class DescriptorComparer : IEqualityComparer<byte[]>, IAlternateEqualityComparer<ReadOnlySpan<byte>, byte[]>
@@ -408,9 +441,20 @@ internal sealed class WindowsAclLease : IDisposable
             if (_inheritance is not null || restrict && ProtectedInheritance.ContainsKey(path))
                 return false;
             using var handle = Open(readOnly: true);
-            var (acl, _, reuseRead) = ReadGrantAcl(handle, sid, directory, effectiveRead);
+            using var descriptor = effectiveRead is null ? null : ReadGrantDescriptor.TryRead(handle);
+            var completeProof = effectiveRead is not null
+                && effectiveRead.IsCompleteProofContext(sid, access, inheritedAccess, restrict, network);
+            if (completeProof && descriptor is { } known
+                && effectiveRead!.HasCompleteProof(known.Pointer, known.Control, directory))
+                return true;
+            var (acl, _, reuseRead) = descriptor is { } fresh
+                ? ReadGrantAcl(fresh, sid, directory, effectiveRead!)
+                : ReadGrantAcl(handle, sid, directory, null);
             if (restrict)
                 DemandNoAmbientGrant(acl, access, network);
+            // Publish only after both effective authority (including directory inheritance) and ambient narrowing succeed.
+            if (completeProof && reuseRead && descriptor is { } proved)
+                effectiveRead!.RememberCompleteProof(proved.Pointer, proved.Control, directory);
             return reuseRead || inheritedAccess == access && HasInheritedGrant(acl, sid, access, directory);
         }
 
@@ -596,36 +640,53 @@ internal sealed class WindowsAclLease : IDisposable
         private (RawAcl Acl, bool Protected, bool ReuseRead) ReadGrantAcl(SafeFileHandle handle,
             SecurityIdentifier sid, bool directory, EffectiveRead? effectiveRead)
         {
-            if (effectiveRead is null)
+            using var descriptor = effectiveRead is null ? null : ReadGrantDescriptor.TryRead(handle);
+            if (descriptor is { } fresh)
+                return ReadGrantAcl(fresh, sid, directory, effectiveRead!);
+            var original = ReadAcl(handle);
+            return (original.Acl, original.Protected, false);
+        }
+
+        private static (RawAcl Acl, bool Protected, bool ReuseRead) ReadGrantAcl(ReadGrantDescriptor descriptor,
+            SecurityIdentifier sid, bool directory, EffectiveRead effectiveRead)
+        {
+            var bytes = new byte[(ushort)Marshal.ReadInt16(descriptor.Dacl, 2)];
+            Marshal.Copy(descriptor.Dacl, bytes, 0, bytes.Length);
+            var acl = new RawAcl(bytes, 0);
+            var protectedDacl = (descriptor.Control & DaclProtected) != 0;
+            // Inspect every object, including protected descendants, and retain the narrowing path for this SID's existing ACEs.
+            var hasPrincipals = descriptor.Owner != 0 && descriptor.Group != 0;
+            var stable = EffectiveRead.IsStableAllowAcl(acl, sid);
+            var reuseRead = hasPrincipals && stable && effectiveRead.CanRead(descriptor.Pointer, descriptor.Control)
+                && (!directory || effectiveRead.CanInheritRead(acl, descriptor.Owner, descriptor.Group, descriptor.Label));
+            return (acl, protectedDacl, reuseRead);
+        }
+
+        private readonly record struct ReadGrantDescriptor(nint Pointer, nint Owner, nint Group, nint Dacl, nint Label,
+            ushort Control) : IDisposable
+        {
+            public static ReadGrantDescriptor? TryRead(SafeFileHandle handle)
             {
-                var original = ReadAcl(handle);
-                return (original.Acl, original.Protected, false);
+                var queryError = WindowsNative.GetSecurityInfo(handle, 1, 0x17, out var owner, out var group,
+                    out var dacl, out var label, out var descriptor);
+                if (queryError != 0)
+                    return null;
+                try
+                {
+                    if (!WindowsNative.GetSecurityDescriptorControl(descriptor, out var control, out _))
+                        throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot read the AppContainer filesystem grant inheritance.");
+                    if (dacl == 0)
+                        throw new NotSupportedException("An AppContainer filesystem grant requires an explicit ACL.");
+                    return new ReadGrantDescriptor(descriptor, owner, group, dacl, label, control);
+                }
+                catch
+                {
+                    WindowsNative.LocalFree(descriptor);
+                    throw;
+                }
             }
-            var queryError = WindowsNative.GetSecurityInfo(handle, 1, 0x17, out var owner, out var group,
-                out var dacl, out var label, out var descriptor);
-            if (queryError != 0)
-            {
-                var original = ReadAcl(handle);
-                return (original.Acl, original.Protected, false);
-            }
-            try
-            {
-                if (!WindowsNative.GetSecurityDescriptorControl(descriptor, out var control, out _))
-                    throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot read the AppContainer filesystem grant inheritance.");
-                if (dacl == 0)
-                    throw new NotSupportedException("An AppContainer filesystem grant requires an explicit ACL.");
-                var bytes = new byte[(ushort)Marshal.ReadInt16(dacl, 2)];
-                Marshal.Copy(dacl, bytes, 0, bytes.Length);
-                var acl = new RawAcl(bytes, 0);
-                var protectedDacl = (control & DaclProtected) != 0;
-                // Inspect every object, including protected descendants, and retain the narrowing path for this SID's existing ACEs.
-                var hasPrincipals = owner != 0 && group != 0;
-                var stable = EffectiveRead.IsStableAllowAcl(acl, sid);
-                var reuseRead = hasPrincipals && stable && effectiveRead.CanRead(descriptor, control)
-                    && (!directory || effectiveRead.CanInheritRead(acl, owner, group, label));
-                return (acl, protectedDacl, reuseRead);
-            }
-            finally { WindowsNative.LocalFree(descriptor); }
+
+            public void Dispose() => WindowsNative.LocalFree(Pointer);
         }
 
         private static (RawAcl Acl, bool Protected) ReadAcl(SafeFileHandle handle)

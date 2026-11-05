@@ -148,6 +148,60 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
 
     [Fact]
     [Trait("Category", "SandboxNative")]
+    public async Task ReadOnlyFileAndDirectory_WithSameNonInheritableAcl_AllowFutureDescendantsWithoutWrites()
+    {
+        if (!OperatingSystem.IsWindows())
+            Assert.Skip("This consumer requires Windows AppContainer and native filesystem access checks.");
+        var working = Directory.CreateDirectory(Path.Combine(_root, "working")).FullName;
+        var readable = Directory.CreateDirectory(Path.Combine(_root, "readonly"));
+        var input = Path.Combine(_root, "f");
+        File.WriteAllText(input, "initial-read");
+        var acl = readable.GetAccessControl(AccessControlSections.Access);
+        acl.SetAccessRuleProtection(isProtected: true, preserveInheritance: true);
+        acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier("S-1-15-2-2"), FileSystemRights.ReadAndExecute,
+            InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
+        readable.SetAccessControl(acl);
+        var fileAcl = new FileSecurity();
+        fileAcl.SetSecurityDescriptorBinaryForm(acl.GetSecurityDescriptorBinaryForm(), AccessControlSections.Access);
+        new FileInfo(input).SetAccessControl(fileAcl);
+        var originalDirectoryAcl = ReadDacl(readable.FullName);
+        var originalFileAcl = ReadDacl(input);
+        Assert.Equal(originalFileAcl, originalDirectoryAcl);
+        string lateFile;
+        await using (var consumer = await SandboxedProcess.StartAsync(new SandboxProcessOptions
+        {
+            Executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
+            WorkingDirectory = working,
+            ReadOnlyPaths = [input, readable.FullName],
+            Arguments = ["/D", "/Q", "/C",
+                @"set /p gate=&type ..\f&type ..\readonly\new\late.txt&(echo tampered>>..\f) 2>nul&(echo tampered>>..\readonly\new\late.txt) 2>nul&exit /b 0"],
+        }, TestContext.Current.CancellationToken))
+        {
+            var output = new StreamReader(consumer.StandardOutput).ReadToEndAsync(TestContext.Current.CancellationToken);
+            var error = consumer.StandardError.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken);
+            var lateDirectory = Directory.CreateDirectory(Path.Combine(readable.FullName, "new")).FullName;
+            lateFile = Path.Combine(lateDirectory, "late.txt");
+            File.WriteAllText(lateFile, "late-read");
+            await consumer.StandardInput.WriteAsync("continue\n"u8.ToArray(), TestContext.Current.CancellationToken);
+            await consumer.StandardInput.DisposeAsync();
+            Assert.Equal(0, await consumer.WaitForExitAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(Deadline, TestContext.Current.CancellationToken));
+            var stdout = await output;
+            await error;
+            Assert.Contains("initial-read", stdout);
+            Assert.Contains("late-read", stdout);
+            Assert.Equal("initial-read", File.ReadAllText(input));
+            Assert.Equal("late-read", File.ReadAllText(lateFile));
+        }
+        AssertDaclRestored(originalFileAcl, input);
+        AssertDaclRestored(originalDirectoryAcl, readable.FullName);
+        var hostAfter = Path.Combine(Path.GetDirectoryName(lateFile)!, "host-after.txt");
+        File.WriteAllText(hostAfter, "host-after");
+        Assert.Equal(ReadDacl(hostAfter), ReadDacl(lateFile));
+    }
+
+    [Fact]
+    [Trait("Category", "SandboxNative")]
     public async Task ProtectedSettings_WithAmbientNetworkCapabilityWrite_RefusesLaunchBeforeExecution()
     {
         if (!OperatingSystem.IsWindows())
