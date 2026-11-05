@@ -67,34 +67,48 @@ internal sealed class WindowsAclLease : IDisposable
 
     public void Apply(SandboxPolicy policy, SafeFileHandle process, CancellationToken cancellationToken)
     {
-        using var effectiveRead = EffectiveRead.TryCreate(process);
-        var paths = new Dictionary<string, (bool Write, bool Directory)>(StringComparer.OrdinalIgnoreCase);
-        var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        foreach (var grant in policy.Writable.OrderBy(static grant => grant.Source.Length))
-            if (!SandboxPolicy.Contains(windows, grant.Source))
-                AddTree(paths, grant.Source, grant.IsDirectory, true, cancellationToken);
-        AddReadableTrees(paths, policy.Readable, windows, cancellationToken);
-        foreach (var denied in policy.Denied)
+        var timing = WindowsIoStageTiming.BeginApply();
+        try
         {
-            if (File.Exists(denied) || Directory.Exists(denied))
-                AddTree(paths, denied, Directory.Exists(denied), false, cancellationToken);
-            else if (policy.Writable.Any(write => SandboxPolicy.Contains(write.Source, denied)))
-                throw new NotSupportedException("A denied path within a writable grant must exist before launch.");
-        }
-        var checkedAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in paths.Keys)
-            for (var parent = Path.GetDirectoryName(path); parent is not null; parent = Path.GetDirectoryName(parent))
+            using var effectiveRead = EffectiveRead.TryCreate(process);
+            timing?.Mark(WindowsIoStageTiming.Phase.CollectionStart);
+            var paths = new Dictionary<string, (bool Write, bool Directory)>(StringComparer.OrdinalIgnoreCase);
+            var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            foreach (var grant in policy.Writable.OrderBy(static grant => grant.Source.Length))
+                if (!SandboxPolicy.Contains(windows, grant.Source))
+                    AddTree(paths, grant.Source, grant.IsDirectory, true, cancellationToken, timing);
+            AddReadableTrees(paths, policy.Readable, windows, cancellationToken, timing);
+            foreach (var denied in policy.Denied)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (paths.ContainsKey(parent) || !checkedAncestors.Add(parent))
-                    break;
-                Entry.DemandAmbientAncestorGrant(parent, policy.AllowNetwork);
+                if (File.Exists(denied) || Directory.Exists(denied))
+                    AddTree(paths, denied, Directory.Exists(denied), false, cancellationToken, timing);
+                else if (policy.Writable.Any(write => SandboxPolicy.Contains(write.Source, denied)))
+                    throw new NotSupportedException("A denied path within a writable grant must exist before launch.");
             }
-        ApplyGrants(policy, paths, effectiveRead, cancellationToken);
+            timing?.Mark(WindowsIoStageTiming.Phase.CollectionComplete, paths.Count);
+            timing?.Mark(WindowsIoStageTiming.Phase.AncestorsStart);
+            var checkedAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var path in paths.Keys)
+                for (var parent = Path.GetDirectoryName(path); parent is not null; parent = Path.GetDirectoryName(parent))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (paths.ContainsKey(parent) || !checkedAncestors.Add(parent))
+                        break;
+                    Entry.DemandAmbientAncestorGrant(parent, policy.AllowNetwork);
+                }
+            timing?.Mark(WindowsIoStageTiming.Phase.AncestorsComplete);
+            timing?.Mark(WindowsIoStageTiming.Phase.GrantsStart);
+            ApplyGrants(policy, paths, effectiveRead, cancellationToken, timing);
+            timing?.Mark(WindowsIoStageTiming.Phase.GrantsComplete);
+        }
+        finally
+        {
+            timing?.Mark(WindowsIoStageTiming.Phase.ApplyFinal);
+        }
     }
 
     private void ApplyGrants(SandboxPolicy policy, Dictionary<string, (bool Write, bool Directory)> paths,
-        EffectiveRead? effectiveRead, CancellationToken cancellationToken)
+        EffectiveRead? effectiveRead, CancellationToken cancellationToken, WindowsIoStageTiming.Apply? timing)
     {
         // All tree collection joins its directory workers before proof workers start.
         var ordered = paths.OrderBy(static entry => entry.Key.Length).ToArray();
@@ -114,12 +128,17 @@ internal sealed class WindowsAclLease : IDisposable
             var mask = denyDelete ? inheritedMask & ~Delete : inheritedMask;
             _entries[offset + index].Grant(_sid, mask, inheritedMask, access.Directory, denyWrite || denyDelete,
                 policy.AllowNetwork, denyWrite ? effectiveRead : null, cancellationToken);
+            timing?.Granted();
         };
         WindowsReadProofCoordinator? proofs = null;
         Func<int, bool>? probe = null;
         Exception? applyFailure = null;
-        bool Probe(int index) => _entries[offset + index].CanReuseReadGrant(_sid, ReadExecute, ReadExecute,
-            ordered[index].Value.Directory, true, policy.AllowNetwork, effectiveRead);
+        bool Probe(int index)
+        {
+            timing?.Mark(WindowsIoStageTiming.Phase.FirstProof);
+            return _entries[offset + index].CanReuseReadGrant(_sid, ReadExecute, ReadExecute,
+                ordered[index].Value.Directory, true, policy.AllowNetwork, effectiveRead);
+        }
         try
         {
             // The caller holds the gate until every pure probe finishes; mutations keep their stable serial order.
@@ -178,7 +197,8 @@ internal sealed class WindowsAclLease : IDisposable
     }
 
     internal static void AddReadableTrees(Dictionary<string, (bool Write, bool Directory)> paths,
-        IEnumerable<SandboxPath> roots, string windows, CancellationToken cancellationToken)
+        IEnumerable<SandboxPath> roots, string windows, CancellationToken cancellationToken,
+        WindowsIoStageTiming.Apply? timing = null)
     {
         var group = new List<SandboxPath>();
         foreach (var grant in roots.OrderBy(static grant => grant.Source.Length))
@@ -203,7 +223,7 @@ internal sealed class WindowsAclLease : IDisposable
             if (group.Count == 1)
             {
                 var grant = group[0];
-                AddTree(paths, grant.Source, grant.IsDirectory, false, cancellationToken);
+                AddTree(paths, grant.Source, grant.IsDirectory, false, cancellationToken, timing);
                 group.Clear();
                 return;
             }
@@ -219,7 +239,7 @@ internal sealed class WindowsAclLease : IDisposable
                 requests.Add(new WindowsDirectoryCollector.RootRequest(grant.Source,
                     (path, directory) => result.Add((path, directory))));
             }
-            WindowsDirectoryCollector.Collect(CollectionsMarshal.AsSpan(requests), cancellationToken);
+            WindowsDirectoryCollector.Collect(CollectionsMarshal.AsSpan(requests), cancellationToken, timing);
             // Callbacks buffer independent trees; only the caller merges roots in their original stable order.
             for (var index = 0; index < group.Count; index++)
             {
@@ -238,7 +258,7 @@ internal sealed class WindowsAclLease : IDisposable
     }
 
     private static void AddTree(Dictionary<string, (bool Write, bool Directory)> paths, string root, bool directory, bool write,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, WindowsIoStageTiming.Apply? timing = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         // Earlier trees already include every descendant with the same access.
@@ -248,7 +268,7 @@ internal sealed class WindowsAclLease : IDisposable
         paths[root] = (write, directory);
         if (directory)
             WindowsDirectoryCollector.Collect(root, (path, isDirectory) => paths[path] = (write, isDirectory),
-                cancellationToken);
+                cancellationToken, timing);
     }
 
     public void Dispose()

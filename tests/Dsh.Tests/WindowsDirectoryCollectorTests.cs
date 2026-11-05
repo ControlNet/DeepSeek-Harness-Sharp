@@ -432,7 +432,7 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         const int threadDeadlineSeconds = 5;
         var deadline = TimeSpan.FromSeconds(threadDeadlineSeconds);
         var queueType = typeof(WindowsDirectoryCollector).GetNestedType("WorkQueue", BindingFlags.NonPublic)!;
-        var queue = Activator.CreateInstance(queueType, CancellationToken.None)!;
+        var queue = Activator.CreateInstance(queueType, [CancellationToken.None, null])!;
         var gate = queueType.GetField("_gate", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(queue)!;
         var run = queueType.GetMethod("Run")!.CreateDelegate<Action>(queue);
         var seal = queueType.GetMethod("Seal")!.CreateDelegate<Action>(queue);
