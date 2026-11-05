@@ -216,21 +216,23 @@ internal static class Program
         return 0;
     }
 
-    private static bool HasFullTimestamp(TraceTimestamp? time) =>
-        time.HasValue && time.Value.HasValue && !time.Value.IsPartial;
+    private static bool SameKnownRelativeTime(TraceTimestamp? left, TraceTimestamp? right) =>
+        left.HasValue && right.HasValue && left.Value.HasValue && right.Value.HasValue &&
+        left.Value.RelativeTimestamp.Equals(right.Value.RelativeTimestamp);
+
+    private static bool SameExitTime(TraceTimestamp? left, TraceTimestamp? right) =>
+        left.HasValue == right.HasValue && (!left.HasValue || SameKnownRelativeTime(left, right));
 
     private static bool SameProcess(IProcess left, IProcess right) =>
         left.Id == right.Id && (ReferenceEquals(left, right) ||
-            (HasFullTimestamp(left.CreateTime) && HasFullTimestamp(right.CreateTime) &&
-             Nullable.Equals(left.CreateTime, right.CreateTime) &&
-             Nullable.Equals(left.ExitTime, right.ExitTime)));
+            (SameKnownRelativeTime(left.CreateTime, right.CreateTime) &&
+             SameExitTime(left.ExitTime, right.ExitTime)));
 
     private static bool SameThread(IThread left, IThread right) =>
         left.Id == right.Id && left.ProcessId == right.ProcessId &&
         (ReferenceEquals(left, right) ||
-         (HasFullTimestamp(left.CreateTime) && HasFullTimestamp(right.CreateTime) &&
-          Nullable.Equals(left.CreateTime, right.CreateTime) &&
-          Nullable.Equals(left.ExitTime, right.ExitTime)));
+         (SameKnownRelativeTime(left.CreateTime, right.CreateTime) &&
+          SameExitTime(left.ExitTime, right.ExitTime)));
 
     private static bool WithinLifetime(TraceTimestamp timestamp, TraceTimestamp? create, TraceTimestamp? exit)
     {
@@ -380,11 +382,7 @@ internal static class Program
                 return;
             }
             if (start.IsPartial || stop.IsPartial)
-            {
                 PartialPairs++;
-                DurationUnknown++;
-                return;
-            }
             Paired++;
             decimal seconds = (stop.RelativeTimestamp - start.RelativeTimestamp).TotalSeconds;
             DurationSumSeconds += seconds;
