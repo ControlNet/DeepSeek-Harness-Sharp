@@ -44,11 +44,11 @@ internal static class WindowsDirectoryCollector
     /// Each root's entries are read and published on the caller before any of its descendants is opened.
     /// At most two caller root anchors and 511 additional native handles are open together.
     /// Ordinary absolute-name opens reserve one descendant handle, peaking at 257 handles including root anchors.
-    /// Input names and the root's opened NT name plus relative suffix must both fit the native counted-name limit.
+    /// The captured resolved NT root name plus relative suffix must fit the native counted-name limit.
     /// Longer names use root-relative opens with two or three reserved handles.
     /// Segmented opens can reach the overall limit of 513 handles.
     /// Every native query buffer is 16 KiB, with caller and worker buffers together bounded by 4 MiB.
-    /// Absolute names re-resolve the discovered path; overlong names instead resolve from the retained root anchor.
+    /// Absolute names re-resolve the captured NT path, not later changes to the logical root alias or device mapping.
     /// All descendant and root self-open handles close before their reservation is returned; queued directories own none.
     /// Paths, entry topology and discovery/publication queues cost O(entries).
     /// All workers join before descendant publication; callbacks retain native entry and FIFO directory order.
@@ -93,6 +93,7 @@ internal static class WindowsDirectoryCollector
                     slot = work.WaitForCompletedRoot(active);
                     active[slot]!.Handle!.Dispose();
                     active[slot]!.Handle = null;
+                    active[slot]!.OpenedNativePath = null;
                 }
                 work.ThrowIfStopped();
                 cancellationToken.ThrowIfCancellationRequested();
@@ -102,15 +103,16 @@ internal static class WindowsDirectoryCollector
                 collected.Add(root);
                 active[slot] = root;
                 var path = root.Directory.Path;
-                var nativeRoot = root.NativePathStart == 2 ? $@"\\?\UNC\{path.AsSpan(2)}"
+                var devicePath = path.StartsWith(@"\\?\", StringComparison.Ordinal) || path.StartsWith(@"\\.\", StringComparison.Ordinal);
+                var nativeRoot = path.StartsWith(@"\\", StringComparison.Ordinal) && !devicePath ? $@"\\?\UNC\{path.AsSpan(2)}"
                     : path.StartsWith(@"\\.\", StringComparison.Ordinal) ? $@"\\?\{path.AsSpan(4)}" : path;
                 root.Handle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics, 0);
                 if (root.Handle.IsInvalid)
                     throw DirectoryError(Marshal.GetLastPInvokeError(), root.Directory.Path, openingDirectory: true);
                 CollectDirectory(root.Handle, root.Directory, buffer, cancellationToken, work);
+                if (root.Directory.Entries.Exists(static entry => entry.Directory is not null))
+                    root.OpenedNativePath = GetOpenedNativePath(root);
                 PublishDirectory(root.Directory, root.Pending, root.Accept, cancellationToken, work);
-                if (root.Pending.Count != 0)
-                    root.OpenedNativeRelativeStart = GetOpenedNativeRelativeStart(root);
                 work.Admit(root);
                 if (root.Pending.Count != 0 && workers is null)
                 {
@@ -146,7 +148,10 @@ internal static class WindowsDirectoryCollector
                     }
                 }
             foreach (var root in collected)
+            {
                 root.Handle?.Dispose();
+                root.OpenedNativePath = null;
+            }
             if (buffer != 0)
                 Marshal.FreeHGlobal(buffer);
         }
@@ -220,17 +225,12 @@ internal static class WindowsDirectoryCollector
             var path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(request.Path));
             Directory = new DirectoryWork(path, this);
             RelativeStart = path.Length + (Path.EndsInDirectorySeparator(path) ? 0 : 1);
-            var devicePath = path.StartsWith(@"\\?\", StringComparison.Ordinal) || path.StartsWith(@"\\.\", StringComparison.Ordinal);
-            NativePathStart = devicePath ? 4 : path.StartsWith(@"\\", StringComparison.Ordinal) ? 2 : 0;
-            NativePrefix = NativePathStart == 2 ? @"\??\UNC\" : @"\??\";
             Accept = request.Accept;
         }
 
         public DirectoryWork Directory { get; }
         public int RelativeStart { get; }
-        public int NativePathStart { get; }
-        public string NativePrefix { get; }
-        public int OpenedNativeRelativeStart { get; set; }
+        public string? OpenedNativePath { get; set; }
         public Action<string, bool> Accept { get; }
         public Queue<DirectoryWork> Pending { get; } = new();
         public SafeFileHandle? Handle { get; set; }
@@ -329,9 +329,8 @@ internal static class WindowsDirectoryCollector
         {
             var root = directory.Root;
             var relativePath = directory.Path.AsSpan(root.RelativeStart);
-            var absoluteNameLength = directory.Path.Length - root.NativePathStart + root.NativePrefix.Length;
-            var absolute = absoluteNameLength <= MaximumNativeNameLength
-                && relativePath.Length <= MaximumNativeNameLength - root.OpenedNativeRelativeStart;
+            var nativeRoot = root.OpenedNativePath;
+            var absolute = nativeRoot is not null && relativePath.Length <= MaximumNativeNameLength - nativeRoot.Length;
             var handleCount = absolute ? 1 : relativePath.Length <= MaximumNativeNameLength ? 2 : 3;
             RentHandles(handleCount);
             try
@@ -340,7 +339,7 @@ internal static class WindowsDirectoryCollector
                 CancellationToken.ThrowIfCancellationRequested();
                 if (absolute)
                 {
-                    using var handle = OpenAbsoluteDirectory(directory, absoluteNameLength);
+                    using var handle = OpenAbsoluteDirectory(nativeRoot!, relativePath, directory.Path);
                     CollectDirectory(handle, directory, buffer, CancellationToken, this);
                 }
                 else
@@ -474,10 +473,10 @@ internal static class WindowsDirectoryCollector
         }
     }
 
-    private static unsafe int GetOpenedNativeRelativeStart(RootWork root)
+    private static unsafe string? GetOpenedNativePath(RootWork root)
     {
         const uint openedNtName = 0x8 | 0x2; // FILE_NAME_OPENED | VOLUME_NAME_NT; do not normalize SMB ancestors.
-        // This root-admission length is not a namespace snapshot or an identity/permission proof.
+        // Capture the resolved NT name, not a namespace snapshot or an identity/permission proof.
         const int capacity = MaximumNativeNameLength + 1;
         var buffer = ArrayPool<char>.Shared.Rent(capacity);
         try
@@ -489,8 +488,9 @@ internal static class WindowsDirectoryCollector
                     throw DirectoryError(Marshal.GetLastPInvokeError(), root.Directory.Path);
                 // A required size beyond this buffer already rules out every absolute descendant.
                 if (length >= capacity)
-                    return capacity;
-                return checked((int)length) + (text[(int)length - 1] == '\\' ? 0 : 1);
+                    return null;
+                var name = new ReadOnlySpan<char>(text, checked((int)length));
+                return name[^1] == '\\' ? new string(name) : $"{name}\\";
             }
         }
         finally
@@ -499,18 +499,18 @@ internal static class WindowsDirectoryCollector
         }
     }
 
-    private static SafeFileHandle OpenAbsoluteDirectory(DirectoryWork directory, int length)
+    private static SafeFileHandle OpenAbsoluteDirectory(ReadOnlySpan<char> nativeRoot, ReadOnlySpan<char> relativePath, string path)
     {
         const int stackCharacters = 512;
+        var length = nativeRoot.Length + relativePath.Length;
         char[]? rented = null;
         Span<char> name = length <= stackCharacters ? stackalloc char[length]
             : (rented = ArrayPool<char>.Shared.Rent(length)).AsSpan(0, length);
         try
         {
-            var root = directory.Root;
-            root.NativePrefix.AsSpan().CopyTo(name);
-            directory.Path.AsSpan(root.NativePathStart).CopyTo(name[root.NativePrefix.Length..]);
-            return OpenNamedDirectory(null, name, directory.Path);
+            nativeRoot.CopyTo(name);
+            relativePath.CopyTo(name[nativeRoot.Length..]);
+            return OpenNamedDirectory(null, name, path);
         }
         finally
         {
