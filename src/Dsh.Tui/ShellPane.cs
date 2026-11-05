@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 using Dsh.Core;
 
@@ -23,7 +24,7 @@ internal sealed class ShellPane : ITuiPane
     private readonly object _screenGate = new();
     private readonly CancellationTokenSource _pump = new();
     private readonly Task _pumpTask;
-    private readonly Channel<byte[]> _writes = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly Channel<(byte[] Bytes, bool IsText)> _writes = Channel.CreateUnbounded<(byte[], bool)>(new UnboundedChannelOptions { SingleReader = true });
     private readonly Task _writerTask;
     private readonly byte[] _readBuffer = new byte[8192];
     private int _scrollOffset;
@@ -44,6 +45,18 @@ internal sealed class ShellPane : ITuiPane
     private int _readHResult;
     private int _snapshots;
     private int _wakesCompleted;
+    private long _textEnteredTick;
+    private long _textPublishTick;
+    private long _textAcceptedTick;
+    private long _textDequeuedTick;
+    private long _textBackingCallTick;
+    private long _textBackingDoneTick;
+    private long _textBackingFailedTick;
+    private int _textWriteOrdinal;
+    private long _lastReadTick;
+    private long _lastFeedTick;
+    private long _lastWakeQueuedTick;
+    private long _lastWakeDoneTick;
     private string _status = "";
     private bool _exited;
     private bool _disposed;
@@ -160,6 +173,7 @@ internal sealed class ShellPane : ITuiPane
 
     public void HandleText(string text)
     {
+        Volatile.Write(ref _textEnteredTick, Stopwatch.GetTimestamp());
         Interlocked.Increment(ref _textCalls);
         if (_disposed || _exited || _backing is null || text.Length == 0)
         {
@@ -168,7 +182,7 @@ internal sealed class ShellPane : ITuiPane
         }
         var bytes = System.Text.Encoding.UTF8.GetBytes(text);
         _scrollOffset = 0;
-        EnqueueWrite(bytes);
+        EnqueueWrite(bytes, isText: true);
     }
 
     /** 窗格尺寸变化时同步到底层 PTY, 终端才能按真实宽高折行。 */
@@ -201,6 +215,9 @@ internal sealed class ShellPane : ITuiPane
     internal string IoDiagnostics
         => $"pane={Id},backing={(_backing is null ? 0 : 1)},disposed={(_disposed ? 1 : 0)},exited={(_exited ? 1 : 0)},backingExited={(_backing?.Exited == true ? 1 : 0)},pump={(int)_pumpTask.Status},writer={(int)_writerTask.Status},text={Volatile.Read(ref _textCalls)},textRejected={Volatile.Read(ref _textRejected)},queued={Volatile.Read(ref _writesQueued)},queueRejected={Volatile.Read(ref _writesRejected)},started={Volatile.Read(ref _writesStarted)},completed={Volatile.Read(ref _writesCompleted)},writtenBytes={Volatile.Read(ref _bytesWritten)},writeHr={Volatile.Read(ref _writeHResult)},replies={Volatile.Read(ref _replies)},cursorReplies={Volatile.Read(ref _cursorReplies)},readBytes={Volatile.Read(ref _bytesRead)},feeds={Volatile.Read(ref _feeds)},readHr={Volatile.Read(ref _readHResult)},snapshots={Volatile.Read(ref _snapshots)},wakePending={Volatile.Read(ref _wakePending)},wakesCompleted={Volatile.Read(ref _wakesCompleted)}";
 
+    internal string IoTimingDiagnostics
+        => $"textEnteredTick={Volatile.Read(ref _textEnteredTick)},textPublishTick={Volatile.Read(ref _textPublishTick)},textAcceptedTick={Volatile.Read(ref _textAcceptedTick)},textDequeuedTick={Volatile.Read(ref _textDequeuedTick)},textWriteOrdinal={Volatile.Read(ref _textWriteOrdinal)},textBackingCallTick={Volatile.Read(ref _textBackingCallTick)},textBackingDoneTick={Volatile.Read(ref _textBackingDoneTick)},textBackingFailedTick={Volatile.Read(ref _textBackingFailedTick)},lastPaneReadTick={Volatile.Read(ref _lastReadTick)},lastPaneFeedTick={Volatile.Read(ref _lastFeedTick)},lastWakeQueuedTick={Volatile.Read(ref _lastWakeQueuedTick)},lastWakeDoneTick={Volatile.Read(ref _lastWakeDoneTick)}";
+
     /** 滚回+当前屏的纯文本快照(去行尾空白; 屏幕末尾的全空行也去掉, 避免快照被空屏淹没)。 */
     public IReadOnlyList<string> SnapshotLines()
     {
@@ -232,30 +249,48 @@ internal sealed class ShellPane : ITuiPane
         return new string(chars).TrimEnd();
     }
 
-    private void EnqueueWrite(byte[] bytes)
+    private void EnqueueWrite(byte[] bytes, bool isText = false)
     {
-        if (_writes.Writer.TryWrite(bytes))
+        // Publication is bracketed because the reader can run before TryWrite returns.
+        if (isText)
+            Volatile.Write(ref _textPublishTick, Stopwatch.GetTimestamp());
+        if (_writes.Writer.TryWrite((bytes, isText)))
+        {
+            if (isText)
+                Volatile.Write(ref _textAcceptedTick, Stopwatch.GetTimestamp());
             Interlocked.Increment(ref _writesQueued);
+        }
         else
             Interlocked.Increment(ref _writesRejected);
     }
 
     private async Task WriteLoopAsync()
     {
-        await foreach (var bytes in _writes.Reader.ReadAllAsync(_pump.Token))
+        await foreach (var (bytes, isText) in _writes.Reader.ReadAllAsync(_pump.Token))
         {
+            if (isText)
+                Volatile.Write(ref _textDequeuedTick, Stopwatch.GetTimestamp());
             if (_backing is null)
                 continue;
             try
             {
-                Interlocked.Increment(ref _writesStarted);
+                var ordinal = Interlocked.Increment(ref _writesStarted);
+                if (isText)
+                {
+                    Volatile.Write(ref _textWriteOrdinal, ordinal);
+                    Volatile.Write(ref _textBackingCallTick, Stopwatch.GetTimestamp());
+                }
                 await _backing.WriteAsync(bytes, _pump.Token);
+                if (isText)
+                    Volatile.Write(ref _textBackingDoneTick, Stopwatch.GetTimestamp());
                 Interlocked.Add(ref _bytesWritten, bytes.Length);
                 Interlocked.Increment(ref _writesCompleted);
             }
             catch (Exception error)
             {
                 Volatile.Write(ref _writeHResult, error.HResult);
+                if (isText)
+                    Volatile.Write(ref _textBackingFailedTick, Stopwatch.GetTimestamp());
                 // 写入失败(会话退出)由读取泵统一标定 Exited
                 return;
             }
@@ -304,11 +339,13 @@ internal sealed class ShellPane : ITuiPane
                 }
                 break;
             }
+            Volatile.Write(ref _lastReadTick, Stopwatch.GetTimestamp());
             _bytesRead += read;
             StatusText = $"终端读取 {_bytesRead} 字节 - {_backing.Command}";
             lock (_screenGate)
             {
                 _screen.Feed(_readBuffer.AsSpan(0, read));
+                Volatile.Write(ref _lastFeedTick, Stopwatch.GetTimestamp());
                 Interlocked.Increment(ref _feeds);
             }
             Invalidate();
@@ -341,11 +378,13 @@ internal sealed class ShellPane : ITuiPane
     {
         if (Interlocked.Exchange(ref _wakePending, 1) == 1)
             return;
+        Volatile.Write(ref _lastWakeQueuedTick, Stopwatch.GetTimestamp());
         _window.QueueAction(() =>
         {
             Interlocked.Exchange(ref _wakePending, 0);
             Interlocked.Increment(ref _wakesCompleted);
             _window.Invalidate();
+            Volatile.Write(ref _lastWakeDoneTick, Stopwatch.GetTimestamp());
         });
     }
 }

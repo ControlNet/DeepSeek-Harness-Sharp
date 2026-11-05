@@ -1,9 +1,9 @@
-name: Windows PTY numeric original quick probe 87
+name: Windows PTY lifecycle timing original quick probe 90
 
 on:
   push:
     branches:
-      - fix/pty-command-marker87
+      - probe/pty-timing90
 
 permissions:
   contents: read
@@ -112,7 +112,7 @@ jobs:
           retention-days: 7
 
   original-windows-quick:
-    name: Original Windows quick with numeric terminal input observation
+    name: Original Windows quick with numeric terminal lifecycle timing
     needs: bridge-dryioc-feed
     uses: ./.github/workflows/ci-tests.yml
     with:

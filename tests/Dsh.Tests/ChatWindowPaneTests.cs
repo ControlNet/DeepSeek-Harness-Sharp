@@ -637,6 +637,7 @@ public sealed class ChatWindowPaneTests : IDisposable
         }, cancellationToken: TestContext.Current.CancellationToken);
         try
         {
+            session.EnableIoObservation();
             var layout = LayoutEngine.Calculate(120, 40);
             _ = DrawFrameReturningGrid(chat, layout);
             PressCtrl(chat, ConsoleKey.X);
@@ -654,22 +655,65 @@ public sealed class ChatWindowPaneTests : IDisposable
             Assert.DoesNotContain(panes, entry => entry.PtyId == session.Id.Value);
 
             // A computed marker confirms that the shell executed the submitted command.
-            var promptText = await WaitForPaneTextAsync(chat, paneId, HasPrompt);
+            long firstPromptTick = 0;
+            bool ObservePrompt(string text)
+            {
+                var matched = HasPrompt(text);
+                if (matched && firstPromptTick == 0)
+                    firstPromptTick = Stopwatch.GetTimestamp();
+                return matched;
+            }
+            var promptWaitStartedTick = Stopwatch.GetTimestamp();
+            var promptText = await WaitForPaneTextAsync(chat, paneId, ObservePrompt);
+            var promptWaitEndedTick = Stopwatch.GetTimestamp();
             if (!HasPrompt(promptText))
                 Assert.Fail(DescribeMissingPrompt(session, promptText));
-            var promptIo = chat.ShellPaneIoDiagnostics(paneId);
+            var promptIo = "";
+            var promptSessionIo = "";
+            Exception? diagnosticError = null;
+            try
+            {
+                promptIo = chat.ShellPaneIoDiagnostics(paneId);
+                promptSessionIo = session.IoDiagnostics;
+            }
+            catch (Exception error)
+            {
+                diagnosticError = error;
+            }
             var input = Path.GetFileNameWithoutExtension(shell).Equals("cmd", StringComparison.OrdinalIgnoreCase)
                 ? "cmd /v:on /c \"set /a m=6*7 & echo STAGE1-!m!\"\r"
                 : "echo STAGE1-$((6*7))\r";
             var commandTime = Stopwatch.StartNew();
+            var sendBeforeTick = Stopwatch.GetTimestamp();
             chat.ApplyPaneInput("text", paneId, input);
-            var paneText = await WaitForPaneTextAsync(chat, paneId, text => text.Contains(expected));
-            var hostText = session.SnapshotText();
-            var inputText = input.TrimEnd('\r');
-            var conPty = typeof(PtySession).GetField("_conPty", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.GetValue(session);
-            await Console.Error.WriteLineAsync(
-                $"PTY_INPUT_DIAGNOSTIC elapsedMs={commandTime.ElapsedMilliseconds},conPty={(conPty is null ? 0 : 1)},status={(int)session.Status},exitKnown={(session.ExitCode is not null ? 1 : 0)},exit={session.ExitCode.GetValueOrDefault()},hostChars={hostText.Length},paneChars={paneText.Length},hostPrompt={(HasPrompt(hostText) ? 1 : 0)},panePrompt={(HasPrompt(paneText) ? 1 : 0)},hostMarker={(hostText.Contains(expected, StringComparison.Ordinal) ? 1 : 0)},hostInput={(hostText.Contains(inputText, StringComparison.Ordinal) ? 1 : 0)},paneInput={(paneText.Contains(inputText, StringComparison.Ordinal) ? 1 : 0)};promptIo=[{promptIo}];finalIo=[{chat.ShellPaneIoDiagnostics(paneId)}];poolThreads={ThreadPool.ThreadCount},poolPending={ThreadPool.PendingWorkItemCount},poolCompleted={ThreadPool.CompletedWorkItemCount}");
+            var sendAfterTick = Stopwatch.GetTimestamp();
+            long firstMarkerTick = 0;
+            bool ObserveMarker(string text)
+            {
+                var matched = text.Contains(expected);
+                if (matched && firstMarkerTick == 0)
+                    firstMarkerTick = Stopwatch.GetTimestamp();
+                return matched;
+            }
+            var commandWaitStartedTick = Stopwatch.GetTimestamp();
+            var paneText = await WaitForPaneTextAsync(chat, paneId, ObserveMarker);
+            var commandWaitEndedTick = Stopwatch.GetTimestamp();
+            var commandElapsedMs = commandTime.ElapsedMilliseconds;
+            try
+            {
+                var hostText = session.SnapshotText();
+                var inputText = input.TrimEnd('\r');
+                var conPty = typeof(PtySession).GetField("_conPty", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.GetValue(session);
+                await Console.Error.WriteLineAsync(
+                    $"PTY_INPUT_DIAGNOSTIC frequency={Stopwatch.Frequency},promptWaitStartedTick={promptWaitStartedTick},firstPromptTick={firstPromptTick},promptWaitEndedTick={promptWaitEndedTick},sendBeforeTick={sendBeforeTick},sendAfterTick={sendAfterTick},commandWaitStartedTick={commandWaitStartedTick},firstMarkerTick={firstMarkerTick},commandWaitEndedTick={commandWaitEndedTick},elapsedMs={commandElapsedMs},childPid={session.ProcessId.GetValueOrDefault()},shellKind=0,shellVersionKnown=0,readLineVersionKnown=0,conPty={(conPty is null ? 0 : 1)},status={(int)session.Status},exitKnown={(session.ExitCode is not null ? 1 : 0)},exit={session.ExitCode.GetValueOrDefault()},hostChars={hostText.Length},paneChars={paneText.Length},hostPrompt={(HasPrompt(hostText) ? 1 : 0)},panePrompt={(HasPrompt(paneText) ? 1 : 0)},hostMarker={(hostText.Contains(expected, StringComparison.Ordinal) ? 1 : 0)},hostInput={(hostText.Contains(inputText, StringComparison.Ordinal) ? 1 : 0)},paneInput={(paneText.Contains(inputText, StringComparison.Ordinal) ? 1 : 0)};promptIo=[{promptIo}];promptSessionIo=[{promptSessionIo}];finalIo=[{chat.ShellPaneIoDiagnostics(paneId)}];finalSessionIo=[{session.IoDiagnostics}];poolThreads={ThreadPool.ThreadCount},poolPending={ThreadPool.PendingWorkItemCount},poolCompleted={ThreadPool.CompletedWorkItemCount}");
+            }
+            catch (Exception error)
+            {
+                diagnosticError ??= error;
+            }
             Assert.Contains(expected, paneText);
+            if (diagnosticError is not null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(diagnosticError).Throw();
         }
         finally
         {

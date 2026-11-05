@@ -33,6 +33,41 @@ public sealed class PtySession : IDisposable, ITerminalConnection
     private bool _subscriptionsClosed;
     private PtySessionStatus _status = PtySessionStatus.Running;
     private int? _exitCode;
+    private WriteObservation[]? _writeObservations;
+    private int _observedWrites;
+    private long _lastHostReadTick;
+    private long _lastHostFeedTick;
+    private long _lastHostPublishedTick;
+
+    private struct WriteObservation
+    {
+        public int Bytes;
+        public int Backend;
+        public int HResult;
+        public long EnteredTick;
+        public long BackendCallTick;
+        public long DoneTick;
+        public long FailedTick;
+    }
+
+    // The test enables a bounded, payload-free trace before the pane subscribes.
+    internal void EnableIoObservation()
+        => Volatile.Write(ref _writeObservations, new WriteObservation[64]);
+
+    internal string IoDiagnostics
+    {
+        get
+        {
+            var observations = _writeObservations;
+            var count = Volatile.Read(ref _observedWrites);
+            var output = new StringBuilder();
+            output.Append($"backend={(_unix is not null ? 1 : _conPty is not null ? 2 : _process is not null ? 3 : 0)},writeCount={count},writeTraceCapacity={observations?.Length ?? 0},writeTraceDropped={Math.Max(0, count - (observations?.Length ?? 0))},lastHostReadTick={Volatile.Read(ref _lastHostReadTick)},lastHostFeedTick={Volatile.Read(ref _lastHostFeedTick)},lastHostPublishedTick={Volatile.Read(ref _lastHostPublishedTick)}");
+            if (observations is not null)
+                for (var index = 0; index < Math.Min(count, observations.Length); index++)
+                    output.Append($",w{index + 1}Bytes={Volatile.Read(ref observations[index].Bytes)},w{index + 1}Backend={Volatile.Read(ref observations[index].Backend)},w{index + 1}EnteredTick={Volatile.Read(ref observations[index].EnteredTick)},w{index + 1}BackendCallTick={Volatile.Read(ref observations[index].BackendCallTick)},w{index + 1}DoneTick={Volatile.Read(ref observations[index].DoneTick)},w{index + 1}FailedTick={Volatile.Read(ref observations[index].FailedTick)},w{index + 1}Hr={Volatile.Read(ref observations[index].HResult)}");
+            return output.ToString();
+        }
+    }
 
     internal PtySession(PtySessionId id, PtyStartInfo startInfo)
     {
@@ -173,15 +208,18 @@ public sealed class PtySession : IDisposable, ITerminalConnection
                 var read = ReadBackend(buffer);
                 if (read <= 0)
                     break;
+                Volatile.Write(ref _lastHostReadTick, Stopwatch.GetTimestamp());
                 var chunk = buffer.AsSpan(0, read).ToArray();
                 lock (_gate)
                 {
                     _screen.Feed(chunk);
+                    Volatile.Write(ref _lastHostFeedTick, Stopwatch.GetTimestamp());
                     foreach (var subscriber in _subscribers)
                         subscriber.Writer.TryWrite(chunk);
                 }
 
                 _output.Writer.TryWrite(chunk);
+                Volatile.Write(ref _lastHostPublishedTick, Stopwatch.GetTimestamp());
             }
         }
         catch (Exception)
@@ -214,28 +252,59 @@ public sealed class PtySession : IDisposable, ITerminalConnection
 
     public async ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
-        var unix = _unix;
-        if (unix is not null)
+        var enteredTick = Stopwatch.GetTimestamp();
+        var observations = Volatile.Read(ref _writeObservations);
+        var index = observations is null ? -1 : Interlocked.Increment(ref _observedWrites) - 1;
+        if (observations is not null && index >= observations.Length)
+            index = -1;
+        if (observations is not null && index >= 0)
         {
-            await unix.Stream.WriteAsync(data, cancellationToken);
-            return;
+            Volatile.Write(ref observations[index].Bytes, data.Length);
+            Volatile.Write(ref observations[index].EnteredTick, enteredTick);
         }
-
-        var conPty = _conPty;
-        if (conPty is not null)
+        try
         {
-            await conPty.Input.WriteAsync(data, cancellationToken);
-            return;
+            Stream stream;
+            int backend;
+            var unix = _unix;
+            var conPty = _conPty;
+            var process = _process;
+            if (unix is not null)
+            {
+                stream = unix.Stream;
+                backend = 1;
+            }
+            else if (conPty is not null)
+            {
+                stream = conPty.Input;
+                backend = 2;
+            }
+            else if (process is not null)
+            {
+                stream = process.StandardInput.BaseStream;
+                backend = 3;
+            }
+            else
+                throw new ObjectDisposedException(nameof(PtySession));
+            if (observations is not null && index >= 0)
+            {
+                Volatile.Write(ref observations[index].Backend, backend);
+                // This is the managed stream call boundary, not a native WriteFile entry.
+                Volatile.Write(ref observations[index].BackendCallTick, Stopwatch.GetTimestamp());
+            }
+            await stream.WriteAsync(data, cancellationToken);
+            if (observations is not null && index >= 0)
+                Volatile.Write(ref observations[index].DoneTick, Stopwatch.GetTimestamp());
         }
-
-        var process = _process;
-        if (process is not null)
+        catch (Exception error)
         {
-            await process.StandardInput.BaseStream.WriteAsync(data, cancellationToken);
-            return;
+            if (observations is not null && index >= 0)
+            {
+                Volatile.Write(ref observations[index].HResult, error.HResult);
+                Volatile.Write(ref observations[index].FailedTick, Stopwatch.GetTimestamp());
+            }
+            throw;
         }
-
-        throw new ObjectDisposedException(nameof(PtySession));
     }
 
     /**

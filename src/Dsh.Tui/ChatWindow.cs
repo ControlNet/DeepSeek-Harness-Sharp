@@ -1,6 +1,7 @@
 using Dsh.Runtime;
 using Dsh.Runtime.Events;
 using System.Globalization;
+using System.Diagnostics;
 using Dsh.Boot;
 using Dsh.Core;
 using Dsh.Ide.History;
@@ -1015,12 +1016,30 @@ public sealed partial class ChatWindow : IDisposable
     }
 
     private IDisposable? _paneTools;
+    private long _lastSnapshotQueuedTick;
+    private long _lastSnapshotStartedTick;
+    private long _lastSnapshotDoneTick;
+    private long _snapshotQueueTicks;
+    private int _snapshotCalls;
 
     internal Task<PaneCatalogEntry?> FindPaneAsync(int paneId)
         => DispatchAsync(() => _panes.TryGetValue(paneId, out var pane) ? CatalogEntryOf(pane) : null);
 
     internal Task<IReadOnlyList<string>?> SnapshotPaneLinesAsync(int paneId)
-        => DispatchAsync(() => _panes.TryGetValue(paneId, out var pane) ? pane.SnapshotLines() : null);
+    {
+        var queuedTick = Stopwatch.GetTimestamp();
+        Volatile.Write(ref _lastSnapshotQueuedTick, queuedTick);
+        Interlocked.Increment(ref _snapshotCalls);
+        return DispatchAsync(() =>
+        {
+            var startedTick = Stopwatch.GetTimestamp();
+            Volatile.Write(ref _lastSnapshotStartedTick, startedTick);
+            Interlocked.Add(ref _snapshotQueueTicks, startedTick - queuedTick);
+            var lines = _panes.TryGetValue(paneId, out var pane) ? pane.SnapshotLines() : null;
+            Volatile.Write(ref _lastSnapshotDoneTick, Stopwatch.GetTimestamp());
+            return lines;
+        });
+    }
 
     /** 常驻桥发布用: 一次派发内取本地窗格目录 + 每个窗格尾行, 作为发往 daemon 的快照。 */
     internal Task<IReadOnlyList<PtyPaneSnapshotDto>> SnapshotPaneSnapshotsAsync(int maxLines)
@@ -1066,7 +1085,7 @@ public sealed partial class ChatWindow : IDisposable
 
     internal string ShellPaneIoDiagnostics(int paneId)
         => _panes.TryGetValue(paneId, out var pane) && pane is ShellPane shell
-            ? $"focused={_focusedPaneId},layer={(_ptyLayer?.Id == paneId ? 1 : 0)},{shell.IoDiagnostics}"
+            ? $"focused={_focusedPaneId},layer={(_ptyLayer?.Id == paneId ? 1 : 0)},{shell.IoDiagnostics},{shell.IoTimingDiagnostics},snapshotCalls={Volatile.Read(ref _snapshotCalls)},snapshotQueueTicks={Volatile.Read(ref _snapshotQueueTicks)},lastSnapshotQueuedTick={Volatile.Read(ref _lastSnapshotQueuedTick)},lastSnapshotStartedTick={Volatile.Read(ref _lastSnapshotStartedTick)},lastSnapshotDoneTick={Volatile.Read(ref _lastSnapshotDoneTick)}"
             : $"focused={_focusedPaneId},missingShell={paneId}";
 
     /** 刷新并返回其他进程发布的远程窗格(pty id + 快照); 直接用返回值, 不等 UI 线程应用 _daemonPtys。 */
