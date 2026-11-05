@@ -1,5 +1,5 @@
 # This file defines functions only and never records or deletes a caller's trace.
-function Invoke-PrivateWpaNative([string] $Executable, [string[]] $Arguments, [string] $Directory, [string] $Stage, [int] $DeadlineMs) {
+function Invoke-PrivateWpaNative([string] $Executable, [string[]] $Arguments, [string] $Directory, [string] $Stage, [int] $DeadlineMs, [ValidateSet('WPA_EXPORT_NATIVE', 'NATIVE_TYPED_PROCESS')] [string] $LogPrefix = 'WPA_EXPORT_NATIVE') {
     $process = [Diagnostics.Process]::new()
     $started = $false
     $terminated = $true
@@ -81,7 +81,7 @@ function Invoke-PrivateWpaNative([string] $Executable, [string[]] $Arguments, [s
         foreach ($pipe in $pipes) { $pipe.Log.Dispose(); $pipe.Stream.Dispose() }
         $process.Dispose()
     }
-    Write-Host "WPA_EXPORT_NATIVE stage=$Stage started=$([int]$started) exitKnown=$([int]$exitKnown) exit=$code timedOut=$([int]$timedOut) terminated=$([int]$terminated) drained=$([int]$drained) outputLimited=$([int]$limited) outputBytes=$bytes hresult=$hresult"
+    Write-Host "$LogPrefix stage=$Stage started=$([int]$started) exitKnown=$([int]$exitKnown) exit=$code timedOut=$([int]$timedOut) terminated=$([int]$terminated) drained=$([int]$drained) outputLimited=$([int]$limited) outputBytes=$bytes hresult=$hresult"
     return @{ Success = $started -and $terminated -and $drained -and $exitKnown -and $code -eq 0 -and -not $timedOut -and -not $limited -and $hresult -eq 0; Bytes = $bytes }
 }
 

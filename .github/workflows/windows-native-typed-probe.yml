@@ -1,0 +1,44 @@
+name: Windows typed owned-thread and file IO calibration
+
+on:
+  push:
+    branches: [probe/native-typed-65]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-typed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build only standalone readers with application-local native SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packages = Join-Path (Get-Location).Path '.artifacts/typed-packages'
+          $config = Join-Path (Get-Location).Path '.artifacts/typed-nuget.config'
+          $null = New-Item -ItemType Directory -Path (Split-Path $config) -Force
+          [IO.File]::WriteAllText($config, '<configuration><packageSources><clear/><add key="nuget.org" value="https://api.nuget.org/v3/index.json"/></packageSources></configuration>')
+          foreach ($kind in @('Cpu', 'File')) {
+            $project = ".github/diagnostics/Trace${kind}Reader/Trace${kind}Reader.csproj"
+            $output = ".artifacts/typed-$($kind.ToLowerInvariant())"
+            dotnet build $project -c Release -o $output -m:1 -p:BuildInParallel=false -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false -p:DebugType=None -p:DebugSymbols=false -p:EnableSourceControlManagerQueries=false -p:EnableSourceLink=false "-p:RestoreConfigFile=$config" "-p:RestorePackagesPath=$packages"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Capture real owned-thread scheduling and controlled private-file IO
+        shell: pwsh
+        run: |
+          $cpu = Join-Path (Get-Location).Path '.artifacts/typed-cpu/TraceCpuReader.exe'
+          $file = Join-Path (Get-Location).Path '.artifacts/typed-file/TraceFileReader.exe'
+          & ./.github/diagnostics/Invoke-TypedNativeCapture.ps1 -CpuReader $cpu -FileReader $file
+          exit $LASTEXITCODE
