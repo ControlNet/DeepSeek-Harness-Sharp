@@ -54,22 +54,25 @@ internal static class WindowsDirectoryCollector
     /// All workers join before descendant publication; callbacks retain native entry and FIFO directory order.
     /// Native calls are synchronous, with cancellation checked before opens, between entries and after completion.
     /// </remarks>
-    public static void Collect(string root, Action<string, bool> accept, CancellationToken cancellationToken)
+    public static void Collect(string root, Action<string, bool> accept, CancellationToken cancellationToken,
+        WindowsIoStageTiming.Apply? timing = null)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(accept);
-        Collect([new RootRequest(root, accept)], cancellationToken);
+        Collect([new RootRequest(root, accept)], cancellationToken, timing);
     }
 
     internal readonly record struct RootRequest(string Path, Action<string, bool> Accept);
 
     /// <summary>Collects independent trees with bounded root admission and preserves each root's publication order.</summary>
-    public static void Collect(ReadOnlySpan<RootRequest> roots, CancellationToken cancellationToken)
+    public static void Collect(ReadOnlySpan<RootRequest> roots, CancellationToken cancellationToken,
+        WindowsIoStageTiming.Apply? timing = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (roots.IsEmpty)
             return;
-        var work = new WorkQueue(cancellationToken);
+        var observation = WindowsIoStageTiming.BeginCollection(timing);
+        var work = new WorkQueue(cancellationToken) { Observation = observation };
         var collected = new List<RootWork>(roots.Length);
         var active = new RootWork?[MaximumActiveRoots];
         Thread[]? workers = null;
@@ -91,7 +94,8 @@ internal static class WindowsDirectoryCollector
                 if (slot < 0)
                 {
                     slot = work.WaitForCompletedRoot(active);
-                    active[slot]!.Handle!.Dispose();
+                    observation?.Bind(0, active[slot]!.ObservationRoot, slot);
+                    Close(active[slot]!.Handle, observation, 0);
                     active[slot]!.Handle = null;
                     active[slot]!.OpenedNativePath = null;
                 }
@@ -102,16 +106,26 @@ internal static class WindowsDirectoryCollector
                 var root = new RootWork(request);
                 collected.Add(root);
                 active[slot] = root;
+                root.ObservationRoot = observation?.Root(slot) ?? 0;
+                root.AdmissionSlot = slot;
+                observation?.Bind(0, root.ObservationRoot, slot);
                 var path = root.Directory.Path;
                 var devicePath = path.StartsWith(@"\\?\", StringComparison.Ordinal) || path.StartsWith(@"\\.\", StringComparison.Ordinal);
                 var nativeRoot = path.StartsWith(@"\\", StringComparison.Ordinal) && !devicePath ? $@"\\?\UNC\{path.AsSpan(2)}"
                     : path.StartsWith(@"\\.\", StringComparison.Ordinal) ? $@"\\?\{path.AsSpan(4)}" : path;
-                root.Handle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics, 0);
+                observation?.Enter(0, WindowsIoStageTiming.Operation.Open);
+                int openError;
+                try
+                {
+                    root.Handle = WindowsNative.CreateFile(nativeRoot, ListDirectory, ShareAll, 0, OpenExisting, BackupSemantics, 0);
+                    openError = Marshal.GetLastPInvokeError();
+                }
+                finally { observation?.Exit(0, WindowsIoStageTiming.Operation.Open); }
                 if (root.Handle.IsInvalid)
-                    throw DirectoryError(Marshal.GetLastPInvokeError(), root.Directory.Path, openingDirectory: true);
+                    throw DirectoryError(openError, root.Directory.Path, openingDirectory: true);
                 CollectDirectory(root.Handle, root.Directory, buffer, cancellationToken, work);
                 if (root.Directory.Entries.Exists(static entry => entry.Directory is not null))
-                    root.OpenedNativePath = GetOpenedNativePath(root);
+                    root.OpenedNativePath = GetOpenedNativePath(root, observation);
                 PublishDirectory(root.Directory, root.Pending, root.Accept, cancellationToken, work);
                 work.Admit(root);
                 if (root.Pending.Count != 0 && workers is null)
@@ -149,30 +163,46 @@ internal static class WindowsDirectoryCollector
                 }
             foreach (var root in collected)
             {
-                root.Handle?.Dispose();
+                observation?.Bind(0, root.ObservationRoot, root.AdmissionSlot);
+                Close(root.Handle, observation, 0);
                 root.OpenedNativePath = null;
             }
             if (buffer != 0)
                 Marshal.FreeHGlobal(buffer);
+            observation?.Retire(0);
         }
-        work.ThrowIfStopped();
-        foreach (var root in collected)
-            while (root.Pending.TryDequeue(out var directory))
-                PublishDirectory(directory, root.Pending, root.Accept, cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            work.ThrowIfStopped();
+            foreach (var root in collected)
+                while (root.Pending.TryDequeue(out var directory))
+                    PublishDirectory(directory, root.Pending, root.Accept, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        finally { observation?.Finished(); }
     }
 
     private static unsafe void CollectDirectory(SafeFileHandle handle, DirectoryWork directory, nint buffer,
-        CancellationToken cancellationToken, WorkQueue? work = null)
+        CancellationToken cancellationToken, WorkQueue? work = null, int slot = 0)
     {
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             work?.ThrowIfStopped();
-            var status = NtQueryDirectoryFile(handle, 0, 0, 0, out var ioStatus, buffer, BufferSize,
-                FileFullDirectoryInformation, 0, 0, 0);
+            work?.Observation?.Enter(slot, WindowsIoStageTiming.Operation.Query);
+            int status;
+            IoStatusBlock ioStatus;
+            try
+            {
+                status = NtQueryDirectoryFile(handle, 0, 0, 0, out ioStatus, buffer, BufferSize,
+                    FileFullDirectoryInformation, 0, 0, 0);
+            }
+            finally { work?.Observation?.Exit(slot, WindowsIoStageTiming.Operation.Query); }
             if (!HasCompleteDirectoryBatch(status, ioStatus.Information, directory.Path))
+            {
+                work?.Observation?.DirectoryCompleted(slot);
                 return;
+            }
             var entry = (DirectoryInformation*)buffer;
             while (true)
             {
@@ -184,6 +214,7 @@ internal static class WindowsDirectoryCollector
                     var path = Path.Join(directory.Path.AsSpan(), name);
                     var child = (entry->Attributes & FileAttributes.Directory) != 0 ? new DirectoryWork(path, directory.Root) : null;
                     directory.Entries.Add(new Entry(path, child));
+                    work?.Observation?.EntryCollected(slot);
                 }
                 if (entry->NextEntryOffset == 0)
                     break;
@@ -235,6 +266,8 @@ internal static class WindowsDirectoryCollector
         public Queue<DirectoryWork> Pending { get; } = new();
         public SafeFileHandle? Handle { get; set; }
         public int Outstanding { get; set; }
+        public int ObservationRoot { get; set; }
+        public int AdmissionSlot { get; set; }
     }
 
     private sealed class DirectoryWork(string path, RootWork root)
@@ -257,6 +290,7 @@ internal static class WindowsDirectoryCollector
         private ExceptionDispatchInfo? _failure;
 
         public CancellationToken CancellationToken { get; }
+        public WindowsIoStageTiming.Collection? Observation { get; init; }
 
         public WorkQueue(CancellationToken cancellationToken) => CancellationToken = cancellationToken;
 
@@ -269,6 +303,8 @@ internal static class WindowsDirectoryCollector
                     _pending.Enqueue(directory);
                 root.Outstanding = root.Pending.Count;
                 _outstanding = checked(_outstanding + root.Outstanding);
+                if (root.Outstanding == 0)
+                    Observation?.RootCompleted(root.ObservationRoot);
                 Monitor.PulseAll(_gate);
             }
         }
@@ -282,7 +318,9 @@ internal static class WindowsDirectoryCollector
                     for (var index = 0; index < active.Length; index++)
                         if (active[index]!.Outstanding == 0)
                             return index;
-                    Monitor.Wait(_gate);
+                    Observation?.Enter(0, WindowsIoStageTiming.Operation.RootAdmissionWait);
+                    try { Monitor.Wait(_gate); }
+                    finally { Observation?.Exit(0, WindowsIoStageTiming.Operation.RootAdmissionWait); }
                 }
         }
 
@@ -304,13 +342,15 @@ internal static class WindowsDirectoryCollector
 
         public void Run()
         {
+            var slot = Observation?.Worker() ?? -1;
             nint buffer = 0;
             try
             {
                 buffer = Marshal.AllocHGlobal(BufferSize);
-                while (Take() is { } directory)
+                while (Take(slot) is { } directory)
                 {
-                    CollectReservedDirectory(directory, buffer);
+                    Observation?.Bind(slot, directory.Root.ObservationRoot, directory.Root.AdmissionSlot);
+                    CollectReservedDirectory(directory, buffer, slot);
                     Complete(directory);
                 }
             }
@@ -322,10 +362,11 @@ internal static class WindowsDirectoryCollector
             {
                 if (buffer != 0)
                     Marshal.FreeHGlobal(buffer);
+                Observation?.Retire(slot);
             }
         }
 
-        private void CollectReservedDirectory(DirectoryWork directory, nint buffer)
+        private void CollectReservedDirectory(DirectoryWork directory, nint buffer, int slot)
         {
             var root = directory.Root;
             var relativePath = directory.Path.AsSpan(root.RelativeStart);
@@ -339,14 +380,20 @@ internal static class WindowsDirectoryCollector
                 CancellationToken.ThrowIfCancellationRequested();
                 if (absolute)
                 {
-                    using var handle = OpenAbsoluteDirectory(nativeRoot!, relativePath, directory.Path);
-                    CollectDirectory(handle, directory, buffer, CancellationToken, this);
+                    var handle = OpenAbsoluteDirectory(nativeRoot!, relativePath, directory.Path, Observation, slot);
+                    try { CollectDirectory(handle, directory, buffer, CancellationToken, this, slot); }
+                    finally { Close(handle, Observation, slot); }
                 }
                 else
                 {
-                    using var self = OpenNamedDirectory(root.Handle!, ReadOnlySpan<char>.Empty, root.Directory.Path);
-                    using var handle = OpenRelativeDirectory(self, relativePath, directory.Path, this);
-                    CollectDirectory(handle, directory, buffer, CancellationToken, this);
+                    var self = OpenNamedDirectory(root.Handle!, ReadOnlySpan<char>.Empty, root.Directory.Path, Observation, slot);
+                    try
+                    {
+                        var handle = OpenRelativeDirectory(self, relativePath, directory.Path, this, slot);
+                        try { CollectDirectory(handle, directory, buffer, CancellationToken, this, slot); }
+                        finally { Close(handle, Observation, slot); }
+                    }
+                    finally { Close(self, Observation, slot); }
                 }
             }
             catch (Exception error)
@@ -361,7 +408,14 @@ internal static class WindowsDirectoryCollector
             ThrowIfStopped();
         }
 
-        public void ThrowIfStopped() => Volatile.Read(ref _failure)?.Throw();
+        public void ThrowIfStopped()
+        {
+            var failure = Volatile.Read(ref _failure);
+            if (failure is null) return;
+            var error = failure.SourceException;
+            Observation?.Stopped(error is OperationCanceledException ? 1 : error is ThreadInterruptedException ? 2 : 3);
+            failure.Throw();
+        }
 
         public void Fail(Exception error)
         {
@@ -441,12 +495,17 @@ internal static class WindowsDirectoryCollector
             }
         }
 
-        private DirectoryWork? Take()
+        private DirectoryWork? Take(int slot)
         {
             lock (_gate)
             {
                 while (_failure is null && _pending.Count == 0 && (!_sealed || _outstanding != 0))
-                    Monitor.Wait(_gate);
+                {
+                    Observation?.Bind(slot, 0, -1);
+                    Observation?.Enter(slot, WindowsIoStageTiming.Operation.QueueWait);
+                    try { Monitor.Wait(_gate); }
+                    finally { Observation?.Exit(slot, WindowsIoStageTiming.Operation.QueueWait); }
+                }
                 return _failure is not null || _pending.Count == 0 ? null : _pending.Dequeue();
             }
         }
@@ -468,12 +527,14 @@ internal static class WindowsDirectoryCollector
                 }
                 _outstanding--;
                 directory.Root.Outstanding--;
+                if (directory.Root.Outstanding == 0)
+                    Observation?.RootCompleted(directory.Root.ObservationRoot);
                 Monitor.PulseAll(_gate);
             }
         }
     }
 
-    private static unsafe string? GetOpenedNativePath(RootWork root)
+    private static unsafe string? GetOpenedNativePath(RootWork root, WindowsIoStageTiming.Collection? observation)
     {
         const uint openedNtName = 0x8 | 0x2; // FILE_NAME_OPENED | VOLUME_NAME_NT; do not normalize SMB ancestors.
         // Capture the resolved NT name, not a namespace snapshot or an identity/permission proof.
@@ -483,9 +544,17 @@ internal static class WindowsDirectoryCollector
         {
             fixed (char* text = buffer)
             {
-                var length = GetFinalPathNameByHandle(root.Handle!, text, capacity, openedNtName);
+                observation?.Enter(0, WindowsIoStageTiming.Operation.RootName);
+                uint length;
+                int error;
+                try
+                {
+                    length = GetFinalPathNameByHandle(root.Handle!, text, capacity, openedNtName);
+                    error = Marshal.GetLastPInvokeError();
+                }
+                finally { observation?.Exit(0, WindowsIoStageTiming.Operation.RootName); }
                 if (length == 0)
-                    throw DirectoryError(Marshal.GetLastPInvokeError(), root.Directory.Path);
+                    throw DirectoryError(error, root.Directory.Path);
                 // A required size beyond this buffer already rules out every absolute descendant.
                 if (length >= capacity)
                     return null;
@@ -499,7 +568,8 @@ internal static class WindowsDirectoryCollector
         }
     }
 
-    private static SafeFileHandle OpenAbsoluteDirectory(ReadOnlySpan<char> nativeRoot, ReadOnlySpan<char> relativePath, string path)
+    private static SafeFileHandle OpenAbsoluteDirectory(ReadOnlySpan<char> nativeRoot, ReadOnlySpan<char> relativePath,
+        string path, WindowsIoStageTiming.Collection? observation, int slot)
     {
         const int stackCharacters = 512;
         var length = nativeRoot.Length + relativePath.Length;
@@ -510,7 +580,7 @@ internal static class WindowsDirectoryCollector
         {
             nativeRoot.CopyTo(name);
             relativePath.CopyTo(name[nativeRoot.Length..]);
-            return OpenNamedDirectory(null, name, path);
+            return OpenNamedDirectory(null, name, path, observation, slot);
         }
         finally
         {
@@ -520,10 +590,10 @@ internal static class WindowsDirectoryCollector
     }
 
     private static SafeFileHandle OpenRelativeDirectory(SafeFileHandle root, ReadOnlySpan<char> relativePath,
-        string path, WorkQueue work)
+        string path, WorkQueue work, int slot)
     {
         if (relativePath.Length <= MaximumNativeNameLength)
-            return OpenNamedDirectory(root, relativePath, path);
+            return OpenNamedDirectory(root, relativePath, path, work.Observation, slot);
 
         SafeFileHandle? current = null;
         try
@@ -539,22 +609,23 @@ internal static class WindowsDirectoryCollector
                     if (segmentLength <= 0)
                         throw new PathTooLongException($"Unable to open directory '{path}'.");
                 }
-                var next = OpenNamedDirectory(current ?? root, relativePath[..segmentLength], path);
+                var next = OpenNamedDirectory(current ?? root, relativePath[..segmentLength], path, work.Observation, slot);
                 if (segmentLength == relativePath.Length)
                     return next;
                 var previous = current;
                 current = next;
-                previous?.Dispose();
+                Close(previous, work.Observation, slot);
                 relativePath = relativePath[(segmentLength + 1)..];
             }
         }
         finally
         {
-            current?.Dispose();
+            Close(current, work.Observation, slot);
         }
     }
 
-    private static unsafe SafeFileHandle OpenNamedDirectory(SafeFileHandle? parent, ReadOnlySpan<char> name, string path)
+    private static unsafe SafeFileHandle OpenNamedDirectory(SafeFileHandle? parent, ReadOnlySpan<char> name,
+        string path, WindowsIoStageTiming.Collection? observation, int slot)
     {
         fixed (char* text = name)
         {
@@ -571,13 +642,28 @@ internal static class WindowsDirectoryCollector
                 ObjectName = &nativeName,
                 Attributes = CaseInsensitive
             };
-            var status = NtOpenFile(out var handle, ListDirectory | Synchronize, ref attributes, out _, ShareAll, SynchronousDirectoryOpen);
+            observation?.Enter(slot, WindowsIoStageTiming.Operation.Open);
+            int status;
+            SafeFileHandle handle;
+            try
+            {
+                status = NtOpenFile(out handle, ListDirectory | Synchronize, ref attributes, out _, ShareAll, SynchronousDirectoryOpen);
+            }
+            finally { observation?.Exit(slot, WindowsIoStageTiming.Operation.Open); }
             GC.KeepAlive(parent);
             if (status == 0)
                 return handle;
-            handle.Dispose();
+            Close(handle, observation, slot);
             throw DirectoryError((int)RtlNtStatusToDosError(status), path, openingDirectory: true);
         }
+    }
+
+    private static void Close(SafeFileHandle? handle, WindowsIoStageTiming.Collection? observation, int slot)
+    {
+        if (handle is null) return;
+        observation?.Enter(slot, WindowsIoStageTiming.Operation.CloseDispose);
+        try { handle.Dispose(); }
+        finally { observation?.Exit(slot, WindowsIoStageTiming.Operation.CloseDispose); }
     }
 
     private static Exception DirectoryError(int error, string path, bool openingDirectory = false)
