@@ -234,14 +234,18 @@ internal static class Program
          (SameKnownRelativeTime(left.CreateTime, right.CreateTime) &&
           SameExitTime(left.ExitTime, right.ExitTime)));
 
-    private static bool WithinLifetime(TraceTimestamp timestamp, TraceTimestamp? create, TraceTimestamp? exit)
+    private static LifetimeBoundary CheckLifetime(TraceTimestamp timestamp, TraceTimestamp? create, TraceTimestamp? exit)
     {
         if (!timestamp.HasValue)
-            return true;
+            return LifetimeBoundary.Within;
         Timestamp relative = timestamp.RelativeTimestamp;
-        return (!create.HasValue || relative >= create.Value.RelativeTimestamp) &&
-               (!exit.HasValue || relative <= exit.Value.RelativeTimestamp);
+        if (create.HasValue && relative < create.Value.RelativeTimestamp)
+            return LifetimeBoundary.BeforeCreate;
+        return exit.HasValue && relative > exit.Value.RelativeTimestamp
+            ? LifetimeBoundary.AfterExit : LifetimeBoundary.Within;
     }
+
+    private enum LifetimeBoundary { Within, BeforeCreate, AfterExit }
 
     private static bool IsNativeFailure(Exception exception) =>
         exception is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException or
@@ -288,20 +292,30 @@ internal static class Program
                 }
                 if (!indices.TryGetValue(unchecked((uint)issuingThread.Id), out int index))
                     continue;
-                if (issuingProcess is null || !SameProcess(issuingProcess, process) ||
-                    threads[index] is not IThread target || !SameThread(issuingThread, target) ||
-                    issuingThread.Process is not IProcess threadOwner || !SameProcess(threadOwner, process))
+                IThread? target = threads[index];
+                IProcess? threadOwner = issuingThread.Process;
+                int identityRejection = issuingProcess is null ? 0 :
+                    !SameProcess(issuingProcess, process) ? 1 :
+                    target is null ? 2 :
+                    !SameThread(issuingThread, target) ? 3 :
+                    threadOwner is null ? 4 :
+                    !SameProcess(threadOwner, process) ? 5 : -1;
+                if (identityRejection >= 0)
                 {
+                    category.MetadataRejections[identityRejection]++;
                     IdentityConflicts++;
                     continue;
                 }
+                IThread targetThread = target!;
                 TraceTimestamp start = activity.StartTime;
                 TraceTimestamp stop = activity.StopTime;
-                if (!WithinLifetime(start, process.CreateTime, process.ExitTime) ||
-                    !WithinLifetime(stop, process.CreateTime, process.ExitTime) ||
-                    !WithinLifetime(start, target.CreateTime, target.ExitTime) ||
-                    !WithinLifetime(stop, target.CreateTime, target.ExitTime))
+                bool processStart = category.RecordBoundary(0, CheckLifetime(start, process.CreateTime, process.ExitTime));
+                bool processStop = category.RecordBoundary(1, CheckLifetime(stop, process.CreateTime, process.ExitTime));
+                bool threadStart = category.RecordBoundary(2, CheckLifetime(start, targetThread.CreateTime, targetThread.ExitTime));
+                bool threadStop = category.RecordBoundary(3, CheckLifetime(stop, targetThread.CreateTime, targetThread.ExitTime));
+                if (processStart || processStop || threadStart || threadStop)
                 {
+                    category.LifetimeRejections++;
                     IdentityConflicts++;
                     continue;
                 }
@@ -328,6 +342,10 @@ internal static class Program
                     continue;
                 }
                 Line($"category={category.Label} category_observed_in_trace=1 trace_observations={category.TraceCount} missing_issuing_thread={category.MissingIssuingThread} unattributed_target_process={category.UnattributedTargetProcess}");
+                Line($"category={category.Label} rejected_metadata={category.MetadataRejections.Sum()} rejected_lifetime={category.LifetimeRejections}");
+                Line($"category={category.Label} rejected_process_missing={category.MetadataRejections[0]} rejected_process_identity={category.MetadataRejections[1]} rejected_thread_missing={category.MetadataRejections[2]} rejected_thread_identity={category.MetadataRejections[3]} rejected_thread_owner_missing={category.MetadataRejections[4]} rejected_thread_owner_identity={category.MetadataRejections[5]}");
+                Line($"category={category.Label} process_start_before_create={category.BoundaryRejections[0]} process_start_after_exit={category.BoundaryRejections[1]} process_stop_before_create={category.BoundaryRejections[2]} process_stop_after_exit={category.BoundaryRejections[3]}");
+                Line($"category={category.Label} thread_start_before_create={category.BoundaryRejections[4]} thread_start_after_exit={category.BoundaryRejections[5]} thread_stop_before_create={category.BoundaryRejections[6]} thread_stop_after_exit={category.BoundaryRejections[7]}");
                 EmitStats(category.Label, null, category.Total);
                 for (int index = 0; index < threadIds.Length; index++)
                     EmitStats(category.Label, threadIds[index], category.PerThread[index]);
@@ -353,6 +371,17 @@ internal static class Program
         public Statistics[] PerThread { get; } = new Statistics[threads];
         public long MissingIssuingThread;
         public long UnattributedTargetProcess;
+        public long[] MetadataRejections { get; } = new long[6];
+        public long[] BoundaryRejections { get; } = new long[8];
+        public long LifetimeRejections;
+
+        public bool RecordBoundary(int endpoint, LifetimeBoundary boundary)
+        {
+            if (boundary == LifetimeBoundary.Within)
+                return false;
+            BoundaryRejections[endpoint * 2 + (boundary == LifetimeBoundary.BeforeCreate ? 0 : 1)]++;
+            return true;
+        }
     }
 
     private struct Statistics

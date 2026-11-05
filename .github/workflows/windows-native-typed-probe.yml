@@ -1,8 +1,8 @@
-name: Windows typed owned-thread and file IO calibration
+name: Windows active-cutoff and pending-read file IO calibration
 
 on:
   push:
-    branches: [probe/native-typed-65]
+    branches: [probe/native-file-identity-74]
   workflow_dispatch:
 
 permissions:
@@ -35,10 +35,18 @@ jobs:
             dotnet build $project -c Release -o $output -m:1 -p:BuildInParallel=false -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false -p:DebugType=None -p:DebugSymbols=false -p:EnableSourceControlManagerQueries=false -p:EnableSourceLink=false "-p:RestoreConfigFile=$config" "-p:RestorePackagesPath=$packages"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-      - name: Capture real owned-thread scheduling and controlled private-file IO
+      - name: Serial active-thread and synchronous pending-read cutoffs
         shell: pwsh
         run: |
           $cpu = Join-Path (Get-Location).Path '.artifacts/typed-cpu/TraceCpuReader.exe'
           $file = Join-Path (Get-Location).Path '.artifacts/typed-file/TraceFileReader.exe'
-          & ./.github/diagnostics/Invoke-TypedNativeCapture.ps1 -CpuReader $cpu -FileReader $file
-          exit $LASTEXITCODE
+          $failed = $false
+          foreach ($mode in @('Active', 'PendingRead')) {
+            $protocol = if ($mode -eq 'PendingRead') { 3 } else { 2 }
+            Write-Host "NATIVE_TYPED_MODE protocol=$protocol begin=1"
+            & ./.github/diagnostics/Invoke-TypedNativeCapture.ps1 -CpuReader $cpu -FileReader $file -BoundaryMode $mode
+            $code = $LASTEXITCODE
+            Write-Host "NATIVE_TYPED_MODE protocol=$protocol complete=1 exit=$code"
+            if ($code -ne 0) { $failed = $true }
+          }
+          exit ([int]$failed)
