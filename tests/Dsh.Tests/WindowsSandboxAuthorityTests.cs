@@ -2,6 +2,7 @@ using Dsh.Boot;
 using Dsh.Plugins.Sandbox;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -203,110 +204,244 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
 
     // Temporary API investigation only; remove after the dedicated Windows observation job.
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
     [Trait("Category", "SandboxNative")]
-    public unsafe void TemporaryDiagnostic_FileSecurityQueries_ReportComponentEquivalence(bool protectedFile)
+    public void TemporaryDiagnostic_FileSecurityQueries_ReportComponentEquivalence(bool protectedFile, bool kernelFirst)
     {
-        const int initialDescriptorBufferSize = 1024;
-        const int errorInsufficientBuffer = 122;
         if (!OperatingSystem.IsWindows())
             Assert.Skip("This diagnostic requires Windows native security queries.");
         var stage = 0;
+        SecurityIdentifier? sid = null;
+        object? parentEntry = null, childEntry = null;
+        string? filePath = null;
+        var parentOwned = false;
+        var childOwned = false;
+        var childCleanupAttempted = false;
+        var parentCleanupAttempted = false;
+        TemporaryDescriptorQuery94.Failure? operationFailure = null, childFailure = null, parentFailure = null;
         try
         {
             var parent = Directory.CreateDirectory(Path.Combine(_root, "descriptor-query"));
-            var parentAcl = parent.GetAccessControl(AccessControlSections.Access);
-            parentAcl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier("S-1-5-21-0-0-0-424242"),
-                FileSystemRights.ReadAttributes, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None, AccessControlType.Allow));
-            parent.SetAccessControl(parentAcl);
             var file = new FileInfo(Path.Combine(parent.FullName, "input.txt"));
-            File.WriteAllText(file.FullName, "owned-descriptor-query");
+            filePath = file.FullName;
+            File.WriteAllText(filePath, "owned-descriptor-query");
             if (protectedFile)
             {
-                var fileAcl = file.GetAccessControl(AccessControlSections.Access);
-                fileAcl.SetAccessRuleProtection(isProtected: true, preserveInheritance: true);
-                file.SetAccessControl(fileAcl);
+                var acl = file.GetAccessControl(AccessControlSections.Access);
+                acl.SetAccessRuleProtection(isProtected: true, preserveInheritance: true);
+                file.SetAccessControl(acl);
             }
-            var before = file.GetAccessControl(AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group)
-                .GetSecurityDescriptorBinaryForm();
+            // This synthetic principal is only an ACL fixture, not an effective AppContainer token.
+            sid = new SecurityIdentifier("S-1-5-21-0-0-0-424242");
+            parentEntry = TemporaryDescriptorQuery94.NewEntry(parent.FullName);
+            childEntry = TemporaryDescriptorQuery94.NewEntry(filePath);
             stage = 1;
-            using var handle = WindowsNative.CreateFile(file.FullName, 0x20000, 7, 0, 3, 0x02000000, 0);
+            parentOwned = true;
+            TemporaryDescriptorQuery94.Grant(parentEntry, sid, 0x1301bf, directory: true, restrict: false);
+            TemporaryDescriptorQuery94.Observe(filePath, stage, protectedFile, kernelFirst, requireLowLabel: true);
+            stage = 2;
+            childOwned = true;
+            TemporaryDescriptorQuery94.Grant(childEntry, sid, 0x1200a9, directory: false, restrict: true);
+            TemporaryDescriptorQuery94.Observe(filePath, stage, protectedFile, kernelFirst, requireLowLabel: true);
+        }
+        catch (Exception error)
+        {
+            operationFailure = TemporaryDescriptorQuery94.NumericFailure(stage, error);
+        }
+        if (childOwned)
+        {
+            childOwned = false;
+            childCleanupAttempted = true;
+            try
+            {
+                TemporaryDescriptorQuery94.Remove(childEntry!, sid!);
+            }
+            catch (Exception error)
+            {
+                childFailure = TemporaryDescriptorQuery94.NumericFailure(3, error);
+            }
+        }
+        if (operationFailure is null && childFailure is null)
+        {
+            try
+            {
+                TemporaryDescriptorQuery94.Observe(filePath!, 3, protectedFile, kernelFirst, requireLowLabel: true);
+            }
+            catch (Exception error)
+            {
+                operationFailure = TemporaryDescriptorQuery94.NumericFailure(3, error);
+            }
+        }
+        if (parentOwned)
+        {
+            parentOwned = false;
+            parentCleanupAttempted = true;
+            try
+            {
+                TemporaryDescriptorQuery94.Remove(parentEntry!, sid!);
+            }
+            catch (Exception error)
+            {
+                parentFailure = TemporaryDescriptorQuery94.NumericFailure(4, error);
+            }
+        }
+        if (operationFailure is null && childFailure is null && parentFailure is null)
+        {
+            try
+            {
+                TemporaryDescriptorQuery94.Observe(filePath!, 4, protectedFile, kernelFirst, requireLowLabel: false);
+            }
+            catch (Exception error)
+            {
+                operationFailure = TemporaryDescriptorQuery94.NumericFailure(4, error);
+            }
+        }
+        var result = $"protected={protectedFile}; kernelFirst={kernelFirst}; operationFailed={operationFailure.HasValue}; operationPhase={operationFailure?.Phase ?? 0}; operationHResult={operationFailure?.HResult ?? 0}; operationNativeCode={operationFailure?.NativeCode ?? 0}; childCleanupAttempted={childCleanupAttempted}; childCleanupFailed={childFailure.HasValue}; childCleanupPhase={childFailure?.Phase ?? 0}; childCleanupHResult={childFailure?.HResult ?? 0}; childCleanupNativeCode={childFailure?.NativeCode ?? 0}; parentCleanupAttempted={parentCleanupAttempted}; parentCleanupFailed={parentFailure.HasValue}; parentCleanupPhase={parentFailure?.Phase ?? 0}; parentCleanupHResult={parentFailure?.HResult ?? 0}; parentCleanupNativeCode={parentFailure?.NativeCode ?? 0}; childOwned={childOwned}; parentOwned={parentOwned}";
+        TestContext.Current.TestOutputHelper?.WriteLine(result);
+        if (operationFailure.HasValue || childFailure.HasValue || parentFailure.HasValue)
+            throw new InvalidOperationException(result);
+    }
+
+    // Temporary production-entry fixture and native materialization; no copied permission decisions.
+    private static class TemporaryDescriptorQuery94
+    {
+        private static readonly Type EntryType = typeof(WindowsAclLease).GetNestedType("Entry", BindingFlags.NonPublic)!;
+        private static readonly SecurityIdentifier LowLabel = new("S-1-16-4096");
+
+        internal readonly record struct Failure(int Phase, int HResult, int NativeCode);
+
+        internal static Failure NumericFailure(int phase, Exception error)
+        {
+            // Unwrap only reflection transport; each operation retains its own independent numeric failure.
+            while (error is TargetInvocationException { InnerException: not null } invocation)
+                error = invocation.InnerException;
+            return new Failure(phase, error.HResult, error is Win32Exception native ? native.NativeErrorCode : 0);
+        }
+
+        internal static object NewEntry(string path) => Activator.CreateInstance(EntryType,
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, [path, false], null)!;
+
+        internal static void Grant(object entry, SecurityIdentifier sid, int access, bool directory, bool restrict)
+            => EntryType.GetMethod("Grant")!.Invoke(entry,
+                [sid, access, access, directory, restrict, false, null, TestContext.Current.CancellationToken]);
+
+        internal static void Remove(object entry, SecurityIdentifier sid)
+            => EntryType.GetMethod("Remove")!.Invoke(entry, [sid]);
+
+        internal static void Observe(string path, int phase, bool protectedFile, bool kernelFirst, bool requireLowLabel)
+        {
+            using var handle = WindowsNative.CreateFile(path, 0x20000, 7, 0, 3, 0x02000000, 0);
             if (handle.IsInvalid)
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
-            stage = 2;
+            // No file-security snapshot precedes the selected first query after the production mutation.
+            var first = kernelFirst ? QueryKernel(handle) : QueryInfo(handle);
+            var second = kernelFirst ? QueryInfo(handle) : QueryKernel(handle);
+            // Repeating the first API detects changes during this query window, not changes inside its first call.
+            var repeatedFirst = kernelFirst ? QueryKernel(handle) : QueryInfo(handle);
+            var info = kernelFirst ? second : first;
+            var kernel = kernelFirst ? first : second;
+            var infoLow = HasLowLabel(info.Descriptor.SystemAcl);
+            var kernelLow = HasLowLabel(kernel.Descriptor.SystemAcl);
+            var totalKernelQueries = kernelFirst ? first.QueryCount + repeatedFirst.QueryCount : second.QueryCount;
+            var infoQueries = kernelFirst ? 1 : 2;
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                $"phase={phase}; protected={protectedFile}; kernelFirst={kernelFirst}; infoLength={info.Length}; kernelLength={kernel.Length}; infoQueryCount={infoQueries}; kernelQueryCount={totalKernelQueries}; infoControl={info.Control}; kernelControl={kernel.Control}; infoDaclLength={info.Descriptor.DiscretionaryAcl?.BinaryLength ?? 0}; kernelDaclLength={kernel.Descriptor.DiscretionaryAcl?.BinaryLength ?? 0}; infoLabelLength={info.Descriptor.SystemAcl?.BinaryLength ?? 0}; kernelLabelLength={kernel.Descriptor.SystemAcl?.BinaryLength ?? 0}; infoInheritedAceCount={info.Descriptor.DiscretionaryAcl?.Cast<GenericAce>().Count(static ace => (ace.AceFlags & AceFlags.Inherited) != 0) ?? 0}; kernelInheritedAceCount={kernel.Descriptor.DiscretionaryAcl?.Cast<GenericAce>().Count(static ace => (ace.AceFlags & AceFlags.Inherited) != 0) ?? 0}; daclEqual={AclEqual(info.Descriptor.DiscretionaryAcl, kernel.Descriptor.DiscretionaryAcl)}; controlEqual={info.Control == kernel.Control}; ownerEqual={Equals(info.Descriptor.Owner, kernel.Descriptor.Owner)}; groupEqual={Equals(info.Descriptor.Group, kernel.Descriptor.Group)}; labelEqual={AclEqual(info.Descriptor.SystemAcl, kernel.Descriptor.SystemAcl)}; infoLowLabel={infoLow}; kernelLowLabel={kernelLow}; headerMatchesRaw={kernel.HeaderMatches}; firstQueryStable={Same(first, repeatedFirst)}");
+            if (requireLowLabel)
+                Assert.True(infoLow && kernelLow, "Temporary diagnostic did not reach the required nonempty Low label.");
+        }
+
+        private sealed record Snapshot(RawSecurityDescriptor Descriptor, uint Length, ushort Control, int QueryCount, bool HeaderMatches);
+
+        private static Snapshot QueryInfo(SafeFileHandle handle)
+        {
             var error = WindowsNative.GetSecurityInfo(handle, 1, 0x17, out var owner, out var group,
-                out var dacl, out var label, out var infoPointer);
+                out var dacl, out var label, out var pointer);
             if (error != 0)
                 throw new Win32Exception((int)error);
             try
             {
-                stage = 3;
-                if (!WindowsNative.GetSecurityDescriptorControl(infoPointer, out var infoControl, out _))
+                if (!WindowsNative.GetSecurityDescriptorControl(pointer, out var control, out _))
                     throw new Win32Exception(Marshal.GetLastPInvokeError());
-                var infoLength = WindowsNative.GetSecurityDescriptorLength(infoPointer);
-                var info = new RawSecurityDescriptor((ControlFlags)infoControl,
+                var descriptor = new RawSecurityDescriptor((ControlFlags)control,
                     owner == 0 ? null : new SecurityIdentifier(owner), group == 0 ? null : new SecurityIdentifier(group),
-                    TemporaryDescriptorQuery94.ReadAcl(label), TemporaryDescriptorQuery94.ReadAcl(dacl));
-                Span<byte> buffer = stackalloc byte[initialDescriptorBufferSize];
-                var queryCount = 0;
-                while (true)
-                {
-                    uint needed;
-                    int kernelError;
-                    fixed (byte* pointer = buffer)
-                    {
-                        queryCount++;
-                        stage = 4;
-                        if (TemporaryDescriptorQuery94.GetKernelObjectSecurity(handle, 0x17, (nint)pointer, (uint)buffer.Length, out needed))
-                        {
-                            var kernelBytes = new byte[checked((int)needed)];
-                            Marshal.Copy((nint)pointer, kernelBytes, 0, kernelBytes.Length);
-                            var kernel = new RawSecurityDescriptor(kernelBytes, 0);
-                            var header = (TemporaryDescriptorQuery94.SecurityDescriptorRelative*)pointer;
-                            var headerOwner = header->Owner == 0 ? null : new SecurityIdentifier((nint)(pointer + header->Owner));
-                            var headerGroup = header->Group == 0 ? null : new SecurityIdentifier((nint)(pointer + header->Group));
-                            var headerDacl = TemporaryDescriptorQuery94.ReadAcl(header->Dacl == 0 ? 0 : (nint)(pointer + header->Dacl));
-                            var headerLabel = TemporaryDescriptorQuery94.ReadAcl(header->Sacl == 0 ? 0 : (nint)(pointer + header->Sacl));
-                            var after = file.GetAccessControl(AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group)
-                                .GetSecurityDescriptorBinaryForm();
-                            TestContext.Current.TestOutputHelper?.WriteLine(
-                                $"protected={protectedFile}; infoLength={infoLength}; kernelLength={needed}; kernelQueryCount={queryCount}; infoControl={infoControl}; kernelControl={(ushort)kernel.ControlFlags}; infoDaclLength={info.DiscretionaryAcl?.BinaryLength ?? 0}; kernelDaclLength={kernel.DiscretionaryAcl?.BinaryLength ?? 0}; infoLabelLength={info.SystemAcl?.BinaryLength ?? 0}; kernelLabelLength={kernel.SystemAcl?.BinaryLength ?? 0}; daclEqual={TemporaryDescriptorQuery94.AclEqual(info.DiscretionaryAcl, kernel.DiscretionaryAcl)}; controlEqual={infoControl == (ushort)kernel.ControlFlags}; ownerEqual={Equals(info.Owner, kernel.Owner)}; groupEqual={Equals(info.Group, kernel.Group)}; labelEqual={TemporaryDescriptorQuery94.AclEqual(info.SystemAcl, kernel.SystemAcl)}; headerControlEqual={header->Control == (ushort)kernel.ControlFlags}; headerOwnerEqual={Equals(headerOwner, kernel.Owner)}; headerGroupEqual={Equals(headerGroup, kernel.Group)}; headerDaclEqual={TemporaryDescriptorQuery94.AclEqual(headerDacl, kernel.DiscretionaryAcl)}; headerLabelEqual={TemporaryDescriptorQuery94.AclEqual(headerLabel, kernel.SystemAcl)}; fileSecurityUnchanged={before.AsSpan().SequenceEqual(after)}");
-                            return;
-                        }
-                        kernelError = Marshal.GetLastPInvokeError();
-                    }
-                    if (kernelError != errorInsufficientBuffer || needed <= (uint)buffer.Length)
-                        throw new Win32Exception(kernelError);
-                    buffer = new byte[checked((int)needed)];
-                }
+                    ReadAcl(label), ReadAcl(dacl));
+                return new Snapshot(descriptor, WindowsNative.GetSecurityDescriptorLength(pointer), control, 1, true);
             }
-            finally { WindowsNative.LocalFree(infoPointer); }
+            finally { WindowsNative.LocalFree(pointer); }
         }
-        catch (Exception error)
-        {
-            // Deliberately omit the original exception and its potentially identifying message.
-            throw new InvalidOperationException($"Temporary descriptor diagnostic failed; stage={stage}; hresult={error.HResult}; nativeError={(error is Win32Exception native ? native.NativeErrorCode : 0)}.");
-        }
-    }
 
-    // Temporary declarations and materialization only, with no product permission decisions.
-    private static class TemporaryDescriptorQuery94
-    {
+        private static unsafe Snapshot QueryKernel(SafeFileHandle handle)
+        {
+            Span<byte> buffer = stackalloc byte[1024];
+            var queryCount = 0;
+            while (true)
+            {
+                uint needed;
+                int error;
+                fixed (byte* pointer = buffer)
+                {
+                    queryCount++;
+                    if (GetKernelObjectSecurity(handle, 0x17, (nint)pointer, (uint)buffer.Length, out needed))
+                    {
+                        var bytes = new byte[checked((int)needed)];
+                        Marshal.Copy((nint)pointer, bytes, 0, bytes.Length);
+                        var descriptor = new RawSecurityDescriptor(bytes, 0);
+                        var header = (SecurityDescriptorRelative*)pointer;
+                        var owner = header->Owner == 0 ? null : new SecurityIdentifier((nint)(pointer + header->Owner));
+                        var group = header->Group == 0 ? null : new SecurityIdentifier((nint)(pointer + header->Group));
+                        var dacl = ReadAcl(header->Dacl == 0 ? 0 : (nint)(pointer + header->Dacl));
+                        var label = ReadAcl(header->Sacl == 0 ? 0 : (nint)(pointer + header->Sacl));
+                        var matches = header->Control == (ushort)descriptor.ControlFlags
+                            && Equals(owner, descriptor.Owner) && Equals(group, descriptor.Group)
+                            && AclEqual(dacl, descriptor.DiscretionaryAcl) && AclEqual(label, descriptor.SystemAcl);
+                        return new Snapshot(descriptor, needed, header->Control, queryCount, matches);
+                    }
+                    error = Marshal.GetLastPInvokeError();
+                }
+                if (error != 122 || needed <= (uint)buffer.Length)
+                    throw new Win32Exception(error);
+                buffer = new byte[checked((int)needed)];
+            }
+        }
+
+        private static bool Same(Snapshot left, Snapshot right) => left.Control == right.Control
+            && Equals(left.Descriptor.Owner, right.Descriptor.Owner) && Equals(left.Descriptor.Group, right.Descriptor.Group)
+            && AclEqual(left.Descriptor.DiscretionaryAcl, right.Descriptor.DiscretionaryAcl)
+            && AclEqual(left.Descriptor.SystemAcl, right.Descriptor.SystemAcl);
+
+        private static bool HasLowLabel(RawAcl? acl)
+        {
+            if (acl is null)
+                return false;
+            foreach (GenericAce ace in acl)
+            {
+                if ((byte)ace.AceType != 0x11)
+                    continue;
+                var bytes = new byte[ace.BinaryLength];
+                ace.GetBinaryForm(bytes, 0);
+                // SYSTEM_MANDATORY_LABEL_ACE stores its integrity SID after the header and mask.
+                if (new SecurityIdentifier(bytes, 8).Equals(LowLabel))
+                    return true;
+            }
+            return false;
+        }
+
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool GetKernelObjectSecurity(SafeFileHandle handle, uint information, nint descriptor, uint length, out uint needed);
+        private static extern bool GetKernelObjectSecurity(SafeFileHandle handle, uint information, nint descriptor, uint length, out uint needed);
 
         [StructLayout(LayoutKind.Sequential)]
-        internal struct SecurityDescriptorRelative
+        private struct SecurityDescriptorRelative
         {
             public byte Revision, ResourceManagerControl;
             public ushort Control;
             public uint Owner, Group, Sacl, Dacl;
         }
 
-        internal static RawAcl? ReadAcl(nint pointer)
+        private static RawAcl? ReadAcl(nint pointer)
         {
             if (pointer == 0)
                 return null;
@@ -315,7 +450,7 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
             return new RawAcl(bytes, 0);
         }
 
-        internal static bool AclEqual(RawAcl? left, RawAcl? right)
+        private static bool AclEqual(RawAcl? left, RawAcl? right)
         {
             if (left is null || right is null)
                 return left is null && right is null;
