@@ -94,7 +94,7 @@ function New-PrivateWpaCsvParser([IO.Stream] $Stream) {
     return $parser
 }
 
-function Test-PrivateWpaIdentityKeys([string] $ProfilePath) {
+function Test-PrivateWpaRawIdentityColumns([string] $ProfilePath) {
     $reader = $null
     $known = $false
     $keyCount = 0U
@@ -114,31 +114,31 @@ function Test-PrivateWpaIdentityKeys([string] $ProfilePath) {
         $presets = $document.SelectNodes('/w:WpaProfileContainer[@Version="2"]/w:Content/w:Views/w:View/w:Graphs/w:Graph[translate(@Guid,"ABCDEF","abcdef")="c58f5fea-0319-4046-932d-e695ebe20b47"]/w:Preset', $manager)
         if ($presets.Count -ne 1) { throw [IO.InvalidDataException]::new() }
         $columns = $presets[0].SelectNodes('w:Columns/w:Column', $manager)
-        if (-not [uint32]::TryParse($presets[0].GetAttribute('KeyColumnCount'), [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$keyCount) -or $keyCount -eq 0 -or $keyCount -gt $columns.Count) { throw [IO.InvalidDataException]::new() }
+        if (-not [uint32]::TryParse($presets[0].GetAttribute('KeyColumnCount'), [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$keyCount) -or $keyCount -ne 0) { throw [IO.InvalidDataException]::new() }
         $identities = [ordered]@{ 'New Process' = 'b065487c-5e32-4f1f-a2cd-581e086ce29e'; 'New Thread Id' = '944ed37a-5774-421e-b2d5-84f17a4b3a05'; 'New Prev Wait Reason' = 'fe7ccd45-6275-413e-a538-3587f0eb452b' }
         foreach ($label in $identities.Keys) {
             $occurrences = 0
-            $keyed = $false
+            $identity = $false
             for ($i = 0; $i -lt $columns.Count; $i++) {
                 if ([string]::Equals($columns[$i].GetAttribute('Name'), $label, [StringComparison]::Ordinal)) {
                     $occurrences++
-                    $keyed = $i -lt $keyCount -and [string]::Equals($columns[$i].GetAttribute('Guid'), $identities[$label], [StringComparison]::OrdinalIgnoreCase)
+                    $identity = [string]::Equals($columns[$i].GetAttribute('Guid'), $identities[$label], [StringComparison]::OrdinalIgnoreCase)
                 }
             }
-            if ($occurrences -eq 1 -and $keyed) { $matches++ }
-            Write-Host "WPA_TARGET_PROFILE_IDENTITY label=$label occurrences=$occurrences declaredKey=$([int]($occurrences -eq 1 -and $keyed))"
+            if ($occurrences -eq 1 -and $identity) { $matches++ }
+            Write-Host "WPA_TARGET_PROFILE_IDENTITY label=$label occurrences=$occurrences rawIdentityColumn=$([int]($occurrences -eq 1 -and $identity))"
         }
         $known = $matches -eq 3
     }
     catch { Write-Host "WPA_TARGET_PROFILE_KEYS_UNKNOWN hresult=$($_.Exception.HResult)" }
     finally { if ($null -ne $reader) { $reader.Dispose() } }
-    Write-Host "WPA_TARGET_PROFILE_KEYS declaredKeyColumns=$keyCount identityKeyMatches=$matches identityGroupingUnknown=$([int](-not $known))"
+    Write-Host "WPA_TARGET_PROFILE_KEYS declaredKeyColumns=$keyCount rawIdentityMatches=$matches rawRowGroupingUnknown=$([int](-not $known))"
     return $known
 }
 
 function Read-PrivateNativeWaitWpaReports([string] $Directory, [string] $Scratch, [string] $ProfilePath, [uint32] $TargetProcessId, [uint32[]] $TargetThreadIds) {
     $required = @('New Process', 'New Thread Id', 'New Prev Wait Reason', 'Readying Process', 'Readying Thread Id', 'CPU')
-    if (-not (Test-PrivateWpaIdentityKeys $ProfilePath)) { return @{ Status = 44 } }
+    if (-not (Test-PrivateWpaRawIdentityColumns $ProfilePath)) { return @{ Status = 44 } }
     $queue = [Collections.Generic.Queue[object]]::new()
     $queue.Enqueue(@{ Path = $Directory; Depth = 0 })
     $selected = $null
@@ -345,7 +345,7 @@ function Read-PrivateNativeWaitWpaReports([string] $Directory, [string] $Scratch
     return @{ Status = $status }
 }
 
-# The private view changes only the inspected original preset's identity-key boundary.
+# The private view removes grouping from the inspected original preset to export raw rows.
 function New-PrivateThreadWaitWpaProfile([string] $SourcePath, [string] $DestinationPath) {
     $reader = $null
     $writer = $null
@@ -375,10 +375,10 @@ function New-PrivateThreadWaitWpaProfile([string] $SourcePath, [string] $Destina
                 -not [string]::Equals($columns[$index].GetAttribute('Name'), $labels[$index], [StringComparison]::Ordinal)) { throw [IO.InvalidDataException]::new() }
         }
         $original = $document.OuterXml
-        $null = $preset.SetAttribute('KeyColumnCount', $guids.Count.ToString([Globalization.CultureInfo]::InvariantCulture))
+        $null = $preset.SetAttribute('KeyColumnCount', '0')
         $null = $preset.SetAttribute('KeyColumnCount', '1')
         if ($document.OuterXml -cne $original) { throw [IO.InvalidDataException]::new() }
-        $null = $preset.SetAttribute('KeyColumnCount', $guids.Count.ToString([Globalization.CultureInfo]::InvariantCulture))
+        $null = $preset.SetAttribute('KeyColumnCount', '0')
         $output = [IO.File]::Open($DestinationPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         $writerSettings = [Xml.XmlWriterSettings]::new()
         $writerSettings.Encoding = [Text.UTF8Encoding]::new($false)
@@ -390,7 +390,7 @@ function New-PrivateThreadWaitWpaProfile([string] $SourcePath, [string] $Destina
         $output.Dispose()
         $output = $null
         $hash = (Get-FileHash -LiteralPath $DestinationPath -Algorithm SHA256).Hash
-        Write-Host "WPA_TARGET_PROFILE_VIEW derived=1 originalFileModified=0 originalFingerprintVerified=1 precisePresets=1 originalKeys=1 newKeys=$($guids.Count) semanticAttributesChanged=1 otherXmlSemanticsPreserved=1 fileReferences=0 sha256=$hash"
+        Write-Host "WPA_TARGET_PROFILE_VIEW derived=1 originalFileModified=0 originalFingerprintVerified=1 precisePresets=1 originalKeys=1 newKeys=0 semanticAttributesChanged=1 otherXmlSemanticsPreserved=1 fileReferences=0 sha256=$hash"
         return $DestinationPath
     }
     finally {
