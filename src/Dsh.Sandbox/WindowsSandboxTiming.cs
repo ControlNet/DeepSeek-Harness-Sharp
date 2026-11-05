@@ -11,7 +11,7 @@ internal static class WindowsSandboxTiming
     private const int ProgressInterval = 4096;
     private const int SnapshotIntervalSeconds = 15;
     private const int MaximumSnapshots = 3;
-    private const int ActiveSlotCapacity = 32;
+    private const int ActiveSlotCapacity = 128;
     [ThreadStatic] private static uint _nativeThreadId;
     private static long _nextOwner;
     private static long _nextObservation;
