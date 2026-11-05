@@ -146,6 +146,58 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
         Assert.Equal(ReadDacl(hostAfter), ReadDacl(lateFile));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Category", "SandboxNative")]
+    public async Task ReadOnlyFile_WithLargeProtectedAcl_PreservesReadOnlyAuthorityAndRestoresAcl(bool existingReadGrant)
+    {
+        const int syntheticPrincipalCount = 400;
+        const int firstPrincipalRid = 10000;
+        const int largeDescriptorThreshold = 8192;
+        if (!OperatingSystem.IsWindows())
+            Assert.Skip("This consumer requires Windows AppContainer and native filesystem ACLs.");
+        var working = Directory.CreateDirectory(Path.Combine(_root, "working")).FullName;
+        var input = new FileInfo(Path.Combine(_root, "large-acl.txt"));
+        File.WriteAllText(input.FullName, "large-descriptor-read");
+        var acl = input.GetAccessControl(AccessControlSections.Access);
+        acl.SetAccessRuleProtection(isProtected: true, preserveInheritance: true);
+        // These distinct synthetic principals only enlarge this owned test file's descriptor.
+        for (var index = 0; index < syntheticPrincipalCount; index++)
+            acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier($"S-1-5-21-0-0-0-{firstPrincipalRid + index}"),
+                FileSystemRights.ReadAttributes, AccessControlType.Allow));
+        if (existingReadGrant)
+            acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier("S-1-15-2-2"),
+                FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+        input.SetAccessControl(acl);
+        Assert.True(input.GetAccessControl(AccessControlSections.Access).GetSecurityDescriptorBinaryForm().Length > largeDescriptorThreshold);
+        var originalAcl = ReadDacl(input.FullName);
+
+        await using (var consumer = await SandboxedProcess.StartAsync(new SandboxProcessOptions
+        {
+            Executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
+            WorkingDirectory = working,
+            ReadOnlyPaths = [input.FullName],
+            Arguments = ["/D", "/Q", "/V:ON", "/C",
+                @"set dshLarge=&set /p dshLarge=<..\large-acl.txt&echo !dshLarge!&(echo tampered>>..\large-acl.txt) 2>nul&exit /b 0"],
+        }, TestContext.Current.CancellationToken))
+        {
+            var output = new StreamReader(consumer.StandardOutput).ReadToEndAsync(TestContext.Current.CancellationToken);
+            var error = new StreamReader(consumer.StandardError).ReadToEndAsync(TestContext.Current.CancellationToken);
+            await consumer.StandardInput.DisposeAsync();
+            Assert.Equal(0, await consumer.WaitForExitAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(Deadline, TestContext.Current.CancellationToken));
+            var stdout = await output;
+            var diagnostic = System.Text.RegularExpressions.Regex.Replace(await error, """(?:[A-Za-z]:[\\/]|/)[^\s"'<>]+""", "<path>");
+            Assert.True(stdout.Contains("large-descriptor-read", StringComparison.Ordinal), $"The real large-ACL file consumer returned no data; stderr={diagnostic}");
+            Assert.Equal("large-descriptor-read", File.ReadAllText(input.FullName));
+        }
+        AssertDaclRestored(originalAcl, input.FullName);
+        Assert.True(input.GetAccessControl(AccessControlSections.Access).AreAccessRulesProtected);
+        File.WriteAllText(input.FullName, "host-write-after-disposal");
+        Assert.Equal("host-write-after-disposal", File.ReadAllText(input.FullName));
+    }
+
     [Fact]
     [Trait("Category", "SandboxNative")]
     public void ReadableRootGroups_MergeIndependentTreesBeforeOverlappingWriteOverridesAreReused()
