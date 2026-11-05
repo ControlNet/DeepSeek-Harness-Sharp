@@ -13,8 +13,7 @@ namespace Dsh.Sandbox;
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsAclLease : IDisposable
 {
-    private const int ReadProbeParallelism = 4;
-    private const int ReadProbeBatchSize = 128;
+    private const int MaximumReadProofWindow = 4096;
     private const int ReadExecute = 0x1200a9;
     private const int Modify = 0x1301bf;
     private const int Delete = 0x10000;
@@ -154,48 +153,52 @@ internal sealed class WindowsAclLease : IDisposable
             _grantEntriesCompleted++;
             WindowsSandboxTiming.Progress(_costs, "grant-entry-complete", _grantEntriesCompleted);
         };
-        var options = new ParallelOptions { MaxDegreeOfParallelism = ReadProbeParallelism, CancellationToken = cancellationToken };
-        var reusable = 1;
-        Action<int, ParallelLoopState> probe = (index, state) =>
+        WindowsReadProofCoordinator? proofs = null;
+        Func<int, bool>? probe = null;
+        Exception? applyFailure = null;
+        bool Probe(int index)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             var canReuse = _entries[offset + index].CanReuseReadGrant(_sid, ReadExecute, ReadExecute, ordered[index].Value.Directory,
                     true, policy.AllowNetwork, effectiveRead);
             var completed = Interlocked.Increment(ref _probeEntriesCompleted);
             WindowsSandboxTiming.Progress(_costs, "probe-entry-complete", completed);
-            if (!canReuse)
-            {
-                Interlocked.Exchange(ref reusable, 0);
-                state.Stop();
-            }
-        };
+            return canReuse;
+        }
         try
         {
             // The caller holds the gate until every pure probe finishes; mutations keep their stable serial order.
             for (var start = 0; start < ordered.Length;)
             {
-                var end = start + Math.Min(ReadProbeBatchSize, ordered.Length - start);
-                var readOnly = effectiveRead is not null;
-                for (var index = start; readOnly && index < end; index++)
-                    readOnly = !ordered[index].Value.Write;
+                var firstBatch = start == 0;
+                var write = ordered[start].Value.Write;
+                var limit = start + Math.Min(MaximumReadProofWindow, ordered.Length - start);
+                var end = start + 1;
+                while (end < limit && ordered[end].Value.Write == write)
+                    end++;
                 WindowsSandboxTiming.Progress(_costs, "acl-lock-wait", start);
                 lock (AclGate)
                 {
                     WindowsSandboxTiming.Progress(_costs, "acl-lock-acquired", start);
-                    if (readOnly)
-                    {
-                        reusable = 1;
-                        WindowsSandboxTiming.Progress(_costs, "probe-start", start);
-                        Parallel.For(start, end, options, probe);
-                        WindowsSandboxTiming.Progress(_costs, "probe-complete", end);
-                    }
-                    if (!readOnly || reusable == 0)
+                    if (!write && effectiveRead is not null)
+                        while (start < end)
+                        {
+                            WindowsSandboxTiming.Progress(_costs, "probe-start", start);
+                            start = (proofs ??= new WindowsReadProofCoordinator(ordered.Length))
+                                .ProbePrefix(start, end, probe ??= Probe, cancellationToken);
+                            WindowsSandboxTiming.Progress(_costs, "probe-complete", start);
+                            if (start < end)
+                            {
+                                grant(start);
+                                start++;
+                            }
+                        }
+                    else
                         for (var index = start; index < end; index++)
                             grant(index);
                 }
                 WindowsSandboxTiming.Progress(_costs, "batch-complete", end);
                 _costs.Progress(end);
-                if (start == 0)
+                if (firstBatch)
                 {
                     WindowsSandboxTiming.Mark(_costs, "first-batch-complete", end);
                     _costs.Emit("first-batch-complete");
@@ -203,16 +206,18 @@ internal sealed class WindowsAclLease : IDisposable
                 start = end;
             }
         }
-        catch (AggregateException failure)
+        catch (Exception error)
         {
-            var original = failure.InnerExceptions[0];
-            foreach (var exception in failure.InnerExceptions)
-                if (exception is not OperationCanceledException)
-                {
-                    original = exception;
-                    break;
-                }
-            ExceptionDispatchInfo.Throw(original);
+            applyFailure = error;
+            throw;
+        }
+        finally
+        {
+            try { proofs?.Dispose(); }
+            catch (Exception) when (applyFailure is not null)
+            {
+                // Disposal finishes all joins before throwing; preserve the original grant/proof failure.
+            }
         }
     }
 
