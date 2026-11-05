@@ -378,3 +378,19 @@ jobs:
           print(f"SDK_POST_TEST_RETURN_CODE={code}; stdoutBytes={len(output)}; stderrBytes={len(error)}", flush=True)
           sys.exit(code if code >= 0 else 128 - code)
           PY
+
+      - name: Verify Core-neutral settings and real SDK shutdown consumers
+        if: inputs.suite == 'host-review-96'
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe"
+          ARGS=(-noColor -parallelMode none -reporter verbose
+            -trait- Category=GpuStress -trait- Category=OnlyGpu
+            -trait- Category=RenderBench -trait- Category=LlmSmoke)
+          "$EXE" "${ARGS[@]}" -class Dsh.Tests.SdkTests -class Dsh.Tests.SettingsMutationTests -class Dsh.Tests.SettingsTemplateTests
+          "$EXE" "${ARGS[@]}" -class Dsh.Tests.PluginWorkerEntrypointTests -class Dsh.Tests.PtcRuntimeTests -failSkips
+          "$EXE" "${ARGS[@]}" -class Dsh.Tests.PtyDaemonTests -class Dsh.Tests.PtyDaemonAuthTests -class Dsh.Tests.PtyDaemonKillTests -class Dsh.Tests.PtyDaemonSubscribeTests
+          "$EXE" "${ARGS[@]}" -class Dsh.Tests.PluginManagerToolTests -class Dsh.Tests.HotPlugTests
+          "$EXE" "${ARGS[@]}" -class Dsh.Tests.WindowsDirectoryCollectorTests -class Dsh.Tests.WindowsSandboxAuthorityTests -failSkips
+          "$EXE" "${ARGS[@]}" -method Dsh.Tests.PluginSandboxIntegrationTests.FailedWorkerCall_RetiresSharedWorker_AndExplicitEnableDoesNotReplay -failSkips
