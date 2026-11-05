@@ -183,13 +183,11 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
             var output = new StreamReader(consumer.StandardOutput).ReadToEndAsync(TestContext.Current.CancellationToken);
             var error = new StreamReader(consumer.StandardError).ReadToEndAsync(TestContext.Current.CancellationToken);
             Assert.Equal(originalFileAcl, ReadDacl(input.FullName));
-            // Only the real directory grant can supply the restricted token's read authority here.
-            // The explicit creation ACL gives the host access, but grants no ambient AppContainer rights.
-            var lateAcl = new FileSecurity();
+            // Keep the directory's inherited authority when granting the creating host explicit access.
+            File.WriteAllText(lateFile.FullName, "late-read");
+            var lateAcl = lateFile.GetAccessControl(AccessControlSections.Access);
             lateAcl.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
-            using (var stream = lateFile.Create(FileMode.CreateNew, FileSystemRights.FullControl, FileShare.Read,
-                4096, FileOptions.None, lateAcl))
-                stream.Write("late-read"u8);
+            lateFile.SetAccessControl(lateAcl);
             await consumer.StandardInput.WriteAsync("continue\n"u8.ToArray(), TestContext.Current.CancellationToken);
             await consumer.StandardInput.DisposeAsync();
             Assert.Equal(0, await consumer.WaitForExitAsync(TestContext.Current.CancellationToken)
