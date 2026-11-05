@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.ComponentModel;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
@@ -30,13 +31,23 @@ internal sealed class WindowsAclLease : IDisposable
     private static readonly Dictionary<string, TemporaryInheritance> ProtectedInheritance = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Entry> _entries = [];
     private readonly SecurityIdentifier _sid;
+    private readonly WindowsSandboxTiming.Costs _costs;
+    private IDisposable? _observation;
+    private int _rootOrdinal;
+    private int _probeEntriesCompleted, _grantEntriesCompleted, _ancestorsCompleted;
     private bool _disposed;
 
-    private WindowsAclLease(SecurityIdentifier sid) => _sid = sid;
-
-    public static WindowsAclLease CreateBootstrap(nint sid, SandboxPolicy policy, CancellationToken cancellationToken)
+    private WindowsAclLease(SecurityIdentifier sid, WindowsSandboxTiming.Costs costs)
     {
-        var lease = new WindowsAclLease(new SecurityIdentifier(sid));
+        _sid = sid;
+        _costs = costs;
+        _observation = WindowsSandboxTiming.Register(costs);
+    }
+
+    public static WindowsAclLease CreateBootstrap(nint sid, SandboxPolicy policy, CancellationToken cancellationToken,
+        WindowsSandboxTiming.Costs costs)
+    {
+        var lease = new WindowsAclLease(new SecurityIdentifier(sid), costs);
         try
         {
             // Bootstrap grants apply only to the executable and working-directory objects before the suspended token is available.
@@ -51,7 +62,7 @@ internal sealed class WindowsAclLease : IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 if (SandboxPolicy.Contains(windows, path))
                     return;
-                var entry = new Entry(path, bootstrap: true);
+                var entry = new Entry(path, lease._costs, bootstrap: true);
                 lease._entries.Add(entry);
                 entry.Grant(lease._sid, ReadExecute, ReadExecute, false, false, policy.AllowNetwork, null, cancellationToken);
             }
@@ -69,7 +80,13 @@ internal sealed class WindowsAclLease : IDisposable
 
     public void Apply(SandboxPolicy policy, SafeFileHandle process, CancellationToken cancellationToken)
     {
-        using var effectiveRead = EffectiveRead.TryCreate(process);
+        WindowsSandboxTiming.Mark(_costs, "apply-start");
+        try
+        {
+        WindowsSandboxTiming.Mark(_costs, "effective-token-start");
+        using var effectiveRead = EffectiveRead.TryCreate(process, _costs);
+        WindowsSandboxTiming.Mark(_costs, "effective-token-complete", effectiveRead is null ? 0 : 1);
+        WindowsSandboxTiming.Mark(_costs, "collect-all-start");
         var paths = new Dictionary<string, (bool Write, bool Directory)>(StringComparer.OrdinalIgnoreCase);
         var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         foreach (var grant in policy.Writable.OrderBy(static grant => grant.Source.Length))
@@ -85,6 +102,8 @@ internal sealed class WindowsAclLease : IDisposable
             else if (policy.Writable.Any(write => SandboxPolicy.Contains(write.Source, denied)))
                 throw new NotSupportedException("A denied path within a writable grant must exist before launch.");
         }
+        WindowsSandboxTiming.Mark(_costs, "collect-all-complete", paths.Count);
+        WindowsSandboxTiming.Mark(_costs, "ancestors-start", paths.Count);
         var checkedAncestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var path in paths.Keys)
             for (var parent = Path.GetDirectoryName(path); parent is not null; parent = Path.GetDirectoryName(parent))
@@ -92,9 +111,24 @@ internal sealed class WindowsAclLease : IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 if (paths.ContainsKey(parent) || !checkedAncestors.Add(parent))
                     break;
-                Entry.DemandAmbientAncestorGrant(parent, policy.AllowNetwork);
+                Entry.DemandAmbientAncestorGrant(parent, policy.AllowNetwork, _costs);
+                _ancestorsCompleted++;
+                WindowsSandboxTiming.Progress(_costs, "ancestors-progress", checkedAncestors.Count);
             }
+        WindowsSandboxTiming.Mark(_costs, "ancestors-complete", checkedAncestors.Count);
+        WindowsSandboxTiming.Mark(_costs, "grants-start", paths.Count);
+        _costs.Emit("grants-start");
         ApplyGrants(policy, paths, effectiveRead, cancellationToken);
+        WindowsSandboxTiming.Mark(_costs, "grants-complete", paths.Count);
+        }
+        finally
+        {
+            _costs.Emit("apply-final");
+            WindowsSandboxTiming.Mark(_costs, "ancestors-final", _ancestorsCompleted);
+            WindowsSandboxTiming.Mark(_costs, "probes-final", _probeEntriesCompleted);
+            WindowsSandboxTiming.Mark(_costs, "grants-final", _grantEntriesCompleted);
+            WindowsSandboxTiming.Mark(_costs, "apply-final");
+        }
     }
 
     private void ApplyGrants(SandboxPolicy policy, Dictionary<string, (bool Write, bool Directory)> paths,
@@ -106,7 +140,7 @@ internal sealed class WindowsAclLease : IDisposable
         foreach (var item in ordered)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _entries.Add(new Entry(item.Key));
+            _entries.Add(new Entry(item.Key, _costs));
         }
         Action<int> grant = index =>
         {
@@ -117,14 +151,19 @@ internal sealed class WindowsAclLease : IDisposable
             var mask = denyDelete ? inheritedMask & ~Delete : inheritedMask;
             _entries[offset + index].Grant(_sid, mask, inheritedMask, access.Directory, denyWrite || denyDelete,
                 policy.AllowNetwork, denyWrite ? effectiveRead : null, cancellationToken);
+            _grantEntriesCompleted++;
+            WindowsSandboxTiming.Progress(_costs, "grant-entry-complete", _grantEntriesCompleted);
         };
         var options = new ParallelOptions { MaxDegreeOfParallelism = ReadProbeParallelism, CancellationToken = cancellationToken };
         var reusable = 1;
         Action<int, ParallelLoopState> probe = (index, state) =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!_entries[offset + index].CanReuseReadGrant(_sid, ReadExecute, ReadExecute, ordered[index].Value.Directory,
-                    true, policy.AllowNetwork, effectiveRead))
+            var canReuse = _entries[offset + index].CanReuseReadGrant(_sid, ReadExecute, ReadExecute, ordered[index].Value.Directory,
+                    true, policy.AllowNetwork, effectiveRead);
+            var completed = Interlocked.Increment(ref _probeEntriesCompleted);
+            WindowsSandboxTiming.Progress(_costs, "probe-entry-complete", completed);
+            if (!canReuse)
             {
                 Interlocked.Exchange(ref reusable, 0);
                 state.Stop();
@@ -139,16 +178,27 @@ internal sealed class WindowsAclLease : IDisposable
                 var readOnly = effectiveRead is not null;
                 for (var index = start; readOnly && index < end; index++)
                     readOnly = !ordered[index].Value.Write;
+                WindowsSandboxTiming.Progress(_costs, "acl-lock-wait", start);
                 lock (AclGate)
                 {
+                    WindowsSandboxTiming.Progress(_costs, "acl-lock-acquired", start);
                     if (readOnly)
                     {
                         reusable = 1;
+                        WindowsSandboxTiming.Progress(_costs, "probe-start", start);
                         Parallel.For(start, end, options, probe);
+                        WindowsSandboxTiming.Progress(_costs, "probe-complete", end);
                     }
                     if (!readOnly || reusable == 0)
                         for (var index = start; index < end; index++)
                             grant(index);
+                }
+                WindowsSandboxTiming.Progress(_costs, "batch-complete", end);
+                _costs.Progress(end);
+                if (start == 0)
+                {
+                    WindowsSandboxTiming.Mark(_costs, "first-batch-complete", end);
+                    _costs.Emit("first-batch-complete");
                 }
                 start = end;
             }
@@ -180,15 +230,25 @@ internal sealed class WindowsAclLease : IDisposable
     private void AddTree(Dictionary<string, (bool Write, bool Directory)> paths, string root, bool directory, bool write,
         CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        // Earlier trees already include every descendant with the same access.
-        // A different access still walks the subtree to narrow all existing children.
-        if (paths.TryGetValue(root, out var existing) && existing.Write == write && existing.Directory == directory)
-            return;
-        paths[root] = (write, directory);
-        if (directory)
-            WindowsDirectoryCollector.Collect(root, (path, isDirectory) => paths[path] = (write, isDirectory),
-                cancellationToken);
+        using var timing = new WindowsSandboxTiming.Collection(_costs, ++_rootOrdinal);
+        timing.Emit(write ? "collect-write-start" : "collect-read-start");
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            // Earlier trees already include every descendant with the same access.
+            // A different access still walks the subtree to narrow all existing children.
+            if (paths.TryGetValue(root, out var existing) && existing.Write == write && existing.Directory == directory)
+                return;
+            paths[root] = (write, directory);
+            if (directory)
+                WindowsDirectoryCollector.Collect(root, (path, isDirectory) => paths[path] = (write, isDirectory),
+                    cancellationToken, timing);
+            timing.Emit("collect-complete");
+        }
+        finally
+        {
+            timing.Emit("collect-final");
+        }
     }
 
     public void Dispose()
@@ -196,14 +256,25 @@ internal sealed class WindowsAclLease : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        List<Exception>? failures = null;
-        for (var index = _entries.Count - 1; index >= 0; index--)
+        try
         {
-            try { _entries[index].Remove(_sid); }
-            catch (Exception exception) { (failures ??= []).Add(exception); }
+            WindowsSandboxTiming.Mark(_costs, "lease-dispose-start", _entries.Count);
+            List<Exception>? failures = null;
+            for (var index = _entries.Count - 1; index >= 0; index--)
+            {
+                try { _entries[index].Remove(_sid); }
+                catch (Exception exception) { (failures ??= []).Add(exception); }
+                WindowsSandboxTiming.Progress(_costs, "lease-dispose-progress", _entries.Count - index);
+            }
+            _costs.Emit("lease-dispose-final");
+            WindowsSandboxTiming.Mark(_costs, "lease-dispose-final", _entries.Count);
+            if (failures is not null)
+                throw new AggregateException("Removing the AppContainer filesystem grants failed.", failures);
         }
-        if (failures is not null)
-            throw new AggregateException("Removing the AppContainer filesystem grants failed.", failures);
+        finally
+        {
+            Interlocked.Exchange(ref _observation, null)?.Dispose();
+        }
     }
 
     private sealed class WritableLabel(byte[]? original)
@@ -218,7 +289,7 @@ internal sealed class WindowsAclLease : IDisposable
         public int Owners { get; set; } = 1;
     }
 
-    private sealed class EffectiveRead(SafeAccessTokenHandle token) : IDisposable
+    private sealed class EffectiveRead(SafeAccessTokenHandle token, WindowsSandboxTiming.Costs costs) : IDisposable
     {
         private const uint TokenQuery = 0x0008;
         private const uint TokenDuplicate = 0x0002;
@@ -238,7 +309,7 @@ internal sealed class WindowsAclLease : IDisposable
         private readonly Lock _proofGate = new();
         private HashSet<byte[]>? _positiveProofs;
 
-        public static EffectiveRead? TryCreate(SafeFileHandle process)
+        public static EffectiveRead? TryCreate(SafeFileHandle process, WindowsSandboxTiming.Costs costs)
         {
             if (!WindowsNative.OpenProcessToken(process, TokenQuery | TokenDuplicate, out var primary))
             {
@@ -248,7 +319,7 @@ internal sealed class WindowsAclLease : IDisposable
             using (primary)
             {
                 if (WindowsNative.DuplicateTokenEx(primary, TokenQuery, 0, SecurityImpersonation, ImpersonationToken, out var duplicate))
-                    return new EffectiveRead(duplicate);
+                    return new EffectiveRead(duplicate, costs);
                 duplicate.Dispose();
                 return null;
             }
@@ -263,30 +334,41 @@ internal sealed class WindowsAclLease : IDisposable
 
         public unsafe bool CanRead(nint descriptor, ushort control)
         {
-            // Absolute descriptors contain pointers, not a contiguous descriptor image.
-            var length = (control & (ushort)ControlFlags.SelfRelative) != 0
-                ? WindowsNative.GetSecurityDescriptorLength(descriptor) : 0;
-            var bytes = length is > 0 and <= int.MaxValue
-                ? new ReadOnlySpan<byte>((void*)descriptor, (int)length) : default;
+            ReadOnlySpan<byte> bytes;
+            using (WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.ProofDescriptorImage))
+            {
+                // Absolute descriptors contain pointers, not a contiguous descriptor image.
+                var length = (control & (ushort)ControlFlags.SelfRelative) != 0
+                    ? WindowsNative.GetSecurityDescriptorLength(descriptor) : 0;
+                bytes = length is > 0 and <= int.MaxValue
+                    ? new ReadOnlySpan<byte>((void*)descriptor, (int)length) : default;
+            }
             return CanRead(descriptor, bytes);
         }
 
         private unsafe bool CanRead(nint descriptor, ReadOnlySpan<byte> bytes)
         {
+            using (WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.ProofCacheLookup))
+            {
             if (!bytes.IsEmpty)
                 lock (_proofGate)
                     if (_positiveProofs is not null && _positiveProofs.GetAlternateLookup<ReadOnlySpan<byte>>().Contains(bytes))
                         return true;
+            }
             var mapping = new WindowsNative.GenericMapping { Read = FileGenericRead, Write = FileGenericWrite, Execute = FileGenericExecute, All = FileAllAccess };
             byte* privileges = stackalloc byte[PrivilegeBufferBytes];
             uint length = PrivilegeBufferBytes;
             // The existing SID grant remains the fallback when the native check cannot prove read authority.
+            var started = Stopwatch.GetTimestamp();
             var succeeded = WindowsNative.AccessCheck(descriptor, token, ReadExecute, ref mapping, (nint)privileges, ref length,
                 out var granted, out var allowed);
+            costs.Record(WindowsSandboxTiming.CostStage.AccessCheck, started);
             if (!succeeded || !allowed || (granted & ReadExecute) != ReadExecute)
                 return false;
             // Only this context's immutable query-only token and constant mapping share successful proofs.
             // Native checks run outside the cache lock; alternate insertion copies only a new successful image.
+            using (WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.ProofCacheInsert))
+            {
             if (!bytes.IsEmpty)
                 lock (_proofGate)
                 {
@@ -294,6 +376,7 @@ internal sealed class WindowsAclLease : IDisposable
                     if (proofs.Count < PositiveProofCapacity)
                         proofs.GetAlternateLookup<ReadOnlySpan<byte>>().Add(bytes);
                 }
+            }
             return true;
         }
 
@@ -314,8 +397,9 @@ internal sealed class WindowsAclLease : IDisposable
             public byte[] Create(ReadOnlySpan<byte> alternate) => alternate.ToArray();
         }
 
-        public static bool IsStableAllowAcl(RawAcl acl, SecurityIdentifier sid)
+        public static bool IsStableAllowAcl(RawAcl acl, SecurityIdentifier sid, WindowsSandboxTiming.Costs costs)
         {
+            using var measurement = WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.StableAclValidation);
             foreach (GenericAce entry in acl)
                 if (entry is not CommonAce { AceQualifier: AceQualifier.AccessAllowed, IsCallback: false } ace
                     || ace.SecurityIdentifier == sid)
@@ -325,6 +409,9 @@ internal sealed class WindowsAclLease : IDisposable
 
         public unsafe bool CanInheritRead(RawAcl acl, nint owner, nint group, nint label)
         {
+            byte[] bytes;
+            using (WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.InheritanceProjection))
+            {
             // Stable OI|CI grants carry the same trustee and access mask to future files and directories.
             var inherited = new RawAcl(acl.Revision, acl.Count + 1);
             // An OWNER RIGHTS entry limits owner rights to explicit ACEs for future creators.
@@ -360,15 +447,16 @@ internal sealed class WindowsAclLease : IDisposable
             }
             var descriptor = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent,
                 new SecurityIdentifier(owner), new SecurityIdentifier(group), null, inherited);
-            var bytes = new byte[descriptor.BinaryLength];
+            bytes = new byte[descriptor.BinaryLength];
             descriptor.GetBinaryForm(bytes, 0);
+            }
             // RawSecurityDescriptor.GetBinaryForm emits the complete self-relative image, including owner and group.
             fixed (byte* pointer = bytes)
                 return CanRead((nint)pointer, bytes);
         }
     }
 
-    private sealed class Entry(string path, bool bootstrap = false)
+    private sealed class Entry(string path, WindowsSandboxTiming.Costs costs, bool bootstrap = false)
     {
         private const uint BootstrapAclAccess = 0x60000;
         private const uint PolicyAclAccess = 0xe0000;
@@ -378,12 +466,15 @@ internal sealed class WindowsAclLease : IDisposable
 
         private SafeFileHandle Open(bool readOnly = false)
         {
+            using var measurement = WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.EntryOpen);
+            using var nativeOpen = readOnly ? costs.ObserveNative(WindowsSandboxTiming.NativeStage.ReadEntryOpen) : default;
             // Read proofs use a direct native open; bootstrap and policy edits keep their distinct Win32 ACL rights.
             var handle = readOnly ? WindowsNative.OpenReadAcl(path)
                 : WindowsNative.CreateFile(path, bootstrap ? BootstrapAclAccess : PolicyAclAccess, 7, 0, 3, 0x02000000, 0);
+            var error = Marshal.GetLastPInvokeError();
+            nativeOpen.Dispose();
             if (!handle.IsInvalid)
                 return handle;
-            var error = Marshal.GetLastPInvokeError();
             handle.Dispose();
             throw new Win32Exception(error, $"Cannot open an AppContainer filesystem grant (Win32 error {error}).");
         }
@@ -410,7 +501,7 @@ internal sealed class WindowsAclLease : IDisposable
             using var handle = Open(readOnly: true);
             var (acl, _, reuseRead) = ReadGrantAcl(handle, sid, directory, effectiveRead);
             if (restrict)
-                DemandNoAmbientGrant(acl, access, network);
+                DemandNoAmbientGrant(acl, access, network, costs);
             return reuseRead || inheritedAccess == access && HasInheritedGrant(acl, sid, access, directory);
         }
 
@@ -420,7 +511,7 @@ internal sealed class WindowsAclLease : IDisposable
             using var handle = Open();
             var (acl, protectedDacl, reuseRead) = ReadGrantAcl(handle, sid, directory, effectiveRead);
             if (restrict)
-                DemandNoAmbientGrant(acl, access, network);
+                DemandNoAmbientGrant(acl, access, network, costs);
             if (restrict && ProtectedInheritance.TryGetValue(path, out var sharedInheritance))
             {
                 sharedInheritance.Owners++;
@@ -463,7 +554,7 @@ internal sealed class WindowsAclLease : IDisposable
                 _label = shared;
                 return;
             }
-            var originalLabel = ReadAclBytes(handle, 0x10).Acl;
+            var originalLabel = ReadAclBytes(handle, 0x10, costs).Acl;
             if (!WindowsNative.ConvertStringSecurityDescriptorToSecurityDescriptor(directory ? "S:(ML;OICI;NW;;;LW)" : "S:(ML;;NW;;;LW)", 1, out var descriptor, out _))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot construct the AppContainer writable label.");
             try
@@ -477,8 +568,9 @@ internal sealed class WindowsAclLease : IDisposable
             finally { WindowsNative.LocalFree(descriptor); }
         }
 
-        private static bool HasInheritedGrant(RawAcl acl, SecurityIdentifier sid, int access, bool directory)
+        private bool HasInheritedGrant(RawAcl acl, SecurityIdentifier sid, int access, bool directory)
         {
+            using var measurement = WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.InheritedGrantValidation);
             var propagation = directory ? AceFlags.ContainerInherit | AceFlags.ObjectInherit : AceFlags.None;
             for (var index = 0; index < acl.Count; index++)
                 if (acl[index] is CommonAce ace && ace.AceQualifier == AceQualifier.AccessAllowed
@@ -489,16 +581,20 @@ internal sealed class WindowsAclLease : IDisposable
             return false;
         }
 
-        public static void DemandAmbientAncestorGrant(string path, bool network)
+        public static void DemandAmbientAncestorGrant(string path, bool network, WindowsSandboxTiming.Costs costs)
         {
+            var started = Stopwatch.GetTimestamp();
             using var handle = WindowsNative.CreateFile(path, 0x20000, 7, 0, 3, 0x02000000, 0);
+            var error = Marshal.GetLastPInvokeError();
+            costs.Record(WindowsSandboxTiming.CostStage.EntryOpen, started);
             if (handle.IsInvalid)
-                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot inspect an AppContainer filesystem grant ancestor.");
-            DemandNoAmbientGrant(ReadAcl(handle).Acl, ReadExecute, network);
+                throw new Win32Exception(error, "Cannot inspect an AppContainer filesystem grant ancestor.");
+            DemandNoAmbientGrant(ReadAcl(handle, costs).Acl, ReadExecute, network, costs);
         }
 
-        private static void DemandNoAmbientGrant(RawAcl acl, int access, bool network)
+        private static void DemandNoAmbientGrant(RawAcl acl, int access, bool network, WindowsSandboxTiming.Costs costs)
         {
+            using var measurement = WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.AmbientAclValidation);
             const uint genericAll = 0x10000000, genericWrite = 0x40000000, fileAccessBits = 0x1fffff;
             foreach (GenericAce entry in acl)
             {
@@ -573,7 +669,7 @@ internal sealed class WindowsAclLease : IDisposable
             using var handle = Open();
             if (_sidGranted || restoreInheritance)
             {
-                var acl = ReadAcl(handle).Acl;
+                var acl = ReadAcl(handle, costs).Acl;
                 var removedGrant = false;
                 for (var index = acl.Count - 1; index >= 0; index--)
                     if (acl[index] is KnownAce ace && ace.SecurityIdentifier == sid)
@@ -598,29 +694,39 @@ internal sealed class WindowsAclLease : IDisposable
         {
             if (effectiveRead is null)
             {
-                var original = ReadAcl(handle);
+                var original = ReadAcl(handle, costs);
                 return (original.Acl, original.Protected, false);
             }
+            var started = Stopwatch.GetTimestamp();
             var queryError = WindowsNative.GetSecurityInfo(handle, 1, 0x17, out var owner, out var group,
                 out var dacl, out var label, out var descriptor);
+            costs.Record(WindowsSandboxTiming.CostStage.GetSecurityInfo, started);
             if (queryError != 0)
             {
-                var original = ReadAcl(handle);
+                var original = ReadAcl(handle, costs);
                 return (original.Acl, original.Protected, false);
             }
             try
             {
-                if (!WindowsNative.GetSecurityDescriptorControl(descriptor, out var control, out _))
-                    throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot read the AppContainer filesystem grant inheritance.");
-                if (dacl == 0)
-                    throw new NotSupportedException("An AppContainer filesystem grant requires an explicit ACL.");
-                var bytes = new byte[(ushort)Marshal.ReadInt16(dacl, 2)];
-                Marshal.Copy(dacl, bytes, 0, bytes.Length);
-                var acl = new RawAcl(bytes, 0);
+                ushort control;
+                using (WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.DescriptorMaterialize))
+                {
+                    if (!WindowsNative.GetSecurityDescriptorControl(descriptor, out control, out _))
+                        throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot read the AppContainer filesystem grant inheritance.");
+                    if (dacl == 0)
+                        throw new NotSupportedException("An AppContainer filesystem grant requires an explicit ACL.");
+                }
+                RawAcl acl;
+                using (WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.DaclMaterialize))
+                {
+                    var bytes = new byte[(ushort)Marshal.ReadInt16(dacl, 2)];
+                    Marshal.Copy(dacl, bytes, 0, bytes.Length);
+                    acl = new RawAcl(bytes, 0);
+                }
                 var protectedDacl = (control & DaclProtected) != 0;
                 // Inspect every object, including protected descendants, and retain the narrowing path for this SID's existing ACEs.
                 var hasPrincipals = owner != 0 && group != 0;
-                var stable = EffectiveRead.IsStableAllowAcl(acl, sid);
+                var stable = EffectiveRead.IsStableAllowAcl(acl, sid, costs);
                 var reuseRead = hasPrincipals && stable && effectiveRead.CanRead(descriptor, control)
                     && (!directory || effectiveRead.CanInheritRead(acl, owner, group, label));
                 return (acl, protectedDacl, reuseRead);
@@ -628,19 +734,24 @@ internal sealed class WindowsAclLease : IDisposable
             finally { WindowsNative.LocalFree(descriptor); }
         }
 
-        private static (RawAcl Acl, bool Protected) ReadAcl(SafeFileHandle handle)
+        private static (RawAcl Acl, bool Protected) ReadAcl(SafeFileHandle handle, WindowsSandboxTiming.Costs costs)
         {
-            var (bytes, control) = ReadAclBytes(handle, 4);
+            var (bytes, control) = ReadAclBytes(handle, 4, costs);
+            using var measurement = WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.DaclMaterialize);
             return (new RawAcl(bytes ?? throw new NotSupportedException("An AppContainer filesystem grant requires an explicit ACL."), 0),
                 (control & DaclProtected) != 0);
         }
 
-        private static (byte[]? Acl, ushort Control) ReadAclBytes(SafeFileHandle handle, uint information)
+        private static (byte[]? Acl, ushort Control) ReadAclBytes(SafeFileHandle handle, uint information, WindowsSandboxTiming.Costs costs)
         {
             ushort control = 0;
-            Check(WindowsNative.GetSecurityInfo(handle, 1, information, out _, out _, out var dacl, out var sacl, out var descriptor));
+            var started = Stopwatch.GetTimestamp();
+            var error = WindowsNative.GetSecurityInfo(handle, 1, information, out _, out _, out var dacl, out var sacl, out var descriptor);
+            costs.Record(WindowsSandboxTiming.CostStage.GetSecurityInfo, started);
+            Check(error);
             try
             {
+                using var measurement = WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.DescriptorMaterialize);
                 if (information == 4 && !WindowsNative.GetSecurityDescriptorControl(descriptor, out control, out _))
                     throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot read the AppContainer filesystem grant inheritance.");
                 var pointer = information == 4 ? dacl : sacl;
@@ -653,16 +764,24 @@ internal sealed class WindowsAclLease : IDisposable
             finally { WindowsNative.LocalFree(descriptor); }
         }
 
-        private static unsafe void WriteAcl(SafeFileHandle handle, RawAcl acl, uint inheritance)
+        private unsafe void WriteAcl(SafeFileHandle handle, RawAcl acl, uint inheritance)
         {
-            var bytes = new byte[acl.BinaryLength];
-            acl.GetBinaryForm(bytes, 0);
+            byte[] bytes;
+            using (WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.WriteAclMaterialize))
+            {
+                bytes = new byte[acl.BinaryLength];
+                acl.GetBinaryForm(bytes, 0);
+            }
             fixed (byte* pointer = bytes)
+            {
+                using var measurement = WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.SetSecurityInfo);
                 Check(WindowsNative.SetSecurityInfo(handle, 1, 4 | inheritance, 0, 0, (nint)pointer, 0));
+            }
         }
 
-        private static void WriteLabel(SafeFileHandle handle, nint label)
+        private void WriteLabel(SafeFileHandle handle, nint label)
         {
+            using var measurement = WindowsSandboxTiming.Measure(costs, WindowsSandboxTiming.CostStage.SetSecurityInfo);
             Check(WindowsNative.SetSecurityInfo(handle, 1, 0x10, 0, 0, 0, label));
         }
 
