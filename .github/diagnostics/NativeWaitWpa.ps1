@@ -258,6 +258,7 @@ function Read-PrivateNativeWaitWpaReports([string] $Directory, [string] $Scratch
     $targetRows = 0L
     $reasonRows = 0L
     $unknownReasons = 0L
+    $unknownReasonShapes = [ordered]@{ Empty = 0L; NotApplicable = 0L; Unknown = 0L; Unwaited = 0L; NotWaiting = 0L; Dash = 0L; Decimal = 0L; Hexadecimal = 0L; Other = 0L }
     $processUnknown = 0L
     $threadUnknown = 0L
     $widthUnknown = 0L
@@ -310,7 +311,18 @@ function Read-PrivateNativeWaitWpaReports([string] $Directory, [string] $Scratch
             $targetRows++
             $reason = $fields[$indices['New Prev Wait Reason']]
             if ($reasons.ContainsKey($reason)) { $reasons[$reason]++; $reasonRows++ }
-            else { $unknownReasons++ }
+            else {
+                $unknownReasons++
+                if ($reason.Length -eq 0) { $unknownReasonShapes.Empty++ }
+                elseif ($reason -cin @('n/a', 'N/A')) { $unknownReasonShapes.NotApplicable++ }
+                elseif ($reason -cin @('Unknown', 'unknown')) { $unknownReasonShapes.Unknown++ }
+                elseif ($reason -ceq 'Unwaited') { $unknownReasonShapes.Unwaited++ }
+                elseif ($reason -cin @('Not waiting', 'Not Waiting')) { $unknownReasonShapes.NotWaiting++ }
+                elseif ($reason -ceq '-') { $unknownReasonShapes.Dash++ }
+                elseif ([regex]::IsMatch($reason, '\A[0-9]{1,10}\z')) { $unknownReasonShapes.Decimal++ }
+                elseif ([regex]::IsMatch($reason, '\A0x[0-9a-fA-F]{1,8}\z')) { $unknownReasonShapes.Hexadecimal++ }
+                else { $unknownReasonShapes.Other++ }
+            }
             foreach ($duration in $durationColumns) {
                 $number = 0.0
                 if ([double]::TryParse($fields[$duration.Column], [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$number) -and [double]::IsFinite($number) -and $number -ge 0) {
@@ -332,6 +344,7 @@ function Read-PrivateNativeWaitWpaReports([string] $Directory, [string] $Scratch
         if ($null -ne $prefix) { $prefix.Dispose() }
     }
     foreach ($label in $reasonLabels) { Write-Host "WPA_TARGET_REASON label=$label rows=$($reasons[$label])" }
+    foreach ($shape in $unknownReasonShapes.Keys) { Write-Host "WPA_TARGET_UNKNOWN_REASON_SHAPE kind=$shape rows=$($unknownReasonShapes[$shape]) interpretationVerified=0" }
     foreach ($duration in $durationColumns) {
         $durationUnknown += [int]($duration.Unknown -gt 0)
         $secondsText = $duration.Seconds.ToString('R', [Globalization.CultureInfo]::InvariantCulture)
