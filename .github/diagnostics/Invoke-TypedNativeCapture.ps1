@@ -25,7 +25,7 @@ try {
     if (-not [IO.File]::Exists($CpuReader) -or -not [IO.File]::Exists($FileReader)) { throw [IO.FileNotFoundException]::new() }
     $null = New-Item -ItemType Directory -Path $private
     $created = $true
-    Add-Type -Namespace NativeTypedCapture -Name NativeThread -UsingNamespace System.Runtime.InteropServices -MemberDefinition '[DllImport("kernel32.dll", ExactSpelling = true)] public static extern uint GetCurrentThreadId();'
+    Add-Type -Namespace NativeTypedCapture -Name NativeThread -MemberDefinition '[DllImport("kernel32.dll", ExactSpelling = true)] public static extern uint GetCurrentThreadId();'
     $current = [Diagnostics.Process]::GetCurrentProcess()
     $targetProcessId = [uint32]$current.Id
     $targetThreadId = [NativeTypedCapture.NativeThread]::GetCurrentThreadId()
