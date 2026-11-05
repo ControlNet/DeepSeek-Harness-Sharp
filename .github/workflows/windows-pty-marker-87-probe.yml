@@ -67,6 +67,50 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Verify the original formal Windows Iroh artifact provenance
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $response = & gh api -X GET 'repos/forestbat/DeepSeek-Harness-Sharp/actions/runs/42017877922/artifacts?name=iroh-ssh-windows-latest&per_page=100' 2>&1
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read the exact formal Windows Iroh artifact metadata.' }
+          $metadata = ($response -join "`n") | ConvertFrom-Json
+          $artifacts = @($metadata.artifacts | Where-Object { $_.name -ceq 'iroh-ssh-windows-latest' })
+          if ($metadata.total_count -ne 1 -or $artifacts.Count -ne 1) { throw 'Expected exactly one real formal Windows Iroh artifact.' }
+          $artifact = $artifacts[0]
+          if ($artifact.id -ne 13409862542 -or $artifact.expired -or $artifact.workflow_run.id -ne 42017877922 -or $artifact.workflow_run.head_sha -cne '7064f443207012858a1fee1924dff3b112a5766f' -or $artifact.digest -cne 'sha256:f225794dcef73d1869e394dd4e58f6ac04872d5e7bf13869af80d14285b2204b') {
+            throw 'The real Windows Iroh artifact does not match the frozen formal source.'
+          }
+          Write-Host 'VERIFIED_IROH_SOURCE run=42017877922 artifact=13409862542 head=7064f443207012858a1fee1924dff3b112a5766f'
+
+      - name: Download the original real Windows Iroh component
+        uses: actions/download-artifact@v4
+        with:
+          name: iroh-ssh-windows-latest
+          repository: forestbat/DeepSeek-Harness-Sharp
+          run-id: 42017877922
+          github-token: ${{ github.token }}
+          path: artifacts/iroh-bridge
+
+      - name: Verify the unchanged real native component tar
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-ChildItem -LiteralPath artifacts/iroh-bridge -File -Recurse)
+          if ($files.Count -ne 1 -or $files[0].Name -cne 'iroh-ssh-component.tar') { throw 'Expected only the original native component tar.' }
+          $sha256 = (Get-FileHash -LiteralPath $files[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha256 -cne '23329029af073f88bae96f98b68818b06ce4e45b2f9815845124ead3c151d4d5') { throw 'The native component tar differs from the original formal artifact.' }
+          Write-Host "VERIFIED_IROH_TAR sha256=$sha256"
+
+      - name: Publish the unchanged native component for original quick consumers
+        uses: actions/upload-artifact@v4
+        with:
+          name: iroh-ssh-windows-latest
+          path: artifacts/iroh-bridge/iroh-ssh-component.tar
+          if-no-files-found: error
+          retention-days: 7
+
   original-windows-quick:
     name: Original Windows quick with numeric terminal input observation
     needs: bridge-dryioc-feed
