@@ -384,7 +384,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose \
+          tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -parallelMode none -reporter verbose -showLiveOutput \
             -method Dsh.Tests.WindowsSandboxAuthorityTests.TemporaryDiagnostic_FileSecurityQueries_ReportComponentEquivalence \
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
