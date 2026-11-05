@@ -1,4 +1,8 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Net;
+using System.Reflection;
+using System.Runtime.ExceptionServices;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -164,6 +168,7 @@ public sealed class PluginSandboxIntegrationTests
     [InlineData(true)]
     public async Task FailedWorkerCall_RetiresSharedWorker_AndExplicitEnableDoesNotReplay(bool cancel)
     {
+        await using var observation = new ActivationFailureObservation(cancel);
         using var fixture = new Fixture();
         await fixture.StartAsync();
         var previous = await fixture.Instance("alpha");
@@ -583,6 +588,167 @@ public sealed class PluginSandboxIntegrationTests
 
     private static string Decode(JsonElement result, string property)
         => Encoding.UTF8.GetString(Convert.FromBase64String(result.GetProperty(property).GetString()!));
+
+    // Temporary bounded host-side observation; no exception or business operation is changed.
+    private sealed class ActivationFailureObservation : IAsyncDisposable
+    {
+        private const int MaximumSamples = 16;
+        private const int MaximumFrames = 64;
+        [ThreadStatic] private static bool _observing;
+        private readonly object _gate = new();
+        private readonly Sample[] _samples = new Sample[MaximumSamples];
+        private readonly bool _cancel;
+        private bool _enabled = true;
+        private int _count;
+        private int _overflow;
+        private int _contentionDrops;
+        private int _captureErrors;
+
+        public ActivationFailureObservation(bool cancel)
+        {
+            _cancel = cancel;
+            AppDomain.CurrentDomain.FirstChanceException += Observe;
+        }
+
+        private void Observe(object? sender, FirstChanceExceptionEventArgs args)
+        {
+            var error = args.Exception;
+            if (_observing || error is not UnauthorizedAccessException
+                && error is not Win32Exception { NativeErrorCode: 5 or 32 })
+                return;
+            var entered = false;
+            _observing = true;
+            try
+            {
+                // Never make the throwing thread wait for another diagnostic callback.
+                if (!Monitor.TryEnter(_gate))
+                {
+                    Interlocked.Increment(ref _contentionDrops);
+                    return;
+                }
+                entered = true;
+                if (!_enabled)
+                    return;
+                if (_count == MaximumSamples)
+                {
+                    _overflow++;
+                    return;
+                }
+                _samples[_count] = Capture(error);
+                _count++;
+            }
+            catch
+            {
+                // Only observer failures are counted here; the observed exception is neither caught nor replaced.
+                Interlocked.Increment(ref _captureErrors);
+            }
+            finally
+            {
+                if (entered)
+                    Monitor.Exit(_gate);
+                _observing = false;
+            }
+        }
+
+        private static Sample Capture(Exception error)
+        {
+            const string supervisor = "Dsh.Plugins.Sandbox.PluginSandboxSupervisor";
+            var stage = false;
+            var inspect = false;
+            var recursiveDelete = false;
+            var deleteFile = false;
+            var copyFile = false;
+            var formRead = false;
+            var workerWrapper = false;
+            var trace = new StackTrace(error, false);
+            var examined = Math.Min(trace.FrameCount, MaximumFrames);
+            for (var index = 0; index < examined; index++)
+            {
+                if (trace.GetFrame(index)?.GetMethod() is not { } method)
+                    continue;
+                stage |= Matches(method, supervisor, "Stage");
+                inspect |= Matches(method, supervisor, "InspectAsync", "<InspectAsync>d__");
+                recursiveDelete |= Matches(method, "System.IO.FileSystem", "RemoveDirectoryRecursive");
+                deleteFile |= Matches(method, "System.IO.FileSystem", "DeleteFile");
+                copyFile |= Matches(method, "System.IO.FileSystem", "CopyFile");
+                formRead |= Matches(method, "Dsh.Plugins.Sandbox.PluginSandboxLaunch", "InspectForm");
+                workerWrapper |= Matches(method, "Dsh.Transport.JsonRpcPeer", "RequestAsync", "<RequestAsync>d__")
+                    || Matches(method, "Dsh.Plugins.Sandbox.PluginSandboxConnection", "RequestAsync", "<RequestAsync>d__")
+                    || Matches(method, "Dsh.Plugins.Sandbox.PluginSandboxCatalog", "Validate");
+            }
+            var deleting = recursiveDelete || deleteFile;
+            var phase = stage && deleting ? ObservedStage.StageCleanup
+                : inspect && deleting ? ObservedStage.InspectCleanup
+                : stage && copyFile ? ObservedStage.StageCopy
+                : formRead ? ObservedStage.HostFormRead
+                : workerWrapper ? ObservedStage.WorkerReturnWrapper
+                : stage ? ObservedStage.StageOther
+                : inspect ? ObservedStage.InspectOther
+                : deleting ? ObservedStage.OtherHostDelete
+                : ObservedStage.Unknown;
+            return new Sample(error.HResult, error is Win32Exception native ? native.NativeErrorCode : -1,
+                error is UnauthorizedAccessException ? 1 : 2, phase, stage, inspect, recursiveDelete, deleteFile,
+                copyFile, formRead, workerWrapper, examined, trace.FrameCount > MaximumFrames);
+        }
+
+        private static bool Matches(MethodBase method, string owner, string name, string? stateMachinePrefix = null)
+        {
+            if (method.DeclaringType is not { } type)
+                return false;
+            return type.FullName == owner && method.Name == name
+                || stateMachinePrefix is not null && method.Name == "MoveNext"
+                    && type.DeclaringType?.FullName == owner
+                    && type.Name.StartsWith(stateMachinePrefix, StringComparison.Ordinal);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            // Unsubscribe before formatting/output, including when Fixture.StartAsync or fixture disposal failed.
+            AppDomain.CurrentDomain.FirstChanceException -= Observe;
+            int count;
+            int overflow;
+            lock (_gate)
+            {
+                if (!_enabled)
+                    return;
+                _enabled = false;
+                count = _count;
+                overflow = _overflow;
+            }
+            try
+            {
+                await Console.Error.WriteLineAsync(
+                    $"ACTIVATION_STAGE version=1 cancel={(_cancel ? 1 : 0)} samples={count} overflow={overflow} contentionDrops={Volatile.Read(ref _contentionDrops)} captureErrors={Volatile.Read(ref _captureErrors)}");
+                for (var index = 0; index < count; index++)
+                {
+                    var sample = _samples[index];
+                    await Console.Error.WriteLineAsync(
+                        $"ACTIVATION_STAGE sample={index} kind={sample.Kind} hresult={sample.HResult} native={sample.NativeErrorCode} stage={(int)sample.Stage} supervisorStage={(sample.SupervisorStage ? 1 : 0)} supervisorInspect={(sample.SupervisorInspect ? 1 : 0)} recursiveDelete={(sample.RecursiveDelete ? 1 : 0)} deleteFile={(sample.DeleteFile ? 1 : 0)} copyFile={(sample.CopyFile ? 1 : 0)} formRead={(sample.FormRead ? 1 : 0)} workerWrapper={(sample.WorkerWrapper ? 1 : 0)} frames={sample.Frames} truncated={(sample.Truncated ? 1 : 0)}");
+                }
+            }
+            catch
+            {
+                // A diagnostic-output failure must not replace the consumer's original failure.
+            }
+        }
+
+        private enum ObservedStage
+        {
+            Unknown = 0,
+            StageCleanup = 1,
+            InspectCleanup = 2,
+            StageCopy = 3,
+            HostFormRead = 4,
+            WorkerReturnWrapper = 5,
+            StageOther = 6,
+            InspectOther = 7,
+            OtherHostDelete = 8
+        }
+
+        private readonly record struct Sample(int HResult, int NativeErrorCode, int Kind, ObservedStage Stage,
+            bool SupervisorStage, bool SupervisorInspect, bool RecursiveDelete, bool DeleteFile, bool CopyFile,
+            bool FormRead, bool WorkerWrapper, int Frames, bool Truncated);
+    }
 
     internal sealed class Fixture : IDisposable
     {
