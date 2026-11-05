@@ -16,10 +16,23 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     public void Dispose() => TempTree.Delete(_root);
 
     [Fact]
-    public void CompleteTree_PreservesRecursiveEnumerationAndStableGrantOrder()
+    public void SuccessfulQueryWithoutCompleteRecords_PropagatesFailureInsteadOfPublishingPartialTree()
     {
         RequireWindows();
-        var expectedCount = PopulateTree();
+
+        var failure = Assert.Throws<IOException>(() =>
+            WindowsDirectoryCollector.HasCompleteDirectoryBatch(0, 0, _root));
+
+        Assert.Equal(unchecked((int)0x8007007a), failure.HResult);
+    }
+
+    [Theory]
+    [InlineData(7, 96)]
+    [InlineData(300, 2)]
+    public void CompleteTree_PreservesRecursiveEnumerationAndStableGrantOrder(int branches, int filesPerBranch)
+    {
+        RequireWindows();
+        var expectedCount = PopulateTree(branches, filesPerBranch);
         var hidden = Path.Combine(_root, "hidden-system.txt");
         File.WriteAllText(hidden, "included");
         File.SetAttributes(hidden, FileAttributes.Hidden | FileAttributes.System);
@@ -47,6 +60,7 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         Assert.True(expected.SequenceEqual(actual), "Collection must retain native entry order and FIFO directory order.");
         Assert.Equal(actual.Count, actual.Select(static entry => entry.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.All(actual, static entry => Assert.Equal(Directory.Exists(entry.Path), entry.Directory));
+        AssertDirectoriesReleased();
     }
 
     [Fact]
@@ -245,10 +259,14 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         Assert.Equal(1, visits);
     }
 
-    [Fact]
-    public void ExclusivelyOpenedNestedDirectory_IsReportedAndReleasesAncestors()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(300)]
+    public void ExclusivelyOpenedNestedDirectory_IsReportedAndReleasesAncestors(int siblingBranches)
     {
         RequireWindows();
+        if (siblingBranches != 0)
+            PopulateTree(siblingBranches, 1);
         var child = Directory.CreateDirectory(Path.Combine(_root, "child")).FullName;
         var middle = Directory.CreateDirectory(Path.Combine(child, "middle")).FullName;
         var nested = Directory.CreateDirectory(Path.Combine(middle, "locked")).FullName;
@@ -303,17 +321,19 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     }
 
     [Theory]
-    [InlineData(31)]
-    [InlineData(32)]
-    [InlineData(33)]
-    [InlineData(65)]
-    public void DeepTree_PreservesReferenceOrderAndReleasesParentHandles(int depth)
+    [InlineData(31, false)]
+    [InlineData(32, false)]
+    [InlineData(33, false)]
+    [InlineData(65, false)]
+    [InlineData(65, true)]
+    public void DeepTree_PreservesReferenceOrderAndReleasesParentHandles(int depth, bool longNames)
     {
         RequireWindows();
         var directory = _root;
+        var name = longNames ? new string('λ', 96) : "d";
         for (var index = 0; index < depth; index++)
         {
-            directory = Directory.CreateDirectory(Path.Combine(directory, "d")).FullName;
+            directory = Directory.CreateDirectory(Path.Combine(directory, name)).FullName;
             File.WriteAllText(Path.Combine(directory, "input.txt"), "included");
             if (index % 8 == 0)
             {
@@ -344,15 +364,17 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     }
 
     [Theory]
-    [InlineData(32)]
-    [InlineData(33)]
-    [InlineData(65)]
-    public void ExclusivelyOpenedDeepDirectory_IsReportedAndReleasesParentHandles(int depth)
+    [InlineData(32, false)]
+    [InlineData(33, false)]
+    [InlineData(65, false)]
+    [InlineData(65, true)]
+    public void ExclusivelyOpenedDeepDirectory_IsReportedAndReleasesParentHandles(int depth, bool longNames)
     {
         RequireWindows();
         var directory = _root;
+        var name = longNames ? new string('λ', 96) : "d";
         for (var index = 0; index < depth; index++)
-            directory = Directory.CreateDirectory(Path.Combine(directory, "d")).FullName;
+            directory = Directory.CreateDirectory(Path.Combine(directory, name)).FullName;
         var file = Path.Combine(directory, "input.txt");
         File.WriteAllText(file, "not enumerable");
         var actual = new List<string>();
@@ -371,22 +393,26 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         AssertDirectoriesReleased();
     }
 
-    [Fact]
-    public void InterruptedSealing_RetiresWaitingWorkersBeforeFailureIsPropagated()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InterruptedSealingOrHandleReturn_RetiresWaitingWorkersBeforeFailureIsPropagated(bool returnHandles)
     {
         RequireWindows();
-        Assert.IsType<ThreadInterruptedException>(RunInterruptedCleanup(null));
+        Assert.IsType<ThreadInterruptedException>(RunInterruptedCleanup(null, returnHandles));
     }
 
-    [Fact]
-    public void InterruptedFailureCleanup_RetiresWorkersAndPreservesThePrimaryFailure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InterruptedFailureCleanupOrHandleReturn_RetiresWorkersAndPreservesThePrimaryFailure(bool returnHandles)
     {
         RequireWindows();
         var failure = new IOException("The native operation failed before cleanup.");
-        Assert.Same(failure, RunInterruptedCleanup(failure));
+        Assert.Same(failure, RunInterruptedCleanup(failure, returnHandles));
     }
 
-    private static Exception? RunInterruptedCleanup(Exception? primaryFailure)
+    private static Exception? RunInterruptedCleanup(Exception? primaryFailure, bool returnHandles)
     {
         const int threadDeadlineSeconds = 5;
         var deadline = TimeSpan.FromSeconds(threadDeadlineSeconds);
@@ -397,13 +423,24 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         var seal = queueType.GetMethod("Seal")!.CreateDelegate<Action>(queue);
         var fail = queueType.GetMethod("Fail")!.CreateDelegate<Action<Exception>>(queue);
         var demand = queueType.GetMethod("ThrowIfStopped")!.CreateDelegate<Action>(queue);
+        var returnReservation = queueType.GetMethod("ReturnHandles", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .CreateDelegate<Action<int>>(queue);
+        if (returnHandles)
+        {
+            queueType.GetMethod("RentHandles", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .CreateDelegate<Action<int>>(queue)(2);
+            if (primaryFailure is not null)
+                fail(primaryFailure);
+        }
         Exception? cleanupFailure = null;
         var worker = new Thread(run.Invoke) { IsBackground = true };
         var caller = new Thread(() =>
         {
             try
             {
-                if (primaryFailure is null)
+                if (returnHandles)
+                    returnReservation(2);
+                else if (primaryFailure is null)
                     seal();
                 else
                     fail(primaryFailure);
@@ -439,8 +476,11 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         }
     }
 
-    [Fact]
-    public void IndependentRoots_PreserveEachReferenceOrderAndCallerPublicationAcrossAdmissionSlots()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3)]
+    [InlineData(300)]
+    public void IndependentRoots_PreserveEachReferenceOrderAndCallerPublicationAcrossAdmissionSlots(int branches)
     {
         RequireWindows();
         var caller = Environment.CurrentManagedThreadId;
@@ -453,7 +493,7 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         {
             var ordinal = index;
             roots[index] = Directory.CreateDirectory(Path.Combine(_root, $"root-{index}")).FullName;
-            for (var branch = 0; branch < 3; branch++)
+            for (var branch = 0; branch < branches; branch++)
             {
                 var child = Directory.CreateDirectory(Path.Combine(roots[index], $"child-{branch}")).FullName;
                 var nested = Directory.CreateDirectory(Path.Combine(child, "nested")).FullName;
@@ -488,7 +528,7 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
                 if (Path.GetDirectoryName(path) == roots[ordinal])
                     rootVisits++;
                 else
-                    Assert.Equal(roots.Length * 3, rootVisits);
+                    Assert.Equal(roots.Length * branches, rootVisits);
                 actual[ordinal].Add((path, directory));
             });
         }
@@ -502,12 +542,15 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void LaterRootVisitorFailureOrCancellation_DrainsEarlierRootAndStopsFurtherAdmission(bool cancel)
+    [InlineData(false, 7, 96)]
+    [InlineData(true, 7, 96)]
+    [InlineData(false, 300, 1)]
+    [InlineData(true, 300, 1)]
+    public void LaterRootVisitorFailureOrCancellation_DrainsEarlierRootAndStopsFurtherAdmission(
+        bool cancel, int branches, int filesPerBranch)
     {
         RequireWindows();
-        PopulateTree();
+        PopulateTree(branches, filesPerBranch);
         var later = Directory.CreateDirectory(Path.Combine(_root, "later")).FullName;
         File.WriteAllText(Path.Combine(later, "input.txt"), "included");
         var failure = new InvalidOperationException("The later root visitor rejected collection.");
@@ -575,15 +618,15 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         }
     }
 
-    private int PopulateTree()
+    private int PopulateTree(int branches = 7, int filesPerBranch = 96)
     {
         var count = 0;
-        for (var branch = 0; branch < 7; branch++)
+        for (var branch = 0; branch < branches; branch++)
         {
             var directory = Directory.CreateDirectory(Path.Combine(_root, $"branch-{branch:00}")).FullName;
             count++;
-            // Force multiple 16 KiB native result buffers in every branch, with non-ASCII and long names.
-            for (var file = 0; file < 96; file++)
+            // Exercise Unicode and long names, with larger inputs spanning multiple native result buffers.
+            for (var file = 0; file < filesPerBranch; file++)
             {
                 File.WriteAllText(Path.Combine(directory, $"entry-{file:000}-λ-{new string('x', 80)}.txt"), "data");
                 count++;

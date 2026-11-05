@@ -13,6 +13,8 @@ internal static class WindowsDirectoryCollector
     private const int BufferSize = 16 * 1024;
     private const int WorkerCount = 255;
     private const int MaximumActiveRoots = 2;
+    private const int MaximumAdditionalHandles = 511;
+    private const int MaximumNativeNameLength = ushort.MaxValue / sizeof(char);
     private const uint ListDirectory = 1;
     private const uint Synchronize = 0x00100000;
     private const uint BackupSemantics = 0x02000000;
@@ -26,6 +28,7 @@ internal static class WindowsDirectoryCollector
     private const int ErrorFileNotFound = 2;
     private const int ErrorPathNotFound = 3;
     private const int ErrorAccessDenied = 5;
+    private const int ErrorInsufficientBuffer = 122;
     private const int ErrorFilenameExceedsRange = 206;
     private const int ErrorOperationAborted = 995;
     private const int HResultHighWordMask = unchecked((int)0xffff0000);
@@ -38,10 +41,12 @@ internal static class WindowsDirectoryCollector
     /// </summary>
     /// <remarks>
     /// Each root's entries are read and published on the caller before any of its descendants is opened.
-    /// At most two root anchors and 255 dedicated workers own handles; every native buffer is 16 KiB.
-    /// The caller scratch buffer and all worker buffers together are bounded by 4 MiB.
+    /// At most two caller root anchors and 511 additional native handles are open together.
+    /// Each worker reserves two handles for a root self-open and descendant, or three for segmented opens.
+    /// Ordinary opens peak at 512 total handles; segmented opens can reach 513.
+    /// Every native buffer is 16 KiB, with caller and worker buffers together bounded by 4 MiB.
     /// Root-relative names exceeding the native counted-name limit are split at directory separators.
-    /// Such opens transiently own two descendant handles per worker; queued directories own none.
+    /// Root self-opens and descendant handles close before their reservation is returned; queued directories own none.
     /// Paths, entry topology and discovery/publication queues cost O(entries).
     /// All workers join before descendant publication; callbacks retain native entry and FIFO directory order.
     /// Native calls are synchronous, with cancellation checked before opens, between entries and after completion.
@@ -156,11 +161,7 @@ internal static class WindowsDirectoryCollector
             work?.ThrowIfStopped();
             var status = NtQueryDirectoryFile(handle, 0, 0, 0, out var ioStatus, buffer, BufferSize,
                 FileFullDirectoryInformation, 0, 0, 0);
-            if (status is NoMoreFiles or NoSuchFile)
-                return;
-            if (status != 0)
-                throw DirectoryError((int)RtlNtStatusToDosError(status), directory.Path);
-            if (ioStatus.Information == 0)
+            if (!HasCompleteDirectoryBatch(status, ioStatus.Information, directory.Path))
                 return;
             var entry = (DirectoryInformation*)buffer;
             while (true)
@@ -179,6 +180,17 @@ internal static class WindowsDirectoryCollector
                 entry = (DirectoryInformation*)((byte*)entry + entry->NextEntryOffset);
             }
         }
+    }
+
+    internal static bool HasCompleteDirectoryBatch(int status, nuint byteCount, string path)
+    {
+        if (status is NoMoreFiles or NoSuchFile)
+            return false;
+        if (status != 0)
+            throw DirectoryError((int)RtlNtStatusToDosError(status), path);
+        if (byteCount == 0)
+            throw DirectoryError(ErrorInsufficientBuffer, path);
+        return true;
     }
 
     private static void PublishDirectory(DirectoryWork directory, Queue<DirectoryWork> pending,
@@ -228,6 +240,8 @@ internal static class WindowsDirectoryCollector
         private readonly object _gate = new();
         private readonly Queue<DirectoryWork> _pending = new();
         private int _outstanding;
+        private int _availableHandles = MaximumAdditionalHandles;
+        private int _handleWaiters;
         private bool _sealed;
         private ExceptionDispatchInfo? _failure;
 
@@ -285,13 +299,7 @@ internal static class WindowsDirectoryCollector
                 buffer = Marshal.AllocHGlobal(BufferSize);
                 while (Take() is { } directory)
                 {
-                    ThrowIfStopped();
-                    CancellationToken.ThrowIfCancellationRequested();
-                    var root = directory.Root;
-                    using (var handle = OpenRelativeDirectory(root.Handle!, directory.Path.AsSpan(root.RelativeStart), directory.Path, this))
-                    {
-                        CollectDirectory(handle, directory, buffer, CancellationToken, this);
-                    }
+                    CollectReservedDirectory(directory, buffer);
                     Complete(directory);
                 }
             }
@@ -304,6 +312,32 @@ internal static class WindowsDirectoryCollector
                 if (buffer != 0)
                     Marshal.FreeHGlobal(buffer);
             }
+        }
+
+        private void CollectReservedDirectory(DirectoryWork directory, nint buffer)
+        {
+            var root = directory.Root;
+            var relativePath = directory.Path.AsSpan(root.RelativeStart);
+            var handleCount = relativePath.Length <= MaximumNativeNameLength ? 2 : 3;
+            RentHandles(handleCount);
+            try
+            {
+                ThrowIfStopped();
+                CancellationToken.ThrowIfCancellationRequested();
+                using var self = OpenDirectorySegment(root.Handle!, ReadOnlySpan<char>.Empty, root.Directory.Path);
+                using var handle = OpenRelativeDirectory(self, relativePath, directory.Path, this);
+                CollectDirectory(handle, directory, buffer, CancellationToken, this);
+            }
+            catch (Exception error)
+            {
+                Fail(error);
+                throw;
+            }
+            finally
+            {
+                ReturnHandles(handleCount);
+            }
+            ThrowIfStopped();
         }
 
         public void ThrowIfStopped() => Volatile.Read(ref _failure)?.Throw();
@@ -338,6 +372,51 @@ internal static class WindowsDirectoryCollector
                 {
                     interruption ??= error;
                 }
+            }
+        }
+
+        private void RentHandles(int count)
+        {
+            lock (_gate)
+            {
+                while (true)
+                {
+                    ThrowIfStopped();
+                    if (_availableHandles >= count)
+                    {
+                        _availableHandles -= count;
+                        return;
+                    }
+                    _handleWaiters++;
+                    try
+                    {
+                        Monitor.Wait(_gate);
+                    }
+                    finally
+                    {
+                        _handleWaiters--;
+                    }
+                }
+            }
+        }
+
+        private void ReturnHandles(int count)
+        {
+            var interruption = EnterCleanupGate();
+            try
+            {
+                _availableHandles += count;
+                if (interruption is not null && _failure is null)
+                {
+                    Volatile.Write(ref _failure, ExceptionDispatchInfo.Capture(interruption));
+                    Monitor.PulseAll(_gate);
+                }
+                else if (_handleWaiters != 0)
+                    Monitor.PulseAll(_gate);
+            }
+            finally
+            {
+                Monitor.Exit(_gate);
             }
         }
 
@@ -376,8 +455,7 @@ internal static class WindowsDirectoryCollector
     private static SafeFileHandle OpenRelativeDirectory(SafeFileHandle root, ReadOnlySpan<char> relativePath,
         string path, WorkQueue work)
     {
-        const int maximumNameLength = ushort.MaxValue / sizeof(char);
-        if (relativePath.Length <= maximumNameLength)
+        if (relativePath.Length <= MaximumNativeNameLength)
             return OpenDirectorySegment(root, relativePath, path);
 
         SafeFileHandle? current = null;
@@ -388,9 +466,9 @@ internal static class WindowsDirectoryCollector
                 work.CancellationToken.ThrowIfCancellationRequested();
                 work.ThrowIfStopped();
                 var segmentLength = relativePath.Length;
-                if (segmentLength > maximumNameLength)
+                if (segmentLength > MaximumNativeNameLength)
                 {
-                    segmentLength = relativePath[..(maximumNameLength + 1)].LastIndexOfAny('\\', '/');
+                    segmentLength = relativePath[..(MaximumNativeNameLength + 1)].LastIndexOfAny('\\', '/');
                     if (segmentLength <= 0)
                         throw new PathTooLongException($"Unable to open directory '{path}'.");
                 }
