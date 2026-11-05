@@ -58,7 +58,10 @@ function Invoke-PrivatePayloadXperfChild([string] $Application, [string[]] $Argu
 # Tokens are exact allowlisted text observations, not a promise of an xperf CSV schema.
 function Measure-PrivatePayloadXperfReport([string] $Report, [int] $Role) {
     $eventNames = @('CSwitch', 'ReadyThread', 'FileIo/DirEnum', 'FileIo/OpEnd', 'DiskIo/ReadInit', 'DiskIo/WriteInit', 'DiskIo/Read', 'DiskIo/Write', 'EventTrace/Header', 'DirEnum', 'FileOpEnd', 'DiskReadInit', 'DiskWriteInit', 'DiskRead', 'DiskWrite', 'Header')
+    $eventNames += @('FileIoDirEnum', 'FileIoOpEnd', 'FileIoDirectoryEnum', 'FileIoOperationEnd', 'FileDirectoryEnum', 'FileOperationEnd', 'FileDirEnum', 'FileIO/DirEnum', 'FileIO/OpEnd')
     $fieldNames = @('Event Name', 'TimeStamp', 'Process Name ( PID)', 'ThreadID', 'CPU', 'New TID', 'Old TID', 'NewThreadPriority', 'OldThreadPriority', 'PreviousCState', 'SpareByte', 'OldThreadWaitReason', 'OldThreadWaitMode', 'OldThreadState', 'OldThreadWaitIdealProcessor', 'NewThreadWaitTime', 'Reserved', 'NewThreadId', 'OldThreadId', 'ThreadId', 'ProcessId', 'Irp', 'FileObject', 'FileKey', 'ExtraInfo', 'InfoClass', 'FileIndex', 'FileName', 'IoSize', 'IoFlags', 'DiskNumber', 'IrpFlags', 'TransferSize', 'ByteOffset', 'HighResResponseTime', 'IssuingThreadId', 'NtStatus', 'Provider', 'ProviderId', 'Provider Name', 'Provider GUID', 'Event ID', 'EventId', 'Opcode', 'Version', 'Task', 'Channel', 'Level', 'Count', 'Event Count', 'Events Lost', 'Buffers Lost', 'Events', 'Trace Statistics', 'EventTrace', 'Time', 'PID', 'TID')
+    # Additional labels are exact lexical candidates rather than inferred payload layouts.
+    $fieldNames += @('Process Name (PID)', 'Process Name', 'New Process Name (PID)', 'New Process Name ( PID)', 'Old Process Name (PID)', 'Old Process Name ( PID)', 'New Thread ID', 'Old Thread ID', 'New Thread Id', 'Old Thread Id', 'New ThreadID', 'Old ThreadID', 'New Thread Priority', 'Old Thread Priority', 'Old Thread Wait Reason', 'Old Thread Wait Mode', 'Old Thread State', 'Old Thread Wait Ideal Processor', 'New Thread Wait Time', 'New Thread Quantum', 'Old Thread Quantum', 'TTID', 'IRP', 'IrpPtr', 'I/O Size', 'I/O Flags', 'Nt Status', 'NTStatus', 'Info Class', 'File Index', 'File Object', 'File Key', 'File Name', 'High Res Response Time', 'Issuing Thread ID', 'Disk Number', 'Transfer Size', 'Byte Offset')
     $events = [Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
     $fields = [Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
     for ($i = 0; $i -lt $eventNames.Count; $i++) { $events[$eventNames[$i]] = $i + 1 }
@@ -66,7 +69,7 @@ function Measure-PrivatePayloadXperfReport([string] $Report, [int] $Role) {
     $state = @{ Lines = 0; Begin = 0; End = 0; Inside = $false; Invalid = 0; LongLines = 0;
         ByteLimit = 0; LineLimit = 0; TimeLimit = 0; Bytes = 0L; Nul = 0L; Failed = 0; HResult = 0;
         Rows = [Collections.Generic.List[object]]::new(); Hits = @{}; ShapeLines = 0;
-        HeaderOnly = 0; HeaderRowsOmitted = 0; QuotedRows = 0; DelimiterRows = 0; WideRows = 0 }
+        HeaderOnly = 0; HeaderRowsOmitted = 0; QuotedRows = 0; DelimiterRows = 0; WideRows = 0; SingleColumnRows = 0 }
     $maxBytes = 8388608
     $maxLines = 20000
     $maxLineBytes = 4096
@@ -126,10 +129,11 @@ function Measure-PrivatePayloadXperfReport([string] $Report, [int] $Role) {
         if (-not $state.Inside -or $textLine.Length -eq 0) { return }
         if ($state.Rows.Count -ge $maxHeaderRows) { $state.HeaderRowsOmitted++; $state.Invalid = 1; return }
         if ($quotes -ne 0) { $state.QuotedRows++; $state.Invalid = 1; return }
-        if (($commas -gt 0) -eq ($tabs -gt 0)) { $state.DelimiterRows++; $state.Invalid = 1; return }
+        if ($commas -gt 0 -and $tabs -gt 0) { $state.DelimiterRows++; $state.Invalid = 1; return }
         $delimiter = ','
         $delimiterId = 1
         if ($tabs -gt 0) { $delimiter = "`t"; $delimiterId = 2 }
+        if ($commas -eq 0 -and $tabs -eq 0) { $delimiterId = 0; $state.SingleColumnRows++ }
         $columns = $textLine.Split([char]$delimiter)
         if ($columns.Count -gt 128) { $state.WideRows++; $state.Invalid = 1; return }
         $eventId = 0
@@ -186,6 +190,7 @@ function Measure-PrivatePayloadXperfReport([string] $Report, [int] $Role) {
         Write-Host "NATIVE_XPERF_TOKEN role=$Role kind=$($hit.Kind) id=$($hit.Id) label=[$name] hits=$($hit.Count) firstLine=$($hit.FirstLine) firstToken=$($hit.FirstToken) lexicalOnly=1"
     }
     Write-Host "NATIVE_XPERF_REPORT role=$Role bytes=$totalBytes inspectedBytes=$($state.Bytes) lines=$($state.Lines) complete=$complete headerOnly=$($state.HeaderOnly) beginHeader=$($state.Begin) endHeader=$($state.End) headerShapeKnown=$header structureUnknown=$([int]($header -eq 0)) headerRows=$($state.Rows.Count) invalidHeader=$($state.Invalid) headerRowsOmitted=$($state.HeaderRowsOmitted) quotedRows=$($state.QuotedRows) delimiterRows=$($state.DelimiterRows) wideRows=$($state.WideRows) nulBytes=$($state.Nul) longLines=$($state.LongLines) byteLimit=$($state.ByteLimit) lineLimit=$($state.LineLimit) timeLimit=$($state.TimeLimit) failure=$($state.Failed) hresult=$($state.HResult) maxBytes=$maxBytes maxLines=$maxLines maxLineBytes=$maxLineBytes maxHeaderRows=$maxHeaderRows maxSeconds=10 decoded=0 targetProcessCausality=0"
+    Write-Host "NATIVE_XPERF_SINGLE_COLUMN role=$Role rows=$($state.SingleColumnRows) delimiterKnown=0 semanticIdentityInferred=0"
     return ($state.Failed -eq 0)
 }
 
