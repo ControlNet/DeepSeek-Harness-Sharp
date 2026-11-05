@@ -50,6 +50,47 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     }
 
     [Fact]
+    public void NarrowThenWideTree_PreservesReferenceOrderThroughDescendantWorkerGrowth()
+    {
+        RequireWindows();
+        PopulateNarrowThenWideTree(_root, 300);
+        var expected = ReferenceEntries(_root);
+        var actual = new List<(string Path, bool Directory)>();
+        var caller = Environment.CurrentManagedThreadId;
+
+        WindowsDirectoryCollector.Collect(_root, (path, directory) =>
+        {
+            Assert.Equal(caller, Environment.CurrentManagedThreadId);
+            actual.Add((path, directory));
+        }, TestContext.Current.CancellationToken);
+
+        Assert.True(expected.SequenceEqual(actual),
+            "A single-child frontier must not strand the wider frontier discovered after root admission.");
+        AssertDirectoriesReleased();
+    }
+
+    [Fact]
+    public void NarrowThenWideLockedDescendant_PreservesNativeFailureAndReleasesEveryHandle()
+    {
+        RequireWindows();
+        var frontier = PopulateNarrowThenWideTree(_root, 300);
+        var locked = Path.Combine(frontier, "branch-150", "nested");
+        var actual = new List<string>();
+        using (var handle = WindowsNative.CreateFile(locked, 1, 0, 0, 3, 0x02000000, 0))
+        {
+            if (handle.IsInvalid)
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), "The exclusive wide-frontier fixture could not open its directory.");
+
+            var failure = Assert.Throws<IOException>(() => WindowsDirectoryCollector.Collect(_root,
+                (path, _) => actual.Add(path), TestContext.Current.CancellationToken));
+
+            Assert.Equal(unchecked((int)0x80070020), failure.HResult);
+            Assert.Equal(new[] { Path.Combine(_root, "level-0") }, actual);
+        }
+        AssertDirectoriesReleased();
+    }
+
+    [Fact]
     public void ReparseEntries_AreExcludedWithoutFollowingExternalTargetsOrCycles()
     {
         RequireWindows();
@@ -111,7 +152,7 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     public void CancellationFromVisitor_StopsPublicationBeforeTheNextEntry()
     {
         RequireWindows();
-        PopulateTree();
+        PopulateNarrowThenWideTree(_root, 300);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var files = 0;
 
@@ -501,13 +542,50 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
         AssertDirectoriesReleased();
     }
 
+    [Fact]
+    public void EmptyAndNarrowThenWideRoots_PreserveOrderAndReleaseHandlesAcrossWorkerReuse()
+    {
+        RequireWindows();
+        int[] widths = [0, 1, 280, 0, 3, 300];
+        var requests = new WindowsDirectoryCollector.RootRequest[widths.Length];
+        var expected = new (string Path, bool Directory)[widths.Length][];
+        var actual = new List<(string Path, bool Directory)>[widths.Length];
+        var caller = Environment.CurrentManagedThreadId;
+        var rootVisits = 0;
+        for (var index = 0; index < widths.Length; index++)
+        {
+            var ordinal = index;
+            var root = Directory.CreateDirectory(Path.Combine(_root, $"root-{index}")).FullName;
+            if (widths[index] != 0)
+                PopulateNarrowThenWideTree(root, widths[index]);
+            expected[index] = ReferenceEntries(root);
+            actual[index] = [];
+            requests[index] = new WindowsDirectoryCollector.RootRequest(root, (path, directory) =>
+            {
+                Assert.Equal(caller, Environment.CurrentManagedThreadId);
+                if (Path.GetDirectoryName(path) == root)
+                    rootVisits++;
+                else
+                    Assert.Equal(4, rootVisits);
+                actual[ordinal].Add((path, directory));
+            });
+        }
+
+        WindowsDirectoryCollector.Collect(requests, TestContext.Current.CancellationToken);
+
+        for (var index = 0; index < widths.Length; index++)
+            Assert.True(expected[index].SequenceEqual(actual[index]),
+                "Idle workers must survive empty roots and serve later narrow-to-wide root admissions.");
+        AssertDirectoriesReleased();
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void LaterRootVisitorFailureOrCancellation_DrainsEarlierRootAndStopsFurtherAdmission(bool cancel)
     {
         RequireWindows();
-        PopulateTree();
+        PopulateNarrowThenWideTree(_root, 300);
         var later = Directory.CreateDirectory(Path.Combine(_root, "later")).FullName;
         File.WriteAllText(Path.Combine(later, "input.txt"), "included");
         var failure = new InvalidOperationException("The later root visitor rejected collection.");
@@ -547,7 +625,7 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
     public void MissingLaterRoot_PropagatesNativeErrorAndReleasesEarlierRoot()
     {
         RequireWindows();
-        PopulateTree();
+        PopulateNarrowThenWideTree(_root, 300);
         var visits = 0;
         WindowsDirectoryCollector.RootRequest[] roots =
         [
@@ -573,6 +651,31 @@ public sealed class WindowsDirectoryCollectorTests : IDisposable
             if (handle.IsInvalid)
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "The collector retained a directory handle after returning.");
         }
+    }
+
+    private static (string Path, bool Directory)[] ReferenceEntries(string root) =>
+        new FileSystemEnumerable<(string Path, bool Directory)>(root,
+            static (ref FileSystemEntry entry) => (entry.ToFullPath(), entry.IsDirectory),
+            new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                AttributesToSkip = FileAttributes.ReparsePoint,
+                IgnoreInaccessible = false,
+                BufferSize = 16 * 1024
+            }).ToArray();
+
+    private static string PopulateNarrowThenWideTree(string root, int width)
+    {
+        var frontier = root;
+        for (var depth = 0; depth < 4; depth++)
+            frontier = Directory.CreateDirectory(Path.Combine(frontier, $"level-{depth}")).FullName;
+        for (var branch = 0; branch < width; branch++)
+        {
+            var child = Directory.CreateDirectory(Path.Combine(frontier, $"branch-{branch:000}")).FullName;
+            var nested = Directory.CreateDirectory(Path.Combine(child, "nested")).FullName;
+            File.WriteAllText(Path.Combine(nested, "input.txt"), "included");
+        }
+        return frontier;
     }
 
     private int PopulateTree()

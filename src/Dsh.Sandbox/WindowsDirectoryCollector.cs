@@ -38,7 +38,7 @@ internal static class WindowsDirectoryCollector
     /// </summary>
     /// <remarks>
     /// Each root's entries are read and published on the caller before any of its descendants is opened.
-    /// At most two root anchors and 255 dedicated workers own handles; every native buffer is 16 KiB.
+    /// At most two root anchors and 255 demand-started, reusable dedicated workers own handles; every native buffer is 16 KiB.
     /// The caller scratch buffer and all worker buffers together are bounded by 4 MiB.
     /// Root-relative names exceeding the native counted-name limit are split at directory separators.
     /// Such opens transiently own two descendant handles per worker; queued directories own none.
@@ -64,8 +64,6 @@ internal static class WindowsDirectoryCollector
         var work = new WorkQueue(cancellationToken);
         var collected = new List<RootWork>(roots.Length);
         var active = new RootWork?[MaximumActiveRoots];
-        Thread[]? workers = null;
-        var started = 0;
         nint buffer = 0;
         using var registration = cancellationToken.UnsafeRegister(static state =>
         {
@@ -102,17 +100,6 @@ internal static class WindowsDirectoryCollector
                 CollectDirectory(root.Handle, root.Directory, buffer, cancellationToken, work);
                 PublishDirectory(root.Directory, root.Pending, root.Accept, cancellationToken, work);
                 work.Admit(root);
-                if (root.Pending.Count != 0 && workers is null)
-                {
-                    workers = new Thread[WorkerCount];
-                    for (; started < workers.Length; started++)
-                    {
-                        work.ThrowIfStopped();
-                        var worker = new Thread(work.Run) { IsBackground = true };
-                        workers[started] = worker;
-                        worker.Start();
-                    }
-                }
             }
         }
         catch (Exception error)
@@ -122,19 +109,7 @@ internal static class WindowsDirectoryCollector
         finally
         {
             work.Seal();
-            for (var index = 0; index < started; index++)
-                while (true)
-                {
-                    try
-                    {
-                        workers![index].Join();
-                        break;
-                    }
-                    catch (ThreadInterruptedException error)
-                    {
-                        work.Fail(error);
-                    }
-                }
+            work.Join();
             foreach (var root in collected)
                 root.Handle?.Dispose();
             if (buffer != 0)
@@ -226,7 +201,13 @@ internal static class WindowsDirectoryCollector
     private sealed class WorkQueue
     {
         private readonly object _gate = new();
+        private readonly object _rootGate = new();
         private readonly Queue<DirectoryWork> _pending = new();
+        private Thread[]? _workers;
+        private ThreadStart? _run;
+        private int _started;
+        private int _waitingWorkers;
+        private bool _waitingForRoot;
         private int _outstanding;
         private bool _sealed;
         private ExceptionDispatchInfo? _failure;
@@ -244,20 +225,44 @@ internal static class WindowsDirectoryCollector
                     _pending.Enqueue(directory);
                 root.Outstanding = root.Pending.Count;
                 _outstanding = checked(_outstanding + root.Outstanding);
-                Monitor.PulseAll(_gate);
+                GrowWorkers();
+                WakeWorkers(root.Outstanding);
             }
         }
 
         public int WaitForCompletedRoot(RootWork?[] active)
         {
-            lock (_gate)
+            // Only the admission caller waits here; worker pulses cannot wake the wrong predicate.
+            lock (_rootGate)
                 while (true)
                 {
-                    ThrowIfStopped();
-                    for (var index = 0; index < active.Length; index++)
-                        if (active[index]!.Outstanding == 0)
-                            return index;
-                    Monitor.Wait(_gate);
+                    lock (_gate)
+                    {
+                        ThrowIfStopped();
+                        for (var index = 0; index < active.Length; index++)
+                            if (active[index]!.Outstanding == 0)
+                                return index;
+                        _waitingForRoot = true;
+                    }
+                    ThreadInterruptedException? interruption;
+                    try
+                    {
+                        Monitor.Wait(_rootGate);
+                    }
+                    finally
+                    {
+                        interruption = EnterCleanupGate();
+                        try
+                        {
+                            _waitingForRoot = false;
+                        }
+                        finally
+                        {
+                            Monitor.Exit(_gate);
+                        }
+                    }
+                    if (interruption is not null)
+                        throw interruption;
                 }
         }
 
@@ -269,11 +274,47 @@ internal static class WindowsDirectoryCollector
                 if (interruption is not null && _failure is null)
                     Volatile.Write(ref _failure, ExceptionDispatchInfo.Capture(interruption));
                 _sealed = true;
-                Monitor.PulseAll(_gate);
+                if (_waitingWorkers != 0 && (_failure is not null || _outstanding == 0))
+                    Monitor.PulseAll(_gate);
             }
             finally
             {
                 Monitor.Exit(_gate);
+            }
+        }
+
+        public void Join()
+        {
+            // Seal closes caller admission, not descendant discovery.
+            // Re-read the published list after every join: a running worker may grow it, but no joined worker can start another worker.
+            for (var index = 0; ; index++)
+            {
+                var interruption = EnterCleanupGate();
+                Thread? worker;
+                try
+                {
+                    worker = index < _started ? _workers![index] : null;
+                }
+                finally
+                {
+                    Monitor.Exit(_gate);
+                }
+                if (interruption is not null)
+                    Fail(interruption);
+                if (worker is null)
+                    return;
+                while (true)
+                {
+                    try
+                    {
+                        worker.Join();
+                        break;
+                    }
+                    catch (ThreadInterruptedException error)
+                    {
+                        Fail(error);
+                    }
+                }
             }
         }
 
@@ -310,28 +351,35 @@ internal static class WindowsDirectoryCollector
 
         public void Fail(Exception error)
         {
+            bool wakeRoot;
             EnterCleanupGate();
             try
             {
                 if (_failure is not null)
                     return;
                 Volatile.Write(ref _failure, ExceptionDispatchInfo.Capture(error));
-                Monitor.PulseAll(_gate);
+                if (_waitingWorkers != 0)
+                    Monitor.PulseAll(_gate);
+                wakeRoot = _waitingForRoot;
             }
             finally
             {
                 Monitor.Exit(_gate);
             }
+            if (wakeRoot)
+                WakeRootWaiter();
         }
 
-        private ThreadInterruptedException? EnterCleanupGate()
+        private ThreadInterruptedException? EnterCleanupGate() => EnterCleanupGate(_gate);
+
+        private static ThreadInterruptedException? EnterCleanupGate(object gate)
         {
             ThreadInterruptedException? interruption = null;
             while (true)
             {
                 try
                 {
-                    Monitor.Enter(_gate);
+                    Monitor.Enter(gate);
                     return interruption;
                 }
                 catch (ThreadInterruptedException error)
@@ -346,18 +394,30 @@ internal static class WindowsDirectoryCollector
             lock (_gate)
             {
                 while (_failure is null && _pending.Count == 0 && (!_sealed || _outstanding != 0))
-                    Monitor.Wait(_gate);
+                {
+                    _waitingWorkers++;
+                    try
+                    {
+                        Monitor.Wait(_gate);
+                    }
+                    finally
+                    {
+                        _waitingWorkers--;
+                    }
+                }
                 return _failure is not null || _pending.Count == 0 ? null : _pending.Dequeue();
             }
         }
 
         private void Complete(DirectoryWork directory)
         {
+            bool rootCompleted;
             lock (_gate)
             {
                 if (_failure is not null)
                     return;
                 // Outstanding counts queued plus active nodes. Publish children before retiring their parent.
+                var added = 0;
                 foreach (var entry in directory.Entries)
                 {
                     if (entry.Directory is not { } child)
@@ -365,11 +425,66 @@ internal static class WindowsDirectoryCollector
                     _pending.Enqueue(child);
                     _outstanding = checked(_outstanding + 1);
                     directory.Root.Outstanding = checked(directory.Root.Outstanding + 1);
+                    added++;
                 }
                 _outstanding--;
                 directory.Root.Outstanding--;
-                Monitor.PulseAll(_gate);
+                GrowWorkers();
+                WakeWorkers(added);
+                if (_sealed && _outstanding == 0 && _waitingWorkers != 0)
+                    Monitor.PulseAll(_gate);
+                rootCompleted = directory.Root.Outstanding == 0 && _waitingForRoot;
             }
+            if (rootCompleted)
+            {
+                var interruption = WakeRootWaiter();
+                if (interruption is not null)
+                    Fail(interruption);
+            }
+        }
+
+        private void GrowWorkers()
+        {
+            // Called only under _gate.
+            // A successful Start and its list publication are indivisible to Join; a failed Start never enters the joinable prefix.
+            // Sealing still permits growth.
+            var target = Math.Min(WorkerCount, _outstanding);
+            if (_started >= target)
+                return;
+            _workers ??= new Thread[WorkerCount];
+            _run ??= Run;
+            while (_started < target)
+            {
+                ThrowIfStopped();
+                CancellationToken.ThrowIfCancellationRequested();
+                var worker = new Thread(_run) { IsBackground = true };
+                _workers[_started] = worker;
+                worker.Start();
+                _started++;
+            }
+        }
+
+        private void WakeWorkers(int added)
+        {
+            // Only workers wait on _gate. Leaf completion does not change their work predicate.
+            var count = Math.Min(added, _waitingWorkers);
+            for (var index = 0; index < count; index++)
+                Monitor.Pulse(_gate);
+        }
+
+        private ThreadInterruptedException? WakeRootWaiter()
+        {
+            // Never acquire _rootGate while holding _gate: admission checks use the opposite order.
+            var interruption = EnterCleanupGate(_rootGate);
+            try
+            {
+                Monitor.Pulse(_rootGate);
+            }
+            finally
+            {
+                Monitor.Exit(_rootGate);
+            }
+            return interruption;
         }
     }
 
