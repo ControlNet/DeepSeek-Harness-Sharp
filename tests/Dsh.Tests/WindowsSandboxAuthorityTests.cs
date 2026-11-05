@@ -176,12 +176,12 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
             Executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
             WorkingDirectory = working,
             ReadOnlyPaths = [input.FullName, readable.FullName],
-            Arguments = ["/D", "/Q", "/C",
-                @"set /p gate=&type ..\a.txt&type ..\readonly\late.txt&(echo tampered>>..\a.txt) 2>nul&(echo tampered>>..\readonly\late.txt) 2>nul&exit /b 0"],
+            Arguments = ["/D", "/Q", "/V:ON", "/C",
+                @"set /p gate=&set dshFirst=&set /p dshFirst=<..\a.txt&echo !dshFirst!&set dshSecond=&set /p dshSecond=<..\readonly\late.txt&echo !dshSecond!&(echo tampered>>..\a.txt) 2>nul&(echo tampered>>..\readonly\late.txt) 2>nul&exit /b 0"],
         }, TestContext.Current.CancellationToken))
         {
             var output = new StreamReader(consumer.StandardOutput).ReadToEndAsync(TestContext.Current.CancellationToken);
-            var error = consumer.StandardError.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken);
+            var error = new StreamReader(consumer.StandardError).ReadToEndAsync(TestContext.Current.CancellationToken);
             Assert.Equal(originalFileAcl, ReadDacl(input.FullName));
             // Only the real directory grant can supply the restricted token's read authority here.
             // The explicit creation ACL gives the host access, but grants no ambient AppContainer rights.
@@ -195,9 +195,9 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
             Assert.Equal(0, await consumer.WaitForExitAsync(TestContext.Current.CancellationToken)
                 .WaitAsync(Deadline, TestContext.Current.CancellationToken));
             var stdout = await output;
-            await error;
-            Assert.Contains("initial-read", stdout);
-            Assert.Contains("late-read", stdout);
+            var diagnostic = System.Text.RegularExpressions.Regex.Replace(await error, """(?:[A-Za-z]:[\\/]|/)[^\s"'<>]+""", "<path>");
+            Assert.True(stdout.Contains("initial-read", StringComparison.Ordinal), $"The real readonly file consumer returned no initial data; stderr={diagnostic}");
+            Assert.True(stdout.Contains("late-read", StringComparison.Ordinal), $"The real readonly directory consumer returned no future data; stderr={diagnostic}");
             Assert.Equal("initial-read", File.ReadAllText(input.FullName));
             Assert.Equal("late-read", File.ReadAllText(lateFile.FullName));
         }
@@ -238,18 +238,18 @@ public sealed class WindowsSandboxAuthorityTests : IDisposable
             Executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
             WorkingDirectory = working,
             ReadOnlyPaths = [shared.FullName, privatePeer.FullName],
-            Arguments = ["/D", "/Q", "/C",
-                @"type ..\a.txt&type ..\z.txt&(echo tampered>>..\a.txt) 2>nul&(echo tampered>>..\z.txt) 2>nul&exit /b 0"],
+            Arguments = ["/D", "/Q", "/V:ON", "/C",
+                @"set dshFirst=&set /p dshFirst=<..\a.txt&echo !dshFirst!&set dshSecond=&set /p dshSecond=<..\z.txt&echo !dshSecond!&(echo tampered>>..\a.txt) 2>nul&(echo tampered>>..\z.txt) 2>nul&exit /b 0"],
         }, TestContext.Current.CancellationToken))
         {
             var output = new StreamReader(consumer.StandardOutput).ReadToEndAsync(TestContext.Current.CancellationToken);
-            var error = consumer.StandardError.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken);
+            var error = new StreamReader(consumer.StandardError).ReadToEndAsync(TestContext.Current.CancellationToken);
             Assert.Equal(0, await consumer.WaitForExitAsync(TestContext.Current.CancellationToken)
                 .WaitAsync(Deadline, TestContext.Current.CancellationToken));
             var stdout = await output;
-            await error;
-            Assert.Contains("shared-read", stdout);
-            Assert.Contains("private-read", stdout);
+            var diagnostic = System.Text.RegularExpressions.Regex.Replace(await error, """(?:[A-Za-z]:[\\/]|/)[^\s"'<>]+""", "<path>");
+            Assert.True(stdout.Contains("shared-read", StringComparison.Ordinal), $"The real shared file consumer returned no data; stderr={diagnostic}");
+            Assert.True(stdout.Contains("private-read", StringComparison.Ordinal), $"The real private file consumer returned no data; stderr={diagnostic}");
             Assert.Equal("shared-read", File.ReadAllText(shared.FullName));
             Assert.Equal("private-read", File.ReadAllText(privatePeer.FullName));
         }
