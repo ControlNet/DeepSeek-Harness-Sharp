@@ -420,8 +420,8 @@ jobs:
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
 
-      - name: Gate demand-wake components before the original consumer on a separate runner
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'sandbox-components-92' }}
+      - name: Gate native completion correctness components without rerunning unchanged MCP
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'sandbox-components-93' }}
         shell: bash
         run: |
           set -euo pipefail

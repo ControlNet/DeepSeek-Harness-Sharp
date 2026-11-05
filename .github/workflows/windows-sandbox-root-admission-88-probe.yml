@@ -1,9 +1,9 @@
-name: Windows sandbox demand wake original consumer probe 92
+name: Windows sandbox native directory completion gate 93
 
 on:
   push:
     branches:
-      - perf/native-demand-wake92
+      - probe/native-batch-completion93
 
 permissions:
   contents: read
@@ -68,27 +68,14 @@ jobs:
           retention-days: 7
 
   sandbox-components:
-    name: Windows demand-wake component gate
+    name: Windows native completion correctness gate
     needs: bridge-dryioc-feed
     uses: ./.github/workflows/ci-tests.yml
     with:
       os: windows-latest
       native-cc: cl
       native-cc-alt: clang-cl
-      suite: sandbox-components-92
-      quick-cohort: all
-      dryioc-commit: b98d2ab37cf05bdea02c34e5e4f8e481d76d5d3f
-      dryioc-sha256: d6a7a8be85937061a60f803b8f0d0fb9a2e320ea42185da5fc5166ad825c54a1
-
-  original-windows-regression:
-    name: Original Windows regression-1 with demand-wake gates
-    needs: [bridge-dryioc-feed, sandbox-components]
-    uses: ./.github/workflows/ci-tests.yml
-    with:
-      os: windows-latest
-      native-cc: cl
-      native-cc-alt: clang-cl
-      suite: regression-1
+      suite: sandbox-components-93
       quick-cohort: all
       dryioc-commit: b98d2ab37cf05bdea02c34e5e4f8e481d76d5d3f
       dryioc-sha256: d6a7a8be85937061a60f803b8f0d0fb9a2e320ea42185da5fc5166ad825c54a1

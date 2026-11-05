@@ -131,11 +131,7 @@ internal static class WindowsDirectoryCollector
             work?.ThrowIfStopped();
             var status = NtQueryDirectoryFile(handle, 0, 0, 0, out var ioStatus, buffer, BufferSize,
                 FileFullDirectoryInformation, 0, 0, 0);
-            if (status is NoMoreFiles or NoSuchFile)
-                return;
-            if (status != 0)
-                throw DirectoryError((int)RtlNtStatusToDosError(status), directory.Path);
-            if (ioStatus.Information == 0)
+            if (!HasCompleteDirectoryBatch(status, ioStatus.Information, directory.Path))
                 return;
             var entry = (DirectoryInformation*)buffer;
             while (true)
@@ -154,6 +150,15 @@ internal static class WindowsDirectoryCollector
                 entry = (DirectoryInformation*)((byte*)entry + entry->NextEntryOffset);
             }
         }
+    }
+
+    internal static bool HasCompleteDirectoryBatch(int status, nuint byteCount, string path)
+    {
+        if (status is NoMoreFiles or NoSuchFile)
+            return false;
+        if (status != 0)
+            throw DirectoryError((int)RtlNtStatusToDosError(status), path);
+        return byteCount != 0;
     }
 
     private static void PublishDirectory(DirectoryWork directory, Queue<DirectoryWork> pending,
