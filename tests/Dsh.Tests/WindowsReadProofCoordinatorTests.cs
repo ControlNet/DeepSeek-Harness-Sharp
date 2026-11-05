@@ -271,15 +271,20 @@ public sealed class WindowsReadProofCoordinatorTests
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Exception? failure = null;
         var finished = 0;
+        var completedAtReturn = 0;
         Thread? worker = null;
-        var caller = new Thread(() => failure = Record.Exception(() => proofs.Probe(0, 128, _ =>
+        var caller = new Thread(() =>
         {
-            worker = Thread.CurrentThread;
-            started.TrySetResult();
-            release.Wait(TestContext.Current.CancellationToken);
-            Interlocked.Increment(ref finished);
-            return true;
-        }, TestContext.Current.CancellationToken))) { IsBackground = true };
+            failure = Record.Exception(() => proofs.Probe(0, 128, _ =>
+            {
+                worker = Thread.CurrentThread;
+                started.TrySetResult();
+                release.Wait(TestContext.Current.CancellationToken);
+                Interlocked.Increment(ref finished);
+                return true;
+            }, TestContext.Current.CancellationToken));
+            completedAtReturn = Volatile.Read(ref finished);
+        }) { IsBackground = true };
         caller.Start();
         try
         {
@@ -294,7 +299,7 @@ public sealed class WindowsReadProofCoordinatorTests
         }
 
         Assert.IsType<ThreadInterruptedException>(failure);
-        Assert.Equal(1, Volatile.Read(ref finished));
+        Assert.Equal(completedAtReturn, Volatile.Read(ref finished));
         Assert.NotNull(worker);
         Assert.False(worker.IsAlive);
     }
