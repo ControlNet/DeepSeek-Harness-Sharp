@@ -1,3 +1,5 @@
+. (Join-Path $PSScriptRoot 'NativePayloadXperfValues.ps1')
+
 # This helper exports only the caller's stopped private ETL and never records events.
 # https://learn.microsoft.com/en-us/windows-hardware/test/wpt/processing
 # https://learn.microsoft.com/en-us/windows-hardware/test/wpt/tracestats
@@ -62,6 +64,7 @@ function Measure-PrivatePayloadXperfReport([string] $Report, [int] $Role) {
     $fieldNames = @('Event Name', 'TimeStamp', 'Process Name ( PID)', 'ThreadID', 'CPU', 'New TID', 'Old TID', 'NewThreadPriority', 'OldThreadPriority', 'PreviousCState', 'SpareByte', 'OldThreadWaitReason', 'OldThreadWaitMode', 'OldThreadState', 'OldThreadWaitIdealProcessor', 'NewThreadWaitTime', 'Reserved', 'NewThreadId', 'OldThreadId', 'ThreadId', 'ProcessId', 'Irp', 'FileObject', 'FileKey', 'ExtraInfo', 'InfoClass', 'FileIndex', 'FileName', 'IoSize', 'IoFlags', 'DiskNumber', 'IrpFlags', 'TransferSize', 'ByteOffset', 'HighResResponseTime', 'IssuingThreadId', 'NtStatus', 'Provider', 'ProviderId', 'Provider Name', 'Provider GUID', 'Event ID', 'EventId', 'Opcode', 'Version', 'Task', 'Channel', 'Level', 'Count', 'Event Count', 'Events Lost', 'Buffers Lost', 'Events', 'Trace Statistics', 'EventTrace', 'Time', 'PID', 'TID')
     # Additional labels are exact lexical candidates rather than inferred payload layouts.
     $fieldNames += @('Process Name (PID)', 'Process Name', 'New Process Name (PID)', 'New Process Name ( PID)', 'Old Process Name (PID)', 'Old Process Name ( PID)', 'New Thread ID', 'Old Thread ID', 'New Thread Id', 'Old Thread Id', 'New ThreadID', 'Old ThreadID', 'New Thread Priority', 'Old Thread Priority', 'Old Thread Wait Reason', 'Old Thread Wait Mode', 'Old Thread State', 'Old Thread Wait Ideal Processor', 'New Thread Wait Time', 'New Thread Quantum', 'Old Thread Quantum', 'TTID', 'IRP', 'IrpPtr', 'I/O Size', 'I/O Flags', 'Nt Status', 'NTStatus', 'Info Class', 'File Index', 'File Object', 'File Key', 'File Name', 'High Res Response Time', 'Issuing Thread ID', 'Disk Number', 'Transfer Size', 'Byte Offset')
+    $fieldNames += @('Old State', 'Old Wait Reason', 'Old Wait Mode', 'New Pri', 'Old Pri', 'New Quantum', 'Old Quantum', 'Old Ideal Proc', 'New Wait Time', 'Ready TID', 'Readying TID', 'Adjust Reason', 'Adjust Increment', 'AdjustReason', 'AdjustIncrement', 'Flags', 'Status', 'IO Size', 'IO Flags', 'Offset', 'Size', 'IO Time', 'I/O Time', 'Disk Service Time', 'Service Time', 'Response Time', 'Irp Flags', 'IRP Flags', 'Issuing Thread Id')
     $events = [Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
     $fields = [Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
     for ($i = 0; $i -lt $eventNames.Count; $i++) { $events[$eventNames[$i]] = $i + 1 }
@@ -191,7 +194,16 @@ function Measure-PrivatePayloadXperfReport([string] $Report, [int] $Role) {
     }
     Write-Host "NATIVE_XPERF_REPORT role=$Role bytes=$totalBytes inspectedBytes=$($state.Bytes) lines=$($state.Lines) complete=$complete headerOnly=$($state.HeaderOnly) beginHeader=$($state.Begin) endHeader=$($state.End) headerShapeKnown=$header structureUnknown=$([int]($header -eq 0)) headerRows=$($state.Rows.Count) invalidHeader=$($state.Invalid) headerRowsOmitted=$($state.HeaderRowsOmitted) quotedRows=$($state.QuotedRows) delimiterRows=$($state.DelimiterRows) wideRows=$($state.WideRows) nulBytes=$($state.Nul) longLines=$($state.LongLines) byteLimit=$($state.ByteLimit) lineLimit=$($state.LineLimit) timeLimit=$($state.TimeLimit) failure=$($state.Failed) hresult=$($state.HResult) maxBytes=$maxBytes maxLines=$maxLines maxLineBytes=$maxLineBytes maxHeaderRows=$maxHeaderRows maxSeconds=10 decoded=0 targetProcessCausality=0"
     Write-Host "NATIVE_XPERF_SINGLE_COLUMN role=$Role rows=$($state.SingleColumnRows) delimiterKnown=0 semanticIdentityInferred=0"
-    return ($state.Failed -eq 0)
+    $valuesKnown = $true
+    if ($Role -eq 2) {
+        if ($header -eq 1 -and $state.HeaderOnly -eq 1) {
+            $valuesKnown = Measure-PrivatePayloadXperfValues $Report $state.Bytes $state.Rows $events $fields
+        }
+        else {
+            Write-Host 'NATIVE_XPERF_VALUE_SCOPE skipped=1 headerUnknown=1 fullReport=0 decoded=0 targetProcessCausality=0'
+        }
+    }
+    return ($state.Failed -eq 0 -and $valuesKnown)
 }
 
 function Invoke-PrivatePayloadXperf {
