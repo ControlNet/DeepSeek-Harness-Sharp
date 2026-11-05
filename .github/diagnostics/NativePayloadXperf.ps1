@@ -65,10 +65,12 @@ function Measure-PrivatePayloadXperfReport([string] $Report, [int] $Role) {
     for ($i = 0; $i -lt $fieldNames.Count; $i++) { $fields[$fieldNames[$i]] = $i + 1 }
     $state = @{ Lines = 0; Begin = 0; End = 0; Inside = $false; Invalid = 0; LongLines = 0;
         ByteLimit = 0; LineLimit = 0; TimeLimit = 0; Bytes = 0L; Nul = 0L; Failed = 0; HResult = 0;
-        Rows = [Collections.Generic.List[object]]::new(); Hits = @{}; ShapeLines = 0 }
+        Rows = [Collections.Generic.List[object]]::new(); Hits = @{}; ShapeLines = 0;
+        HeaderOnly = 0; HeaderRowsOmitted = 0; QuotedRows = 0; DelimiterRows = 0; WideRows = 0 }
     $maxBytes = 8388608
     $maxLines = 20000
     $maxLineBytes = 4096
+    $maxHeaderRows = 256
     $timer = [Diagnostics.Stopwatch]::StartNew()
     $stream = $null
     $totalBytes = -1L
@@ -122,12 +124,14 @@ function Measure-PrivatePayloadXperfReport([string] $Report, [int] $Role) {
             }
         }
         if (-not $state.Inside -or $textLine.Length -eq 0) { return }
-        if ($state.Rows.Count -ge 64 -or $quotes -ne 0 -or (($commas -gt 0) -eq ($tabs -gt 0))) { $state.Invalid = 1; return }
+        if ($state.Rows.Count -ge $maxHeaderRows) { $state.HeaderRowsOmitted++; $state.Invalid = 1; return }
+        if ($quotes -ne 0) { $state.QuotedRows++; $state.Invalid = 1; return }
+        if (($commas -gt 0) -eq ($tabs -gt 0)) { $state.DelimiterRows++; $state.Invalid = 1; return }
         $delimiter = ','
         $delimiterId = 1
         if ($tabs -gt 0) { $delimiter = "`t"; $delimiterId = 2 }
         $columns = $textLine.Split([char]$delimiter)
-        if ($columns.Count -gt 128) { $state.Invalid = 1; return }
+        if ($columns.Count -gt 128) { $state.WideRows++; $state.Invalid = 1; return }
         $eventId = 0
         $null = $events.TryGetValue($columns[0].Trim(), [ref]$eventId)
         $ids = [int[]]::new($columns.Count - 1)
@@ -155,6 +159,7 @@ function Measure-PrivatePayloadXperfReport([string] $Report, [int] $Role) {
                     & $consumeLine $line.ToString() $overlong
                     $null = $line.Clear()
                     $overlong = $false
+                    if ($Role -eq 2 -and $state.End -eq 1) { $state.HeaderOnly = 1; break scan }
                     if ($state.Lines -ge $maxLines) { break scan }
                 }
                 else {
@@ -180,7 +185,7 @@ function Measure-PrivatePayloadXperfReport([string] $Report, [int] $Role) {
         $name = if ($hit.Kind -eq 1) { $eventNames[$hit.Id - 1] } else { $fieldNames[$hit.Id - 1] }
         Write-Host "NATIVE_XPERF_TOKEN role=$Role kind=$($hit.Kind) id=$($hit.Id) label=[$name] hits=$($hit.Count) firstLine=$($hit.FirstLine) firstToken=$($hit.FirstToken) lexicalOnly=1"
     }
-    Write-Host "NATIVE_XPERF_REPORT role=$Role bytes=$totalBytes inspectedBytes=$($state.Bytes) lines=$($state.Lines) complete=$complete beginHeader=$($state.Begin) endHeader=$($state.End) headerShapeKnown=$header structureUnknown=$([int]($header -eq 0)) headerRows=$($state.Rows.Count) invalidHeader=$($state.Invalid) nulBytes=$($state.Nul) longLines=$($state.LongLines) byteLimit=$($state.ByteLimit) lineLimit=$($state.LineLimit) timeLimit=$($state.TimeLimit) failure=$($state.Failed) hresult=$($state.HResult) maxBytes=$maxBytes maxLines=$maxLines maxLineBytes=$maxLineBytes maxSeconds=10 decoded=0 targetProcessCausality=0"
+    Write-Host "NATIVE_XPERF_REPORT role=$Role bytes=$totalBytes inspectedBytes=$($state.Bytes) lines=$($state.Lines) complete=$complete headerOnly=$($state.HeaderOnly) beginHeader=$($state.Begin) endHeader=$($state.End) headerShapeKnown=$header structureUnknown=$([int]($header -eq 0)) headerRows=$($state.Rows.Count) invalidHeader=$($state.Invalid) headerRowsOmitted=$($state.HeaderRowsOmitted) quotedRows=$($state.QuotedRows) delimiterRows=$($state.DelimiterRows) wideRows=$($state.WideRows) nulBytes=$($state.Nul) longLines=$($state.LongLines) byteLimit=$($state.ByteLimit) lineLimit=$($state.LineLimit) timeLimit=$($state.TimeLimit) failure=$($state.Failed) hresult=$($state.HResult) maxBytes=$maxBytes maxLines=$maxLines maxLineBytes=$maxLineBytes maxHeaderRows=$maxHeaderRows maxSeconds=10 decoded=0 targetProcessCausality=0"
     return ($state.Failed -eq 0)
 }
 
