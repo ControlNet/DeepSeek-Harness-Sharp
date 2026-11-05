@@ -160,7 +160,11 @@ function Write-ApprovedTypedOutput([string] $Path, [ValidateSet('CPU', 'FILE')] 
           'invalid_durations', 'category_observed_in_trace', 'target_count_unknown', 'trace_observations',
           'missing_issuing_thread', 'unattributed_target_process', 'paired_endpoints', 'missing_start', 'missing_stop',
           'both_endpoints_missing', 'duration_unknown', 'partial_timestamp_pairs', 'sdk_endpoint_duration_sum_seconds',
-          'sdk_endpoint_duration_max_seconds', 'duration_sum_unknown', 'duration_max_unknown')
+          'sdk_endpoint_duration_max_seconds', 'duration_sum_unknown', 'duration_max_unknown',
+          'rejected_metadata', 'rejected_lifetime', 'rejected_process_missing', 'rejected_process_identity',
+          'rejected_thread_missing', 'rejected_thread_identity', 'rejected_thread_owner_missing', 'rejected_thread_owner_identity',
+          'process_start_before_create', 'process_start_after_exit', 'process_stop_before_create', 'process_stop_after_exit',
+          'thread_start_before_create', 'thread_start_after_exit', 'thread_stop_before_create', 'thread_stop_after_exit')
     }
     foreach ($key in $numeric) { $null = $keys.Add($key) }
     $labels = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)

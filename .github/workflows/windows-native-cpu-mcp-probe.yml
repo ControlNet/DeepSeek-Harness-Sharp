@@ -1,14 +1,14 @@
-name: Windows original MCP typed CPU and file startup window
+name: Windows original MCP exact FileIO rejection branches
 
 on:
   push:
-    branches: [probe/native-file-mcp-72]
+    branches: [probe/native-file-mcp-75]
 
 permissions:
   contents: read
 
 concurrency:
-  group: native-file-mcp-72-${{ github.ref }}
+  group: native-file-mcp-75-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
