@@ -400,11 +400,11 @@ function Invoke-PrivateNativeWaitWpa {
         $created = $true
         $reports = Join-Path $child 'reports'
         $readiness = Get-PrivateNativeWpaPrerequisites $child
-        $status = [int]$readiness.Status
-        if ($status -ne 0) { throw [IO.InvalidDataException]::new() }
+        $readinessStatus = [int]$readiness.Status
+        if ($readinessStatus -ne 0) { $status = $readinessStatus; throw [IO.InvalidDataException]::new() }
+        $status = 43
         $selection = $readiness.ProfilePath
         $null = New-Item -ItemType Directory -Path $reports
-        $status = 43
         $export = Invoke-PrivateWpaNative $readiness.Application @('-i', $TracePath, '-profile', $selection, '-outputfolder', $reports) $child 'export' 60000
         # A failed exporter cannot be redeemed by partial output files.
         if (-not $export.Success) { throw [IO.InvalidDataException]::new() }

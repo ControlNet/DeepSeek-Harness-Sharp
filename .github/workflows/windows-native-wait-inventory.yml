@@ -1,4 +1,4 @@
-name: Windows native ETL tools and installed WPA export probe
+name: Windows installed WPA original identity-key inventory
 
 on:
   push:
@@ -20,8 +20,6 @@ jobs:
       - name: Inspect installed command-line analyzer help without recording or exporting
         shell: pwsh
         run: ./.github/diagnostics/Invoke-NativeEtlToolsInventory.ps1
-      - name: Export an owned four-second trace with the exact inspected installed WPA profile
+      - name: Inspect original installed precise CPU identity keys without recording or exporting
         shell: pwsh
-        # The entrypoint reuses the bounded inventory and refuses recording without both prerequisites.
-        # Output shape observations are not event-schema validation or original MCP attribution.
-        run: ./.github/diagnostics/Invoke-WpaInstalledProfileExport.ps1
+        run: ./.github/diagnostics/Invoke-WpaInstalledProfileInventory.ps1

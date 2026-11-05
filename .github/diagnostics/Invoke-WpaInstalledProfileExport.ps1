@@ -26,9 +26,9 @@ try {
     $readinessDirectory = Join-Path $private 'readiness'
     $null = New-Item -ItemType Directory -Path $readinessDirectory
     $readiness = Get-PrivateNativeWpaPrerequisites $readinessDirectory
-    $measurementStatus = [int]$readiness.Status
-    Write-Host "WPA_EXPORT_PREREQUISITE status=$measurementStatus recordingStarted=0"
-    if ($measurementStatus -ne 0) { throw [InvalidOperationException]::new() }
+    $readinessStatus = [int]$readiness.Status
+    Write-Host "WPA_EXPORT_PREREQUISITE status=$readinessStatus recordingStarted=0"
+    if ($readinessStatus -ne 0) { throw [InvalidOperationException]::new() }
     $phase = 1
     $current = [Diagnostics.Process]::GetCurrentProcess()
     $targetProcessId = [uint32]$current.Id

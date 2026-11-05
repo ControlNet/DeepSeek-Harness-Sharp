@@ -210,6 +210,29 @@ try {
                                     }
                                     if ($present) { $waitProperties++ }
                                 }
+                                $cpuPresets = @($precise | ForEach-Object { $_.SelectNodes('w:Preset', $manager) })
+                                Emit "WPA_PROFILE_CPU_PRESETS candidate=$index count=$($cpuPresets.Count) fileReferences=$allReferences"
+                                $identityGuids = @('b065487c-5e32-4f1f-a2cd-581e086ce29e', '944ed37a-5774-421e-b2d5-84f17a4b3a05', 'fe7ccd45-6275-413e-a538-3587f0eb452b')
+                                $identityLabels = @('New Process', 'New Thread Id', 'New Prev Wait Reason')
+                                for ($presetIndex = 0; $presetIndex -lt $cpuPresets.Count; $presetIndex++) {
+                                    $cpuColumns = $cpuPresets[$presetIndex].SelectNodes('w:Columns/w:Column', $manager)
+                                    $declaredKeys = 0U
+                                    $keyCountKnown = [uint32]::TryParse($cpuPresets[$presetIndex].GetAttribute('KeyColumnCount'), [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$declaredKeys) -and $declaredKeys -gt 0 -and $declaredKeys -le $cpuColumns.Count
+                                    Emit "WPA_PROFILE_CPU_KEYS candidate=$index preset=$presetIndex columns=$($cpuColumns.Count) declaredKeys=$declaredKeys keyCountKnown=$([int]$keyCountKnown)"
+                                    for ($identity = 0; $identity -lt $identityGuids.Count; $identity++) {
+                                        $occurrences = 0
+                                        $withinKeys = 0
+                                        $labelExact = 0
+                                        for ($columnIndex = 0; $columnIndex -lt $cpuColumns.Count; $columnIndex++) {
+                                            if ([string]::Equals($cpuColumns[$columnIndex].GetAttribute('Guid'), $identityGuids[$identity], [StringComparison]::OrdinalIgnoreCase)) {
+                                                $occurrences++
+                                                if ($keyCountKnown -and $columnIndex -lt $declaredKeys) { $withinKeys++ }
+                                                if ([string]::Equals($cpuColumns[$columnIndex].GetAttribute('Name'), $identityLabels[$identity], [StringComparison]::Ordinal)) { $labelExact++ }
+                                            }
+                                        }
+                                        Emit "WPA_PROFILE_CPU_IDENTITY candidate=$index preset=$presetIndex identity=$identity guidOccurrences=$occurrences withinKeys=$withinKeys labelExact=$labelExact"
+                                    }
+                                }
                                 if (-not $selectionCopied -and -not [string]::IsNullOrWhiteSpace($SelectionCopyPath) -and
                                     $fingerprint -ceq '248989AFE19CC92AB856AF84D538B079FFE0597F92C7DBD1A61C1AF917E6B0E8' -and
                                     $categoryCounts[0] -gt 0 -and $waitProperties -eq 3 -and $allReferences -eq 0) {
