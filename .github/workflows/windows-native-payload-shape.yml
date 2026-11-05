@@ -1,0 +1,25 @@
+name: Windows kernel payload shape metadata only
+
+on:
+  push:
+    branches: [probe/native-payload-shape-52]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-payload-shape-52-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  shape:
+    name: Four-second owned WPR capture without build or product tests
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Reduce real kernel event metadata to bounded numeric shapes
+        shell: pwsh
+        run: ./.github/diagnostics/Invoke-NativePayloadShape.ps1

@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'NativeWaitCapture.ps1')
 
 # All external output remains inside this invocation's private checkout directory.
 $root = (Get-Location).Path
@@ -19,14 +20,6 @@ $testExit = 125
 $stopExit = 125
 $test = $null
 $wpr = $null
-
-function Invoke-PrivateWpr([string[]] $Arguments, [string] $Label) {
-    $output = Join-Path $private ($Label + '.txt')
-    & $wpr @Arguments *> $output
-    $code = $LASTEXITCODE
-    Write-Host "NATIVE_WAIT_TOOL stage=$Label exit=$code"
-    return @{ Code = $code; Text = [IO.File]::ReadAllText($output) }
-}
 
 function Read-Schema($Class, [string] $Guid, [int[]] $Opcodes, [hashtable] $Required, [hashtable] $Optional = @{}) {
     $properties = @($Class.CimClassProperties | Where-Object { $null -ne $_.Qualifiers['WmiDataId'] } |
@@ -288,37 +281,9 @@ function Measure-PrivateTrace {
 }
 
 try {
-    try {
-        $wpr = (Get-Command wpr.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-        [xml]$definition = [IO.File]::ReadAllText($profilePath)
-        $collectors = @($definition.WindowsPerformanceRecorder.Profiles.SystemCollector)
-        $profiles = @($definition.WindowsPerformanceRecorder.Profiles.Profile)
-        if ($collectors.Count -ne 1 -or $profiles.Count -ne 1 -or
-            $profiles[0].LoggingMode -ne 'Memory' -or
-            $collectors[0].BufferSize.Value -ne '1024' -or
-            $collectors[0].Buffers.Value -ne '128' -or
-            $collectors[0].Buffers.PercentageOfTotalMemory -ne 'false' -or
-            $null -ne $definition.SelectSingleNode('//EventCollector|//HeapEventCollector|//HypervisorEventCollector|//*[@Base]')) {
-            throw 'Unknown allocation.'
-        }
-        $inventory = Invoke-PrivateWpr @('-profiles', $profilePath) 'inventory'
-        $details = Invoke-PrivateWpr @('-profiledetails', $profile) 'details'
-        $valid = $inventory.Code -eq 0 -and $details.Code -eq 0
-        foreach ($keyword in @('ProcessThread', 'CSwitch', 'ReadyThread', 'FileIO', 'FileIOInit', 'DiskIO', 'DiskIOInit', 'FileDirEnum', 'FileOpEnd', 'DiskReadInit', 'DiskWriteInit')) {
-            $valid = $valid -and $details.Text -match ('\b' + $keyword + '\b')
-        }
-        if (-not $valid) { $measurement = 11 }
-        else {
-            $status = Invoke-PrivateWpr @('-status') 'before'
-            if ($status.Code -ne 0 -or $status.Text -notmatch '\bWPR is not recording\b') { $measurement = 12 }
-            else {
-                $start = Invoke-PrivateWpr @('-start', $profile, '-recordtempto', $private) 'start'
-                if ($start.Code -eq 0) { $owned = $true; $measurement = 13 }
-                else { $measurement = 14 }
-            }
-        }
-    }
-    catch { $measurement = 15 }
+    $capture = Start-PrivateNativeWaitCapture
+    $owned = $capture.Owned
+    $measurement = $capture.Status
     Write-Host "NATIVE_WAIT_CAPTURE owned=$([int]$owned) requestedBufferBytes=134217728 status=$measurement"
     $arguments = @('-noColor', '-parallelMode', 'none', '-reporter', 'verbose',
         '-method', 'Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_PreservesToolOutput_ButNeverMutatesSettings',
@@ -332,24 +297,11 @@ catch { Write-Host 'NATIVE_WAIT_TEST_LAUNCH status=1' }
 finally {
     if ($owned) {
         try {
-            $status = Invoke-PrivateWpr @('-status', 'collectors', '-details') 'collectors'
-            $loss = [regex]::Matches($status.Text, '(?im)^\s*Events Lost\s*:\s*(\d+)\s*$')
-            $dropped = [regex]::Match($status.Text, '(?im)^\s*Dropped event\s*:\s*(\d+)\s*$')
-            $knownLoss = $status.Code -eq 0 -and $loss.Count -eq 1 -and $dropped.Success
-            $lost = if ($knownLoss) { [uint64]$loss[0].Groups[1].Value } else { 0 }
-            $droppedCount = if ($knownLoss) { [uint64]$dropped.Groups[1].Value } else { 0 }
-            if ($knownLoss) { Write-Host "NATIVE_WAIT_LIVE_LOSS known=1 eventsLost=$lost droppedEvents=$droppedCount" }
-            else { Write-Host 'NATIVE_WAIT_LIVE_LOSS known=0' }
-        }
-        catch { $knownLoss = $false; $lost = 0 }
-        finally {
-            try {
-                $stop = Invoke-PrivateWpr @('-stop', $etl, '-skipPdbGen') 'stop'
-                $stopExit = $stop.Code
-            }
-            catch { $stopExit = 125 }
-        }
-        try {
+            $stopped = Stop-PrivateNativeWaitCapture
+            $stopExit = $stopped.Code
+            $knownLoss = $stopped.KnownLoss
+            $lost = $stopped.Lost
+            $droppedCount = $stopped.Dropped
             if ($stopExit -ne 0 -or -not [IO.File]::Exists($etl)) { $measurement = 20 }
             else {
                 Write-Host "NATIVE_WAIT_TRACE bytes=$((Get-Item -LiteralPath $etl).Length)"
