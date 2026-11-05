@@ -378,3 +378,52 @@ jobs:
           print(f"SDK_POST_TEST_RETURN_CODE={code}; stdoutBytes={len(output)}; stderrBytes={len(error)}", flush=True)
           sys.exit(code if code >= 0 else 128 - code)
           PY
+
+      - name: Check real native Git cancellation and original SDK consumers
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && inputs.suite == 'host-repairs-97' && github.ref == 'refs/heads/diag/host-repairs97' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE="$EXE.exe"; fi
+          "$EXE" -noColor -parallelMode none -reporter verbose \
+            -class Dsh.Tests.CheckpointTests -class Dsh.Tests.SdkTests \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke
+
+      - name: Check actual visible text, manual scrolling, selection and original fold budgets
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && inputs.suite == 'host-repairs-97' && github.ref == 'refs/heads/diag/host-repairs97' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE="$EXE.exe"; fi
+          "$EXE" -noColor -parallelMode none -reporter verbose \
+            -class Dsh.Tests.GuiViewsHeadlessTests -class Dsh.Tests.MessageFoldTests -class Dsh.Tests.ChatScrollStabilityTests -class Dsh.Tests.MessageSelectionTests \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke
+
+      - name: Check actual theme and font layout consumers
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && inputs.suite == 'host-repairs-97' && github.ref == 'refs/heads/diag/host-repairs97' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE="$EXE.exe"; fi
+          "$EXE" -noColor -parallelMode none -reporter verbose \
+            -method Dsh.Tests.GuiHeadlessTests.MarkdownView_Rebuilds_OnFontSizeResourceChange -method Dsh.Tests.GuiHeadlessTests.ThemeSwitch_AppliesLightVariantToTheWholeApp \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke
+
+      - name: Check real optional worker and test-process dispatch consumers
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && inputs.suite == 'host-repairs-97' && github.ref == 'refs/heads/diag/host-repairs97' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE="$EXE.exe"; fi
+          "$EXE" -noColor -parallelMode none -reporter verbose \
+            -class Dsh.Tests.PluginSandboxIntegrationTests -class Dsh.Tests.PtcRuntimeTests \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke
+
