@@ -20,3 +20,7 @@ jobs:
       - name: Inspect installed command-line analyzer help without recording or exporting
         shell: pwsh
         run: ./.github/diagnostics/Invoke-NativeEtlToolsInventory.ps1
+      - name: Inspect installed WPA profile templates without recording or exporting
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./.github/diagnostics/Invoke-WpaInstalledProfileInventory.ps1

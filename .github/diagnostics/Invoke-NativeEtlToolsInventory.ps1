@@ -125,6 +125,27 @@ try {
             Write-Host "NATIVE_ETL_CANDIDATE role=$role candidate=$candidate exists=$([int]$exists) resolved=$([int]$resolved)"
         }
         Write-Host "NATIVE_ETL_SELECTION role=$role selected=$([int]($null -ne $command)) sourceRole=$selection"
+        $versionKnown = $false
+        $fileMajor = -1
+        $fileMinor = -1
+        $fileBuild = -1
+        $filePrivate = -1
+        $versionHresult = 0
+        try {
+            if ($null -ne $command) {
+                $version = [Diagnostics.FileVersionInfo]::GetVersionInfo([string] $command.Source)
+                if (-not [string]::IsNullOrWhiteSpace($version.FileVersion)) {
+                    $fileMajor = $version.FileMajorPart
+                    $fileMinor = $version.FileMinorPart
+                    $fileBuild = $version.FileBuildPart
+                    $filePrivate = $version.FilePrivatePart
+                    $versionKnown = $true
+                }
+            }
+        }
+        catch { $versionHresult = $_.Exception.HResult }
+        # Publish numeric file-version parts only, never executable paths or free-form version resources.
+        Write-Host "NATIVE_ETL_VERSION role=$role known=$([int]$versionKnown) fileMajor=$fileMajor fileMinor=$fileMinor fileBuild=$fileBuild filePrivate=$filePrivate hresult=$versionHresult"
         $confirmed = 0
         for ($operation = 0; $operation -lt $tool.Queries.Count; $operation++) {
             if (Invoke-HelpInventory $command $tool.Queries[$operation] $role $operation $private) { $confirmed++ }
