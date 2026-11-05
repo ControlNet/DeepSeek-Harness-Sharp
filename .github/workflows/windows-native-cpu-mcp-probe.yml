@@ -1,14 +1,14 @@
-name: Windows original MCP bounded typed CPU window
+name: Windows original MCP typed CPU and file startup window
 
 on:
   push:
-    branches: [probe/native-cpu-mcp-69]
+    branches: [probe/native-file-mcp-72]
 
 permissions:
   contents: read
 
 concurrency:
-  group: native-cpu-mcp-69-${{ github.ref }}
+  group: native-file-mcp-72-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -150,7 +150,7 @@ jobs:
           ARGS+=(-trait- Category=GpuStress -trait- Category=OnlyGpu
             -trait- Category=RenderBench -trait- Category=LlmSmoke)
           "$EXE" "${ARGS[@]}"
-      - name: Observe one bounded typed CPU window inside the unchanged original MCP consumer
+      - name: Observe a bounded startup CPU and file IO window inside the unchanged original MCP consumer
         if: ${{ !cancelled() && steps.original_regression.outcome == 'success' }}
         shell: pwsh
         run: ./.github/diagnostics/Invoke-TypedNativeWaitRecording.ps1

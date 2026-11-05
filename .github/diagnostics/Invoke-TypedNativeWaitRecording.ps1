@@ -68,7 +68,7 @@ function Stop-ObservedTrace {
     catch { $script:measurement = 23 }
     if ($windowStartTicks -gt 0 -and $windowStopTicks -ge $windowStartTicks) {
         $elapsed = [decimal]($windowStopTicks - $windowStartTicks) / $frequency
-        Write-Host "NATIVE_TYPED_WINDOW known=1 requestedObservationMs=12000 startTicks=$windowStartTicks stopTicks=$windowStopTicks frequency=$frequency seconds=$($elapsed.ToString('0.000000000', [Globalization.CultureInfo]::InvariantCulture)) consumerWindowCompletenessUnknown=1"
+        Write-Host "NATIVE_TYPED_WINDOW known=1 requestedObservationMs=20000 startTicks=$windowStartTicks stopTicks=$windowStopTicks frequency=$frequency seconds=$($elapsed.ToString('0.000000000', [Globalization.CultureInfo]::InvariantCulture)) consumerWindowCompletenessUnknown=1"
     }
     else { Write-Host 'NATIVE_TYPED_WINDOW known=0 consumerWindowCompletenessUnknown=1' }
 }
@@ -113,70 +113,93 @@ function Select-ObservedThreads {
     return @{ Status = 0; Ids = [uint32[]]@($targets) }
 }
 
-function Build-PrivateCpuReader {
-    # No SDK restore, compilation, or native loading is allowed while the consumer or WPR is active.
+function Build-PrivateReaders {
     if (-not $testExited -or $owned -or -not $stopAttempted -or $stopExit -ne 0) { return 45 }
     $config = Join-Path $private 'nuget.config'
     $packages = Join-Path $private 'packages'
-    $intermediate = (Join-Path $private 'obj') + [IO.Path]::DirectorySeparatorChar
-    $output = Join-Path $private 'reader'
     [IO.File]::WriteAllText($config, '<configuration><packageSources><clear/><add key="nuget.org" value="https://api.nuget.org/v3/index.json"/></packageSources></configuration>')
-    $project = Join-Path $PSScriptRoot 'TraceCpuReader/TraceCpuReader.csproj'
-    $arguments = @('build', $project, '-c', 'Release', '-o', $output, '-m:1', '--nologo',
-        '-p:BuildInParallel=false', '-p:ImportDirectoryBuildProps=false', '-p:ImportDirectoryBuildTargets=false',
-        '-p:DebugType=None', '-p:DebugSymbols=false', '-p:EnableSourceControlManagerQueries=false', '-p:EnableSourceLink=false',
-        "-p:RestoreConfigFile=$config", "-p:RestorePackagesPath=$packages", "-p:BaseIntermediateOutputPath=$intermediate",
-        "-p:MSBuildProjectExtensionsPath=$intermediate")
     $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-    # The shared process record contains the actual compiler exit, deadline, termination, and drain results.
-    $compiled = Invoke-PrivateWpaNative -Executable $dotnet -Arguments $arguments -Directory $private `
-        -Stage 'typed-cpu-build' -DeadlineMs 300000 -LogPrefix 'NATIVE_TYPED_PROCESS'
-    Write-Host "NATIVE_TYPED_BUILD success=$([int]$compiled.Success) afterTestExit=$([int]$testExited) afterCaptureStop=$([int]($stopAttempted -and $stopExit -eq 0 -and -not $owned))"
-    if (-not $compiled.Success -or -not [IO.File]::Exists((Join-Path $output 'TraceCpuReader.exe'))) { return 45 }
+    foreach ($kind in @('Cpu', 'File')) {
+        $name = $kind.ToLowerInvariant()
+        $intermediate = (Join-Path $private ('obj-' + $name)) + [IO.Path]::DirectorySeparatorChar
+        $output = Join-Path $private ('reader-' + $name)
+        $project = Join-Path $PSScriptRoot "Trace${kind}Reader/Trace${kind}Reader.csproj"
+        $arguments = @('build', $project, '-c', 'Release', '-o', $output, '-m:1', '--nologo',
+            '-p:BuildInParallel=false', '-p:ImportDirectoryBuildProps=false', '-p:ImportDirectoryBuildTargets=false',
+            '-p:DebugType=None', '-p:DebugSymbols=false', '-p:EnableSourceControlManagerQueries=false', '-p:EnableSourceLink=false',
+            "-p:RestoreConfigFile=$config", "-p:RestorePackagesPath=$packages", "-p:BaseIntermediateOutputPath=$intermediate",
+            "-p:MSBuildProjectExtensionsPath=$intermediate")
+        $compiled = Invoke-PrivateWpaNative -Executable $dotnet -Arguments $arguments -Directory $private `
+            -Stage "typed-$name-build" -DeadlineMs 300000 -LogPrefix 'NATIVE_TYPED_PROCESS'
+        Write-Host "NATIVE_TYPED_BUILD kind=$name success=$([int]$compiled.Success) afterTestExit=$([int]$testExited) afterCaptureStop=$([int]($stopAttempted -and $stopExit -eq 0 -and -not $owned))"
+        if (-not $compiled.Success -or -not [IO.File]::Exists((Join-Path $output "Trace${kind}Reader.exe"))) { return 45 }
+    }
     return 0
 }
 
-function Write-ApprovedCpuOutput([string] $Path) {
+function Write-ApprovedTypedOutput([string] $Path, [ValidateSet('CPU', 'FILE')] [string] $Kind) {
+    $prefix = "NATIVE_TYPED_$Kind "
     $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($key in @('hresult', 'status', 'sdkMajor', 'sdkMinor', 'sdkPatch', 'toolkitMajor', 'toolkitMinor', 'toolkitPatch',
-        'allowLostEvents', 'allowTimeInversion', 'lostEvents', 'lostBuffers', 'traceHeaderKernelEventVersion',
-        'traceHeaderDurationSeconds', 'analyzerDisplayedDurationKnown', 'analyzerDisplayedDurationSeconds',
-        'eventSchemaUnknown', 'eventVersionUnknown', 'nativeModeUnknown', 'stackAvailabilityUnknown', 'rootCauseUnknown',
-        'consumerWindowCompletenessUnknown', 'intervalEnumerationCompletenessUnknown', 'unobservedLeadingIntervalsUnknown',
-        'unobservedTrailingIntervalsUnknown', 'contextSwitchRecords', 'readyThreadRecords', 'cpuTimeSliceRecords',
-        'threadActivityRecords', 'pid', 'tid', 'identityInstances', 'identitySourceTypedRow', 'identityBoundaryUnknown',
-        'activityCount', 'waitMissing', 'readyMissing', 'waitIntervals', 'waitComplete', 'waitIncomplete', 'waitDuplicateLinks',
-        'waitSeconds', 'readyIntervals', 'readyComplete', 'readyIncomplete', 'readyDuplicateLinks', 'readySeconds', 'reasonUnavailable')) {
-        $null = $keys.Add($key)
+    $numeric = if ($Kind -ceq 'CPU') {
+        @('hresult', 'status', 'sdkMajor', 'sdkMinor', 'sdkPatch', 'toolkitMajor', 'toolkitMinor', 'toolkitPatch',
+          'allowLostEvents', 'allowTimeInversion', 'lostEvents', 'lostBuffers', 'traceHeaderKernelEventVersion',
+          'traceHeaderDurationSeconds', 'analyzerDisplayedDurationKnown', 'analyzerDisplayedDurationSeconds',
+          'eventSchemaUnknown', 'eventVersionUnknown', 'nativeModeUnknown', 'stackAvailabilityUnknown', 'rootCauseUnknown',
+          'consumerWindowCompletenessUnknown', 'intervalEnumerationCompletenessUnknown', 'unobservedLeadingIntervalsUnknown',
+          'unobservedTrailingIntervalsUnknown', 'contextSwitchRecords', 'readyThreadRecords', 'cpuTimeSliceRecords',
+          'threadActivityRecords', 'pid', 'tid', 'identityInstances', 'identitySourceTypedRow', 'identityBoundaryUnknown',
+          'activityCount', 'waitMissing', 'readyMissing', 'waitIntervals', 'waitComplete', 'waitIncomplete', 'waitDuplicateLinks',
+          'waitSeconds', 'readyIntervals', 'readyComplete', 'readyIncomplete', 'readyDuplicateLinks', 'readySeconds', 'reasonUnavailable')
     }
-    # These are the public KernelWaitReason names in the exact pinned CPU package.
-    $reasons = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($reason in @('Executive', 'FreePage', 'PageIn', 'PoolAllocation', 'DelayExecution', 'Suspended', 'UserRequest',
-        'WrExecutive', 'WrFreePage', 'WrPageIn', 'WrPoolAllocation', 'WrDelayExecution', 'WrSuspended', 'WrUserRequest',
-        'WrEventPair', 'WrQueue', 'WrLpcReceive', 'WrLpcReply', 'WrVirtualMemory', 'WrPageOut', 'WrRendezvous', 'WrKeyedEvent',
-        'WrTerminated', 'WrProcessInSwap', 'WrCpuRateControl', 'WrCalloutStack', 'WrKernel', 'WrResource', 'WrPushLock',
-        'WrMutex', 'WrQuantumEnd', 'WrDispatchInt', 'WrPreempted', 'WrYieldExecution', 'WrFastMutex', 'WrGuardedMutex',
-        'WrRundown', 'WrAlertByThreadId', 'WrDeferredPreempt', 'WrPhysicalFault', 'WrIoRing')) { $null = $reasons.Add($reason) }
+    else {
+        @('hresult', 'status', 'input_bytes', 'requested_threads', 'allow_lost_events', 'allow_time_inversion',
+          'symbols_requested', 'syscall_data_available', 'machine_disk_io_used', 'capture_window_completeness_unknown',
+          'raw_unpaired_events_available', 'duration_sum_is_wallclock_partition', 'lost_events', 'lost_buffers',
+          'target_process_identity_count', 'tid', 'identity_count', 'create_boundary_known', 'exit_boundary_known',
+          'process_create_boundary_known', 'process_exit_boundary_known', 'target_observations', 'identity_conflicts',
+          'invalid_durations', 'category_observed_in_trace', 'target_count_unknown', 'trace_observations',
+          'missing_issuing_thread', 'unattributed_target_process', 'paired_endpoints', 'missing_start', 'missing_stop',
+          'both_endpoints_missing', 'duration_unknown', 'partial_timestamp_pairs', 'sdk_endpoint_duration_sum_seconds',
+          'sdk_endpoint_duration_max_seconds', 'duration_sum_unknown', 'duration_max_unknown')
+    }
+    foreach ($key in $numeric) { $null = $keys.Add($key) }
+    $labels = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $categoricalKey = if ($Kind -ceq 'CPU') { 'waitReason' } else { 'category' }
+    $publicLabels = if ($Kind -ceq 'CPU') {
+        @('Executive', 'FreePage', 'PageIn', 'PoolAllocation', 'DelayExecution', 'Suspended', 'UserRequest',
+          'WrExecutive', 'WrFreePage', 'WrPageIn', 'WrPoolAllocation', 'WrDelayExecution', 'WrSuspended', 'WrUserRequest',
+          'WrEventPair', 'WrQueue', 'WrLpcReceive', 'WrLpcReply', 'WrVirtualMemory', 'WrPageOut', 'WrRendezvous', 'WrKeyedEvent',
+          'WrTerminated', 'WrProcessInSwap', 'WrCpuRateControl', 'WrCalloutStack', 'WrKernel', 'WrResource', 'WrPushLock',
+          'WrMutex', 'WrQuantumEnd', 'WrDispatchInt', 'WrPreempted', 'WrYieldExecution', 'WrFastMutex', 'WrGuardedMutex',
+          'WrRundown', 'WrAlertByThreadId', 'WrDeferredPreempt', 'WrPhysicalFault', 'WrIoRing')
+    }
+    else {
+        @('create_open', 'directory_enumeration', 'query_information', 'read', 'write', 'directory_change_notification',
+          'change_capacity', 'cleanup', 'close', 'delete_on_close', 'flush', 'rename', 'resize', 'set_information',
+          'file_system_control', 'set_security', 'query_security', 'set_extended_attributes', 'query_extended_attributes')
+    }
+    foreach ($label in $publicLabels) { $null = $labels.Add($label) }
+    $statusPattern = if ($Kind -ceq 'CPU') { '^NATIVE_TYPED_CPU status=(0|10|20|30|31|32|33)$' } else { '^NATIVE_TYPED_FILE status=([0-9]) hresult=-?\d+$' }
     $records = 0
     $rejected = 0
     $statusCount = 0
     $readerStatus = 125
     foreach ($line in [IO.File]::ReadLines($Path)) {
-        if (-not $line.StartsWith('NATIVE_TYPED_CPU ', [StringComparison]::Ordinal)) { continue }
+        if (-not $line.StartsWith($prefix, [StringComparison]::Ordinal)) { continue }
         $records++
         if ($records -gt 4096) { $rejected++; break }
         $valid = $true
         $seenKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        foreach ($field in $line.Substring(17).Split(' ')) {
+        foreach ($field in $line.Substring($prefix.Length).Split(' ')) {
             $pair = $field.Split('=')
             if ($pair.Count -ne 2 -or -not $seenKeys.Add($pair[0])) { $valid = $false; break }
-            if ($pair[0] -ceq 'waitReason') {
-                if (-not $reasons.Contains($pair[1])) { $valid = $false; break }
+            if ($pair[0] -ceq $categoricalKey) {
+                if (-not $labels.Contains($pair[1])) { $valid = $false; break }
             }
             elseif (-not $keys.Contains($pair[0]) -or $pair[1] -notmatch '^-?\d+(?:\.\d+)?$') { $valid = $false; break }
         }
         if (-not $valid) { $rejected++; continue }
-        $status = [regex]::Match($line, '^NATIVE_TYPED_CPU status=(0|10|20|30|31|32|33)$')
+        $status = [regex]::Match($line, $statusPattern)
         if ($seenKeys.Contains('status')) {
             if (-not $status.Success) { $rejected++; continue }
             $statusCount++
@@ -184,7 +207,7 @@ function Write-ApprovedCpuOutput([string] $Path) {
         }
         Write-Host $line
     }
-    Write-Host "NATIVE_TYPED_DECODER records=$records rejected=$rejected statusRecords=$statusCount status=$readerStatus"
+    Write-Host "NATIVE_TYPED_DECODER kind=$Kind records=$records rejected=$rejected statusRecords=$statusCount status=$readerStatus"
     if ($rejected -ne 0 -or $statusCount -ne 1) { return 47 }
     return $readerStatus
 }
@@ -197,15 +220,19 @@ function Measure-PrivateTrace {
     if ($traceBytes -le 0 -or $traceBytes -gt 268435456) { return 40 }
     $selected = Select-ObservedThreads
     if ($selected.Status -ne 0) { return [int]$selected.Status }
-    $build = Build-PrivateCpuReader
+    $build = Build-PrivateReaders
     if ($build -ne 0) { return [int]$build }
-    $reader = Join-Path $private 'reader/TraceCpuReader.exe'
-    $result = Invoke-PrivateWpaNative -Executable $reader -Arguments @($etl, [string]$test.Id, ($selected.Ids -join ',')) `
-        -Directory $private -Stage 'typed-cpu-window' -DeadlineMs 120000 -LogPrefix 'NATIVE_TYPED_PROCESS'
-    $readerStatus = Write-ApprovedCpuOutput (Join-Path $private 'typed-cpu-window-out.txt')
-    if ($readerStatus -ne 0) { return [int]$readerStatus }
-    if (-not $result.Success) { return 46 }
-    return 0
+    $measurementStatus = 0
+    foreach ($kind in @('Cpu', 'File')) {
+        $name = $kind.ToLowerInvariant()
+        $reader = Join-Path $private "reader-$name/Trace${kind}Reader.exe"
+        $result = Invoke-PrivateWpaNative -Executable $reader -Arguments @($etl, [string]$test.Id, ($selected.Ids -join ',')) `
+            -Directory $private -Stage "typed-$name-window" -DeadlineMs 120000 -LogPrefix 'NATIVE_TYPED_PROCESS'
+        $readerStatus = Write-ApprovedTypedOutput -Path (Join-Path $private "typed-$name-window-out.txt") -Kind $kind.ToUpperInvariant()
+        if ($readerStatus -ne 0 -and $measurementStatus -eq 0) { $measurementStatus = [int]$readerStatus }
+        if (-not $result.Success -and $measurementStatus -eq 0) { $measurementStatus = 46 }
+    }
+    return $measurementStatus
 }
 
 try {
@@ -213,23 +240,18 @@ try {
         '-method', 'Dsh.Tests.Mcp.McpSettingsBoundaryTests.OwnedStdio_PreservesToolOutput_ButNeverMutatesSettings',
         '-trait-', 'Category=GpuStress', '-trait-', 'Category=OnlyGpu',
         '-trait-', 'Category=RenderBench', '-trait-', 'Category=LlmSmoke', '-failSkips')
+    $capture = Start-PrivateNativeWaitCapture
+    if ($capture.Owned) { $windowStartTicks = [Diagnostics.Stopwatch]::GetTimestamp() }
+    $owned = $capture.Owned
+    $measurement = $capture.Status
+    Write-Host "NATIVE_WAIT_CAPTURE owned=$([int]$owned) requestedBufferBytes=134217728 status=$measurement beforeTestLaunch=1"
     $test = Start-Process -FilePath (Join-Path $root 'tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe') -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $private 'test-out.txt') -RedirectStandardError (Join-Path $private 'test-error.txt')
-    $exitedBeforeStart = $test.WaitForExit(10000)
-    Write-Host "NATIVE_TYPED_WAIT_START requestedDelayMs=10000 testExitedBeforeCapture=$([int]$exitedBeforeStart)"
-    if (-not $exitedBeforeStart -and -not $test.HasExited) {
-        $capture = Start-PrivateNativeWaitCapture
-        if ($capture.Owned) { $windowStartTicks = [Diagnostics.Stopwatch]::GetTimestamp() }
-        $owned = $capture.Owned
-        $measurement = $capture.Status
-        Write-Host "NATIVE_WAIT_CAPTURE owned=$([int]$owned) requestedBufferBytes=134217728 status=$measurement"
-        if ($owned) {
-            $remainingTicks = 12L * $frequency - ([Diagnostics.Stopwatch]::GetTimestamp() - $windowStartTicks)
-            $remainingMs = [Math]::Max(0, [int][Math]::Ceiling(1000.0 * $remainingTicks / $frequency))
-            if ($remainingMs -gt 0) { $null = $test.WaitForExit($remainingMs) }
-            Stop-ObservedTrace
-        }
+    if ($owned) {
+        $remainingTicks = 20L * $frequency - ([Diagnostics.Stopwatch]::GetTimestamp() - $windowStartTicks)
+        $remainingMs = [Math]::Max(0, [int][Math]::Ceiling(1000.0 * $remainingTicks / $frequency))
+        if ($remainingMs -gt 0) { $null = $test.WaitForExit($remainingMs) }
+        Stop-ObservedTrace
     }
-    else { $measurement = 42 }
 }
 catch { Write-Host "NATIVE_TYPED_WAIT_CAPTURE hresult=$($_.Exception.HResult)"; $measurement = 23 }
 finally {
