@@ -26,10 +26,11 @@ internal static class WindowsIoStageTiming
     // Proof TLS holds one Apply reference only during its callback; the retained slot hint is numeric.
     // Each coherent active thread sample opens at most one additional query-only handle, verifies its process owner, and closes it before the next sample.
     // A pending-I/O flag is transient and does not identify a device, filesystem filter or wait cause.
+    // PDH adds four fixed counters and one query; its provider-owned allocation and sampling cost are outside the array bound.
     private const int ApplyCapacity = 16;
     private const int CollectionCapacity = 16;
     private const int SlotCapacity = 257; // Caller 0, actual current-source workers 1..256.
-    private const int ProofSlotCapacity = 512;
+    private const int ProofSlotCapacity = 256;
     private const int RootCapacity = 256;
     private const int ProvenanceCapacity = 4096;
     private const int CollectionThreadSampleCapacity = CollectionCapacity * SlotCapacity;
@@ -40,7 +41,7 @@ internal static class WindowsIoStageTiming
         + ThreadSampleCapacity * 32 + ProvenanceCapacity * 12 + (int)RootCategory.Count * sizeof(int)
         + ApplyCapacity * ((int)Phase.Count * sizeof(long)
             + ProofSlotCapacity * (48 + 3 * (int)ProofOperation.Count * sizeof(long)))
-        + (int)TestPhase.Count * sizeof(long);
+        + (int)TestPhase.Count * sizeof(long) + WindowsDiskCounters.MaximumNumericArrayBytes;
     private static readonly int MaximumReferenceArrayBytes =
         (ProvenanceCapacity + ApplyCapacity + CollectionCapacity) * IntPtr.Size;
     private const int PreDeadlineSeconds = 59;
@@ -164,6 +165,7 @@ internal static class WindowsIoStageTiming
         private int _applyCount, _collectionCount, _errors, _sample, _disposed;
         private long _previousCpu = -1, _previousCpuStamp, _previousPause = -1, _previousPauseStamp;
         private CpuSample? _previousMachine;
+        private readonly WindowsDiskCounters? _diskCounters;
 
         internal Observation()
         {
@@ -172,6 +174,7 @@ internal static class WindowsIoStageTiming
                 Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             try
             {
+                if (OperatingSystem.IsWindows()) _diskCounters = new WindowsDiskCounters();
                 Trace.Listeners.Add(_listener);
                 _timer.Change(TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
                 if (Interlocked.CompareExchange(ref _observation, this, null) is not null)
@@ -180,6 +183,8 @@ internal static class WindowsIoStageTiming
             catch (Exception)
             {
                 _timer.Dispose();
+                try { _diskCounters?.Dispose(); }
+                catch (Exception) { Failed(); }
                 Trace.Listeners.Remove(_listener);
                 throw;
             }
@@ -347,6 +352,7 @@ internal static class WindowsIoStageTiming
                 DumpProcessCpu(sample, process);
                 DumpGcPause(sample);
                 DumpMachine(sample);
+                _diskCounters?.Dump(sample);
                 for (var index = 0; index < _collections.Length; index++)
                     _collections[index]?.DumpThreads(sample,
                         _threadSamples.AsSpan(index * SlotCapacity, SlotCapacity), threads,
@@ -434,6 +440,8 @@ internal static class WindowsIoStageTiming
             try { await _timer.DisposeAsync().ConfigureAwait(false); }
             catch (Exception) { Failed(); }
             Dump(5);
+            try { _diskCounters?.Dispose(); }
+            catch (Exception) { Failed(); }
             try
             {
                 Trace.Listeners.Remove(_listener);
