@@ -12,9 +12,11 @@ PluginGuard.props copies its obj/dsh-guard libraries into bin, so no obj or Carg
 NativePluginAbiTests optionally loads the frozen-v1 C fixtures and published Linux sample at the exact paths below.
 The independently installed SDK, NuGet feed, C# frontends, SSH and Iroh component remain CI prerequisites.
 Restore deliberately refuses existing payload destinations instead of merging into an old build.
-The JSON summary counts payload entries and regular-file bytes, excluding the manifest and tar padding.
+The JSON summary counts restored files and logical versus stored payload bytes, excluding the manifest and tar padding.
 """
 import argparse
+from collections import Counter
+import hashlib
 import io
 import json
 import os
@@ -30,7 +32,7 @@ import tarfile
 import tempfile
 
 
-VERSION = 1
+VERSION = 2
 MANIFEST = "test-build-manifest.json"
 TEST_OUTPUT = "tests/Dsh.Tests/bin/Debug/net10.0"
 CLI_OUTPUT = "DeepSeek-Harness-Sharp/bin/Debug/net10.0"
@@ -139,8 +141,11 @@ def validate_members(members, os_name, tracked):
         if member.name.casefold() in folded:
             raise ArchiveError("Archive contains duplicate or case-colliding paths.")
         folded[member.name.casefold()] = member
-        if not (member.isfile() or member.isdir() or member.issym()) or member.size < 0:
+        if not (member.isfile() or member.isdir() or member.issym() or member.islnk()) or member.size < 0:
             raise ArchiveError("Archive contains an unsupported entry type.")
+        if ((not member.isfile() and member.size != 0) or member.sparse is not None
+                or (member.isfile() or member.isdir()) and member.linkname):
+            raise ArchiveError("Archive contains malformed payload metadata.")
         if member.mode & ~0o777:
             raise ArchiveError("Archive contains privileged or invalid modes.")
         entries[member.name] = member
@@ -151,6 +156,16 @@ def validate_members(members, os_name, tracked):
             raise ArchiveError("Archive would overwrite tracked source.")
         if any(parent.as_posix().casefold() in folded and not folded[parent.as_posix().casefold()].isdir() for parent in ancestors):
             raise ArchiveError("Archive contains a non-directory parent.")
+        if member.islnk():
+            safe_payload(member.linkname, os_name)
+            target = entries.get(member.linkname)
+            if target is None or not target.isfile():
+                raise ArchiveError("Archive transport reference must target a regular payload entry.")
+            if set(member.pax_headers) - {"path", "linkpath", "mtime"}:
+                raise ArchiveError("Archive transport reference contains unsupported metadata.")
+            if (member.pax_headers.get("path", name) != name
+                    or member.pax_headers.get("linkpath", member.linkname) != member.linkname):
+                raise ArchiveError("Archive transport reference contains malformed metadata.")
         if member.issym():
             target = member.linkname
             if not target or target.startswith("/") or "\\" in target or ":" in target or any(ord(char) < 32 for char in target):
@@ -177,6 +192,8 @@ def require_products(entries, os_name):
         while member.issym():
             target = posixpath.normpath(posixpath.join(posixpath.dirname(member.name), member.linkname))
             member = entries[target]
+        if member.islnk():
+            member = entries[member.linkname]
         if not member.isfile() or member.size == 0:
             raise ArchiveError("Archive has an empty or non-file required runtime product.")
 
@@ -223,14 +240,60 @@ def product_paths(root, os_name):
 
 
 def summary(operation, archive, members):
+    entries = {member.name: member for member in members}
     print(json.dumps({
         "operation": operation,
-        "files": sum(member.isfile() for member in members),
+        "files": sum(member.isfile() or member.islnk() for member in members),
         "directories": sum(member.isdir() for member in members),
         "symlinks": sum(member.issym() for member in members),
-        "uncompressed_bytes": sum(member.size for member in members if member.isfile()),
+        "transport_references": sum(member.islnk() for member in members),
+        "logical_bytes": sum(entries[member.linkname].size if member.islnk() else member.size
+                             for member in members if member.isfile() or member.islnk()),
+        "stored_bytes": sum(member.size for member in members if member.isfile()),
         "compressed_bytes": archive.stat().st_size,
     }, sort_keys=True))
+
+
+def payload_members(output, root, paths):
+    members = []
+    for path in paths:
+        member = output.gettarinfo(str(path), arcname=path.relative_to(root).as_posix())
+        if member is None:
+            raise ArchiveError("Runtime output contains an unsupported filesystem entry.")
+        # Normalize accidental filesystem hardlinks before choosing content-based transport references.
+        if member.islnk():
+            member.type, member.linkname, member.size = tarfile.REGTYPE, "", path.stat().st_size
+        member.mode = stat.S_IMODE(member.mode)
+        member.uid = member.gid = 0
+        member.uname = member.gname = ""
+        member.pax_headers = {}
+        members.append(member)
+    return members
+
+
+def add_payload(output, paths, members):
+    # Unique file sizes cannot share contents, so avoid hashing those products.
+    sizes = Counter(member.size for member in members if member.isfile())
+    contents_by_digest = {}
+    stored = []
+    for path, member in zip(paths, members):
+        if member.isfile():
+            with path.open("rb") as contents:
+                if sizes[member.size] > 1:
+                    # file_digest uses bounded streaming rather than loading runtime products into memory.
+                    key = (member.size, hashlib.file_digest(contents, "sha256").digest())
+                    target = contents_by_digest.get(key)
+                    if target is not None:
+                        member = member.replace(linkname=target, deep=False)
+                        member.type, member.size = tarfile.LNKTYPE, 0
+                    else:
+                        contents_by_digest[key] = member.name
+                        contents.seek(0)
+                output.addfile(member, contents if member.isfile() else None)
+        else:
+            output.addfile(member)
+        stored.append(member)
+    return stored
 
 
 def pack(root, archive, source, os_name, tracked):
@@ -239,39 +302,51 @@ def pack(root, archive, source, os_name, tracked):
     with tempfile.TemporaryDirectory(prefix="test-build-pack-", dir=archive.parent) as temporary:
         pending = Path(temporary) / "test-build.tar.gz"
         with tarfile.open(pending, "w:gz", compresslevel=1, dereference=False) as output:
-            members = []
-            for path in paths:
-                member = output.gettarinfo(str(path), arcname=path.relative_to(root).as_posix())
-                if member is None:
-                    raise ArchiveError("Runtime output contains an unsupported filesystem entry.")
-                # Store hard-linked regular products as independent files without changing symbolic links.
-                if member.islnk():
-                    member.type, member.linkname, member.size = tarfile.REGTYPE, "", path.stat().st_size
-                member.mode = stat.S_IMODE(member.mode)
-                member.uid = member.gid = 0
-                member.uname = member.gname = ""
-                member.pax_headers = {}
-                members.append(member)
+            members = payload_members(output, root, paths)
             require_products(validate_members(members, os_name, tracked), os_name)
             manifest = json.dumps({"version": VERSION, "source": source, "os": os_name}, sort_keys=True).encode("utf-8")
             metadata = tarfile.TarInfo(MANIFEST)
             metadata.size, metadata.mode = len(manifest), 0o644
             output.addfile(metadata, io.BytesIO(manifest))
-            for path, member in zip(paths, members):
-                if member.isfile():
-                    with path.open("rb") as contents:
-                        output.addfile(member, contents)
-                else:
-                    output.addfile(member)
+            members = add_payload(output, paths, members)
         os.replace(pending, archive)
     summary("pack", archive, members)
 
 
 def extraction_filter(member, destination):
     # data_filter rejects outside destinations and unsafe link targets before each extraction.
+    if member.islnk():
+        raise ArchiveError("Transport references must be copied, never extracted as filesystem links.")
     filtered = tarfile.data_filter(member, destination)
     # Retain ordinary Unix permissions instead of data_filter's default permission normalization.
     return filtered.replace(mode=None if member.issym() else member.mode)
+
+
+def extract_payload(incoming, payload, staging):
+    # Keep directories writable until all independent reference copies exist in private staging.
+    ordinary = [member.replace(mode=member.mode | 0o700) if member.isdir()
+                else member.replace(mode=member.mode | 0o400) if member.isfile() else member
+                for member in payload if not member.islnk()]
+    incoming.extractall(staging, members=ordinary, filter=extraction_filter)
+    for member in payload:
+        if not member.islnk():
+            continue
+        ordinary_parents(staging, member.linkname)
+        ordinary_parents(staging, member.name)
+        source, destination = staging / member.linkname, staging / member.name
+        if not stat.S_ISREG(source.lstat().st_mode) or os.path.lexists(destination):
+            raise ArchiveError("Transport reference requires a private regular source and absent destination.")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        # copyfile creates a separate writable inode; neither source nor final products are hard-linked.
+        shutil.copyfile(source, destination)
+        destination.chmod(member.mode)
+        os.utime(destination, (member.mtime, member.mtime))
+    for member in payload:
+        if member.isfile():
+            (staging / member.name).chmod(member.mode)
+    for member in sorted((member for member in payload if member.isdir()),
+                         key=lambda member: len(PurePosixPath(member.name).parts), reverse=True):
+        (staging / member.name).chmod(member.mode)
 
 
 def restore(root, archive, source, os_name, tracked):
@@ -294,7 +369,7 @@ def restore(root, archive, source, os_name, tracked):
                 raise ArchiveError("Restore requires clean, absent runtime output destinations.")
         with tempfile.TemporaryDirectory(prefix=".test-build-restore-", dir=root) as temporary:
             staging = Path(temporary)
-            incoming.extractall(staging, members=payload, filter=extraction_filter)
+            extract_payload(incoming, payload, staging)
             installed = []
             try:
                 for name in destinations:

@@ -187,7 +187,7 @@ jobs:
   test-build-windows:
     name: Prepare shared test build (Windows)
     needs: [changes, dryioc-feed]
-    if: needs.changes.outputs.tests == 'true'
+    if: needs.changes.outputs.tests == 'true' || needs.changes.outputs.aot == 'true'
     uses: ./.github/workflows/ci-tests.yml
     with:
       os: windows-latest
@@ -201,7 +201,7 @@ jobs:
   test-build-linux:
     name: Prepare shared test build (Linux)
     needs: [changes, dryioc-feed]
-    if: needs.changes.outputs.tests == 'true'
+    if: needs.changes.outputs.tests == 'true' || needs.changes.outputs.aot == 'true'
     uses: ./.github/workflows/ci-tests.yml
     with:
       os: ubuntu-latest
@@ -461,31 +461,58 @@ jobs:
           retention-days: 1
 
 
-  aot:
-    name: AOT 构建（${{ matrix.rid }}）
+  # Each OS publishes immediately after the feed; only its validator joins the shared test build.
+  aot-publish-windows:
+    name: AOT publish (win-x64)
     needs: [changes, dryioc-feed]
     if: needs.changes.outputs.aot == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            rid: win-x64
-            native-cc: cl
-          - os: ubuntu-latest
-            rid: linux-x64
-            native-cc: clang
-    uses: ./.github/workflows/ci-aot.yml
+    uses: ./.github/workflows/ci-aot-publish.yml
     with:
-      os: ${{ matrix.os }}
-      rid: ${{ matrix.rid }}
-      native-cc: ${{ matrix.native-cc }}
+      os: windows-latest
+      rid: win-x64
+      native-cc: cl
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  aot-publish-linux:
+    name: AOT publish (linux-x64)
+    needs: [changes, dryioc-feed]
+    if: needs.changes.outputs.aot == 'true'
+    uses: ./.github/workflows/ci-aot-publish.yml
+    with:
+      os: ubuntu-latest
+      rid: linux-x64
+      native-cc: clang
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  aot-validate-windows:
+    name: AOT validation (win-x64)
+    needs: [changes, dryioc-feed, aot-publish-windows, test-build-windows]
+    if: needs.changes.outputs.aot == 'true'
+    uses: ./.github/workflows/ci-aot-validate.yml
+    with:
+      os: windows-latest
+      rid: win-x64
+      test_build_artifact: dsh-test-build-Windows-${{ github.sha }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  aot-validate-linux:
+    name: AOT validation (linux-x64)
+    needs: [changes, dryioc-feed, aot-publish-linux, test-build-linux]
+    if: needs.changes.outputs.aot == 'true'
+    uses: ./.github/workflows/ci-aot-validate.yml
+    with:
+      os: ubuntu-latest
+      rid: linux-x64
+      test_build_artifact: dsh-test-build-Linux-${{ github.sha }}
       dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
       dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
 
   result:
     name: CI 结果
-    needs: [changes, validate, dryioc-feed, iroh-component-windows, iroh-component-linux, iroh-component-macos, test-build-windows, test-build-linux, test-build-macos, test-windows-regression, test-linux-regression, test-macos-regression, test-windows-quick, test-linux-quick, test-macos-quick, build, aot]
+    needs: [changes, validate, dryioc-feed, iroh-component-windows, iroh-component-linux, iroh-component-macos, test-build-windows, test-build-linux, test-build-macos, test-windows-regression, test-linux-regression, test-macos-regression, test-windows-quick, test-linux-quick, test-macos-quick, build, aot-publish-windows, aot-publish-linux, aot-validate-windows, aot-validate-linux]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
