@@ -33,11 +33,13 @@ internal static class WindowsIoStageTiming
     private const int ProofSlotCapacity = 256;
     private const int RootCapacity = 256;
     private const int ProvenanceCapacity = 4096;
+    private const int QueryInformationClassCount = 2;
+    private const int QueryInformationClassScalarFields = 5;
     private const int CollectionThreadSampleCapacity = CollectionCapacity * SlotCapacity;
     private const int ThreadSampleCapacity = CollectionThreadSampleCapacity + ApplyCapacity * ProofSlotCapacity;
     private const int MaximumNumericArrayBytes = CollectionCapacity
         * (SlotCapacity * (184 + 3 * (int)Operation.Count * sizeof(long))
-            + RootCapacity * 28)
+            + RootCapacity * 28 + QueryInformationClassCount * QueryInformationClassScalarFields * sizeof(long))
         + ThreadSampleCapacity * 32 + ProvenanceCapacity * 12 + (int)RootCategory.Count * sizeof(int)
         + ApplyCapacity * ((int)Phase.Count * sizeof(long)
             + ProofSlotCapacity * (48 + 3 * (int)ProofOperation.Count * sizeof(long)))
@@ -711,6 +713,7 @@ internal static class WindowsIoStageTiming
     {
         // Directory identity and progress live only in fixed active slots; no pending-work registry.
         private readonly Slot[] _slots = CreateSlots();
+        private readonly QueryClassCounters[] _informationClasses = new QueryClassCounters[QueryInformationClassCount];
         private readonly long[] _enters = new long[SlotCapacity * (int)Operation.Count];
         private readonly long[] _exits = new long[SlotCapacity * (int)Operation.Count];
         private readonly long[] _elapsed = new long[SlotCapacity * (int)Operation.Count];
@@ -724,6 +727,11 @@ internal static class WindowsIoStageTiming
         private readonly long _started = Stopwatch.GetTimestamp();
         private long _finished;
         private int _workers, _roots, _errors, _slotOverflow, _stopKind;
+
+        private struct QueryClassCounters
+        {
+            internal long Directories, Queries, CompletedTicks, InformationBytes, Returned;
+        }
 
         private struct Slot
         {
@@ -808,13 +816,14 @@ internal static class WindowsIoStageTiming
             Interlocked.Increment(ref state.Sequence);
         }
 
-        internal void ReturnedEntry(int slot)
+        internal void ReturnedEntry(int slot, int informationClass)
         {
             if ((uint)slot >= SlotCapacity) return;
             ref var state = ref _slots[slot];
             Interlocked.Increment(ref state.Sequence);
             state.Returned++;
             state.TotalReturned++;
+            Interlocked.Increment(ref _informationClasses[informationClass - 1].Returned);
             Interlocked.Increment(ref state.Sequence);
         }
 
@@ -887,8 +896,16 @@ internal static class WindowsIoStageTiming
             Interlocked.Increment(ref state.Sequence);
         }
 
-        internal void QueryResult(int status, nuint information, int capacity)
+        internal void DirectoryInformationClass(int informationClass)
+            => Interlocked.Increment(ref _informationClasses[informationClass - 1].Directories);
+
+        internal void QueryResult(int status, nuint information, int capacity, int slot, int informationClass)
         {
+            ref var counters = ref _informationClasses[informationClass - 1];
+            Interlocked.Increment(ref counters.Queries);
+            Interlocked.Add(ref counters.CompletedTicks, _slots[slot].LastQueryTicks);
+            if (status == 0 && information <= (nuint)capacity)
+                Interlocked.Add(ref counters.InformationBytes, (long)information);
             if (status != 0)
             {
                 Interlocked.Increment(ref _queryNonSuccess);
@@ -965,6 +982,11 @@ internal static class WindowsIoStageTiming
             Trace.WriteLine($"IO_STAGE_PROGRESS sample={sample} collection={ordinal} discoveredPaths={paths} directoriesReadToCompletion={directories} atomicSnapshot=0");
             Trace.WriteLine($"IO_STAGE_COLLECTION sample={sample} collection={ordinal} apply={apply} started={_started} finished={Volatile.Read(ref _finished)} stopKind={Volatile.Read(ref _stopKind)} workersEntered={Volatile.Read(ref _workers)} roots={Volatile.Read(ref _roots)} rootOverflow={Math.Max(0, Volatile.Read(ref _roots) - RootCapacity)} slotOverflow={Volatile.Read(ref _slotOverflow)} observerErrors={Volatile.Read(ref _errors)} ticks={Stopwatch.GetTimestamp()}");
             Trace.WriteLine($"IO_STAGE_QUERY_INFORMATION sample={sample} collection={ordinal} successfulQueries={Volatile.Read(ref _querySuccess)} nonSuccessQueries={Volatile.Read(ref _queryNonSuccess)} informationBytes={Volatile.Read(ref _queryBytes)} invalidInformation={Volatile.Read(ref _queryInvalidInformation)} zeroInformationSuccess={Volatile.Read(ref _queryZeroInformation)} fullBufferSuccess={Volatile.Read(ref _queryFullBuffer)} nonSuccessIncludesEOF=1 atomicSnapshot=0 perCollectionScalarBytes={6 * sizeof(long)}");
+            for (var index = 0; index < _informationClasses.Length; index++)
+            {
+                ref var counters = ref _informationClasses[index];
+                Trace.WriteLine($"IO_STAGE_QUERY_CLASS sample={sample} collection={ordinal} informationClass={index + 1} directories={Volatile.Read(ref counters.Directories)} queries={Volatile.Read(ref counters.Queries)} completedQueryTicks={Volatile.Read(ref counters.CompletedTicks)} returnedBytes={Volatile.Read(ref counters.InformationBytes)} parsedReturnedEntries={Volatile.Read(ref counters.Returned)} assignmentAlternatingDiscovery=1 assignmentRandomized=0 differentDirectoryPopulations=1 sameDirectorySinglePass=1 nonSuccessIncludesEOF=1 atomicSnapshot=0 additionalMeasurementNativeCalls=0 cacheInteractionUnknown=1 observerPerturbationUnknown=1");
+            }
             for (var operation = 1; operation < (int)Operation.Count; operation++)
             {
                 long entered = 0, exited = 0, elapsed = 0;

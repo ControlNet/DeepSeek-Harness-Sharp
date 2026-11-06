@@ -16,6 +16,7 @@ internal static class WindowsDirectoryCollector
     private const uint Synchronize = 0x00100000;
     private const uint BackupSemantics = 0x02000000;
     private const uint SynchronousDirectoryOpen = 0x00004021;
+    private const int FileDirectoryInformation = 1;
     private const int FileFullDirectoryInformation = 2;
     private const int NoMoreFiles = unchecked((int)0x80000006);
     private const int NoSuchFile = unchecked((int)0xc000000f);
@@ -30,6 +31,7 @@ internal static class WindowsDirectoryCollector
     private const int ErrorOperationAborted = 995;
     private const int HResultHighWordMask = unchecked((int)0xffff0000);
     private const int Win32HResultMask = unchecked((int)0x80070000);
+    private static int _informationClassSequence;
 
     /// <summary>
     /// Visits descendants, excluding the root, serially on the calling thread in native entry and FIFO directory order.
@@ -164,6 +166,8 @@ internal static class WindowsDirectoryCollector
         CancellationToken cancellationToken, WorkQueue? work = null, int slot = 0,
         WindowsIoStageTiming.Collection? observation = null)
     {
+        var nameOffset = directory.InformationClass == FileDirectoryInformation ? -sizeof(uint) : 0;
+        observation?.DirectoryInformationClass(directory.InformationClass);
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -174,10 +178,10 @@ internal static class WindowsDirectoryCollector
             try
             {
                 status = NtQueryDirectoryFile(handle, 0, 0, 0, out ioStatus, buffer, BufferSize,
-                    FileFullDirectoryInformation, 0, 0, 0);
+                    directory.InformationClass, 0, 0, 0);
             }
             finally { observation?.Exit(slot, WindowsIoStageTiming.Operation.Query); }
-            observation?.QueryResult(status, ioStatus.Information, BufferSize);
+            observation?.QueryResult(status, ioStatus.Information, BufferSize, slot, directory.InformationClass);
             if (!HasCompleteDirectoryBatch(status, ioStatus.Information, directory.Path))
             {
                 observation?.DirectoryCompleted(slot);
@@ -188,8 +192,8 @@ internal static class WindowsDirectoryCollector
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 work?.ThrowIfStopped();
-                observation?.ReturnedEntry(slot);
-                var name = new ReadOnlySpan<char>(&entry->FileName, checked((int)entry->FileNameLength / sizeof(char)));
+                observation?.ReturnedEntry(slot, directory.InformationClass);
+                var name = new ReadOnlySpan<char>((char*)((byte*)&entry->FileName + nameOffset), checked((int)entry->FileNameLength / sizeof(char)));
                 if ((entry->Attributes & FileAttributes.ReparsePoint) == 0 && !name.SequenceEqual(".") && !name.SequenceEqual(".."))
                 {
                     var path = Path.Join(directory.Path.AsSpan(), name);
@@ -230,6 +234,9 @@ internal static class WindowsDirectoryCollector
 
     private sealed class DirectoryWork(string path)
     {
+        // Neighboring discovered directories use the two metadata layouts within one consumer run.
+        public int InformationClass { get; } = (Interlocked.Increment(ref _informationClassSequence) & 1) == 0
+            ? FileDirectoryInformation : FileFullDirectoryInformation;
         public string Path { get; } = path;
         public List<Entry> Entries { get; } = [];
     }
