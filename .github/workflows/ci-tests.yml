@@ -22,6 +22,16 @@ on:
         required: false
         type: string
         default: 'all'
+      publish_test_build:
+        description: 'Build and publish the complete test payload without running test consumers'
+        required: false
+        type: boolean
+        default: false
+      test_build_artifact:
+        description: 'Exact-source test build artifact; empty keeps the standalone build path'
+        required: false
+        type: string
+        default: ''
       dryioc-commit:
         required: true
         type: string
@@ -34,13 +44,13 @@ permissions:
 
 jobs:
   test:
-    name: ${{ inputs.suite }}
+    name: ${{ inputs.publish_test_build && 'publish-test-build' || inputs.suite }}
     runs-on: ${{ inputs.os }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Verify the checkout contains the current PR head
@@ -56,6 +66,12 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Prepare Python for the test build archive
+        if: inputs.publish_test_build || inputs.test_build_artifact != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Cache NuGet packages without a post-job dotnet invocation
         uses: actions/cache@v4
         with:
@@ -63,14 +79,14 @@ jobs:
           key: dotnet-cache-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
 
       - name: Download the native iroh-ssh built for this run
-        if: inputs.suite == 'quick'
+        if: ${{ !inputs.publish_test_build && inputs.suite == 'quick' }}
         uses: actions/download-artifact@v4
         with:
           name: iroh-ssh-${{ inputs.os }}
           path: artifacts
 
       - name: Extract the native component without a consumer cache
-        if: inputs.suite == 'quick'
+        if: ${{ !inputs.publish_test_build && inputs.suite == 'quick' }}
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifacts/iroh-ssh | Out-Null
@@ -100,7 +116,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install real C# frontends for standalone tool tests
-        if: (inputs.suite == 'quick' && inputs.quick-cohort != 'fleet-iroh') || (runner.os == 'Windows' && inputs.suite == 'regression-1')
+        if: ${{ !inputs.publish_test_build && ((inputs.suite == 'quick' && inputs.quick-cohort != 'fleet-iroh') || (runner.os == 'Windows' && inputs.suite == 'regression-1')) }}
         shell: pwsh
         run: |
           $tools = Join-Path $PWD '.artifacts/csharp-frontends'
@@ -134,7 +150,7 @@ jobs:
           fi
 
       - name: Install real SSH end-to-end prerequisites (Linux)
-        if: inputs.suite != 'raw' && runner.os == 'Linux'
+        if: ${{ !inputs.publish_test_build && inputs.suite != 'raw' && runner.os == 'Linux' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -148,12 +164,48 @@ jobs:
 
       - name: Build tests (Debug, plugin fixtures and fault probe)
         id: build_tests
+        if: inputs.publish_test_build || inputs.test_build_artifact == ''
         run: >
           dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo
           -p:DshNativeCompiler=${{ inputs.native-cc }}
 
+      - name: Pack the complete exact-source test build
+        if: inputs.publish_test_build
+        shell: bash
+        run: >
+          python scripts/archive-test-build.py pack
+          --archive .ci-test-build/test-build.tar.gz
+          --source '${{ github.sha }}' --os '${{ runner.os }}'
+
+      - name: Upload the complete exact-source test build
+        if: inputs.publish_test_build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.test_build_artifact || format('dsh-test-build-{0}-{1}', runner.os, github.sha) }}
+          path: .ci-test-build/test-build.tar.gz
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Download the complete exact-source test build
+        if: ${{ !inputs.publish_test_build && inputs.test_build_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.test_build_artifact }}
+          path: .ci-test-build
+
+      - name: Restore and verify the complete exact-source test build
+        id: restore_test_build
+        if: ${{ !inputs.publish_test_build && inputs.test_build_artifact != '' }}
+        shell: bash
+        run: >
+          python scripts/archive-test-build.py restore
+          --archive .ci-test-build/test-build.tar.gz
+          --source '${{ github.sha }}' --os '${{ runner.os }}'
+
       - name: Validate the explicitly installed native Iroh test fixture
-        if: inputs.suite == 'quick' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh')
+        if: ${{ !inputs.publish_test_build && inputs.suite == 'quick' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -171,10 +223,11 @@ jobs:
 
 
       - name: Check macOS non-admin headless SSH LAN receiver
-        if: inputs.suite == 'quick' && runner.os == 'macOS' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh')
+        if: ${{ !inputs.publish_test_build && inputs.suite == 'quick' && runner.os == 'macOS' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh') }}
         shell: bash
         run: bash scripts/test-iroh-macos-lan.sh
       - name: Start a standalone PTY daemon from the current build
+        if: ${{ !inputs.publish_test_build }}
         shell: bash
         run: |
           set -euo pipefail
@@ -209,7 +262,7 @@ jobs:
           exit 1
 
       - name: Check real Unix TUI raw input and exit restoration (eight native rounds)
-        if: inputs.suite == 'raw' && runner.os != 'Windows'
+        if: ${{ !inputs.publish_test_build && inputs.suite == 'raw' && runner.os != 'Windows' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -218,7 +271,7 @@ jobs:
             -trait- "Category=LlmSmoke" -failSkips
 
       - name: Run quick tests (excluding GPU, model, and render categories)
-        if: inputs.suite == 'quick'
+        if: ${{ !inputs.publish_test_build && inputs.suite == 'quick' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -282,7 +335,7 @@ jobs:
           "${ARGS[@]}"
 
       - name: Run root-cause regression (${{ inputs.suite }}, no retries)
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && startsWith(inputs.suite, 'regression-') }}
+        if: ${{ !cancelled() && !inputs.publish_test_build && (steps.build_tests.outcome == 'success' || steps.restore_test_build.outcome == 'success') && startsWith(inputs.suite, 'regression-') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -328,7 +381,7 @@ jobs:
           "$EXE" "${ARGS[@]}"
 
       - name: Run original owned MCP sandbox regression (Windows)
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' }}
+        if: ${{ !cancelled() && !inputs.publish_test_build && (steps.build_tests.outcome == 'success' || steps.restore_test_build.outcome == 'success') && runner.os == 'Windows' && inputs.suite == 'regression-1' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -339,7 +392,7 @@ jobs:
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
 
       - name: Check schedule time zones with invariant globalization
-        if: inputs.suite == 'quick' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh')
+        if: ${{ !inputs.publish_test_build && inputs.suite == 'quick' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh') }}
         shell: pwsh
         run: |
           $runtime = Get-Content tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.runtimeconfig.json -Raw | ConvertFrom-Json -AsHashtable
@@ -350,7 +403,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check native containment (NativeGuardTests, ${{ inputs.native-cc }}, no skips)
-        if: inputs.suite == 'quick' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh')
+        if: ${{ !inputs.publish_test_build && inputs.suite == 'quick' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -361,7 +414,7 @@ jobs:
           "$EXE" -noColor -class Dsh.Tests.NativeGuardTests -failSkips
 
       - name: Rebuild native libraries with ${{ inputs.native-cc-alt }} and check native containment
-        if: inputs.suite == 'quick' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh') && inputs.native-cc-alt != ''
+        if: ${{ !inputs.publish_test_build && inputs.suite == 'quick' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh') && inputs.native-cc-alt != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -372,7 +425,7 @@ jobs:
           tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -class Dsh.Tests.NativeGuardTests -failSkips
 
       - name: Verify the SDK still runs after macOS test consumers
-        if: runner.os == 'macOS'
+        if: ${{ !inputs.publish_test_build && runner.os == 'macOS' }}
         shell: bash
         run: |
           python3 - <<'PY'

@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: 校验检出提交包含当前 PR head
         if: github.event_name == 'pull_request'
@@ -63,7 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: 校验检出提交包含当前 PR head
         if: github.event_name == 'pull_request'
@@ -81,7 +81,7 @@ jobs:
     if: needs.changes.outputs.tests == 'true' || needs.changes.outputs.jit == 'true' || needs.changes.outputs.aot == 'true'
     uses: ./.github/workflows/ci-dryioc.yml
     with:
-      checkout-ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+      checkout-ref: ${{ github.sha }}
 
   iroh-component-windows:
     name: 准备真实 Iroh 测试夹具（${{ matrix.rid }}）
@@ -98,7 +98,7 @@ jobs:
     steps: &iroh-component-steps
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: 校验检出提交包含当前 PR head
         if: github.event_name == 'pull_request'
@@ -184,44 +184,116 @@ jobs:
             rid: osx-arm64
     steps: *iroh-component-steps
 
-  test:
-    name: 测试（${{ matrix.platform.os }}，${{ matrix.suite }}）
+  test-build-windows:
+    name: Prepare shared test build (Windows)
     needs: [changes, dryioc-feed]
+    if: needs.changes.outputs.tests == 'true'
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: windows-latest
+      native-cc: cl
+      suite: quick
+      publish_test_build: true
+      test_build_artifact: dsh-test-build-Windows-${{ github.sha }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  test-build-linux:
+    name: Prepare shared test build (Linux)
+    needs: [changes, dryioc-feed]
+    if: needs.changes.outputs.tests == 'true'
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: ubuntu-latest
+      native-cc: clang
+      suite: quick
+      publish_test_build: true
+      test_build_artifact: dsh-test-build-Linux-${{ github.sha }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  test-build-macos:
+    name: Prepare shared test build (macOS)
+    needs: [changes, dryioc-feed]
+    if: needs.changes.outputs.tests == 'true'
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: macos-latest
+      native-cc: clang
+      suite: quick
+      publish_test_build: true
+      test_build_artifact: dsh-test-build-macOS-${{ github.sha }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  test-windows-regression:
+    name: 测试（windows-latest，${{ matrix.suite }}）
+    needs: [changes, dryioc-feed, test-build-windows]
     if: needs.changes.outputs.tests == 'true' && join(fromJSON(needs.changes.outputs.suites), ',') != 'quick'
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - os: windows-latest
-            native-cc: cl
-            native-cc-alt: clang-cl
-          - os: ubuntu-latest
-            native-cc: clang
-            native-cc-alt: ''
-          - os: macos-latest
-            native-cc: clang
-            native-cc-alt: ''
         suite: ${{ fromJSON(needs.changes.outputs.suites) }}
         exclude:
-          - platform:
-              os: windows-latest
-              native-cc: cl
-              native-cc-alt: clang-cl
-            suite: raw
+          - suite: raw
           - suite: quick
     uses: ./.github/workflows/ci-tests.yml
     with:
-      os: ${{ matrix.platform.os }}
-      native-cc: ${{ matrix.platform.native-cc }}
-      native-cc-alt: ${{ matrix.platform.native-cc-alt }}
+      os: windows-latest
+      native-cc: cl
+      native-cc-alt: clang-cl
       suite: ${{ matrix.suite }}
       quick-cohort: all
+      test_build_artifact: dsh-test-build-Windows-${{ github.sha }}
       dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
       dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  test-linux-regression:
+    name: 测试（ubuntu-latest，${{ matrix.suite }}）
+    needs: [changes, dryioc-feed, test-build-linux]
+    if: needs.changes.outputs.tests == 'true' && join(fromJSON(needs.changes.outputs.suites), ',') != 'quick'
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
+        exclude:
+          - suite: quick
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: ubuntu-latest
+      native-cc: clang
+      native-cc-alt: ''
+      suite: ${{ matrix.suite }}
+      quick-cohort: all
+      test_build_artifact: dsh-test-build-Linux-${{ github.sha }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  test-macos-regression:
+    name: 测试（macos-latest，${{ matrix.suite }}）
+    needs: [changes, dryioc-feed, test-build-macos]
+    if: needs.changes.outputs.tests == 'true' && join(fromJSON(needs.changes.outputs.suites), ',') != 'quick'
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
+        exclude:
+          - suite: quick
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: macos-latest
+      native-cc: clang
+      native-cc-alt: ''
+      suite: ${{ matrix.suite }}
+      quick-cohort: all
+      test_build_artifact: dsh-test-build-macOS-${{ github.sha }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
   test-windows-quick:
     name: 测试（windows-latest，quick-${{ matrix.cohort }}）
-    needs: [changes, dryioc-feed, iroh-component-windows]
-    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-windows.result == 'success' || needs.iroh-component-windows.result == 'skipped') }}
+    needs: [changes, dryioc-feed, iroh-component-windows, test-build-windows]
+    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.test-build-windows.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-windows.result == 'success' || needs.iroh-component-windows.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
@@ -233,13 +305,14 @@ jobs:
       native-cc-alt: clang-cl
       suite: quick
       quick-cohort: ${{ matrix.cohort }}
+      test_build_artifact: dsh-test-build-Windows-${{ github.sha }}
       dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
       dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
 
   test-linux-quick:
     name: 测试（ubuntu-latest，quick-${{ matrix.cohort }}）
-    needs: [changes, dryioc-feed, iroh-component-linux]
-    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-linux.result == 'success' || needs.iroh-component-linux.result == 'skipped') }}
+    needs: [changes, dryioc-feed, iroh-component-linux, test-build-linux]
+    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.test-build-linux.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-linux.result == 'success' || needs.iroh-component-linux.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
@@ -251,14 +324,15 @@ jobs:
       native-cc-alt: ''
       suite: quick
       quick-cohort: ${{ matrix.cohort }}
+      test_build_artifact: dsh-test-build-Linux-${{ github.sha }}
       dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
       dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
 
 
   test-macos-quick:
     name: 测试（macos-latest，quick-${{ matrix.cohort }}）
-    needs: [changes, dryioc-feed, iroh-component-macos]
-    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-macos.result == 'success' || needs.iroh-component-macos.result == 'skipped') }}
+    needs: [changes, dryioc-feed, iroh-component-macos, test-build-macos]
+    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.test-build-macos.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-macos.result == 'success' || needs.iroh-component-macos.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
@@ -269,6 +343,7 @@ jobs:
       native-cc: clang
       suite: quick
       quick-cohort: ${{ matrix.cohort }}
+      test_build_artifact: dsh-test-build-macOS-${{ github.sha }}
       dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
       dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
 
@@ -294,7 +369,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: 校验检出提交包含当前 PR head
         if: github.event_name == 'pull_request'
@@ -410,7 +485,7 @@ jobs:
 
   result:
     name: CI 结果
-    needs: [changes, validate, dryioc-feed, iroh-component-windows, iroh-component-linux, iroh-component-macos, test, test-windows-quick, test-linux-quick, test-macos-quick, build, aot]
+    needs: [changes, validate, dryioc-feed, iroh-component-windows, iroh-component-linux, iroh-component-macos, test-build-windows, test-build-linux, test-build-macos, test-windows-regression, test-linux-regression, test-macos-regression, test-windows-quick, test-linux-quick, test-macos-quick, build, aot]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
