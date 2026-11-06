@@ -29,7 +29,7 @@ internal static class WindowsIoStageTiming
     private const int ApplyCapacity = 16;
     private const int CollectionCapacity = 16;
     private const int SlotCapacity = 257; // Caller 0, actual current-source workers 1..256.
-    private const int ProofSlotCapacity = 256;
+    private const int ProofSlotCapacity = 512;
     private const int RootCapacity = 256;
     private const int ProvenanceCapacity = 4096;
     private const int CollectionThreadSampleCapacity = CollectionCapacity * SlotCapacity;
