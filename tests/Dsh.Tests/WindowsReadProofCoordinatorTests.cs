@@ -46,10 +46,12 @@ public sealed class WindowsReadProofCoordinatorTests
         Assert.All(workers[0].Keys, static worker => Assert.False(worker.IsAlive));
     }
 
-    [Fact(Timeout = 10000)]
-    public void LargeBatches_VisitEveryIndexOnceAcrossSuccessiveCalls()
+    [Theory(Timeout = 10000)]
+    [InlineData(512)]
+    [InlineData(768)]
+    public void LargeBatches_VisitEveryIndexOnceAcrossSuccessiveCalls(int entryCount)
     {
-        const int entryCount = 512, batches = 2;
+        const int batches = 2;
         using var proofs = new WindowsReadProofCoordinator(entryCount);
         var visits = new int[entryCount * batches];
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -64,6 +66,38 @@ public sealed class WindowsReadProofCoordinatorTests
             }, cancellationToken));
         }
         Assert.All(visits, static count => Assert.Equal(1, count));
+    }
+
+    [Fact(Timeout = 10000)]
+    public async Task FalseWithEarlierPendingIndices_ReturnsOnlyACompletePrefix()
+    {
+        const int start = 20, entryCount = 769, firstFalse = 23;
+        using var proofs = new WindowsReadProofCoordinator(3);
+        using var release = new ManualResetEventSlim();
+        var earlierStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var visits = new int[entryCount];
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var pending = Task.Run(() => proofs.ProbePrefix(start, start + entryCount, index =>
+        {
+            Interlocked.Increment(ref visits[index - start]);
+            if (index == start + 1)
+                earlierStarted.TrySetResult();
+            if (index == firstFalse)
+                return false;
+            if (index == start || index > firstFalse)
+                release.Wait(cancellationToken);
+            return true;
+        }, cancellationToken), cancellationToken);
+        try { await earlierStarted.Task.WaitAsync(cancellationToken); }
+        finally
+        {
+            release.Set();
+            await pending;
+        }
+        Assert.Equal(firstFalse, await pending);
+        Assert.All(visits[..(firstFalse - start)], static count => Assert.Equal(1, count));
+        Assert.Equal(1, visits[firstFalse - start]);
+        Assert.All(visits, static count => Assert.InRange(count, 0, 1));
     }
 
     [Theory(Timeout = 10000)]
