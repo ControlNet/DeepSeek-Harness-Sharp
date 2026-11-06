@@ -405,11 +405,25 @@ internal sealed class WindowsAclLease : IDisposable
         private SafeFileHandle Open(bool readOnly = false)
         {
             // Read proofs use a direct native open; bootstrap and policy edits keep their distinct Win32 ACL rights.
-            var handle = readOnly ? WindowsNative.OpenReadAcl(path)
-                : WindowsNative.CreateFile(path, bootstrap ? BootstrapAclAccess : PolicyAclAccess, 7, 0, 3, 0x02000000, 0);
+            SafeFileHandle handle;
+            int error;
+            if (readOnly)
+            {
+                WindowsIoStageTiming.EnterProofNative(WindowsIoStageTiming.ProofOperation.ReadOpen);
+                try
+                {
+                    handle = WindowsNative.OpenReadAcl(path);
+                    error = handle.IsInvalid ? Marshal.GetLastPInvokeError() : 0;
+                }
+                finally { WindowsIoStageTiming.ExitProofNative(WindowsIoStageTiming.ProofOperation.ReadOpen); }
+            }
+            else
+            {
+                handle = WindowsNative.CreateFile(path, bootstrap ? BootstrapAclAccess : PolicyAclAccess, 7, 0, 3, 0x02000000, 0);
+                error = handle.IsInvalid ? Marshal.GetLastPInvokeError() : 0;
+            }
             if (!handle.IsInvalid)
                 return handle;
-            var error = Marshal.GetLastPInvokeError();
             handle.Dispose();
             throw new Win32Exception(error, $"Cannot open an AppContainer filesystem grant (Win32 error {error}).");
         }
@@ -433,11 +447,20 @@ internal sealed class WindowsAclLease : IDisposable
         {
             if (_inheritance is not null || restrict && ProtectedInheritance.ContainsKey(path))
                 return false;
-            using var handle = Open(readOnly: true);
-            var (acl, _, reuseRead) = ReadGrantAcl(handle, sid, directory, effectiveRead);
-            if (restrict)
-                DemandNoAmbientGrant(acl, access, network);
-            return reuseRead || inheritedAccess == access && HasInheritedGrant(acl, sid, access, directory);
+            var handle = Open(readOnly: true);
+            try
+            {
+                var (acl, _, reuseRead) = ReadGrantAcl(handle, sid, directory, effectiveRead);
+                if (restrict)
+                    DemandNoAmbientGrant(acl, access, network);
+                return reuseRead || inheritedAccess == access && HasInheritedGrant(acl, sid, access, directory);
+            }
+            finally
+            {
+                WindowsIoStageTiming.EnterProofNative(WindowsIoStageTiming.ProofOperation.HandleClose);
+                try { handle.Dispose(); }
+                finally { WindowsIoStageTiming.ExitProofNative(WindowsIoStageTiming.ProofOperation.HandleClose); }
+            }
         }
 
         private void GrantCore(SecurityIdentifier sid, int access, int inheritedAccess, bool directory, bool restrict, bool network,
@@ -627,8 +650,15 @@ internal sealed class WindowsAclLease : IDisposable
                 var original = ReadAcl(handle);
                 return (original.Acl, original.Protected, false);
             }
-            var queryError = WindowsNative.GetSecurityInfo(handle, 1, 0x17, out var owner, out var group,
-                out var dacl, out var label, out var descriptor);
+            uint queryError;
+            nint owner, group, dacl, label, descriptor;
+            WindowsIoStageTiming.EnterProofNative(WindowsIoStageTiming.ProofOperation.SecurityInfo);
+            try
+            {
+                queryError = WindowsNative.GetSecurityInfo(handle, 1, 0x17, out owner, out group,
+                    out dacl, out label, out descriptor);
+            }
+            finally { WindowsIoStageTiming.ExitProofNative(WindowsIoStageTiming.ProofOperation.SecurityInfo); }
             if (queryError != 0)
             {
                 var original = ReadAcl(handle);
@@ -651,7 +681,12 @@ internal sealed class WindowsAclLease : IDisposable
                     && (!directory || effectiveRead.CanInheritRead(acl, owner, group, label));
                 return (acl, protectedDacl, reuseRead);
             }
-            finally { WindowsNative.LocalFree(descriptor); }
+            finally
+            {
+                WindowsIoStageTiming.EnterProofNative(WindowsIoStageTiming.ProofOperation.DescriptorFree);
+                try { WindowsNative.LocalFree(descriptor); }
+                finally { WindowsIoStageTiming.ExitProofNative(WindowsIoStageTiming.ProofOperation.DescriptorFree); }
+            }
         }
 
         private static (RawAcl Acl, bool Protected) ReadAcl(SafeFileHandle handle)
@@ -664,7 +699,15 @@ internal sealed class WindowsAclLease : IDisposable
         private static (byte[]? Acl, ushort Control) ReadAclBytes(SafeFileHandle handle, uint information)
         {
             ushort control = 0;
-            Check(WindowsNative.GetSecurityInfo(handle, 1, information, out _, out _, out var dacl, out var sacl, out var descriptor));
+            uint queryError;
+            nint dacl, sacl, descriptor;
+            WindowsIoStageTiming.EnterProofNative(WindowsIoStageTiming.ProofOperation.SecurityInfo);
+            try
+            {
+                queryError = WindowsNative.GetSecurityInfo(handle, 1, information, out _, out _, out dacl, out sacl, out descriptor);
+            }
+            finally { WindowsIoStageTiming.ExitProofNative(WindowsIoStageTiming.ProofOperation.SecurityInfo); }
+            Check(queryError);
             try
             {
                 if (information == 4 && !WindowsNative.GetSecurityDescriptorControl(descriptor, out control, out _))
@@ -676,7 +719,12 @@ internal sealed class WindowsAclLease : IDisposable
                 Marshal.Copy(pointer, bytes, 0, bytes.Length);
                 return (bytes, control);
             }
-            finally { WindowsNative.LocalFree(descriptor); }
+            finally
+            {
+                WindowsIoStageTiming.EnterProofNative(WindowsIoStageTiming.ProofOperation.DescriptorFree);
+                try { WindowsNative.LocalFree(descriptor); }
+                finally { WindowsIoStageTiming.ExitProofNative(WindowsIoStageTiming.ProofOperation.DescriptorFree); }
+            }
         }
 
         private static unsafe void WriteAcl(SafeFileHandle handle, RawAcl acl, uint inheritance,

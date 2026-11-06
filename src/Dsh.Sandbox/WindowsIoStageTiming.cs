@@ -9,37 +9,47 @@ internal static class WindowsIoStageTiming
 {
     // Numeric payload maximum: collections * (slots * (184 + 3 * operations * 8)
     // + roots * 28) + threadSamples * 32 + provenance * 12 + categories * 4
-    // + applies * phases * 8 + testPhases * 8, using x64 CLR field layout.
+    // + applies * (phases * 8 + proofSlots * (48 + 3 * proofOperations * 8))
+    // + testPhases * 8, using x64 CLR field layout.
     // Reference arrays add (provenance + applies + collections) * IntPtr.Size bytes.
     // This excludes object headers, existing work/path objects, formatting and BCL snapshots.
     // Each resource sample retains managed BCL thread objects for O(own-process threads).
     // Process.Threads internally queries a system-wide native process/thread buffer before filtering this process.
     // Its transient native allocation scales with system processes and threads, not the captured slot capacity.
     // The fixed numeric payload is therefore not a bound on total diagnostic allocation.
-    // At most CollectionCapacity * SlotCapacity captured slots are searched, with one CPU query per matching stable slot.
+    // At most CollectionCapacity * SlotCapacity + ApplyCapacity * ProofSlotCapacity captured slots are searched, with one CPU query per matching stable slot.
     // One timer and one process-wide filtered listener exist only during the observed test scope.
     // Directory IDs add one atomic and a relative-name scan; entry accounting adds sequence atomics.
     // Native operation pairs add two clock reads and seven atomic updates before sampling costs.
     // Query result counters add six Int64 scalars per collection, outside the numeric-array total.
+    // Proof samples use two stack spans of 3 * ProofOperation.Count Int64 values, not retained arrays.
+    // Proof TLS holds one Apply reference only during its callback; the retained slot hint is numeric.
     // Each coherent active thread sample opens at most one additional query-only handle, verifies its process owner, and closes it before the next sample.
     // A pending-I/O flag is transient and does not identify a device, filesystem filter or wait cause.
     private const int ApplyCapacity = 16;
     private const int CollectionCapacity = 16;
     private const int SlotCapacity = 257; // Caller 0, actual current-source workers 1..256.
+    private const int ProofSlotCapacity = 256;
     private const int RootCapacity = 256;
     private const int ProvenanceCapacity = 4096;
-    private const int ThreadSampleCapacity = CollectionCapacity * SlotCapacity;
+    private const int CollectionThreadSampleCapacity = CollectionCapacity * SlotCapacity;
+    private const int ThreadSampleCapacity = CollectionThreadSampleCapacity + ApplyCapacity * ProofSlotCapacity;
     private const int MaximumNumericArrayBytes = CollectionCapacity
         * (SlotCapacity * (184 + 3 * (int)Operation.Count * sizeof(long))
             + RootCapacity * 28)
         + ThreadSampleCapacity * 32 + ProvenanceCapacity * 12 + (int)RootCategory.Count * sizeof(int)
-        + ApplyCapacity * (int)Phase.Count * sizeof(long) + (int)TestPhase.Count * sizeof(long);
+        + ApplyCapacity * ((int)Phase.Count * sizeof(long)
+            + ProofSlotCapacity * (48 + 3 * (int)ProofOperation.Count * sizeof(long)))
+        + (int)TestPhase.Count * sizeof(long);
     private static readonly int MaximumReferenceArrayBytes =
         (ProvenanceCapacity + ApplyCapacity + CollectionCapacity) * IntPtr.Size;
     private const int PreDeadlineSeconds = 59;
     private static Observation? _observation;
     [ThreadStatic] private static bool _threadIdAttempted;
     [ThreadStatic] private static uint _nativeThreadId;
+    [ThreadStatic] private static Apply? _proofApply;
+    [ThreadStatic] private static int _proofSlot;
+    [ThreadStatic] private static int _proofDepth;
 
     private static uint CaptureThreadId()
     {
@@ -63,6 +73,7 @@ internal static class WindowsIoStageTiming
 
     internal enum Phase { CollectionStart, CollectionComplete, AncestorsStart, AncestorsComplete, GrantsStart, FirstProof, FirstMutation, GrantsComplete, ApplyFinal, Count }
     internal enum Operation { None, Open, Query, CloseDispose, QueueWait, RootAdmissionWait, RootName, WorkerJoin, Count }
+    internal enum ProofOperation { None, ReadOpen, SecurityInfo, DescriptorFree, HandleClose, Count }
     internal enum TestPhase { Start, BackendStart, BackendComplete, ConnectStart, ConnectComplete, PermittedStart, PermittedComplete, DeniedStart, DeniedComplete, AssertionsComplete, Count }
 
     internal enum RootCategory
@@ -124,6 +135,16 @@ internal static class WindowsIoStageTiming
         catch (Exception) { observation.Failed(); return null; }
     }
 
+    public static void EnterProofNative(ProofOperation operation)
+    {
+        if (_proofDepth == 1) _proofApply?.EnterNative(_proofSlot, operation);
+    }
+
+    public static void ExitProofNative(ProofOperation operation)
+    {
+        if (_proofDepth == 1) _proofApply?.ExitNative(_proofSlot, operation);
+    }
+
     internal sealed class Observation : IAsyncDisposable
     {
         private readonly Apply?[] _applies = new Apply?[ApplyCapacity];
@@ -181,6 +202,9 @@ internal static class WindowsIoStageTiming
             Volatile.Write(ref _collections[index], collection);
             return collection;
         }
+        internal bool OwnsApply(Apply apply) => Volatile.Read(ref _disposed) == 0
+            && ReferenceEquals(Volatile.Read(ref _applies[apply.Ordinal - 1]), apply);
+
 
         internal void Failed() => Interlocked.Increment(ref _errors);
 
@@ -302,6 +326,9 @@ internal static class WindowsIoStageTiming
             var started = Stopwatch.GetTimestamp();
             for (var index = 0; index < _collections.Length; index++)
                 _collections[index]?.CaptureThreads(_threadSamples.AsSpan(index * SlotCapacity, SlotCapacity));
+            for (var index = 0; index < _applies.Length; index++)
+                _applies[index]?.CaptureThreads(_threadSamples.AsSpan(
+                    CollectionThreadSampleCapacity + index * ProofSlotCapacity, ProofSlotCapacity));
             Process? process = null;
             ProcessThreadCollection? threads = null;
             var collectionError = 0;
@@ -324,6 +351,10 @@ internal static class WindowsIoStageTiming
                     _collections[index]?.DumpThreads(sample,
                         _threadSamples.AsSpan(index * SlotCapacity, SlotCapacity), threads,
                         threadSnapshotStarted, threadSnapshotFinished, collectionError);
+                for (var index = 0; index < _applies.Length; index++)
+                    _applies[index]?.DumpThreads(sample, _threadSamples.AsSpan(
+                        CollectionThreadSampleCapacity + index * ProofSlotCapacity, ProofSlotCapacity),
+                        threads, threadSnapshotStarted, threadSnapshotFinished, collectionError);
             }
             finally
             {
@@ -399,6 +430,7 @@ internal static class WindowsIoStageTiming
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             Interlocked.CompareExchange(ref _observation, null, this);
+            foreach (var apply in _applies) apply?.Disable();
             try { await _timer.DisposeAsync().ConfigureAwait(false); }
             catch (Exception) { Failed(); }
             Dump(5);
@@ -427,6 +459,19 @@ internal static class WindowsIoStageTiming
     internal sealed class Apply(int ordinal)
     {
         private readonly long[] _phases = new long[(int)Phase.Count];
+        // Slots are claimed per callback, not cached as strong references on worker threads.
+        // Sequence brackets all numeric state and counters; Claimed only arbitrates slot writers.
+        private struct ProofSlot
+        {
+            internal int Sequence, Claimed, Active, Operation, Invalid;
+            internal uint ThreadId;
+            internal long CallbackStarted, NativeStarted, CompletedCallbacks;
+        }
+        private readonly ProofSlot[] _proofSlots = new ProofSlot[ProofSlotCapacity];
+        private readonly long[] _proofEnters = new long[ProofSlotCapacity * (int)ProofOperation.Count];
+        private readonly long[] _proofExits = new long[ProofSlotCapacity * (int)ProofOperation.Count];
+        private readonly long[] _proofElapsed = new long[ProofSlotCapacity * (int)ProofOperation.Count];
+        private int _enabled = 1, _proofOverflow, _scopeErrors;
         private int _paths, _grants, _proofEntered, _proofExited, _mutationEntered, _mutationExited;
         internal int Ordinal { get; } = ordinal;
         internal void Mark(Phase phase, int paths = -1)
@@ -436,8 +481,206 @@ internal static class WindowsIoStageTiming
                 Interlocked.CompareExchange(ref _phases[(int)phase], Stopwatch.GetTimestamp(), 0);
         }
         internal void Granted() => Interlocked.Increment(ref _grants);
-        internal void ProofEntered() { Mark(Phase.FirstProof); Interlocked.Increment(ref _proofEntered); }
-        internal void ProofExited() => Interlocked.Increment(ref _proofExited);
+        internal void ProofEntered()
+        {
+            Mark(Phase.FirstProof);
+            Interlocked.Increment(ref _proofEntered);
+            if (Volatile.Read(ref _enabled) == 0
+                || Volatile.Read(ref _observation)?.OwnsApply(this) != true) return;
+            if (_proofApply is not null)
+            {
+                _proofDepth++;
+                _proofApply.InvalidateScope(_proofSlot);
+                Interlocked.Increment(ref _scopeErrors);
+                return;
+            }
+            for (var offset = 0; offset < ProofSlotCapacity; offset++)
+            {
+                var slot = (_proofSlot + offset) % ProofSlotCapacity;
+                ref var state = ref _proofSlots[slot];
+                if (Interlocked.CompareExchange(ref state.Claimed, 1, 0) != 0) continue;
+                if (Volatile.Read(ref _enabled) == 0
+                    || Volatile.Read(ref _observation)?.OwnsApply(this) != true)
+                {
+                    Volatile.Write(ref state.Claimed, 0);
+                    return;
+                }
+                Interlocked.Increment(ref state.Sequence);
+                state.ThreadId = CaptureThreadId();
+                state.Active = 1;
+                state.Operation = 0;
+                state.CallbackStarted = Stopwatch.GetTimestamp();
+                state.NativeStarted = 0;
+                Interlocked.Increment(ref state.Sequence);
+                _proofSlot = slot;
+                _proofDepth = 1;
+                _proofApply = this;
+                return;
+            }
+            Interlocked.Increment(ref _proofOverflow);
+        }
+        internal void ProofExited()
+        {
+            Interlocked.Increment(ref _proofExited);
+            if (_proofApply is null) return;
+            if (_proofDepth > 1) { _proofDepth--; return; }
+            var owner = _proofApply;
+            var slot = _proofSlot;
+            // Clear even when observation disposal disabled native hooks during this callback.
+            _proofApply = null;
+            _proofDepth = 0;
+            if (!ReferenceEquals(owner, this)) owner.InvalidateScope(slot);
+            ref var state = ref owner._proofSlots[slot];
+            Interlocked.Increment(ref state.Sequence);
+            if (state.Operation != 0 || Volatile.Read(ref owner._enabled) == 0)
+            {
+                state.Invalid = 1;
+                Interlocked.Increment(ref owner._scopeErrors);
+            }
+            state.Active = state.Operation = 0;
+            state.CallbackStarted = state.NativeStarted = 0;
+            state.CompletedCallbacks++;
+            Interlocked.Increment(ref state.Sequence);
+            Volatile.Write(ref state.Claimed, 0);
+        }
+        internal void Disable() => Volatile.Write(ref _enabled, 0);
+        private void InvalidateScope(int slot)
+        {
+            ref var state = ref _proofSlots[slot];
+            Interlocked.Increment(ref state.Sequence);
+            state.Invalid = 1;
+            Interlocked.Increment(ref _scopeErrors);
+            Interlocked.Increment(ref state.Sequence);
+        }
+        internal void EnterNative(int slot, ProofOperation operation)
+        {
+            if (Volatile.Read(ref _enabled) == 0) return;
+            if (operation <= ProofOperation.None || operation >= ProofOperation.Count)
+            {
+                InvalidateScope(slot);
+                return;
+            }
+            ref var state = ref _proofSlots[slot];
+            Interlocked.Increment(ref state.Sequence);
+            if (state.Operation != 0)
+            {
+                state.Invalid = 1;
+                Interlocked.Increment(ref _scopeErrors);
+            }
+            state.NativeStarted = Stopwatch.GetTimestamp();
+            state.Operation = (int)operation;
+            Interlocked.Increment(ref _proofEnters[slot * (int)ProofOperation.Count + (int)operation]);
+            Interlocked.Increment(ref state.Sequence);
+        }
+        internal void ExitNative(int slot, ProofOperation operation)
+        {
+            if (Volatile.Read(ref _enabled) == 0) return;
+            if (operation <= ProofOperation.None || operation >= ProofOperation.Count)
+            {
+                InvalidateScope(slot);
+                return;
+            }
+            ref var state = ref _proofSlots[slot];
+            Interlocked.Increment(ref state.Sequence);
+            var now = Stopwatch.GetTimestamp();
+            var index = slot * (int)ProofOperation.Count + (int)operation;
+            if (state.Operation == (int)operation && state.NativeStarted > 0)
+                Interlocked.Add(ref _proofElapsed[index], now - state.NativeStarted);
+            else
+            {
+                state.Invalid = 1;
+                Interlocked.Increment(ref _scopeErrors);
+            }
+            Interlocked.Increment(ref _proofExits[index]);
+            state.Operation = 0;
+            state.NativeStarted = 0;
+            Interlocked.Increment(ref state.Sequence);
+        }
+        internal void CaptureThreads(Span<ThreadSnapshot> snapshots)
+        {
+            for (var slot = 0; slot < ProofSlotCapacity; slot++)
+            {
+                snapshots[slot] = default;
+                ref var state = ref _proofSlots[slot];
+                var sequence = Volatile.Read(ref state.Sequence);
+                var active = Volatile.Read(ref state.Active);
+                var invalid = Volatile.Read(ref state.Invalid);
+                var snapshot = new ThreadSnapshot
+                {
+                    Sequence = sequence,
+                    Operation = Volatile.Read(ref state.Operation),
+                    ThreadId = Volatile.Read(ref state.ThreadId),
+                    Entered = Volatile.Read(ref state.NativeStarted)
+                };
+                Thread.MemoryBarrier();
+                var coherent = (sequence & 1) == 0 && sequence == Volatile.Read(ref state.Sequence);
+                if (active == 0 && coherent) continue;
+                snapshot.Captured = coherent && invalid == 0 && Volatile.Read(ref _enabled) != 0 ? 1 : 2;
+                snapshots[slot] = snapshot;
+            }
+        }
+        internal void DumpThreads(int sample, ReadOnlySpan<ThreadSnapshot> snapshots,
+            ProcessThreadCollection? threads, long snapshotStarted, long snapshotFinished, int collectionError)
+        {
+            for (var slot = 0; slot < snapshots.Length; slot++)
+            {
+                ref readonly var snapshot = ref snapshots[slot];
+                if (snapshot.Captured == 0) continue;
+                var (state, reason, cpu, found, metadataError, pendingIo) = ReadOwnThread(snapshot, threads);
+                Thread.MemoryBarrier();
+                var sequenceAfter = Volatile.Read(ref _proofSlots[slot].Sequence);
+                var stable = snapshot.Captured == 1 && snapshot.Sequence == sequenceAfter
+                    && Volatile.Read(ref _enabled) != 0;
+                if (!stable) { state = -1; reason = -1; cpu = -1; }
+                var operation = stable ? ProofName(snapshot.Operation) : "Unknown";
+                Trace.WriteLine($"IO_STAGE_PROOF_THREAD sample={sample} apply={Ordinal} slot={slot} operation={operation} uninstrumentedProof={(stable && snapshot.Operation == 0 ? 1 : 0)} otherProofMayIncludeUninstrumentedNativeCalls=1 sequence={snapshot.Sequence} sequenceAfter={sequenceAfter} nativeStarted={(stable ? snapshot.Entered : -1)} tid={(stable ? snapshot.ThreadId : 0)} tidKnown={(stable && snapshot.ThreadId != 0 ? 1 : 0)} capturedCoherent={(snapshot.Captured == 1 ? 1 : 0)} stable={(stable ? 1 : 0)} threadCollectionKnown={(threads is null ? 0 : 1)} threadCollectionError={collectionError} threadFound={(found ? 1 : 0)} metadataError={metadataError} stateKnown={(state >= 0 && state != (int)System.Diagnostics.ThreadState.Unknown ? 1 : 0)} state={state} waitReasonKnown={(reason >= 0 && reason != (int)ThreadWaitReason.Unknown ? 1 : 0)} waitReason={reason} cpuKnown={(cpu >= 0 ? 1 : 0)} cpu100ns={cpu} osSnapshotStarted={snapshotStarted} osSnapshotFinished={snapshotFinished} atomicSnapshot=0 waitCauseUnknown=1 managedCpuBusyUnknown=1");
+                Trace.WriteLine($"IO_STAGE_PROOF_THREAD_IO sample={sample} apply={Ordinal} slot={slot} operation={operation} stable={(stable ? 1 : 0)} status={(int)pendingIo.Status} error={pendingIo.Error} pendingKnown={(stable && pendingIo.Status == ThreadIoStatus.Known ? 1 : 0)} pending={(stable && pendingIo.Status == ThreadIoStatus.Known ? pendingIo.Pending : -1)} closeError={pendingIo.CloseError} queryStarted={pendingIo.Started} queryFinished={pendingIo.Finished} ownerScope=currentProcess requestedThreadAccess=64 atomicSnapshot=0 flagMayChangeBeforeReturn=1 waitCauseProven=0");
+            }
+        }
+        private static string ProofName(int operation) => operation == 0 ? "OtherProof" : ((ProofOperation)operation).ToString();
+        private void DumpProof(int sample)
+        {
+            Span<long> totals = stackalloc long[3 * (int)ProofOperation.Count];
+            Span<long> counters = stackalloc long[3 * (int)ProofOperation.Count];
+            totals.Clear();
+            var incoherent = 0;
+            var invalidSlots = 0;
+            long callbacksObserved = 0;
+            for (var slot = 0; slot < ProofSlotCapacity; slot++)
+            {
+                ref var state = ref _proofSlots[slot];
+                var sequence = Volatile.Read(ref state.Sequence);
+                var captured = state;
+                for (var operation = 0; operation < (int)ProofOperation.Count; operation++)
+                {
+                    var index = slot * (int)ProofOperation.Count + operation;
+                    counters[operation * 3] = Volatile.Read(ref _proofEnters[index]);
+                    counters[operation * 3 + 1] = Volatile.Read(ref _proofExits[index]);
+                    counters[operation * 3 + 2] = Volatile.Read(ref _proofElapsed[index]);
+                }
+                Thread.MemoryBarrier();
+                var sequenceAfter = Volatile.Read(ref state.Sequence);
+                var coherent = (sequence & 1) == 0 && sequence == sequenceAfter;
+                if (!coherent) incoherent++;
+                var scopeKnown = captured.Invalid == 0
+                    && (captured.Active == 0 || Volatile.Read(ref _enabled) != 0);
+                if (coherent && !scopeKnown) invalidSlots++;
+                var known = coherent && scopeKnown;
+                if (known)
+                {
+                    callbacksObserved += captured.CompletedCallbacks + captured.Active;
+                    for (var index = 0; index < counters.Length; index++) totals[index] += counters[index];
+                }
+                else counters.Fill(-1);
+                if (coherent && captured.Active == 0 && captured.CompletedCallbacks == 0) continue;
+                Trace.WriteLine($"IO_STAGE_PROOF_SLOT sample={sample} apply={Ordinal} slot={slot} sequence={sequence} sequenceAfter={sequenceAfter} coherent={(coherent ? 1 : 0)} known={(known ? 1 : 0)} active={(known ? captured.Active : -1)} operation={(known ? ProofName(captured.Operation) : "Unknown")} uninstrumentedProof={(known && captured.Active != 0 && captured.Operation == 0 ? 1 : 0)} callbackStarted={(known ? captured.CallbackStarted : -1)} nativeStarted={(known ? captured.NativeStarted : -1)} callbacksCompleted={(known ? captured.CompletedCallbacks : -1)} readOpenEntered={counters[3]} readOpenExited={counters[4]} readOpenCompletedTicks={counters[5]} securityInfoEntered={counters[6]} securityInfoExited={counters[7]} securityInfoCompletedTicks={counters[8]} descriptorFreeEntered={counters[9]} descriptorFreeExited={counters[10]} descriptorFreeCompletedTicks={counters[11]} handleCloseEntered={counters[12]} handleCloseExited={counters[13]} handleCloseCompletedTicks={counters[14]} otherProofMayIncludeUninstrumentedNativeCalls=1 handleCloseIsSafeHandleDisposeBoundary=1 activeNativeTicksExcluded=1 atomicSnapshot=0");
+            }
+            var callbacksEntered = Volatile.Read(ref _proofEntered);
+            var knownTotals = incoherent == 0 && invalidSlots == 0 && callbacksObserved == callbacksEntered
+                && Volatile.Read(ref _proofOverflow) == 0 && Volatile.Read(ref _scopeErrors) == 0;
+            for (var operation = 1; operation < (int)ProofOperation.Count; operation++)
+                Trace.WriteLine($"IO_STAGE_PROOF_TOTAL sample={sample} apply={Ordinal} operation={(ProofOperation)operation} entered={totals[operation * 3]} exited={totals[operation * 3 + 1]} completedTicks={totals[operation * 3 + 2]} totalsKnown={(knownTotals ? 1 : 0)} callbacksObserved={callbacksObserved} callbacksEntered={callbacksEntered} allCallbacksCaptured={(callbacksObserved == callbacksEntered ? 1 : 0)} incoherentSlotsExcluded={incoherent} invalidSlotsExcluded={invalidSlots} slotOverflowCallbacks={Volatile.Read(ref _proofOverflow)} scopeErrors={Volatile.Read(ref _scopeErrors)} slotCapacity={ProofSlotCapacity} activeNativeTicksExcluded=1 totals=overlapping notWallPartitions=1 atomicSnapshot=0 successfulCallsUnknown=1 kernelAttributionUnknown=1 handleCloseIsSafeHandleDisposeBoundary=1 otherProofMayIncludeUninstrumentedNativeCalls=1 observerPerturbationUnknown=1 numericCounterOverflowUnknown=1");
+        }
         internal void MutationEntered() { Mark(Phase.FirstMutation); Interlocked.Increment(ref _mutationEntered); }
         internal void MutationExited() => Interlocked.Increment(ref _mutationExited);
         internal void Dump(int sample)
@@ -446,6 +689,7 @@ internal static class WindowsIoStageTiming
             Trace.WriteLine($"IO_STAGE_DURATION sample={sample} apply={Ordinal} collectionTicks={Duration(Phase.CollectionStart, Phase.CollectionComplete)} ancestorTicks={Duration(Phase.AncestorsStart, Phase.AncestorsComplete)} grantTicks={Duration(Phase.GrantsStart, Phase.GrantsComplete)} unknownDuration=-1");
             for (var phase = 0; phase < _phases.Length; phase++)
                 Trace.WriteLine($"IO_STAGE_PHASE sample={sample} apply={Ordinal} phase={(Phase)phase} ticks={Volatile.Read(ref _phases[phase])} known={(Volatile.Read(ref _phases[phase]) == 0 ? 0 : 1)}");
+            DumpProof(sample);
         }
         private long Duration(Phase start, Phase end)
         {
@@ -689,34 +933,7 @@ internal static class WindowsIoStageTiming
             {
                 ref readonly var snapshot = ref snapshots[slot];
                 if (snapshot.Captured == 0) continue;
-                var state = -1;
-                var reason = -1;
-                long cpu = -1;
-                var found = false;
-                var metadataError = 0;
-                if (snapshot.Captured == 1 && snapshot.ThreadId != 0 && threads is not null)
-                    foreach (ProcessThread thread in threads)
-                    {
-                        try
-                        {
-                            if (unchecked((uint)thread.Id) != snapshot.ThreadId) continue;
-                        }
-                        catch (Exception error) { metadataError = error.HResult; continue; }
-                        found = true;
-                        try
-                        {
-                            var threadState = thread.ThreadState;
-                            state = (int)threadState;
-                            if (threadState == System.Diagnostics.ThreadState.Wait)
-                                reason = (int)thread.WaitReason;
-                        }
-                        catch (Exception error) { metadataError = error.HResult; }
-                        try { cpu = thread.TotalProcessorTime.Ticks; }
-                        catch (Exception error) { metadataError = error.HResult; }
-                        break;
-                    }
-                var pendingIo = snapshot.Captured == 1 && snapshot.ThreadId != 0
-                    ? QueryOwnThreadPendingIo(snapshot.ThreadId) : default;
+                var (state, reason, cpu, found, metadataError, pendingIo) = ReadOwnThread(snapshot, threads);
                 var currentSequence = Volatile.Read(ref _slots[slot].Sequence);
                 var stable = snapshot.Captured == 1 && snapshot.Sequence == currentSequence;
                 if (!stable) { state = -1; reason = -1; cpu = -1; }
@@ -791,6 +1008,40 @@ internal static class WindowsIoStageTiming
                 Trace.WriteLine($"IO_STAGE_ROOT sample={sample} collection={ordinal} root={root + 1} admission={Volatile.Read(ref _rootAdmission[root])} category={(int)provenance.Category} categoryKnown={(provenance.Category == RootCategory.Unknown ? 0 : 1)} sourceOrdinal={provenance.SourceOrdinal} sourceOrdinalKnown={(provenance.SourceOrdinal > 0 ? 1 : 0)} entered={entered} completed={Volatile.Read(ref _rootCompleted[root])}");
             }
         }
+    }
+
+    private static (int State, int Reason, long Cpu, bool Found, int Error, ThreadIoSample Pending)
+        ReadOwnThread(ThreadSnapshot snapshot, ProcessThreadCollection? threads)
+    {
+        var state = -1;
+        var reason = -1;
+        long cpu = -1;
+        var found = false;
+        var metadataError = 0;
+        if (snapshot.Captured == 1 && snapshot.ThreadId != 0 && threads is not null)
+            foreach (ProcessThread thread in threads)
+            {
+                try
+                {
+                    if (unchecked((uint)thread.Id) != snapshot.ThreadId) continue;
+                }
+                catch (Exception error) { metadataError = error.HResult; continue; }
+                found = true;
+                try
+                {
+                    var threadState = thread.ThreadState;
+                    state = (int)threadState;
+                    if (threadState == System.Diagnostics.ThreadState.Wait)
+                        reason = (int)thread.WaitReason;
+                }
+                catch (Exception error) { metadataError = error.HResult; }
+                try { cpu = thread.TotalProcessorTime.Ticks; }
+                catch (Exception error) { metadataError = error.HResult; }
+                break;
+            }
+        var pendingIo = snapshot.Captured == 1 && snapshot.ThreadId != 0
+            ? QueryOwnThreadPendingIo(snapshot.ThreadId) : default;
+        return (state, reason, cpu, found, metadataError, pendingIo);
     }
 
     // Machine status is 0 for success, 1 for an unavailable API result, 2 for a non-single processor group, 3 for unsupported OS and 4 for an exception.

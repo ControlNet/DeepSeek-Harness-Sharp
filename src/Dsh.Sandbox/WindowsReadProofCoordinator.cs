@@ -157,8 +157,7 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
                     lock (_gate)
                     {
                         _active--;
-                        if (_active == 0 && (_stopped || _next == _end))
-                            Monitor.PulseAll(_gate);
+                        Monitor.PulseAll(_gate);
                     }
                 }
             }
