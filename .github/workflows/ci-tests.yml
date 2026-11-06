@@ -62,15 +62,16 @@ jobs:
           path: ~/.nuget/packages
           key: dotnet-cache-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
 
+      # Only all and fleet-iroh execute native Iroh consumers under the unchanged quick filters.
       - name: Download the native iroh-ssh built for this run
-        if: inputs.suite == 'quick'
+        if: inputs.suite == 'quick' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh')
         uses: actions/download-artifact@v4
         with:
           name: iroh-ssh-${{ inputs.os }}
           path: artifacts
 
       - name: Extract the native component without a consumer cache
-        if: inputs.suite == 'quick'
+        if: inputs.suite == 'quick' && (inputs.quick-cohort == 'all' || inputs.quick-cohort == 'fleet-iroh')
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifacts/iroh-ssh | Out-Null

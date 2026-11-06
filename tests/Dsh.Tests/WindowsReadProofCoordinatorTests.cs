@@ -8,7 +8,6 @@ public sealed class WindowsReadProofCoordinatorTests
 {
     [Theory(Timeout = 10000)]
     [InlineData(3, 3)]
-    [InlineData(512, 256)]
     public void Batches_GrowFromOneEntryAndReuseTheSameBoundedDedicatedWorkers(int entries, int expectedWorkers)
     {
         using var proofs = new WindowsReadProofCoordinator(entries);
@@ -45,6 +44,60 @@ public sealed class WindowsReadProofCoordinatorTests
         Assert.All(visits, static count => Assert.Equal(1, count));
         proofs.Dispose();
         Assert.All(workers[0].Keys, static worker => Assert.False(worker.IsAlive));
+    }
+
+    [Theory(Timeout = 10000)]
+    [InlineData(512)]
+    [InlineData(768)]
+    public void LargeBatches_VisitEveryIndexOnceAcrossSuccessiveCalls(int entryCount)
+    {
+        const int batches = 2;
+        using var proofs = new WindowsReadProofCoordinator(entryCount);
+        var visits = new int[entryCount * batches];
+        var cancellationToken = TestContext.Current.CancellationToken;
+        for (var batch = 0; batch < batches; batch++)
+        {
+            var start = batch * entryCount;
+            var end = start + entryCount;
+            Assert.Equal(end, proofs.ProbePrefix(start, end, index =>
+            {
+                Interlocked.Increment(ref visits[index]);
+                return true;
+            }, cancellationToken));
+        }
+        Assert.All(visits, static count => Assert.Equal(1, count));
+    }
+
+    [Fact(Timeout = 10000)]
+    public async Task FalseWithEarlierPendingIndices_ReturnsOnlyACompletePrefix()
+    {
+        const int start = 20, entryCount = 769, firstFalse = 23;
+        using var proofs = new WindowsReadProofCoordinator(3);
+        using var release = new ManualResetEventSlim();
+        var earlierStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var visits = new int[entryCount];
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var pending = Task.Run(() => proofs.ProbePrefix(start, start + entryCount, index =>
+        {
+            Interlocked.Increment(ref visits[index - start]);
+            if (index == start + 1)
+                earlierStarted.TrySetResult();
+            if (index == firstFalse)
+                return false;
+            if (index == start || index > firstFalse)
+                release.Wait(cancellationToken);
+            return true;
+        }, cancellationToken), cancellationToken);
+        try { await earlierStarted.Task.WaitAsync(cancellationToken); }
+        finally
+        {
+            release.Set();
+            await pending;
+        }
+        Assert.Equal(firstFalse, await pending);
+        Assert.All(visits[..(firstFalse - start)], static count => Assert.Equal(1, count));
+        Assert.Equal(1, visits[firstFalse - start]);
+        Assert.All(visits, static count => Assert.InRange(count, 0, 1));
     }
 
     [Theory(Timeout = 10000)]

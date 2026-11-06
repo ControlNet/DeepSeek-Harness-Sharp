@@ -218,14 +218,15 @@ jobs:
       quick-cohort: all
       dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
       dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+  # Remainder cohorts can start before the platform's native Iroh fixture is ready.
   test-windows-quick:
     name: 测试（windows-latest，quick-${{ matrix.cohort }}）
-    needs: [changes, dryioc-feed, iroh-component-windows]
-    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-windows.result == 'success' || needs.iroh-component-windows.result == 'skipped') }}
+    needs: [changes, dryioc-feed]
+    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') }}
     strategy:
       fail-fast: false
       matrix:
-        cohort: [fleet-iroh, remainder-a-m, remainder-rest]
+        cohort: [remainder-a-m, remainder-rest]
     uses: ./.github/workflows/ci-tests.yml
     with:
       os: windows-latest
@@ -238,12 +239,12 @@ jobs:
 
   test-linux-quick:
     name: 测试（ubuntu-latest，quick-${{ matrix.cohort }}）
-    needs: [changes, dryioc-feed, iroh-component-linux]
-    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-linux.result == 'success' || needs.iroh-component-linux.result == 'skipped') }}
+    needs: [changes, dryioc-feed]
+    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') }}
     strategy:
       fail-fast: false
       matrix:
-        cohort: [fleet-iroh, remainder-a-m, remainder-rest]
+        cohort: [remainder-a-m, remainder-rest]
     uses: ./.github/workflows/ci-tests.yml
     with:
       os: ubuntu-latest
@@ -257,18 +258,60 @@ jobs:
 
   test-macos-quick:
     name: 测试（macos-latest，quick-${{ matrix.cohort }}）
-    needs: [changes, dryioc-feed, iroh-component-macos]
-    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-macos.result == 'success' || needs.iroh-component-macos.result == 'skipped') }}
+    needs: [changes, dryioc-feed]
+    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') }}
     strategy:
       fail-fast: false
       matrix:
-        cohort: [fleet-iroh, remainder-a-m, remainder-rest]
+        cohort: [remainder-a-m, remainder-rest]
     uses: ./.github/workflows/ci-tests.yml
     with:
       os: macos-latest
       native-cc: clang
       suite: quick
       quick-cohort: ${{ matrix.cohort }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  # Each Fleet/Iroh cohort retains its own platform's native fixture dependency.
+  test-windows-quick-fleet-iroh:
+    name: 测试（windows-latest，quick-fleet-iroh）
+    needs: [changes, dryioc-feed, iroh-component-windows]
+    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-windows.result == 'success' || needs.iroh-component-windows.result == 'skipped') }}
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: windows-latest
+      native-cc: cl
+      native-cc-alt: clang-cl
+      suite: quick
+      quick-cohort: fleet-iroh
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  test-linux-quick-fleet-iroh:
+    name: 测试（ubuntu-latest，quick-fleet-iroh）
+    needs: [changes, dryioc-feed, iroh-component-linux]
+    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-linux.result == 'success' || needs.iroh-component-linux.result == 'skipped') }}
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: ubuntu-latest
+      native-cc: clang
+      native-cc-alt: ''
+      suite: quick
+      quick-cohort: fleet-iroh
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  test-macos-quick-fleet-iroh:
+    name: 测试（macos-latest，quick-fleet-iroh）
+    needs: [changes, dryioc-feed, iroh-component-macos]
+    if: ${{ !cancelled() && needs.dryioc-feed.result == 'success' && needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'quick') && (needs.iroh-component-macos.result == 'success' || needs.iroh-component-macos.result == 'skipped') }}
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: macos-latest
+      native-cc: clang
+      suite: quick
+      quick-cohort: fleet-iroh
       dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
       dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
 
@@ -410,7 +453,7 @@ jobs:
 
   result:
     name: CI 结果
-    needs: [changes, validate, dryioc-feed, iroh-component-windows, iroh-component-linux, iroh-component-macos, test, test-windows-quick, test-linux-quick, test-macos-quick, build, aot]
+    needs: [changes, validate, dryioc-feed, iroh-component-windows, iroh-component-linux, iroh-component-macos, test, test-windows-quick, test-linux-quick, test-macos-quick, test-windows-quick-fleet-iroh, test-linux-quick-fleet-iroh, test-macos-quick-fleet-iroh, build, aot]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

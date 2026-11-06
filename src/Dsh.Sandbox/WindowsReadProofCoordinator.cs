@@ -6,7 +6,7 @@ namespace Dsh.Sandbox;
 /// <remarks>
 /// A single caller submits batches; callbacks must not call back into this coordinator.
 /// At most min(256, entryCount) workers exist, growing lazily to each batch's length.
-/// False stops dispatch and drains every reserved callback before returning the first false index, or the end when all pass.
+/// False narrows dispatch to earlier unproved indices; completion returns the first false index, or the end when all pass.
 /// Failure, cancellation and disposal also join every started worker and never return a reusable prefix.
 /// Batch callbacks are released before completion, and disposal drains synchronous native calls.
 /// Callback errors remain primary when cancellation also arrives.
@@ -18,8 +18,10 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
     private readonly object _gate = new();
     private readonly Thread?[] _workers;
     private int _started;
-    private int _next;
-    private int _end;
+    private int _nextOrdinal;
+    private int _batchLength;
+    private int _batchStart;
+    private int _dispatchStride;
     private int _active;
     private int _prefixEnd;
     private bool _running;
@@ -51,8 +53,10 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
                 return end;
             _running = true;
             _stopped = false;
-            _next = start;
-            _end = end;
+            _nextOrdinal = 0;
+            _batchStart = start;
+            _batchLength = end - start;
+            _dispatchStride = ChooseDispatchStride(_batchLength);
             _prefixEnd = end;
             _probe = probe;
             _cancellationToken = cancellationToken;
@@ -78,7 +82,7 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
             try
             {
                 var required = Math.Min(_workers.Length, batchLength);
-                while (_started < required && _next < _end && !_shutdown && !_stopped)
+                while (_started < required && _nextOrdinal < _batchLength && !_shutdown && !_stopped)
                 {
                     _cancellationToken.ThrowIfCancellationRequested();
                     var worker = new Thread(Run) { IsBackground = true };
@@ -101,7 +105,7 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
         int prefixEnd;
         lock (_gate)
         {
-            while (_active != 0 || !_stopped && _next < _end)
+            while (_active != 0 || !_stopped && _nextOrdinal < _batchLength)
             {
                 try { Monitor.Wait(_gate); }
                 catch (ThreadInterruptedException error) { Fail(error); }
@@ -122,6 +126,32 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
         return prefixEnd;
     }
 
+    private static int ChooseDispatchStride(int length)
+    {
+        var stride = Math.Max(1, length / MaximumWorkers);
+        while (true)
+        {
+            var divisor = length;
+            var remainder = stride;
+            while (remainder != 0)
+                (divisor, remainder) = (remainder, divisor % remainder);
+            if (divisor == 1)
+                return stride;
+            stride++;
+        }
+    }
+
+    private int ReserveNextIndex()
+    {
+        while (_nextOrdinal < _batchLength)
+        {
+            var index = _batchStart + (int)((long)_nextOrdinal++ * _dispatchStride % _batchLength);
+            if (index < _prefixEnd)
+                return index;
+        }
+        return _prefixEnd;
+    }
+
     private void Run()
     {
         try
@@ -132,12 +162,17 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
                 int index;
                 lock (_gate)
                 {
-                    while (!_shutdown && (!_running || _stopped || _next == _end))
+                    while (!_shutdown && (!_running || _stopped || _nextOrdinal == _batchLength))
                         Monitor.Wait(_gate);
                     if (_shutdown)
                         return;
                     _cancellationToken.ThrowIfCancellationRequested();
-                    index = _next++;
+                    index = ReserveNextIndex();
+                    if (index == _prefixEnd)
+                    {
+                        Monitor.PulseAll(_gate);
+                        continue;
+                    }
                     probe = _probe!;
                     _active++;
                 }
@@ -147,7 +182,8 @@ internal sealed class WindowsReadProofCoordinator : IDisposable
                         lock (_gate)
                         {
                             _prefixEnd = Math.Min(_prefixEnd, index);
-                            _stopped = true;
+                            if (_dispatchStride == 1 || _prefixEnd == _batchStart)
+                                _nextOrdinal = _batchLength;
                         }
                 }
                 catch (Exception error) { Fail(error); }
