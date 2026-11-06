@@ -107,6 +107,35 @@ class PathSafetyTests(unittest.TestCase):
                     ARCHIVER.safe_payload(name + ".private", os_name)
         self.assertNotIn("Dsh.NativePluginSample.so", " ".join(ARCHIVER.optional_files("Windows")))
 
+    def test_build_path_maps_are_excluded_without_losing_runtime_files(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            root = Path(temporary)
+            for directory in ARCHIVER.OUTPUT_ROOTS:
+                (root / directory).mkdir(parents=True)
+            runtime = root / PREFIX / "runtime.txt"
+            runtime.write_text("runtime fixture text", encoding="utf-8")
+            metadata = [
+                root / PREFIX / ".msCoverageSourceRootsMapping_fixture",
+                root / PREFIX / "CoverletSourceRootsMapping_fixture",
+            ]
+            for path in metadata:
+                path.write_text("compiler build-path provenance", encoding="utf-8")
+            inventory = ARCHIVER.product_paths(root, "Linux")
+            self.assertIn(runtime, inventory)
+            for path in metadata:
+                self.assertNotIn(path, inventory)
+                with self.assertRaises(ARCHIVER.ArchiveError):
+                    ARCHIVER.safe_payload(path.relative_to(root).as_posix(), "Linux")
+
+    def test_inventory_still_rejects_unexpected_private_material(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            root = Path(temporary)
+            for directory in ARCHIVER.OUTPUT_ROOTS:
+                (root / directory).mkdir(parents=True)
+            (root / PREFIX / "credentials.json").write_text("private fixture text", encoding="utf-8")
+            with self.assertRaises(ARCHIVER.ArchiveError):
+                ARCHIVER.product_paths(root, "Linux")
+
 
 class ArchiveBoundaryTests(unittest.TestCase):
     def write_archive(self, root, manifest, entries=()):

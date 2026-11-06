@@ -47,6 +47,7 @@ PRIVATE_NAMES = {
     "config", "configuration", "credentials", "secrets", "plans", "knowledge", "knowledges",
     "sessions", "session", "logs", "sdk-test-home", "__pycache__",
 }
+BUILD_PATH_METADATA_PREFIXES = (".msCoverageSourceRootsMapping_", "CoverletSourceRootsMapping_")
 
 
 class ArchiveError(Exception):
@@ -117,6 +118,8 @@ def safe_payload(name, os_name):
     parts = safe_name(name)
     if not allowed_payload(name, os_name):
         raise ArchiveError("Archive contains a path outside the runtime product allowlist.")
+    if parts[-1].startswith(BUILD_PATH_METADATA_PREFIXES):
+        raise ArchiveError("Runtime output contains build-path provenance.")
     if any(part.lower() in PRIVATE_NAMES or (part.startswith(".") and part != ".dockerignore") for part in parts):
         raise ArchiveError("Runtime output contains private or non-product material.")
     lower = name.lower()
@@ -206,6 +209,9 @@ def product_paths(root, os_name):
     pending.extend(root / name for name in optional_files(os_name) if os.path.lexists(root / name))
     while pending:
         path = pending.pop()
+        # Coverage source-root maps carry compiler path provenance outside these non-coverage runtime consumers.
+        if path.name.startswith(BUILD_PATH_METADATA_PREFIXES):
+            continue
         name = path.relative_to(root).as_posix()
         ordinary_parents(root, name)
         safe_payload(name, os_name)
