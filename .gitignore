@@ -41,3 +41,4 @@ secrets.yaml
 .boto
 .s3cfg
 kubeconfig
+.ci-test-build/

@@ -1,4 +1,4 @@
-name: Product NativeAOT publish validation
+name: Product NativeAOT validation
 
 on:
   workflow_call:
@@ -7,9 +7,6 @@ on:
         required: true
         type: string
       rid:
-        required: true
-        type: string
-      native-cc:
         required: true
         type: string
       dryioc-commit:
@@ -23,119 +20,10 @@ permissions:
   contents: read
 
 jobs:
-  publish:
-    name: Publish ${{ matrix.entry }} (${{ inputs.rid }})
-    runs-on: ${{ inputs.os }}
-    # Each hosted runner performs one product ILC pass without sharing its memory.
-    timeout-minutes: ${{ startsWith(inputs.rid, 'win-') && 50 || 30 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - entry: cli
-            project: DeepSeek-Harness-Sharp/DeepSeek-Harness-Sharp.csproj
-            publish-root: DeepSeek-Harness-Sharp/bin/Release/net10.0
-          - entry: gui
-            project: Dsh.GuiHost/Dsh.GuiHost.csproj
-            publish-root: Dsh.GuiHost/bin/Release/net10.0
-          - entry: web
-            project: Dsh.WebHost/Dsh.WebHost.csproj
-            publish-root: Dsh.WebHost/bin/Release/net10.0
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-
-      - name: Check PR merge checkout contains the current head
-        if: github.event_name == 'pull_request' && github.event.action != 'closed'
-        shell: bash
-        env:
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          git merge-base --is-ancestor "$PR_HEAD_SHA" HEAD
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-          cache: true
-          cache-dependency-path: '**/*.csproj'
-
-      - name: Download the DryIoc feed prepared for this run
-        uses: actions/download-artifact@v4
-        with:
-          name: dryioc-feed
-          path: packages
-
-      - name: Prepare local NuGet feed
-        shell: pwsh
-        run: |
-          & ./packages/fetch-dryioc-feed.ps1 -VerifyOnly -ExpectedCommit '${{ inputs.dryioc-commit }}' -ExpectedSha256 '${{ inputs.dryioc-sha256 }}' -RefreshPackageCache
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Install AOT toolchain on Linux
-        if: inputs.rid == 'linux-x64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld zlib1g-dev build-essential
-
-      - name: Publish native plugin sample before product builds
-        if: inputs.rid == 'linux-x64' && matrix.entry == 'cli'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Keep the generator's cold restore covered before this runner builds a product.
-          dotnet publish tests/Dsh.NativePluginSample -c Release --nologo -v m
-
-      - name: Publish the product NativeAOT entry
-        shell: bash
-        run: |
-          set -euo pipefail
-          RID='${{ inputs.rid }}'
-          PUBLISH_ARGS=(
-            -c Release -r "$RID" -p:PublishAot=true --self-contained true
-            -p:DebugSymbols=false -p:DebugType=none
-            -p:DshNativeCompiler='${{ inputs.native-cc }}' -p:DshShipFaultProbe=true
-            --nologo -v m
-          )
-          dotnet publish '${{ matrix.project }}' "${PUBLISH_ARGS[@]}"
-
-      - name: Archive the complete publish root for validation
-        shell: bash
-        run: |
-          set -euo pipefail
-          RID='${{ inputs.rid }}'
-          ROOT='${{ matrix.publish-root }}'/"$RID/publish"
-          test -d "$ROOT"
-          rm -f "$ROOT"/*.pdb "$ROOT"/*.dbg
-          mkdir -p artifacts
-          TAR="tar"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            TAR="$(cygpath -u "$WINDIR")/System32/tar.exe"
-          fi
-          # Archive each complete entry root before artifact upload changes Unix modes.
-          "$TAR" -cf "artifacts/aot-$RID-${{ matrix.entry }}.tar" -C "$ROOT" .
-          if [ "$RID" = "linux-x64" ] && [ '${{ matrix.entry }}' = "cli" ]; then
-            SAMPLE="tests/Dsh.NativePluginSample/bin/Release/net10.0/linux-x64/publish"
-            test -f "$SAMPLE/Dsh.NativePluginSample.so"
-            "$TAR" -cf "artifacts/native-plugin-$RID.tar" -C "$SAMPLE" .
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: aot-intermediate-${{ inputs.rid }}-${{ matrix.entry }}
-          path: artifacts/*.tar
-          if-no-files-found: error
-          retention-days: 1
-
   validate:
     name: Validate product entries (${{ inputs.rid }})
-    needs: publish
     runs-on: ${{ inputs.os }}
-    # The join keeps the original critical-path ceiling without extending consumer deadlines.
+    # The caller joins only this OS's three publishers and regression groups.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -158,6 +46,11 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
+      - name: Prepare Python for the test build archive
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Download the DryIoc feed prepared for this run
         uses: actions/download-artifact@v4
         with:
@@ -177,6 +70,19 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang lld zlib1g-dev build-essential
+
+      - name: Download the complete exact-source test build
+        uses: actions/download-artifact@v4
+        with:
+          name: dsh-test-build-${{ runner.os }}-${{ github.sha }}
+          path: .ci-test-build
+
+      - name: Restore and verify the complete exact-source test build
+        shell: bash
+        run: >
+          python3 -B scripts/archive-test-build.py restore
+          --archive .ci-test-build/test-build.tar.gz
+          --source '${{ github.sha }}' --os '${{ runner.os }}'
 
       - name: Download this run's complete publish archives
         uses: actions/download-artifact@v4
@@ -261,11 +167,10 @@ jobs:
           PUB="DeepSeek-Harness-Sharp/bin/Release/net10.0/$RID/publish"
           BIN="tests/Dsh.Tests/bin/Debug/net10.0"
           CLASSES=(-class Dsh.Tests.NativeGuardTests)
-          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo -v m -p:DshNativeCompiler='${{ inputs.native-cc }}'
           if [ "$RID" = "linux-x64" ]; then
             CLASSES+=(-class Dsh.Tests.NativePluginAbiTests)
           fi
-          # Run the real JIT test host with the guard and probe from the published release.
+          # Run the test host with guard and probe binaries from the published release.
           for NATIVE in dsh_plugin_guard dsh_fault_probe; do
             FILE="$(printf '%s\n' "$PUB"/* | grep -E "/(lib)?$NATIVE\.(dll|so|dylib)$")"
             FILE="${FILE##*/}"

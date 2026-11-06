@@ -185,39 +185,97 @@ jobs:
     steps: *iroh-component-steps
 
   test:
-    name: 测试（${{ matrix.platform.os }}，${{ matrix.suite }}）
+    name: 测试（${{ matrix.platform.os }}，raw）
     needs: [changes, dryioc-feed]
-    if: needs.changes.outputs.tests == 'true' && join(fromJSON(needs.changes.outputs.suites), ',') != 'quick'
+    if: needs.changes.outputs.tests == 'true' && contains(fromJSON(needs.changes.outputs.suites), 'raw')
     strategy:
       fail-fast: false
       matrix:
         platform:
-          - os: windows-latest
-            native-cc: cl
-            native-cc-alt: clang-cl
           - os: ubuntu-latest
             native-cc: clang
             native-cc-alt: ''
           - os: macos-latest
             native-cc: clang
             native-cc-alt: ''
-        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
-        exclude:
-          - platform:
-              os: windows-latest
-              native-cc: cl
-              native-cc-alt: clang-cl
-            suite: raw
-          - suite: quick
     uses: ./.github/workflows/ci-tests.yml
     with:
       os: ${{ matrix.platform.os }}
       native-cc: ${{ matrix.platform.native-cc }}
       native-cc-alt: ${{ matrix.platform.native-cc-alt }}
+      suite: raw
+      quick-cohort: all
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  # Each regression consumer keeps its own build; only group 1 publishes for AOT.
+  test-windows-regression:
+    name: 测试（windows-latest，${{ matrix.suite }}）
+    needs: [changes, dryioc-feed]
+    if: needs.changes.outputs.tests == 'true' && contains(needs.changes.outputs.suites, 'regression-') || needs.changes.outputs.aot == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.tests == 'true' && contains(needs.changes.outputs.suites, 'regression-') && needs.changes.outputs.suites || '["regression-1"]') }}
+        exclude:
+          - suite: quick
+          - suite: raw
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: windows-latest
+      native-cc: cl
+      native-cc-alt: clang-cl
+      suite: ${{ matrix.suite }}
+      quick-cohort: all
+      publish_test_build: ${{ needs.changes.outputs.aot == 'true' && matrix.suite == 'regression-1' }}
+      build_only: ${{ needs.changes.outputs.tests != 'true' || !contains(needs.changes.outputs.suites, 'regression-') }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  test-linux-regression:
+    name: 测试（ubuntu-latest，${{ matrix.suite }}）
+    needs: [changes, dryioc-feed]
+    if: needs.changes.outputs.tests == 'true' && contains(needs.changes.outputs.suites, 'regression-') || needs.changes.outputs.aot == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.tests == 'true' && contains(needs.changes.outputs.suites, 'regression-') && needs.changes.outputs.suites || '["regression-1"]') }}
+        exclude:
+          - suite: quick
+          - suite: raw
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: ubuntu-latest
+      native-cc: clang
+      native-cc-alt: ''
+      suite: ${{ matrix.suite }}
+      quick-cohort: all
+      publish_test_build: ${{ needs.changes.outputs.aot == 'true' && matrix.suite == 'regression-1' }}
+      build_only: ${{ needs.changes.outputs.tests != 'true' || !contains(needs.changes.outputs.suites, 'regression-') }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  test-macos-regression:
+    name: 测试（macos-latest，${{ matrix.suite }}）
+    needs: [changes, dryioc-feed]
+    if: needs.changes.outputs.tests == 'true' && contains(needs.changes.outputs.suites, 'regression-')
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
+        exclude:
+          - suite: quick
+          - suite: raw
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: macos-latest
+      native-cc: clang
+      native-cc-alt: ''
       suite: ${{ matrix.suite }}
       quick-cohort: all
       dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
       dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
   test-windows-quick:
     name: 测试（windows-latest，quick-${{ matrix.cohort }}）
     needs: [changes, dryioc-feed, iroh-component-windows]
@@ -386,31 +444,56 @@ jobs:
           retention-days: 1
 
 
-  aot:
-    name: AOT 构建（${{ matrix.rid }}）
+  aot-publish-windows:
+    name: AOT 发布（win-x64）
     needs: [changes, dryioc-feed]
     if: needs.changes.outputs.aot == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            rid: win-x64
-            native-cc: cl
-          - os: ubuntu-latest
-            rid: linux-x64
-            native-cc: clang
-    uses: ./.github/workflows/ci-aot.yml
+    uses: ./.github/workflows/ci-aot-publish.yml
     with:
-      os: ${{ matrix.os }}
-      rid: ${{ matrix.rid }}
-      native-cc: ${{ matrix.native-cc }}
+      os: windows-latest
+      rid: win-x64
+      native-cc: cl
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  aot-publish-linux:
+    name: AOT 发布（linux-x64）
+    needs: [changes, dryioc-feed]
+    if: needs.changes.outputs.aot == 'true'
+    uses: ./.github/workflows/ci-aot-publish.yml
+    with:
+      os: ubuntu-latest
+      rid: linux-x64
+      native-cc: clang
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  # A failed regression may already have uploaded group 1's build; result still records that failure.
+  aot-validate-windows:
+    name: AOT 验证（win-x64）
+    needs: [changes, dryioc-feed, aot-publish-windows, test-windows-regression]
+    if: ${{ !cancelled() && needs.changes.outputs.aot == 'true' && needs.dryioc-feed.result == 'success' && needs.aot-publish-windows.result == 'success' && (needs.test-windows-regression.result == 'success' || (needs.changes.outputs.tests == 'true' && needs.test-windows-regression.result == 'failure')) }}
+    uses: ./.github/workflows/ci-aot-validate.yml
+    with:
+      os: windows-latest
+      rid: win-x64
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  aot-validate-linux:
+    name: AOT 验证（linux-x64）
+    needs: [changes, dryioc-feed, aot-publish-linux, test-linux-regression]
+    if: ${{ !cancelled() && needs.changes.outputs.aot == 'true' && needs.dryioc-feed.result == 'success' && needs.aot-publish-linux.result == 'success' && (needs.test-linux-regression.result == 'success' || (needs.changes.outputs.tests == 'true' && needs.test-linux-regression.result == 'failure')) }}
+    uses: ./.github/workflows/ci-aot-validate.yml
+    with:
+      os: ubuntu-latest
+      rid: linux-x64
       dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
       dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
 
   result:
     name: CI 结果
-    needs: [changes, validate, dryioc-feed, iroh-component-windows, iroh-component-linux, iroh-component-macos, test, test-windows-quick, test-linux-quick, test-macos-quick, build, aot]
+    needs: [changes, validate, dryioc-feed, iroh-component-windows, iroh-component-linux, iroh-component-macos, test, test-windows-regression, test-linux-regression, test-macos-regression, test-windows-quick, test-linux-quick, test-macos-quick, build, aot-publish-windows, aot-publish-linux, aot-validate-windows, aot-validate-linux]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
