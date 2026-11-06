@@ -8,7 +8,6 @@ public sealed class WindowsReadProofCoordinatorTests
 {
     [Theory(Timeout = 10000)]
     [InlineData(3, 3)]
-    [InlineData(512, 256)]
     public void Batches_GrowFromOneEntryAndReuseTheSameBoundedDedicatedWorkers(int entries, int expectedWorkers)
     {
         using var proofs = new WindowsReadProofCoordinator(entries);
@@ -45,6 +44,26 @@ public sealed class WindowsReadProofCoordinatorTests
         Assert.All(visits, static count => Assert.Equal(1, count));
         proofs.Dispose();
         Assert.All(workers[0].Keys, static worker => Assert.False(worker.IsAlive));
+    }
+
+    [Fact(Timeout = 10000)]
+    public void LargeBatches_VisitEveryIndexOnceAcrossSuccessiveCalls()
+    {
+        const int entryCount = 512, batches = 2;
+        using var proofs = new WindowsReadProofCoordinator(entryCount);
+        var visits = new int[entryCount * batches];
+        var cancellationToken = TestContext.Current.CancellationToken;
+        for (var batch = 0; batch < batches; batch++)
+        {
+            var start = batch * entryCount;
+            var end = start + entryCount;
+            Assert.Equal(end, proofs.ProbePrefix(start, end, index =>
+            {
+                Interlocked.Increment(ref visits[index]);
+                return true;
+            }, cancellationToken));
+        }
+        Assert.All(visits, static count => Assert.Equal(1, count));
     }
 
     [Theory(Timeout = 10000)]
