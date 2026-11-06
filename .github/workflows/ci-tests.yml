@@ -341,6 +341,18 @@ jobs:
             -trait- Category=GpuStress -trait- Category=OnlyGpu \
             -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
 
+      - name: Check original directory and proof behavior after the MCP consumer
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe"
+          "$EXE" -noColor -parallelMode none -reporter verbose \
+            -class Dsh.Tests.WindowsDirectoryCollectorTests \
+            -class Dsh.Tests.WindowsReadProofCoordinatorTests \
+            -trait- Category=GpuStress -trait- Category=OnlyGpu \
+            -trait- Category=RenderBench -trait- Category=LlmSmoke -failSkips
+
       - name: Calibrate owned-thread pending I/O after the original consumer
         if: ${{ !cancelled() && steps.build_tests.outcome == 'success' && runner.os == 'Windows' && inputs.suite == 'regression-1' }}
         shell: bash
