@@ -328,6 +328,7 @@ internal static class WindowsDirectoryCollector
                 if (_failure is not null)
                     return;
                 // Outstanding counts queued plus active nodes. Publish children before retiring their parent.
+                var queuedBefore = _pending.Count;
                 foreach (var entry in directory.Entries)
                 {
                     if (entry.Directory is not { } child)
@@ -338,7 +339,8 @@ internal static class WindowsDirectoryCollector
                 _outstanding--;
                 if (_outstanding == 0)
                     Observation?.RootCompleted(ObservationRoot);
-                Monitor.PulseAll(_gate);
+                if (_outstanding == 0 || _pending.Count > queuedBefore)
+                    Monitor.PulseAll(_gate);
             }
         }
     }
