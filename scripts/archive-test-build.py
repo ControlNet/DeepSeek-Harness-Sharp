@@ -23,6 +23,7 @@ import platform
 import posixpath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -246,6 +247,7 @@ def pack(root, archive, source, os_name, tracked):
                 # Store hard-linked regular products as independent files without changing symbolic links.
                 if member.islnk():
                     member.type, member.linkname, member.size = tarfile.REGTYPE, "", path.stat().st_size
+                member.mode = stat.S_IMODE(member.mode)
                 member.uid = member.gid = 0
                 member.uname = member.gname = ""
                 member.pax_headers = {}
