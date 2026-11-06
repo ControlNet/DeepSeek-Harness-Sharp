@@ -418,10 +418,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dotnet build tests/Dsh.Tests/Dsh.Tests.csproj -c Debug --nologo \
+          # The live standalone daemon holds main-entry DLLs; rebuild only the native owners.
+          dotnet msbuild src/Dsh.Plugins.Host/Dsh.Plugins.Host.csproj -nologo \
+            -t:BuildDshPluginGuard -p:Configuration=Debug \
             -p:DshNativeCompiler=${{ inputs.native-cc-alt }} "-flp:verbosity=normal;logfile=native-alt.log"
+          dotnet msbuild tests/Dsh.Tests/Dsh.Tests.csproj -nologo \
+            -t:BuildDshFaultProbe -p:Configuration=Debug \
+            -p:DshNativeCompiler=${{ inputs.native-cc-alt }} "-flp:verbosity=normal;logfile=native-alt.log;append"
           # Verify that the alternate driver rebuilt both the guard and the probe.
-          grep -E '${{ inputs.native-cc-alt }} /nologo' native-alt.log
+          grep -E '${{ inputs.native-cc-alt }} /nologo.*guard[.]c' native-alt.log
+          grep -E '${{ inputs.native-cc-alt }} /nologo.*fault_probe[.]c' native-alt.log
+          cp src/Dsh.Plugins.Host/obj/Debug/net10.0/dsh-guard/dsh_plugin_guard.dll tests/Dsh.Tests/bin/Debug/net10.0/
+          cp tests/Dsh.Tests/obj/Debug/net10.0/dsh-guard/dsh_fault_probe.dll tests/Dsh.Tests/bin/Debug/net10.0/
           tests/Dsh.Tests/bin/Debug/net10.0/Dsh.Tests.exe -noColor -class Dsh.Tests.NativeGuardTests -failSkips
 
       - name: Verify the SDK still runs after macOS test consumers

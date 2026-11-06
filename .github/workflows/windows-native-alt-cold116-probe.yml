@@ -1,0 +1,164 @@
+name: Windows cold-restored native alternate compiler probe
+
+# This branch-only probe does not invoke the full CI matrix or AOT workflows.
+on:
+  push:
+    branches: [perf/ci-test-build-integration111]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-native-alt-cold116-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dryioc-feed:
+    name: Prepare the real current-run DryIoc feed
+    uses: ./.github/workflows/ci-dryioc.yml
+    with:
+      checkout-ref: ${{ github.sha }}
+
+  iroh-fixture:
+    name: Bridge the pinned real Windows Iroh fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # This pinned fixture is reused from the same repository's df source run, whose overall workflow failed.
+      # Only this probe's complete test build is produced at its current head.
+      - name: Verify source provenance and read only the pinned component member
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B - '${{ github.repository }}' '${{ github.repository_id }}' <<'PY'
+          import hashlib
+          import io
+          import json
+          import sys
+          from pathlib import Path
+          import subprocess
+          import zipfile
+
+          repository = sys.argv[1]
+          repository_id = int(sys.argv[2])
+          source_run = 42189760759
+          source_head = 'df411166261d1cc2f3e9474e0a4558e4471b1bcb'
+          artifact_id = 13489582643
+          artifact_name = 'iroh-ssh-windows-latest'
+          zip_size = 5980068
+          zip_sha256 = 'c086b7f56cbdbf47af83a589813ec9d6884cbb4b446beddcb36bef5f3756e863'
+          member_name = 'iroh-ssh-component.tar'
+          member_size = 16826880
+          member_sha256 = 'cf8bb3049f935bb47ce89db14468b8d7560df9e466226c42d0aeb4f13bf6cff0'
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          def api(route):
+              result = subprocess.run(
+                  ['gh', 'api', '--method', 'GET', route],
+                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+              )
+              # API errors expose a fixed message while authenticated response bodies remain private.
+              require(result.returncode == 0, 'Pinned fixture API request failed.')
+              return result.stdout
+
+          def metadata(suffix):
+              return json.loads(api(f'repos/{repository}{suffix}'))
+
+          current = metadata('')
+          require(current['id'] == repository_id and current['full_name'] == repository,
+                  'Current repository identity mismatch.')
+          run = metadata(f'/actions/runs/{source_run}')
+          require(run['id'] == source_run and run['head_sha'] == source_head,
+                  'Pinned source run or head mismatch.')
+          require(run['repository']['id'] == repository_id
+                  and run['repository']['full_name'] == repository
+                  and run['head_repository']['id'] == repository_id
+                  and run['head_repository']['full_name'] == repository,
+                  'Pinned source run repository mismatch.')
+          require(run['path'] == '.github/workflows/ci.yml'
+                  and run['event'] == 'workflow_dispatch'
+                  and run['status'] == 'completed' and run['conclusion'] == 'failure',
+                  'Pinned source workflow provenance mismatch.')
+
+          artifact = metadata(f'/actions/artifacts/{artifact_id}')
+          require(artifact['id'] == artifact_id and artifact['name'] == artifact_name
+                  and artifact['size_in_bytes'] == zip_size and artifact['expired'] is False
+                  and artifact['digest'] == f'sha256:{zip_sha256}',
+                  'Pinned fixture artifact metadata mismatch.')
+          binding = artifact['workflow_run']
+          require(binding['id'] == source_run and binding['head_sha'] == source_head
+                  and binding['repository_id'] == repository_id
+                  and binding['head_repository_id'] == repository_id,
+                  'Pinned fixture source run binding mismatch.')
+
+          archive = api(f'repos/{repository}/actions/artifacts/{artifact_id}/zip')
+          require(len(archive) == zip_size
+                  and hashlib.sha256(archive).hexdigest() == zip_sha256,
+                  'Pinned fixture ZIP size or SHA256 mismatch.')
+          # Read the authenticated ZIP member into the fixed current-workspace destination.
+          with zipfile.ZipFile(io.BytesIO(archive)) as container:
+              entries = container.infolist()
+              require(len(entries) == 1 and entries[0].filename == member_name
+                      and not entries[0].is_dir() and entries[0].file_size == member_size,
+                      'Pinned fixture ZIP member mismatch.')
+              component = container.read(entries[0])
+          require(len(component) == member_size
+                  and hashlib.sha256(component).hexdigest() == member_sha256,
+                  'Pinned fixture component TAR size or SHA256 mismatch.')
+          destination = Path('artifacts') / member_name
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_bytes(component)
+          print(f'Pinned cross-run fixture verified: run={source_run}; head={source_head}; '
+                f'artifact={artifact_id}; ZIP-SHA256={zip_sha256}; TAR-SHA256={member_sha256}')
+          PY
+      - name: Publish the original component TAR under the current-run consumer name
+        uses: actions/upload-artifact@v4
+        with:
+          name: iroh-ssh-windows-latest
+          path: artifacts/iroh-ssh-component.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  test-build-windows:
+    name: Produce the complete actual Windows test build
+    needs: dryioc-feed
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: windows-latest
+      native-cc: cl
+      suite: quick
+      publish_test_build: true
+      test_build_artifact: dsh-test-build-Windows-${{ github.sha }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
+
+  cold-quick-fleet-windows:
+    name: Cold-restored original Windows quick fleet and both native compiler gates
+    needs: [dryioc-feed, iroh-fixture, test-build-windows]
+    # A distinct reusable-workflow job restores only runtime products on a fresh VM without obj/assets.
+    # The original daemon, fleet/Iroh cohort, invariant schedules, NativeGuard gates, traits, assertions and budgets remain unchanged.
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      os: windows-latest
+      native-cc: cl
+      native-cc-alt: clang-cl
+      suite: quick
+      quick-cohort: fleet-iroh
+      test_build_artifact: dsh-test-build-Windows-${{ github.sha }}
+      dryioc-commit: ${{ needs.dryioc-feed.outputs.commit }}
+      dryioc-sha256: ${{ needs.dryioc-feed.outputs.sha256 }}
