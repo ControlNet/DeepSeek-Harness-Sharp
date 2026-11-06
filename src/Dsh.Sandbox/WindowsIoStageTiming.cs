@@ -20,6 +20,9 @@ internal static class WindowsIoStageTiming
     // One timer and one process-wide filtered listener exist only during the observed test scope.
     // Directory IDs add one atomic and a relative-name scan; entry accounting adds sequence atomics.
     // Native operation pairs add two clock reads and seven atomic updates before sampling costs.
+    // Query result counters add six Int64 scalars per collection, outside the numeric-array total.
+    // Each coherent active thread sample opens at most one additional query-only handle, verifies its process owner, and closes it before the next sample.
+    // A pending-I/O flag is transient and does not identify a device, filesystem filter or wait cause.
     private const int ApplyCapacity = 16;
     private const int CollectionCapacity = 16;
     private const int SlotCapacity = 257; // Caller 0, actual current-source workers 1..256.
@@ -465,6 +468,7 @@ internal static class WindowsIoStageTiming
         private readonly Provenance[] _rootProvenance = new Provenance[RootCapacity];
         private long _nextDirectory;
         private int _numericOverflow;
+        private long _querySuccess, _queryNonSuccess, _queryBytes, _queryInvalidInformation, _queryZeroInformation, _queryFullBuffer;
         private readonly long _started = Stopwatch.GetTimestamp();
         private long _finished;
         private int _workers, _roots, _errors, _slotOverflow, _stopKind;
@@ -630,6 +634,24 @@ internal static class WindowsIoStageTiming
             state.Accepted++;
             Interlocked.Increment(ref state.Sequence);
         }
+
+        internal void QueryResult(int status, nuint information, int capacity)
+        {
+            if (status != 0)
+            {
+                Interlocked.Increment(ref _queryNonSuccess);
+                return;
+            }
+            Interlocked.Increment(ref _querySuccess);
+            if (information > (nuint)capacity)
+            {
+                Interlocked.Increment(ref _queryInvalidInformation);
+                return;
+            }
+            Interlocked.Add(ref _queryBytes, (long)information);
+            if (information == 0) Interlocked.Increment(ref _queryZeroInformation);
+            if (information == (nuint)capacity) Interlocked.Increment(ref _queryFullBuffer);
+        }
         internal void DirectoryCompleted(int slot)
         {
             if ((uint)slot < SlotCapacity) Interlocked.Increment(ref _slots[slot].DirectoriesCompleted);
@@ -693,6 +715,8 @@ internal static class WindowsIoStageTiming
                         catch (Exception error) { metadataError = error.HResult; }
                         break;
                     }
+                var pendingIo = snapshot.Captured == 1 && snapshot.ThreadId != 0
+                    ? QueryOwnThreadPendingIo(snapshot.ThreadId) : default;
                 var currentSequence = Volatile.Read(ref _slots[slot].Sequence);
                 var stable = snapshot.Captured == 1 && snapshot.Sequence == currentSequence;
                 if (!stable) { state = -1; reason = -1; cpu = -1; }
@@ -701,6 +725,7 @@ internal static class WindowsIoStageTiming
                 // The OS state snapshot is bracketed by the same active operation sequence.
                 // State, CPU and GC counters still do not form an atomic snapshot or establish a wait cause.
                 Trace.WriteLine($"IO_STAGE_THREAD sample={sample} collection={ordinal} slot={slot} root={snapshot.Root} admission={snapshot.Admission} operation={(Operation)snapshot.Operation} sequence={snapshot.Sequence} sequenceAfter={currentSequence} entered={snapshot.Entered} tid={snapshot.ThreadId} tidKnown={(snapshot.ThreadId == 0 ? 0 : 1)} capturedCoherent={(snapshot.Captured == 1 ? 1 : 0)} stable={(stable ? 1 : 0)} threadCollectionKnown={(threads is null ? 0 : 1)} threadCollectionError={collectionError} threadFound={(found ? 1 : 0)} metadataError={metadataError} stateKnown={(stateKnown ? 1 : 0)} state={state} waitReasonKnown={(reasonKnown ? 1 : 0)} waitReason={reason} cpuKnown={(cpu >= 0 ? 1 : 0)} cpu100ns={cpu} osSnapshotStarted={snapshotStarted} osSnapshotFinished={snapshotFinished} ticks={Stopwatch.GetTimestamp()} atomicSnapshot=0 waitCauseUnknown=1");
+                Trace.WriteLine($"IO_STAGE_THREAD_IO sample={sample} collection={ordinal} slot={slot} tid={snapshot.ThreadId} operation={(Operation)snapshot.Operation} stable={(stable ? 1 : 0)} status={(int)pendingIo.Status} error={pendingIo.Error} pendingKnown={(stable && pendingIo.Status == ThreadIoStatus.Known ? 1 : 0)} pending={(stable && pendingIo.Status == ThreadIoStatus.Known ? pendingIo.Pending : -1)} closeError={pendingIo.CloseError} queryStarted={pendingIo.Started} queryFinished={pendingIo.Finished} ownerScope=currentProcess requestedThreadAccess=64 atomicSnapshot=0 flagMayChangeBeforeReturn=1 waitCauseProven=0");
             }
         }
 
@@ -714,6 +739,7 @@ internal static class WindowsIoStageTiming
             }
             Trace.WriteLine($"IO_STAGE_PROGRESS sample={sample} collection={ordinal} discoveredPaths={paths} directoriesReadToCompletion={directories} atomicSnapshot=0");
             Trace.WriteLine($"IO_STAGE_COLLECTION sample={sample} collection={ordinal} apply={apply} started={_started} finished={Volatile.Read(ref _finished)} stopKind={Volatile.Read(ref _stopKind)} workersEntered={Volatile.Read(ref _workers)} roots={Volatile.Read(ref _roots)} rootOverflow={Math.Max(0, Volatile.Read(ref _roots) - RootCapacity)} slotOverflow={Volatile.Read(ref _slotOverflow)} observerErrors={Volatile.Read(ref _errors)} ticks={Stopwatch.GetTimestamp()}");
+            Trace.WriteLine($"IO_STAGE_QUERY_INFORMATION sample={sample} collection={ordinal} successfulQueries={Volatile.Read(ref _querySuccess)} nonSuccessQueries={Volatile.Read(ref _queryNonSuccess)} informationBytes={Volatile.Read(ref _queryBytes)} invalidInformation={Volatile.Read(ref _queryInvalidInformation)} zeroInformationSuccess={Volatile.Read(ref _queryZeroInformation)} fullBufferSuccess={Volatile.Read(ref _queryFullBuffer)} nonSuccessIncludesEOF=1 atomicSnapshot=0 perCollectionScalarBytes={6 * sizeof(long)}");
             for (var operation = 1; operation < (int)Operation.Count; operation++)
             {
                 long entered = 0, exited = 0, elapsed = 0;
@@ -788,6 +814,42 @@ internal static class WindowsIoStageTiming
 
     private readonly record struct CpuSample(ulong Idle, ulong Kernel, ulong User, long Ticks);
 
+    internal enum ThreadIoStatus { NotCaptured, Known, Unsupported, OpenFailed, OwnerQueryFailed, ForeignOwner, QueryFailed, Exception }
+    internal readonly record struct ThreadIoSample(ThreadIoStatus Status, int Error, int Pending, int CloseError, long Started, long Finished);
+
+    internal static ThreadIoSample QueryOwnThreadPendingIo(uint threadId)
+    {
+        const uint queryInformation = 0x0040;
+        var started = Stopwatch.GetTimestamp();
+        if (!OperatingSystem.IsWindows())
+            return new ThreadIoSample(ThreadIoStatus.Unsupported, 0, -1, 0, started, Stopwatch.GetTimestamp());
+        nint handle = 0;
+        var status = ThreadIoStatus.OpenFailed;
+        var error = 0;
+        var pending = -1;
+        var closeError = 0;
+        try
+        {
+            handle = OpenThread(queryInformation, false, threadId);
+            if (handle == 0)
+                error = Marshal.GetLastPInvokeError();
+            else
+            {
+                var owner = GetProcessIdOfThread(handle);
+                if (owner == 0) { status = ThreadIoStatus.OwnerQueryFailed; error = Marshal.GetLastPInvokeError(); }
+                else if (owner != (uint)Environment.ProcessId) status = ThreadIoStatus.ForeignOwner;
+                else if (GetThreadIOPendingFlag(handle, out var flag)) { status = ThreadIoStatus.Known; pending = flag == 0 ? 0 : 1; }
+                else { status = ThreadIoStatus.QueryFailed; error = Marshal.GetLastPInvokeError(); }
+            }
+        }
+        catch (Exception exception) { status = ThreadIoStatus.Exception; error = exception.HResult; }
+        finally
+        {
+            if (handle != 0 && !CloseHandle(handle)) closeError = Marshal.GetLastPInvokeError();
+        }
+        return new ThreadIoSample(status, error, pending, closeError, started, Stopwatch.GetTimestamp());
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct PerformanceInformation
     {
@@ -800,6 +862,20 @@ internal static class WindowsIoStageTiming
 
     [DllImport("kernel32.dll", ExactSpelling = true)]
     private static extern uint GetCurrentThreadId();
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern nint OpenThread(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint threadId);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern uint GetProcessIdOfThread(nint handle);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetThreadIOPendingFlag(nint handle, out int pending);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(nint handle);
 
     [DllImport("kernel32.dll", ExactSpelling = true)]
     private static extern ushort GetActiveProcessorGroupCount();

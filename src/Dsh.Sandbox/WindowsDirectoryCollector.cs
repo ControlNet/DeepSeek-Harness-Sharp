@@ -176,6 +176,7 @@ internal static class WindowsDirectoryCollector
                     FileFullDirectoryInformation, 0, 0, 0);
             }
             finally { observation?.Exit(slot, WindowsIoStageTiming.Operation.Query); }
+            observation?.QueryResult(status, ioStatus.Information, BufferSize);
             if (status is NoMoreFiles or NoSuchFile)
             {
                 observation?.DirectoryCompleted(slot);
